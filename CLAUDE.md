@@ -12,11 +12,16 @@
 - Styling: CSS (inline styles for now)
 - Package manager: npm
 
+## Deployment
+- Production URL: https://ruchapov.github.io/right-place-game/
+- Mini App: t.me/RightPlaceGame_bot/game
+- Deploy command: `npm run deploy`
+- After deploy: changes are live in 1-2 minutes
+
 ## Local Development
 - Vite dev server: `npm run dev -- --host` (port 5173)
-- ngrok tunnel: `ngrok http 5173`
-- Both must be running simultaneously for Telegram testing
-- ngrok URL changes every restart — update BotFather when it changes
+- ngrok tunnel: `ngrok http 5173` (only needed for local testing)
+- For most testing use Production URL directly
 
 ## Project Structure
 src/
