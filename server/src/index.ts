@@ -1,12 +1,13 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import dotenv from 'dotenv'
+import { authRoutes } from './routes/auth.js'
 
 // Load environment variables from .env file
 dotenv.config()
 
 const server = Fastify({
-  logger: true // Logs every request to console — useful for debugging
+  logger: true
 })
 
 // Allow requests from our frontend
@@ -18,7 +19,10 @@ await server.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
 })
 
-// Health check endpoint — tells us server is alive
+// Register routes
+await server.register(authRoutes)
+
+// Health check endpoint
 server.get('/health', async () => {
   return {
     status: 'ok',
