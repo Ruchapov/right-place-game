@@ -1,7 +1,7 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import dotenv from 'dotenv'
-import { authRoutes } from './routes/auth.js'
+import { authRoutes } from './routes/auth'
 
 // Load environment variables from .env file
 dotenv.config()
