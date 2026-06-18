@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import dotenv from 'dotenv'
 import { authRoutes } from './routes/auth.js'
+import { runRoutes } from './routes/run.js'
 
 // Load environment variables from .env file
 dotenv.config()
@@ -21,6 +22,7 @@ await server.register(cors, {
 
 // Register routes
 await server.register(authRoutes)
+await server.register(runRoutes)
 
 // Health check endpoint
 server.get('/health', async () => {
