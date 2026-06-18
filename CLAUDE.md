@@ -31,7 +31,7 @@
 - Frontend dev: `npm run dev -- --host` (in root, port 5173)
 - Server dev: `cd server && npm run dev` (port 3000)
 - Deploy frontend: `npm run deploy` (live in 1-2 min on GitHub Pages)
-- Check server alive: open http://localhost:3000/health
+- Check server alive (cloud): open https://right-place-game.onrender.com/health
 
 ## Environment / Gotchas (these caused real bugs)
 - server/.env contains: DATABASE_URL (Neon), JWT_SECRET, BOT_TOKEN — NEVER commit
