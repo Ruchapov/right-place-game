@@ -1,7 +1,7 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import dotenv from 'dotenv'
-import { authRoutes } from './routes/auth'
+import { authRoutes } from './routes/auth.js'
 
 // Load environment variables from .env file
 dotenv.config()
@@ -32,14 +32,14 @@ server.get('/health', async () => {
 })
 
 // Start server
+const port = Number(process.env.PORT) || 3000
 const start = async () => {
   try {
-    await server.listen({ port: 3000, host: '0.0.0.0' })
-    console.log('🚀 Right Place server running on port 3000')
+    await server.listen({ port, host: '0.0.0.0' })
+    console.log(`Right Place server running on port ${port}`)
   } catch (err) {
     server.log.error(err)
     process.exit(1)
   }
 }
-
 start()

@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient } from '@prisma/client'
-import { verifyTelegramInitData, parseTelegramUser } from '../auth'
+import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
 
 const prisma = new PrismaClient()
 
