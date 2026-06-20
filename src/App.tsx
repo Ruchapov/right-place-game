@@ -8,7 +8,6 @@ type PlayerData = {
   firstName: string
   level: number
   gold: number
-  energy: number
 }
 
 const ROOM_LABELS: Record<string, string> = {
@@ -20,6 +19,14 @@ const ROOM_LABELS: Record<string, string> = {
   puzzle: '🧩 Загадка',
 }
 
+const MAX_ENERGY = 100
+
+// Energy now = base value + minutes passed since it was true (capped at MAX).
+function liveEnergy(base: number, baseAt: number, now: number): number {
+  const minutes = Math.floor((now - baseAt) / 60000)
+  return Math.min(MAX_ENERGY, base + minutes)
+}
+
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -27,6 +34,17 @@ export default function App() {
   const [rooms, setRooms] = useState<string[] | null>(null)
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
+
+  // Energy is computed live from a base value + when it was measured.
+  const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
+  const [energyBaseAt, setEnergyBaseAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+
+  // Re-render every 15s so the energy number climbs on screen.
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 15000)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     async function init() {
@@ -40,8 +58,9 @@ export default function App() {
           firstName: data.user.firstName,
           level: data.character.level,
           gold: data.character.gold,
-          energy: data.character.energy,
         })
+        setEnergyBase(data.character.energy)
+        setEnergyBaseAt(Date.now())
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Unknown error')
       } finally {
@@ -51,6 +70,9 @@ export default function App() {
     init()
   }, [])
 
+  const energy = liveEnergy(energyBase, energyBaseAt, now)
+  const notEnoughEnergy = energy < 10
+
   async function handleStartRun() {
     const token = localStorage.getItem('jwt')
     if (!token) return
@@ -59,7 +81,8 @@ export default function App() {
     try {
       const result = await startRun(token)
       setRooms(result.rooms)
-      setPlayer((prev) => (prev ? { ...prev, energy: result.energy } : prev))
+      setEnergyBase(result.energy)
+      setEnergyBaseAt(Date.now())
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Run failed')
     } finally {
@@ -75,8 +98,6 @@ export default function App() {
     </div>
   )
 
-  const notEnoughEnergy = (player?.energy ?? 0) < 10
-
   return (
     <div style={{ padding: 20, fontFamily: 'sans-serif' }}>
       <h1>⚔️ Right Place</h1>
@@ -84,29 +105,22 @@ export default function App() {
         <p>👤 {player?.firstName} (ID: {player?.id})</p>
         <p>⭐ Уровень: {player?.level}</p>
         <p>💰 Золото: {player?.gold}</p>
-        <p>⚡ Энергия: {player?.energy}</p>
+        <p>⚡ Энергия: {energy} / {MAX_ENERGY}</p>
       </div>
 
       <button
         onClick={handleStartRun}
         disabled={running || notEnoughEnergy}
         style={{
-          marginTop: 20,
-          padding: '12px 20px',
-          fontSize: 16,
-          borderRadius: 8,
-          border: 'none',
+          marginTop: 20, padding: '12px 20px', fontSize: 16, borderRadius: 8,
+          border: 'none', color: 'white',
           background: running || notEnoughEnergy ? '#999' : '#4caf50',
-          color: 'white',
         }}
       >
         {running ? 'Забег...' : 'Начать забег (-10 ⚡)'}
       </button>
 
-      {notEnoughEnergy && (
-        <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно 10).</p>
-      )}
-
+      {notEnoughEnergy && <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно 10).</p>}
       {runError && <p style={{ color: 'red', marginTop: 8 }}>{runError}</p>}
 
       {rooms && (

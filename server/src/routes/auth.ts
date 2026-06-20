@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
+import { getCurrentEnergy } from '../game.js'
 
 const prisma = new PrismaClient()
 
@@ -62,6 +63,9 @@ export async function authRoutes(server: FastifyInstance) {
       { expiresIn: '7d' }
     )
 
+    const char = user.character
+    if (!char) return reply.status(500).send({ error: 'No character' })
+
     return reply.send({
       token,
       user: {
@@ -69,7 +73,7 @@ export async function authRoutes(server: FastifyInstance) {
         firstName: user.firstName,
         username: user.username,
       },
-      character: user.character
+      character: { ...char, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate) },
     })
   })
 }
