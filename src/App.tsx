@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, type LoginResponse } from './api'
+import { loginWithTelegram, startRun, type LoginResponse } from './api'
 import './App.css'
 
 type PlayerData = {
@@ -11,20 +11,30 @@ type PlayerData = {
   energy: number
 }
 
+const ROOM_LABELS: Record<string, string> = {
+  enemy: '⚔️ Враг',
+  boss: '👹 Босс',
+  chest: '📦 Сундук',
+  trap: '💥 Ловушка',
+  smuggler: '🤝 Контрабандист',
+  puzzle: '🧩 Загадка',
+}
+
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [rooms, setRooms] = useState<string[] | null>(null)
+  const [running, setRunning] = useState(false)
+  const [runError, setRunError] = useState<string | null>(null)
 
   useEffect(() => {
     async function init() {
       try {
         const initDataRaw = retrieveRawInitData()
         if (!initDataRaw) throw new Error('No initData from Telegram')
-
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-
         setPlayer({
           id: data.user.id,
           firstName: data.user.firstName,
@@ -41,6 +51,22 @@ export default function App() {
     init()
   }, [])
 
+  async function handleStartRun() {
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setRunning(true)
+    setRunError(null)
+    try {
+      const result = await startRun(token)
+      setRooms(result.rooms)
+      setPlayer((prev) => (prev ? { ...prev, energy: result.energy } : prev))
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : 'Run failed')
+    } finally {
+      setRunning(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
 
   if (error) return (
@@ -48,6 +74,8 @@ export default function App() {
       <b>Ошибка:</b> {error}
     </div>
   )
+
+  const notEnoughEnergy = (player?.energy ?? 0) < 10
 
   return (
     <div style={{ padding: 20, fontFamily: 'sans-serif' }}>
@@ -58,6 +86,39 @@ export default function App() {
         <p>💰 Золото: {player?.gold}</p>
         <p>⚡ Энергия: {player?.energy}</p>
       </div>
+
+      <button
+        onClick={handleStartRun}
+        disabled={running || notEnoughEnergy}
+        style={{
+          marginTop: 20,
+          padding: '12px 20px',
+          fontSize: 16,
+          borderRadius: 8,
+          border: 'none',
+          background: running || notEnoughEnergy ? '#999' : '#4caf50',
+          color: 'white',
+        }}
+      >
+        {running ? 'Забег...' : 'Начать забег (-10 ⚡)'}
+      </button>
+
+      {notEnoughEnergy && (
+        <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно 10).</p>
+      )}
+
+      {runError && <p style={{ color: 'red', marginTop: 8 }}>{runError}</p>}
+
+      {rooms && (
+        <div style={{ marginTop: 20 }}>
+          <h2>Комнаты забега:</h2>
+          <ol>
+            {rooms.map((r, i) => (
+              <li key={i} style={{ fontSize: 18, marginBottom: 4 }}>{ROOM_LABELS[r] ?? r}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }

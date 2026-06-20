@@ -28,3 +28,21 @@ export async function loginWithTelegram(initDataRaw: string): Promise<LoginRespo
 
   return await response.json() as LoginResponse
 }
+export type RunResult = {
+  energy: number
+  rooms: string[]
+}
+
+export async function startRun(token: string): Promise<RunResult> {
+  const response = await fetch(`${SERVER_URL}/run/start`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Run failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as RunResult
+}
