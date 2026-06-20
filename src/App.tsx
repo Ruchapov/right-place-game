@@ -15,6 +15,7 @@ const ROOM_LABELS: Record<string, string> = {
 }
 
 const MAX_ENERGY = 100
+const RUN_COST = 3 // DEV: держать в синхроне с сервером (вернуть 10 перед релизом)
 
 function liveEnergy(base: number, baseAt: number, now: number): number {
   const minutes = Math.floor((now - baseAt) / 60000)
@@ -64,7 +65,7 @@ export default function App() {
   }, [])
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
-  const notEnoughEnergy = energy < 10
+  const notEnoughEnergy = energy < RUN_COST
   const runDone = rooms !== null && roomIndex >= rooms.length
 
   async function handleStartRun() {
@@ -115,9 +116,9 @@ export default function App() {
         <>
           <button onClick={handleStartRun} disabled={running || notEnoughEnergy}
             style={{ marginTop: 20, padding: '12px 20px', fontSize: 16, borderRadius: 8, border: 'none', color: 'white', background: running || notEnoughEnergy ? '#999' : '#4caf50' }}>
-            {running ? 'Забег...' : 'Начать забег (-10 ⚡)'}
+            {running ? 'Забег...' : `Начать забег (-${RUN_COST} ⚡)`}
           </button>
-          {notEnoughEnergy && <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно 10).</p>}
+          {notEnoughEnergy && <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно {RUN_COST}).</p>}
         </>
       )}
 

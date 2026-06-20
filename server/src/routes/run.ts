@@ -4,7 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, generateRooms } from '../game.js'
 
 const prisma = new PrismaClient()
-const RUN_COST = 10
+const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
 
 // Read & verify the JWT from the Authorization header. Returns userId or null.
 function getUserId(request: FastifyRequest): number | null {
