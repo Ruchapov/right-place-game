@@ -46,3 +46,23 @@ export async function startRun(token: string): Promise<RunResult> {
   }
   return await response.json() as RunResult
 }
+export type RoomResult = {
+  roomType: string
+  goldGained: number
+  message: string
+  gold: number
+  index: number
+  done: boolean
+}
+
+export async function enterRoom(token: string): Promise<RoomResult> {
+  const response = await fetch(`${SERVER_URL}/run/room`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Room failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as RoomResult
+}
