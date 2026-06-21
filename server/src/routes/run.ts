@@ -24,7 +24,7 @@ function getUserId(request: FastifyRequest): number | null {
 // Shape of the active run stored in Character.currentRun (JSON).
 type ActiveRun = { rooms: string[]; index: number; hp: number }
 // Body shape for POST /run/battle-result.
-type BattleResultBody = { won: boolean; damageTaken: number }
+type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number }
 
 export async function runRoutes(server: FastifyInstance) {
   // Start a run: spend energy, generate 3 rooms, save them as the active run.
@@ -139,11 +139,14 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: `Current room is '${roomType}', not 'enemy'` })
     }
 
-    const { won, damageTaken: rawDamageTaken } = request.body
+    const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const maxHp = character.endurance * 8
+    const ENEMY_MAX_HP = 100 // DEV: matches Battle.tsx's hardcoded normal-enemy HP
 
-    // Sanity check: damage taken in one enemy fight can't exceed the player's own max HP.
+    // Sanity check: damage taken in one enemy fight can't exceed the player's own max HP,
+    // and damage dealt can't exceed the enemy's own max HP.
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
+    const damageDealt = Math.max(0, Math.min(rawDamageDealt, ENEMY_MAX_HP))
 
     const hp = run.hp - damageTaken
     let trophyGained = 0
@@ -161,12 +164,14 @@ export async function runRoutes(server: FastifyInstance) {
 
     const newTrophies = character.trophies + trophyGained
     const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+    const newTotalDamageDealt = character.totalDamageDealt + damageDealt
 
     await prisma.character.update({
       where: { userId },
       data: {
         trophies: died ? 0 : newTrophies, // trophies lost on death, per design
         totalDamageReceived: newTotalDamageReceived,
+        totalDamageDealt: newTotalDamageDealt,
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp },
       },
     })
