@@ -133,6 +133,9 @@ export async function runRoutes(server: FastifyInstance) {
       newTotalDamageReceived,
       maxHp,
       hp,
+      character.level,
+      character.enduranceAtLevelUp,
+      character.strengthAtLevelUp,
     )
 
     const died = growth.hp <= 0
@@ -147,6 +150,9 @@ export async function runRoutes(server: FastifyInstance) {
         totalDamageReceived: newTotalDamageReceived,
         strength: growth.strength,
         endurance: growth.endurance,
+        level: growth.level,
+        enduranceAtLevelUp: growth.enduranceAtLevelUp,
+        strengthAtLevelUp: growth.strengthAtLevelUp,
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
@@ -173,6 +179,8 @@ export async function runRoutes(server: FastifyInstance) {
       gold: newGold,
       index: nextIndex,
       done,
+      level: growth.level,
+      levelsGained: growth.levelsGained,
     })
   })
 
@@ -218,6 +226,9 @@ export async function runRoutes(server: FastifyInstance) {
       newTotalDamageReceived,
       maxHp,
       hp,
+      character.level,
+      character.enduranceAtLevelUp,
+      character.strengthAtLevelUp,
     )
 
     const died = growth.hp <= 0
@@ -235,6 +246,9 @@ export async function runRoutes(server: FastifyInstance) {
         totalDamageDealt: newTotalDamageDealt,
         strength: growth.strength,
         endurance: growth.endurance,
+        level: growth.level,
+        enduranceAtLevelUp: growth.enduranceAtLevelUp,
+        strengthAtLevelUp: growth.strengthAtLevelUp,
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
@@ -256,6 +270,8 @@ export async function runRoutes(server: FastifyInstance) {
       trophies: died ? 0 : newTrophies,
       index: nextIndex,
       done,
+      level: growth.level,
+      levelsGained: growth.levelsGained,
     })
   })
 }
