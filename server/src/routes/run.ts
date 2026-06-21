@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus } from '../game.js'
+import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -65,15 +66,24 @@ function applyStatGrowth(
 }
 
 // Shape of the active run stored in Character.currentRun (JSON).
-type ActiveRun = { rooms: string[]; index: number; hp: number }
+// puzzleId is set when the current room is 'puzzle' and a question has been
+// generated for it — remembers WHICH puzzle was shown, so the answer can be
+// checked against the same question later (puzzles are picked randomly).
+type ActiveRun = { rooms: string[]; index: number; hp: number; puzzleId?: string }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number }
 // Body shape for POST /run/smuggler-result.
 type SmugglerResultBody = { exchange: boolean }
+// Body shape for POST /run/puzzle-result.
+type PuzzleResultBody = { selectedIndex: number }
 
 const SMUGGLER_MULTIPLIER = 1.5
 const SMUGGLER_STEAL_CHANCE = 0.2
 const SMUGGLER_STEAL_FRACTION = 0.5
+
+const PUZZLE_DAMAGE_FRACTION = 0.2 // same as Trap: 20% of maxHP on a wrong answer
+const PUZZLE_GOLD_MIN = 15
+const PUZZLE_GOLD_MAX = 60
 
 export async function runRoutes(server: FastifyInstance) {
   // Start a run: spend energy, generate 3 rooms, save them as the active run.
@@ -306,7 +316,6 @@ export async function runRoutes(server: FastifyInstance) {
     let trophies = character.trophies
     let stolen = false
 
-    // Only attempt the exchange if the player chose to AND actually has trophies to trade.
     if (exchange && trophies > 0) {
       const isStolen = Math.random() < SMUGGLER_STEAL_CHANCE
       if (isStolen) {
@@ -350,6 +359,130 @@ export async function runRoutes(server: FastifyInstance) {
       died: false,
       index: nextIndex,
       done,
+    })
+  })
+
+  // Get the puzzle question for the current room (generates and remembers one if
+  // not already picked for this room visit, so a refresh doesn't get a new question).
+  server.post('/run/puzzle', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveRun | null
+    if (!run) return reply.status(400).send({ error: 'No active run' })
+
+    const roomType = run.rooms[run.index]
+    if (roomType !== 'puzzle') {
+      return reply.status(400).send({ error: `Current room is '${roomType}', not 'puzzle'` })
+    }
+
+    // Reuse the puzzle if one was already picked for this room visit; otherwise
+    // pick a new one and remember it in currentRun.
+    let puzzle = PUZZLES.find((p) => p.id === run.puzzleId)
+    if (!puzzle) {
+      puzzle = pickRandomPuzzle()
+      await prisma.character.update({
+        where: { userId },
+        data: { currentRun: { ...run, puzzleId: puzzle.id } },
+      })
+    }
+
+    return reply.send({ question: puzzle.question, options: puzzle.options })
+  })
+
+  // Submit the player's answer to the current puzzle. Advances the run.
+  server.post<{ Body: PuzzleResultBody }>('/run/puzzle-result', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveRun | null
+    if (!run) return reply.status(400).send({ error: 'No active run' })
+
+    const roomType = run.rooms[run.index]
+    if (roomType !== 'puzzle') {
+      return reply.status(400).send({ error: `Current room is '${roomType}', not 'puzzle'` })
+    }
+
+    const puzzle = PUZZLES.find((p) => p.id === run.puzzleId)
+    if (!puzzle) {
+      return reply.status(400).send({ error: 'No puzzle was generated for this room — call /run/puzzle first' })
+    }
+
+    const { selectedIndex } = request.body
+    const correct = selectedIndex === puzzle.correctIndex
+    const maxHp = character.endurance * 8
+
+    let goldGained = 0
+    let damageTaken = 0
+    let hp = run.hp
+
+    if (correct) {
+      goldGained = Math.floor(Math.random() * (PUZZLE_GOLD_MAX - PUZZLE_GOLD_MIN + 1)) + PUZZLE_GOLD_MIN
+    } else {
+      damageTaken = Math.ceil(maxHp * PUZZLE_DAMAGE_FRACTION)
+      hp = hp - damageTaken
+    }
+
+    const newGold = character.gold + goldGained
+    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+
+    const growth = applyStatGrowth(
+      character.totalDamageDealt,
+      newTotalDamageReceived,
+      maxHp,
+      hp,
+      character.level,
+      character.enduranceAtLevelUp,
+      character.strengthAtLevelUp,
+    )
+
+    const died = growth.hp <= 0
+    const nextIndex = run.index + 1
+    const done = !died && nextIndex >= run.rooms.length
+    const runEnds = died || done
+
+    await prisma.character.update({
+      where: { userId },
+      data: {
+        gold: newGold,
+        totalDamageReceived: newTotalDamageReceived,
+        strength: growth.strength,
+        endurance: growth.endurance,
+        level: growth.level,
+        enduranceAtLevelUp: growth.enduranceAtLevelUp,
+        strengthAtLevelUp: growth.strengthAtLevelUp,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
+      },
+    })
+
+    const message = died
+      ? `Wrong answer! −${damageTaken} HP. You died.`
+      : correct
+        ? `Correct! +${goldGained} gold`
+        : `Wrong answer! −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
+
+    return reply.send({
+      roomType,
+      correct,
+      goldGained,
+      damageTaken,
+      hp: Math.max(0, growth.hp),
+      maxHp: growth.maxHp,
+      died,
+      message,
+      gold: newGold,
+      index: nextIndex,
+      done,
+      level: growth.level,
+      levelsGained: growth.levelsGained,
+      strength: growth.strength,
+      endurance: growth.endurance,
     })
   })
 }

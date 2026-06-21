@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, type LoginResponse, type BattleResult, type SmugglerResult } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
 import Battle from './Battle'
 import Smuggler from './Smuggler'
+import Puzzle from './Puzzle'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; trophies: number }
@@ -30,6 +31,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [inBattle, setInBattle] = useState(false)
   const [inSmuggler, setInSmuggler] = useState(false)
+  const [puzzleData, setPuzzleData] = useState<{ question: string; options: string[] } | null>(null)
   const [runHp, setRunHp] = useState(80)
   const [runMaxHp, setRunMaxHp] = useState(80)
 
@@ -99,6 +101,16 @@ export default function App() {
       setInSmuggler(true)
       return
     }
+    if (rooms && rooms[roomIndex] === 'puzzle') {
+      setEntering(true); setRunError(null)
+      try {
+        const pz = await getPuzzle(token)
+        setPuzzleData(pz)
+      } catch (e) {
+        setRunError(e instanceof Error ? e.message : 'Puzzle failed')
+      } finally { setEntering(false) }
+      return
+    }
     setEntering(true); setRunError(null)
     try {
       const result = await enterRoom(token)
@@ -143,6 +155,22 @@ export default function App() {
     } finally { setEntering(false) }
   }
 
+  async function handlePuzzleAnswer(selectedIndex: number) {
+    setPuzzleData(null)
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setEntering(true); setRunError(null)
+    try {
+      const pr: PuzzleResult = await submitPuzzleResult(token, selectedIndex)
+      setResults((prev) => [...prev, pr.message])
+      setRoomIndex(pr.index)
+      setRunHp(pr.hp)
+      setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : 'Puzzle failed')
+    } finally { setEntering(false) }
+  }
+
   function backToMenu() {
     setRooms(null); setRoomIndex(0); setResults([])
   }
@@ -175,6 +203,7 @@ export default function App() {
 
       {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} onBattleEnd={handleBattleEnd} />}
       {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
+      {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
       {rooms !== null && (
         <div style={{ marginTop: 20 }}>
           <h2>Забег: комната {Math.min(roomIndex + 1, rooms.length)} / {rooms.length}</h2>

@@ -142,3 +142,53 @@ export async function submitSmugglerResult(token: string, exchange: boolean): Pr
   }
   return await response.json() as SmugglerResult
 }
+export type PuzzleQuestion = {
+  question: string
+  options: string[]
+}
+
+export async function getPuzzle(token: string): Promise<PuzzleQuestion> {
+  const response = await fetch(`${SERVER_URL}/run/puzzle`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Get puzzle failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as PuzzleQuestion
+}
+
+export type PuzzleResult = {
+  roomType: string
+  correct: boolean
+  goldGained: number
+  damageTaken: number
+  hp: number
+  maxHp: number
+  died: boolean
+  message: string
+  gold: number
+  index: number
+  done: boolean
+  level: number
+  levelsGained: number
+  strength: number
+  endurance: number
+}
+
+export async function submitPuzzleResult(token: string, selectedIndex: number): Promise<PuzzleResult> {
+  const response = await fetch(`${SERVER_URL}/run/puzzle-result`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ selectedIndex }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Puzzle result failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as PuzzleResult
+}
