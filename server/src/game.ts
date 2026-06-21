@@ -87,10 +87,10 @@ export function calculateEnduranceBonus(totalDamageReceived: number): number {
 const LEVELUP_ENDURANCE_GAIN = 3
 const LEVELUP_STRENGTH_GAIN = 6
 
-// Returns how many levels the player should gain right now, based on how many full
-// "Endurance +3 AND Strength +6" thresholds have been cleared since the last level-up.
-// Can be 0 (no level-up yet), 1, or more (if growth jumped past multiple thresholds
-// in a single fight/trap — e.g. a big damage spike).
+// Returns how many levels the player should gain right now. Each is independent:
+// every full +3 Endurance gives a level, AND separately every full +6 Strength
+// gives a level (design decision: "OR", not "AND" — either stat progressing is
+// enough, they don't have to advance together). Levels from both tracks add up.
 export function checkStatLevelUp(
   currentEndurance: number,
   currentStrength: number,
@@ -103,7 +103,5 @@ export function checkStatLevelUp(
   const levelsFromEndurance = Math.floor(enduranceGain / LEVELUP_ENDURANCE_GAIN)
   const levelsFromStrength = Math.floor(strengthGain / LEVELUP_STRENGTH_GAIN)
 
-  // Both conditions must be satisfied per design ("Endurance +3 AND Strength +6"),
-  // so the number of full level-ups is bound by whichever stat lags behind.
-  return Math.min(levelsFromEndurance, levelsFromStrength)
+  return levelsFromEndurance + levelsFromStrength
 }

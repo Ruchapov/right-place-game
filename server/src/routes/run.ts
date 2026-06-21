@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, checkStatLevelUp } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus } from '../game.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -45,13 +45,16 @@ function applyStatGrowth(
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
 
-  const levelsGained = checkStatLevelUp(endurance, strength, enduranceAtLevelUp, strengthAtLevelUp)
+  // Each stat's progress toward a level-up is tracked independently (design: "OR" —
+  // either +3 Endurance or +6 Strength alone gives a level, they don't need to
+  // happen together). Advance each marker by exactly the thresholds IT consumed,
+  // not by the combined level count, so excess progress correctly carries over.
+  const levelsFromEndurance = Math.floor((endurance - enduranceAtLevelUp) / LEVELUP_ENDURANCE_GAIN)
+  const levelsFromStrength = Math.floor((strength - strengthAtLevelUp) / LEVELUP_STRENGTH_GAIN)
+  const levelsGained = levelsFromEndurance + levelsFromStrength
   const level = currentLevel + levelsGained
-  // Advance the "at last level-up" markers by exactly the thresholds consumed, not to
-  // the full current stat value — any extra progress beyond the threshold carries over
-  // toward the next level-up instead of being discarded.
-  const newEnduranceAtLevelUp = enduranceAtLevelUp + levelsGained * LEVELUP_ENDURANCE_GAIN
-  const newStrengthAtLevelUp = strengthAtLevelUp + levelsGained * LEVELUP_STRENGTH_GAIN
+  const newEnduranceAtLevelUp = enduranceAtLevelUp + levelsFromEndurance * LEVELUP_ENDURANCE_GAIN
+  const newStrengthAtLevelUp = strengthAtLevelUp + levelsFromStrength * LEVELUP_STRENGTH_GAIN
 
   return {
     strength,
