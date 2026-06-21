@@ -181,6 +181,8 @@ export async function runRoutes(server: FastifyInstance) {
       done,
       level: growth.level,
       levelsGained: growth.levelsGained,
+      strength: growth.strength,
+      endurance: growth.endurance,
     })
   })
 
@@ -272,6 +274,8 @@ export async function runRoutes(server: FastifyInstance) {
       done,
       level: growth.level,
       levelsGained: growth.levelsGained,
+      strength: growth.strength,
+      endurance: growth.endurance,
     })
   })
 }

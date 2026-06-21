@@ -4,7 +4,7 @@ import { loginWithTelegram, startRun, enterRoom, submitBattleResult, type LoginR
 import Battle from './Battle'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number }
 
 const ROOM_LABELS: Record<string, string> = {
   enemy: '⚔️ Враг',
@@ -56,7 +56,7 @@ export default function App() {
         if (!initDataRaw) throw new Error('No initData from Telegram')
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold })
+        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
       } catch (e) {
@@ -99,7 +99,7 @@ export default function App() {
       setResults((prev) => [...prev, result.message])
       setRoomIndex(result.index)
       setRunHp(result.hp)
-      setPlayer((prev) => (prev ? { ...prev, gold: result.gold } : prev))
+      setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Room failed')
     } finally { setEntering(false) }
@@ -115,6 +115,7 @@ export default function App() {
       setResults((prev) => [...prev, br.message])
       setRoomIndex(br.index)
       setRunHp(br.hp)
+      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
     } finally { setEntering(false) }
@@ -134,6 +135,8 @@ export default function App() {
         <p>👤 {player?.firstName} (ID: {player?.id})</p>
         <p>⭐ Уровень: {player?.level}</p>
         <p>💰 Золото: {player?.gold}</p>
+        <p>💪 Сила: {player?.strength}</p>
+        <p>🛡️ Выносливость: {player?.endurance}</p>
         <p>⚡ Энергия: {energy} / {MAX_ENERGY}</p>
       </div>
 

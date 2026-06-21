@@ -59,6 +59,10 @@ export type RoomResult = {
   gold: number
   index: number
   done: boolean
+  level: number
+  levelsGained: number
+  strength: number
+  endurance: number
 }
 
 export async function enterRoom(token: string): Promise<RoomResult> {
@@ -83,6 +87,10 @@ export type BattleResult = {
   trophies: number
   index: number
   done: boolean
+  level: number
+  levelsGained: number
+  strength: number
+  endurance: number
 }
 
 export async function submitBattleResult(
