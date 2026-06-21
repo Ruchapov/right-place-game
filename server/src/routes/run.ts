@@ -219,7 +219,9 @@ export async function runRoutes(server: FastifyInstance) {
     let trophyGained = 0
 
     if (won) {
-      trophyGained = 1 // DEV: 1 trophy per normal enemy, balance later
+      trophyGained = isBoss
+        ? Math.floor(Math.random() * (22 - 15 + 1)) + 15
+        : Math.floor(Math.random() * (15 - 10 + 1)) + 10
     }
 
     const newTotalDamageReceived = character.totalDamageReceived + damageTaken

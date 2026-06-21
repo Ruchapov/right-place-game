@@ -157,6 +157,7 @@ export default function App() {
         <p>👤 {player?.firstName} (ID: {player?.id})</p>
         <p>⭐ Уровень: {player?.level}</p>
         <p>💰 Золото: {player?.gold}</p>
+        <p>🏆 Трофеи: {player?.trophies}</p>
         <p>💪 Сила: {player?.strength}</p>
         <p>🛡️ Выносливость: {player?.endurance}</p>
         <p>⚡ Энергия: {energy} / {MAX_ENERGY}</p>
