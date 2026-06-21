@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, type LoginResponse, type BattleResult } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, type LoginResponse, type BattleResult, type SmugglerResult } from './api'
 import Battle from './Battle'
+import Smuggler from './Smuggler'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; trophies: number }
 
 const ROOM_LABELS: Record<string, string> = {
   enemy: '⚔️ Враг',
@@ -28,6 +29,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [inBattle, setInBattle] = useState(false)
+  const [inSmuggler, setInSmuggler] = useState(false)
   const [runHp, setRunHp] = useState(80)
   const [runMaxHp, setRunMaxHp] = useState(80)
 
@@ -56,7 +58,7 @@ export default function App() {
         if (!initDataRaw) throw new Error('No initData from Telegram')
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance })
+        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, trophies: data.character.trophies })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
       } catch (e) {
@@ -93,6 +95,10 @@ export default function App() {
       setInBattle(true)
       return
     }
+    if (rooms && rooms[roomIndex] === 'smuggler') {
+      setInSmuggler(true)
+      return
+    }
     setEntering(true); setRunError(null)
     try {
       const result = await enterRoom(token)
@@ -115,9 +121,25 @@ export default function App() {
       setResults((prev) => [...prev, br.message])
       setRoomIndex(br.index)
       setRunHp(br.hp)
-      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance } : prev))
+      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, trophies: br.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
+    } finally { setEntering(false) }
+  }
+
+  async function handleSmugglerChoice(exchange: boolean) {
+    setInSmuggler(false)
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setEntering(true); setRunError(null)
+    try {
+      const sr: SmugglerResult = await submitSmugglerResult(token, exchange)
+      setResults((prev) => [...prev, sr.message])
+      setRoomIndex(sr.index)
+      setRunHp(sr.hp)
+      setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : 'Smuggler failed')
     } finally { setEntering(false) }
   }
 
@@ -151,6 +173,7 @@ export default function App() {
       )}
 
       {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} onBattleEnd={handleBattleEnd} />}
+      {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
       {rooms !== null && (
         <div style={{ marginTop: 20 }}>
           <h2>Забег: комната {Math.min(roomIndex + 1, rooms.length)} / {rooms.length}</h2>

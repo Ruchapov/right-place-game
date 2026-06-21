@@ -45,10 +45,6 @@ function applyStatGrowth(
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
 
-  // Each stat's progress toward a level-up is tracked independently (design: "OR" —
-  // either +3 Endurance or +6 Strength alone gives a level, they don't need to
-  // happen together). Advance each marker by exactly the thresholds IT consumed,
-  // not by the combined level count, so excess progress correctly carries over.
   const levelsFromEndurance = Math.floor((endurance - enduranceAtLevelUp) / LEVELUP_ENDURANCE_GAIN)
   const levelsFromStrength = Math.floor((strength - strengthAtLevelUp) / LEVELUP_STRENGTH_GAIN)
   const levelsGained = levelsFromEndurance + levelsFromStrength
@@ -72,6 +68,12 @@ function applyStatGrowth(
 type ActiveRun = { rooms: string[]; index: number; hp: number }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number }
+// Body shape for POST /run/smuggler-result.
+type SmugglerResultBody = { exchange: boolean }
+
+const SMUGGLER_MULTIPLIER = 1.5
+const SMUGGLER_STEAL_CHANCE = 0.2
+const SMUGGLER_STEAL_FRACTION = 0.5
 
 export async function runRoutes(server: FastifyInstance) {
   // Start a run: spend energy, generate 3 rooms, save them as the active run.
@@ -210,8 +212,6 @@ export async function runRoutes(server: FastifyInstance) {
     const maxHp = character.endurance * 8
     const ENEMY_MAX_HP = isBoss ? 150 : 100 // DEV: matches Battle.tsx's hardcoded enemy HP
 
-    // Sanity check: damage taken in one enemy fight can't exceed the player's own max HP,
-    // and damage dealt can't exceed the enemy's own max HP.
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
     const damageDealt = Math.max(0, Math.min(rawDamageDealt, ENEMY_MAX_HP))
 
@@ -221,15 +221,10 @@ export async function runRoutes(server: FastifyInstance) {
     if (won) {
       trophyGained = 1 // DEV: 1 trophy per normal enemy, balance later
     }
-    // If the player lost (won === false), we trust the client's "lost" claim for now —
-    // the run already ends either way once hp <= 0, so there's nothing extra to fake here.
 
     const newTotalDamageReceived = character.totalDamageReceived + damageTaken
     const newTotalDamageDealt = character.totalDamageDealt + damageDealt
 
-    // Boss Method 2 leveling: instant level-up on kill, no auto stat growth (the
-    // player picks a permanent stat reward separately — not yet implemented, that's
-    // a follow-up step). Regular enemies keep using the normal stat-driven growth.
     const bossLevelUp = isBoss && won
     const growth = applyStatGrowth(
       newTotalDamageDealt,
@@ -251,7 +246,7 @@ export async function runRoutes(server: FastifyInstance) {
     await prisma.character.update({
       where: { userId },
       data: {
-        trophies: died ? 0 : newTrophies, // trophies lost on death, per design
+        trophies: died ? 0 : newTrophies,
         totalDamageReceived: newTotalDamageReceived,
         totalDamageDealt: newTotalDamageDealt,
         strength: growth.strength,
@@ -286,6 +281,73 @@ export async function runRoutes(server: FastifyInstance) {
       levelsGained: growth.levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
+    })
+  })
+
+  // Submit the player's choice in a Smuggler room: exchange trophies or walk away.
+  server.post<{ Body: SmugglerResultBody }>('/run/smuggler-result', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveRun | null
+    if (!run) return reply.status(400).send({ error: 'No active run' })
+
+    const roomType = run.rooms[run.index]
+    if (roomType !== 'smuggler') {
+      return reply.status(400).send({ error: `Current room is '${roomType}', not 'smuggler'` })
+    }
+
+    const { exchange } = request.body
+    let trophies = character.trophies
+    let stolen = false
+
+    // Only attempt the exchange if the player chose to AND actually has trophies to trade.
+    if (exchange && trophies > 0) {
+      const isStolen = Math.random() < SMUGGLER_STEAL_CHANCE
+      if (isStolen) {
+        trophies = Math.floor(trophies * (1 - SMUGGLER_STEAL_FRACTION))
+        stolen = true
+      } else {
+        trophies = Math.floor(trophies * SMUGGLER_MULTIPLIER)
+      }
+    }
+
+    const nextIndex = run.index + 1
+    const done = nextIndex >= run.rooms.length
+
+    await prisma.character.update({
+      where: { userId },
+      data: {
+        trophies,
+        currentRun: done ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: run.hp },
+      },
+    })
+
+    let message: string
+    if (!exchange) {
+      message = 'You walked away from the smuggler.'
+    } else if (trophies === character.trophies && character.trophies === 0) {
+      message = 'Nothing to trade.'
+    } else if (stolen) {
+      message = `The smuggler stole half your trophies! (${trophies} left)`
+    } else {
+      message = `Trade successful! Trophies: ${trophies}`
+    }
+
+    return reply.send({
+      roomType,
+      exchanged: exchange && character.trophies > 0,
+      stolen,
+      trophies,
+      message,
+      hp: run.hp,
+      maxHp: character.endurance * 8,
+      died: false,
+      index: nextIndex,
+      done,
     })
   })
 }

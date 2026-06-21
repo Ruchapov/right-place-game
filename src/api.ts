@@ -11,6 +11,7 @@ export type LoginResponse = {
     strength: number
     agility: number
     luck: number
+    trophies: number
   }
 }
 
@@ -112,4 +113,32 @@ export async function submitBattleResult(
     throw new Error(`Battle result failed: ${response.status} ${JSON.stringify(err)}`)
   }
   return await response.json() as BattleResult
+}
+export type SmugglerResult = {
+  roomType: string
+  exchanged: boolean
+  stolen: boolean
+  trophies: number
+  message: string
+  hp: number
+  maxHp: number
+  died: boolean
+  index: number
+  done: boolean
+}
+
+export async function submitSmugglerResult(token: string, exchange: boolean): Promise<SmugglerResult> {
+  const response = await fetch(`${SERVER_URL}/run/smuggler-result`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ exchange }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Smuggler result failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as SmugglerResult
 }
