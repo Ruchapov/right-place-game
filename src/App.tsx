@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
 import { loginWithTelegram, startRun, enterRoom, type LoginResponse } from './api'
+import Battle from './Battle'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number }
@@ -26,6 +27,7 @@ export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [showBattleTest, setShowBattleTest] = useState(false) // TEMP: тестовая кнопка, удалить позже
 
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -119,9 +121,16 @@ export default function App() {
             {running ? 'Забег...' : `Начать забег (-${RUN_COST} ⚡)`}
           </button>
           {notEnoughEnergy && <p style={{ color: '#c00', marginTop: 8 }}>Недостаточно энергии (нужно {RUN_COST}).</p>}
+
+          {/* TEMP: кнопка для теста сцены боя, удалить когда бой подключим к комнате enemy */}
+          <button onClick={() => setShowBattleTest(true)}
+            style={{ marginTop: 12, marginLeft: 10, padding: '12px 20px', fontSize: 16, borderRadius: 8, border: 'none', color: 'white', background: '#9c27b0' }}>
+            🧪 Тест боя
+          </button>
         </>
       )}
 
+      {showBattleTest && <Battle onClose={() => setShowBattleTest(false)} />}
       {rooms !== null && (
         <div style={{ marginTop: 20 }}>
           <h2>Забег: комната {Math.min(roomIndex + 1, rooms.length)} / {rooms.length}</h2>

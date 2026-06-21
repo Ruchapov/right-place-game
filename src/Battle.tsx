@@ -1,0 +1,335 @@
+import { useEffect, useRef, useCallback, useState } from 'react'
+import { Application, Graphics, Text, TextStyle } from 'pixi.js'
+
+type BattleProps = {
+  onClose: () => void
+}
+
+export default function Battle({ onClose }: BattleProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const directionRef = useRef(0)
+  const [battleOver, setBattleOver] = useState(false)
+  const attackRef = useRef<{
+    canAttack: boolean
+    cooldownLeft: number
+    doAttack: () => void
+  }>({ canAttack: false, cooldownLeft: 0, doAttack: () => {} })
+  const dodgeRef = useRef<{ doDodge: () => void }>({ doDodge: () => {} })
+
+  useEffect(() => {
+    let app: Application | null = null
+    let cancelled = false
+
+    async function setup() {
+      app = new Application()
+      const width = window.innerWidth
+      const height = window.innerHeight
+      const PLAYER_W = 40
+      const SPEED = 3
+      const ATTACK_RANGE = 70
+      const ATTACK_DAMAGE = 15
+      const ATTACK_COOLDOWN = 0.5
+
+      await app.init({
+        width,
+        height,
+        backgroundColor: 0x1a1a2e,
+        resizeTo: window,
+      })
+
+      if (cancelled || !containerRef.current) {
+        app.destroy(true, { children: true })
+        return
+      }
+
+      containerRef.current.appendChild(app.canvas)
+
+      const player = new Graphics()
+      player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
+      player.x = width * 0.2
+      player.y = height / 2 - 30
+      app.stage.addChild(player)
+
+      const enemy = new Graphics()
+      enemy.rect(0, 0, 40, 60).fill(0xd32f2f)
+      enemy.x = width * 0.75
+      enemy.y = height / 2 - 30
+      app.stage.addChild(enemy)
+
+      let enemyHp = 100
+      let enemyAlive = true
+      let playerHp = 80
+      let battleEnded = false
+
+      const hpStyle = new TextStyle({ fontSize: 16, fill: 0xffffff })
+
+      const enemyHpText = new Text({ text: `HP: ${enemyHp}`, style: hpStyle })
+      enemyHpText.anchor.set(0.5, 1)
+      enemyHpText.x = enemy.x + 20
+      enemyHpText.y = enemy.y - 6
+      app.stage.addChild(enemyHpText)
+
+      const playerHpText = new Text({ text: `HP: ${playerHp}`, style: hpStyle })
+      playerHpText.anchor.set(0.5, 1)
+      playerHpText.x = player.x + PLAYER_W / 2
+      playerHpText.y = player.y - 6
+      app.stage.addChild(playerHpText)
+
+      let cooldownLeft = 0
+      const ENEMY_SPEED = 1
+      const ENEMY_ATTACK_INTERVAL = 2
+      const ENEMY_ATTACK_DAMAGE = 10
+      let enemyAttackTimer = 0
+      const ENEMY_WINDUP = 0.6
+      let enemyWindingUp = false
+      let windupTimer = 0
+
+      attackRef.current = {
+        canAttack: true,
+        cooldownLeft: 0,
+        doAttack() {
+          if (battleEnded || cooldownLeft > 0) return
+          const dist = Math.abs(player.x - enemy.x)
+          if (dist > ATTACK_RANGE) return
+          enemyHp -= ATTACK_DAMAGE
+          if (enemyHp < 0) enemyHp = 0
+          enemyHpText.text = `HP: ${enemyHp}`
+          cooldownLeft = ATTACK_COOLDOWN
+          if (enemyHp <= 0) {
+            enemyAlive = false
+            battleEnded = true
+            setBattleOver(true)
+            app!.stage.removeChild(enemy)
+            app!.stage.removeChild(enemyHpText)
+            const winStyle = new TextStyle({ fontSize: 48, fill: 0xffd700, fontWeight: 'bold' })
+            const winText = new Text({ text: 'Победа!', style: winStyle })
+            winText.anchor.set(0.5)
+            winText.x = app!.screen.width / 2
+            winText.y = app!.screen.height / 2
+            app!.stage.addChild(winText)
+          }
+        },
+      }
+
+      dodgeRef.current = {
+        doDodge() {
+          if (!enemyWindingUp) return
+          enemyWindingUp = false
+          windupTimer = 0
+          enemyAttackTimer = 0
+          enemy.scale.set(1)
+        },
+      }
+
+      app.ticker.add((ticker) => {
+        if (battleEnded) return
+
+        if (cooldownLeft > 0) {
+          cooldownLeft -= ticker.deltaMS / 1000
+          if (cooldownLeft < 0) cooldownLeft = 0
+        }
+        attackRef.current.canAttack = cooldownLeft <= 0
+        attackRef.current.cooldownLeft = cooldownLeft
+
+        if (directionRef.current !== 0) {
+          player.x += SPEED * directionRef.current
+          const maxX = app!.screen.width - PLAYER_W
+          if (player.x < 0) player.x = 0
+          else if (player.x > maxX) player.x = maxX
+        }
+        playerHpText.x = player.x + PLAYER_W / 2
+
+        if (enemyAlive) {
+          const dx = player.x - enemy.x
+          if (Math.abs(dx) > PLAYER_W) {
+            enemy.x += Math.sign(dx) * ENEMY_SPEED
+            if (enemy.x < 0) enemy.x = 0
+            else if (enemy.x > app!.screen.width - 40) enemy.x = app!.screen.width - 40
+          }
+          enemyHpText.x = enemy.x + 20
+
+          const dist = Math.abs(player.x - enemy.x)
+          if (dist < ATTACK_RANGE) {
+            if (!enemyWindingUp) {
+              enemyAttackTimer += ticker.deltaMS / 1000
+              if (enemyAttackTimer >= ENEMY_ATTACK_INTERVAL) {
+                enemyAttackTimer = 0
+                enemyWindingUp = true
+                windupTimer = 0
+                enemy.scale.set(1.3)
+              }
+            } else {
+              windupTimer += ticker.deltaMS / 1000
+              if (windupTimer >= ENEMY_WINDUP) {
+                enemyWindingUp = false
+                enemy.scale.set(1)
+                playerHp -= ENEMY_ATTACK_DAMAGE
+                if (playerHp < 0) playerHp = 0
+                playerHpText.text = `HP: ${playerHp}`
+                if (playerHp <= 0) {
+                  battleEnded = true
+                  setBattleOver(true)
+                  const loseStyle = new TextStyle({ fontSize: 48, fill: 0xff3333, fontWeight: 'bold' })
+                  const loseText = new Text({ text: 'Поражение', style: loseStyle })
+                  loseText.anchor.set(0.5)
+                  loseText.x = app!.screen.width / 2
+                  loseText.y = app!.screen.height / 2
+                  app!.stage.addChild(loseText)
+                }
+              }
+            }
+          } else {
+            if (enemyWindingUp) {
+              enemyWindingUp = false
+              enemy.scale.set(1)
+              windupTimer = 0
+            }
+            enemyAttackTimer = 0
+          }
+        }
+      })
+    }
+
+    setup()
+
+    return () => {
+      cancelled = true
+      if (app) {
+        app.destroy(true, { children: true })
+      }
+    }
+  }, [])
+
+  const startMove = useCallback((dir: number) => { directionRef.current = dir }, [])
+  const stopMove = useCallback(() => { directionRef.current = 0 }, [])
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 1000,
+        background: '#1a1a2e',
+      }}
+    >
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      <button
+        onClick={onClose}
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          padding: '8px 14px',
+          borderRadius: 8,
+          border: 'none',
+          background: 'rgba(0,0,0,0.5)',
+          color: 'white',
+        }}
+      >
+        ✕ Закрыть (тест)
+      </button>
+
+      {!battleOver && <div
+        style={{
+          position: 'absolute',
+          bottom: 40,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          gap: 16,
+        }}
+      >
+        <button
+          onMouseDown={() => startMove(-1)}
+          onMouseUp={stopMove}
+          onMouseLeave={stopMove}
+          onTouchStart={() => startMove(-1)}
+          onTouchEnd={stopMove}
+          onTouchCancel={stopMove}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            border: 'none',
+            background: 'rgba(255,255,255,0.2)',
+            color: 'white',
+            fontSize: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+          }}
+        >
+          ◀
+        </button>
+        <button
+          onMouseDown={() => startMove(1)}
+          onMouseUp={stopMove}
+          onMouseLeave={stopMove}
+          onTouchStart={() => startMove(1)}
+          onTouchEnd={stopMove}
+          onTouchCancel={stopMove}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            border: 'none',
+            background: 'rgba(255,255,255,0.2)',
+            color: 'white',
+            fontSize: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+          }}
+        >
+          ▶
+        </button>
+        <button
+          onClick={() => attackRef.current.doAttack()}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            border: 'none',
+            background: 'rgba(220,60,60,0.4)',
+            color: 'white',
+            fontSize: 20,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+          }}
+        >
+          ⚔
+        </button>
+        <button
+          onClick={() => dodgeRef.current.doDodge()}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            border: 'none',
+            background: 'rgba(60,160,220,0.4)',
+            color: 'white',
+            fontSize: 20,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+          }}
+        >
+          🔄
+        </button>
+      </div>}
+    </div>
+  )
+}

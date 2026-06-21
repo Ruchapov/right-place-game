@@ -32,6 +32,7 @@ model Character {
   totalDamageDealt    Float    @default(0)
   totalSkillUses      Int      @default(0)
   gold                Int      @default(0)
+  trophies            Int      @default(0)
   crystals            Int      @default(0)
   potionCharges       Int      @default(3)
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет

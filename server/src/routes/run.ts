@@ -23,6 +23,8 @@ function getUserId(request: FastifyRequest): number | null {
 
 // Shape of the active run stored in Character.currentRun (JSON).
 type ActiveRun = { rooms: string[]; index: number; hp: number }
+// Body shape for POST /run/battle-result.
+type BattleResultBody = { won: boolean; damageTaken: number }
 
 export async function runRoutes(server: FastifyInstance) {
   // Start a run: spend energy, generate 3 rooms, save them as the active run.
@@ -107,7 +109,7 @@ export async function runRoutes(server: FastifyInstance) {
       message = `Entered a ${roomType} room (not implemented yet)`
     }
 
-    return reply.send({
+   return reply.send({
       roomType,
       goldGained,
       damageTaken,
@@ -116,6 +118,74 @@ export async function runRoutes(server: FastifyInstance) {
       died,
       message,
       gold: newGold,
+      index: nextIndex,
+      done,
+    })
+  })
+
+  // Submit the result of a client-played battle (enemy room). Advances the run.
+  server.post<{ Body: BattleResultBody }>('/run/battle-result', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveRun | null
+    if (!run) return reply.status(400).send({ error: 'No active run' })
+
+    const roomType = run.rooms[run.index]
+    if (roomType !== 'enemy') {
+      return reply.status(400).send({ error: `Current room is '${roomType}', not 'enemy'` })
+    }
+
+    const { won, damageTaken: rawDamageTaken } = request.body
+    const maxHp = character.endurance * 8
+
+    // Sanity check: damage taken in one enemy fight can't exceed the player's own max HP.
+    const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
+
+    const hp = run.hp - damageTaken
+    let trophyGained = 0
+
+    if (won) {
+      trophyGained = 1 // DEV: 1 trophy per normal enemy, balance later
+    }
+    // If the player lost (won === false), we trust the client's "lost" claim for now —
+    // the run already ends either way once hp <= 0, so there's nothing extra to fake here.
+
+    const died = hp <= 0
+    const nextIndex = run.index + 1
+    const done = !died && nextIndex >= run.rooms.length
+    const runEnds = died || done
+
+    const newTrophies = character.trophies + trophyGained
+    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+
+    await prisma.character.update({
+      where: { userId },
+      data: {
+        trophies: died ? 0 : newTrophies, // trophies lost on death, per design
+        totalDamageReceived: newTotalDamageReceived,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp },
+      },
+    })
+
+    const message = died
+      ? `Defeated! −${damageTaken} HP. You died.`
+      : won
+        ? `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, hp)}/${maxHp})`
+        : `Retreated. −${damageTaken} HP (${Math.max(0, hp)}/${maxHp})`
+
+    return reply.send({
+      roomType,
+      trophyGained,
+      damageTaken,
+      hp: Math.max(0, hp),
+      maxHp,
+      died,
+      message,
+      trophies: died ? 0 : newTrophies,
       index: nextIndex,
       done,
     })
