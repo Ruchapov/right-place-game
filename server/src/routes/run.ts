@@ -22,7 +22,7 @@ function getUserId(request: FastifyRequest): number | null {
 }
 
 // Shape of the active run stored in Character.currentRun (JSON).
-type ActiveRun = { rooms: string[]; index: number }
+type ActiveRun = { rooms: string[]; index: number; hp: number }
 
 export async function runRoutes(server: FastifyInstance) {
   // Start a run: spend energy, generate 3 rooms, save them as the active run.
@@ -40,17 +40,18 @@ export async function runRoutes(server: FastifyInstance) {
 
     const newEnergy = currentEnergy - RUN_COST
     const rooms = generateRooms(3)
+    const maxHp = character.endurance * 8
 
     await prisma.character.update({
       where: { userId },
       data: {
         energy: newEnergy,
         lastEnergyUpdate: new Date(),
-        currentRun: { rooms, index: 0 },
+        currentRun: { rooms, index: 0, hp: maxHp },
       },
     })
 
-    return reply.send({ energy: newEnergy, rooms, index: 0 })
+    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp })
   })
 
   // Enter the current room: process it, then advance the run.
@@ -65,29 +66,58 @@ export async function runRoutes(server: FastifyInstance) {
     if (!run) return reply.status(400).send({ error: 'No active run' })
 
     const roomType = run.rooms[run.index]
-    let goldGained = 0
-   let message: string
+    const maxHp = character.endurance * 8
 
-    // Process the room (only chest is fully implemented for now).
+    let goldGained = 0
+    let damageTaken = 0
+    let hp = run.hp
+
     if (roomType === 'chest') {
       goldGained = 10 + Math.floor(Math.random() * 41) // 10..50
-      message = `Chest! +${goldGained} gold`
-    } else {
-      message = `Entered a ${roomType} room (not implemented yet)`
+    } else if (roomType === 'trap') {
+      damageTaken = Math.ceil(maxHp * 0.2) // DEV: 20% макс. HP, балансим позже
+      hp = hp - damageTaken
     }
 
+    const died = hp <= 0
     const nextIndex = run.index + 1
-    const done = nextIndex >= run.rooms.length
+    const done = !died && nextIndex >= run.rooms.length
+    const runEnds = died || done
+
     const newGold = character.gold + goldGained
+    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
 
     await prisma.character.update({
       where: { userId },
       data: {
         gold: newGold,
-        currentRun: done ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex },
+        totalDamageReceived: newTotalDamageReceived,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp },
       },
     })
 
-    return reply.send({ roomType, goldGained, message, gold: newGold, index: nextIndex, done })
+    let message: string
+    if (died) {
+      message = `Trap! −${damageTaken} HP. You died.`
+    } else if (roomType === 'chest') {
+      message = `Chest! +${goldGained} gold`
+    } else if (roomType === 'trap') {
+      message = `Trap! −${damageTaken} HP (${Math.max(0, hp)}/${maxHp})`
+    } else {
+      message = `Entered a ${roomType} room (not implemented yet)`
+    }
+
+    return reply.send({
+      roomType,
+      goldGained,
+      damageTaken,
+      hp: Math.max(0, hp),
+      maxHp,
+      died,
+      message,
+      gold: newGold,
+      index: nextIndex,
+      done,
+    })
   })
 }
