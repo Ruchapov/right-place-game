@@ -31,6 +31,8 @@ export async function loginWithTelegram(initDataRaw: string): Promise<LoginRespo
 export type RunResult = {
   energy: number
   rooms: string[]
+  hp: number
+  maxHp: number
 }
 
 export async function startRun(token: string): Promise<RunResult> {
@@ -49,6 +51,10 @@ export async function startRun(token: string): Promise<RunResult> {
 export type RoomResult = {
   roomType: string
   goldGained: number
+  damageTaken: number
+  hp: number
+  maxHp: number
+  died: boolean
   message: string
   gold: number
   index: number
@@ -65,4 +71,37 @@ export async function enterRoom(token: string): Promise<RoomResult> {
     throw new Error(`Room failed: ${response.status} ${JSON.stringify(err)}`)
   }
   return await response.json() as RoomResult
+}
+export type BattleResult = {
+  roomType: string
+  trophyGained: number
+  damageTaken: number
+  hp: number
+  maxHp: number
+  died: boolean
+  message: string
+  trophies: number
+  index: number
+  done: boolean
+}
+
+export async function submitBattleResult(
+  token: string,
+  won: boolean,
+  damageTaken: number,
+  damageDealt: number,
+): Promise<BattleResult> {
+  const response = await fetch(`${SERVER_URL}/run/battle-result`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ won, damageTaken, damageDealt }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Battle result failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as BattleResult
 }

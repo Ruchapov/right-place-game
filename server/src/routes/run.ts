@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus } from '../game.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -19,6 +19,26 @@ function getUserId(request: FastifyRequest): number | null {
   } catch {
     return null
   }
+}
+
+const BASE_ENDURANCE = 10 // starting Endurance before any damage-driven growth
+
+// Recalculates Strength/Endurance from cumulative damage, and grows currentRun.hp
+// by the same amount maxHp increased (so an Endurance level-up mid-run feels like
+// real healing, not just a higher ceiling). Returns the new stat values, the new
+// maxHp, and the (possibly increased) currentRun.hp to save.
+function applyStatGrowth(
+  totalDamageDealt: number,
+  totalDamageReceived: number,
+  previousMaxHp: number,
+  currentHp: number,
+) {
+  const strength = calculateStrength(totalDamageDealt)
+  const endurance = BASE_ENDURANCE + calculateEnduranceBonus(totalDamageReceived)
+  const maxHp = endurance * 8
+  const hpGain = Math.max(0, maxHp - previousMaxHp)
+  const hp = currentHp + hpGain
+  return { strength, endurance, maxHp, hp }
 }
 
 // Shape of the active run stored in Character.currentRun (JSON).
@@ -81,20 +101,29 @@ export async function runRoutes(server: FastifyInstance) {
       hp = hp - damageTaken
     }
 
-    const died = hp <= 0
+    const newGold = character.gold + goldGained
+    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+
+    const growth = applyStatGrowth(
+      character.totalDamageDealt,
+      newTotalDamageReceived,
+      maxHp,
+      hp,
+    )
+
+    const died = growth.hp <= 0
     const nextIndex = run.index + 1
     const done = !died && nextIndex >= run.rooms.length
     const runEnds = died || done
-
-    const newGold = character.gold + goldGained
-    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
 
     await prisma.character.update({
       where: { userId },
       data: {
         gold: newGold,
         totalDamageReceived: newTotalDamageReceived,
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp },
+        strength: growth.strength,
+        endurance: growth.endurance,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
 
@@ -104,17 +133,17 @@ export async function runRoutes(server: FastifyInstance) {
     } else if (roomType === 'chest') {
       message = `Chest! +${goldGained} gold`
     } else if (roomType === 'trap') {
-      message = `Trap! −${damageTaken} HP (${Math.max(0, hp)}/${maxHp})`
+      message = `Trap! −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
     } else {
       message = `Entered a ${roomType} room (not implemented yet)`
     }
 
-   return reply.send({
+    return reply.send({
       roomType,
       goldGained,
       damageTaken,
-      hp: Math.max(0, hp),
-      maxHp,
+      hp: Math.max(0, growth.hp),
+      maxHp: growth.maxHp,
       died,
       message,
       gold: newGold,
@@ -157,14 +186,22 @@ export async function runRoutes(server: FastifyInstance) {
     // If the player lost (won === false), we trust the client's "lost" claim for now —
     // the run already ends either way once hp <= 0, so there's nothing extra to fake here.
 
-    const died = hp <= 0
+    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+    const newTotalDamageDealt = character.totalDamageDealt + damageDealt
+
+    const growth = applyStatGrowth(
+      newTotalDamageDealt,
+      newTotalDamageReceived,
+      maxHp,
+      hp,
+    )
+
+    const died = growth.hp <= 0
     const nextIndex = run.index + 1
     const done = !died && nextIndex >= run.rooms.length
     const runEnds = died || done
 
     const newTrophies = character.trophies + trophyGained
-    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
-    const newTotalDamageDealt = character.totalDamageDealt + damageDealt
 
     await prisma.character.update({
       where: { userId },
@@ -172,22 +209,24 @@ export async function runRoutes(server: FastifyInstance) {
         trophies: died ? 0 : newTrophies, // trophies lost on death, per design
         totalDamageReceived: newTotalDamageReceived,
         totalDamageDealt: newTotalDamageDealt,
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp },
+        strength: growth.strength,
+        endurance: growth.endurance,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
 
     const message = died
       ? `Defeated! −${damageTaken} HP. You died.`
       : won
-        ? `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, hp)}/${maxHp})`
-        : `Retreated. −${damageTaken} HP (${Math.max(0, hp)}/${maxHp})`
+        ? `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, growth.hp)}/${growth.maxHp})`
+        : `Retreated. −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
 
     return reply.send({
       roomType,
       trophyGained,
       damageTaken,
-      hp: Math.max(0, hp),
-      maxHp,
+      hp: Math.max(0, growth.hp),
+      maxHp: growth.maxHp,
       died,
       message,
       trophies: died ? 0 : newTrophies,

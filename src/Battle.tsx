@@ -1,11 +1,15 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Application, Graphics, Text, TextStyle } from 'pixi.js'
 
+type BattleResult = { won: boolean; damageTaken: number; damageDealt: number }
+
 type BattleProps = {
-  onClose: () => void
+  initialHp: number
+  maxHp: number
+  onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ onClose }: BattleProps) {
+export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -19,6 +23,7 @@ export default function Battle({ onClose }: BattleProps) {
   useEffect(() => {
     let app: Application | null = null
     let cancelled = false
+    let endTimer: ReturnType<typeof setTimeout> | undefined
 
     async function setup() {
       app = new Application()
@@ -58,7 +63,7 @@ export default function Battle({ onClose }: BattleProps) {
 
       let enemyHp = 100
       let enemyAlive = true
-      let playerHp = 80
+      let playerHp = initialHp
       let battleEnded = false
 
       const hpStyle = new TextStyle({ fontSize: 16, fill: 0xffffff })
@@ -107,6 +112,9 @@ export default function Battle({ onClose }: BattleProps) {
             winText.x = app!.screen.width / 2
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
+            endTimer = setTimeout(() => {
+              onBattleEnd({ won: true, damageTaken: maxHp - playerHp, damageDealt: 100 - enemyHp })
+            }, 1500)
           }
         },
       }
@@ -175,6 +183,9 @@ export default function Battle({ onClose }: BattleProps) {
                   loseText.x = app!.screen.width / 2
                   loseText.y = app!.screen.height / 2
                   app!.stage.addChild(loseText)
+                  endTimer = setTimeout(() => {
+                    onBattleEnd({ won: false, damageTaken: maxHp, damageDealt: 100 - enemyHp })
+                  }, 1500)
                 }
               }
             }
@@ -194,6 +205,7 @@ export default function Battle({ onClose }: BattleProps) {
 
     return () => {
       cancelled = true
+      if (endTimer) clearTimeout(endTimer)
       if (app) {
         app.destroy(true, { children: true })
       }
@@ -216,22 +228,6 @@ export default function Battle({ onClose }: BattleProps) {
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-      <button
-        onClick={onClose}
-        style={{
-          position: 'absolute',
-          top: 16,
-          right: 16,
-          padding: '8px 14px',
-          borderRadius: 8,
-          border: 'none',
-          background: 'rgba(0,0,0,0.5)',
-          color: 'white',
-        }}
-      >
-        ✕ Закрыть (тест)
-      </button>
 
       {!battleOver && <div
         style={{
