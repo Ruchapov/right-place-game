@@ -78,3 +78,32 @@ export function calculateEnduranceBonus(totalDamageReceived: number): number {
   const lateBonus = Math.floor(remainingDamage / ENDURANCE_COST_LATE)
   return ENDURANCE_THRESHOLD + lateBonus
 }
+// --- Leveling (Method 1: stat progression) ---
+
+// Checks whether the player has progressed enough since their last level-up to
+// gain a new level. Per design: Endurance +3 AND (Strength+Agility) +6 since last
+// level-up. TEMPORARY (until Agility exists): Strength +6 alone stands in for
+// Strength+Agility +6.
+const LEVELUP_ENDURANCE_GAIN = 3
+const LEVELUP_STRENGTH_GAIN = 6
+
+// Returns how many levels the player should gain right now, based on how many full
+// "Endurance +3 AND Strength +6" thresholds have been cleared since the last level-up.
+// Can be 0 (no level-up yet), 1, or more (if growth jumped past multiple thresholds
+// in a single fight/trap — e.g. a big damage spike).
+export function checkStatLevelUp(
+  currentEndurance: number,
+  currentStrength: number,
+  enduranceAtLevelUp: number,
+  strengthAtLevelUp: number,
+): number {
+  const enduranceGain = currentEndurance - enduranceAtLevelUp
+  const strengthGain = currentStrength - strengthAtLevelUp
+
+  const levelsFromEndurance = Math.floor(enduranceGain / LEVELUP_ENDURANCE_GAIN)
+  const levelsFromStrength = Math.floor(strengthGain / LEVELUP_STRENGTH_GAIN)
+
+  // Both conditions must be satisfied per design ("Endurance +3 AND Strength +6"),
+  // so the number of full level-ups is bound by whichever stat lags behind.
+  return Math.min(levelsFromEndurance, levelsFromStrength)
+}

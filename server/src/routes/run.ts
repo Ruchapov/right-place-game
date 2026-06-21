@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, checkStatLevelUp } from '../game.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -22,23 +22,47 @@ function getUserId(request: FastifyRequest): number | null {
 }
 
 const BASE_ENDURANCE = 10 // starting Endurance before any damage-driven growth
+const LEVELUP_ENDURANCE_GAIN = 3
+const LEVELUP_STRENGTH_GAIN = 6
 
-// Recalculates Strength/Endurance from cumulative damage, and grows currentRun.hp
-// by the same amount maxHp increased (so an Endurance level-up mid-run feels like
-// real healing, not just a higher ceiling). Returns the new stat values, the new
+// Recalculates Strength/Endurance from cumulative damage, grows currentRun.hp by the
+// same amount maxHp increased (so an Endurance level-up mid-run feels like real
+// healing, not just a higher ceiling), and applies any stat-based level-ups earned.
+// Returns the new stat values, new level, new "at last level-up" markers, the new
 // maxHp, and the (possibly increased) currentRun.hp to save.
 function applyStatGrowth(
   totalDamageDealt: number,
   totalDamageReceived: number,
   previousMaxHp: number,
   currentHp: number,
+  currentLevel: number,
+  enduranceAtLevelUp: number,
+  strengthAtLevelUp: number,
 ) {
   const strength = calculateStrength(totalDamageDealt)
   const endurance = BASE_ENDURANCE + calculateEnduranceBonus(totalDamageReceived)
   const maxHp = endurance * 8
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
-  return { strength, endurance, maxHp, hp }
+
+  const levelsGained = checkStatLevelUp(endurance, strength, enduranceAtLevelUp, strengthAtLevelUp)
+  const level = currentLevel + levelsGained
+  // Advance the "at last level-up" markers by exactly the thresholds consumed, not to
+  // the full current stat value — any extra progress beyond the threshold carries over
+  // toward the next level-up instead of being discarded.
+  const newEnduranceAtLevelUp = enduranceAtLevelUp + levelsGained * LEVELUP_ENDURANCE_GAIN
+  const newStrengthAtLevelUp = strengthAtLevelUp + levelsGained * LEVELUP_STRENGTH_GAIN
+
+  return {
+    strength,
+    endurance,
+    maxHp,
+    hp,
+    level,
+    levelsGained,
+    enduranceAtLevelUp: newEnduranceAtLevelUp,
+    strengthAtLevelUp: newStrengthAtLevelUp,
+  }
 }
 
 // Shape of the active run stored in Character.currentRun (JSON).
