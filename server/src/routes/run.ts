@@ -189,7 +189,7 @@ export async function runRoutes(server: FastifyInstance) {
     })
   })
 
-  // Submit the result of a client-played battle (enemy room). Advances the run.
+  // Submit the result of a client-played battle (enemy or boss room). Advances the run.
   server.post<{ Body: BattleResultBody }>('/run/battle-result', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
@@ -201,13 +201,14 @@ export async function runRoutes(server: FastifyInstance) {
     if (!run) return reply.status(400).send({ error: 'No active run' })
 
     const roomType = run.rooms[run.index]
-    if (roomType !== 'enemy') {
-      return reply.status(400).send({ error: `Current room is '${roomType}', not 'enemy'` })
+    if (roomType !== 'enemy' && roomType !== 'boss') {
+      return reply.status(400).send({ error: `Current room is '${roomType}', not 'enemy' or 'boss'` })
     }
+    const isBoss = roomType === 'boss'
 
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const maxHp = character.endurance * 8
-    const ENEMY_MAX_HP = 100 // DEV: matches Battle.tsx's hardcoded normal-enemy HP
+    const ENEMY_MAX_HP = isBoss ? 150 : 100 // DEV: matches Battle.tsx's hardcoded enemy HP
 
     // Sanity check: damage taken in one enemy fight can't exceed the player's own max HP,
     // and damage dealt can't exceed the enemy's own max HP.
@@ -226,12 +227,16 @@ export async function runRoutes(server: FastifyInstance) {
     const newTotalDamageReceived = character.totalDamageReceived + damageTaken
     const newTotalDamageDealt = character.totalDamageDealt + damageDealt
 
+    // Boss Method 2 leveling: instant level-up on kill, no auto stat growth (the
+    // player picks a permanent stat reward separately — not yet implemented, that's
+    // a follow-up step). Regular enemies keep using the normal stat-driven growth.
+    const bossLevelUp = isBoss && won
     const growth = applyStatGrowth(
       newTotalDamageDealt,
       newTotalDamageReceived,
       maxHp,
       hp,
-      character.level,
+      character.level + (bossLevelUp ? 1 : 0),
       character.enduranceAtLevelUp,
       character.strengthAtLevelUp,
     )
@@ -261,7 +266,9 @@ export async function runRoutes(server: FastifyInstance) {
     const message = died
       ? `Defeated! −${damageTaken} HP. You died.`
       : won
-        ? `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, growth.hp)}/${growth.maxHp})`
+        ? (isBoss
+            ? `Boss defeated! −${damageTaken} HP, +${trophyGained} trophy, Level Up! (${Math.max(0, growth.hp)}/${growth.maxHp})`
+            : `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, growth.hp)}/${growth.maxHp})`)
         : `Retreated. −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
 
     return reply.send({

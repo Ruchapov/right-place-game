@@ -89,7 +89,7 @@ export default function App() {
   async function handleEnterRoom() {
     const token = localStorage.getItem('jwt')
     if (!token) return
-    if (rooms && rooms[roomIndex] === 'enemy') {
+    if (rooms && (rooms[roomIndex] === 'enemy' || rooms[roomIndex] === 'boss')) {
       setInBattle(true)
       return
     }
@@ -150,7 +150,7 @@ export default function App() {
         </>
       )}
 
-      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} onBattleEnd={handleBattleEnd} />}
+      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} onBattleEnd={handleBattleEnd} />}
       {rooms !== null && (
         <div style={{ marginTop: 20 }}>
           <h2>Забег: комната {Math.min(roomIndex + 1, rooms.length)} / {rooms.length}</h2>

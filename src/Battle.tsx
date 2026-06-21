@@ -6,10 +6,11 @@ type BattleResult = { won: boolean; damageTaken: number; damageDealt: number }
 type BattleProps = {
   initialHp: number
   maxHp: number
+  isBoss?: boolean
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -55,13 +56,17 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
       player.y = height / 2 - 30
       app.stage.addChild(player)
 
+      const ENEMY_W = isBoss ? 50 : 40
+      const ENEMY_H = isBoss ? 75 : 60
+      const ENEMY_MAX_HP = isBoss ? 150 : 100
+
       const enemy = new Graphics()
-      enemy.rect(0, 0, 40, 60).fill(0xd32f2f)
+      enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = height / 2 - 30
+      enemy.y = height / 2 - ENEMY_H / 2
       app.stage.addChild(enemy)
 
-      let enemyHp = 100
+      let enemyHp = ENEMY_MAX_HP
       let enemyAlive = true
       let playerHp = initialHp
       let battleEnded = false
@@ -70,7 +75,7 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
 
       const enemyHpText = new Text({ text: `HP: ${enemyHp}`, style: hpStyle })
       enemyHpText.anchor.set(0.5, 1)
-      enemyHpText.x = enemy.x + 20
+      enemyHpText.x = enemy.x + ENEMY_W / 2
       enemyHpText.y = enemy.y - 6
       app.stage.addChild(enemyHpText)
 
@@ -82,12 +87,47 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
 
       let cooldownLeft = 0
       const ENEMY_SPEED = 1
-      const ENEMY_ATTACK_INTERVAL = 2
-      const ENEMY_ATTACK_DAMAGE = 10
+      const ENEMY_ATTACK_INTERVAL = isBoss ? 1.5 : 2
+      const ENEMY_ATTACK_DAMAGE = isBoss ? 15 : 10
       let enemyAttackTimer = 0
       const ENEMY_WINDUP = 0.6
       let enemyWindingUp = false
       let windupTimer = 0
+      let bossAttackType: 'melee' | 'aoe' | null = null
+      const projectiles: { gfx: Graphics; targetX: number; dir: number }[] = []
+
+      let aoeOverlay: Graphics | null = null
+      if (isBoss) {
+        aoeOverlay = new Graphics()
+        aoeOverlay.rect(0, 0, width, height).fill({ color: 0xff0000, alpha: 0.15 })
+        aoeOverlay.visible = false
+        app.stage.addChild(aoeOverlay)
+      }
+
+      function applyDamageToPlayer() {
+        playerHp -= ENEMY_ATTACK_DAMAGE
+        if (playerHp < 0) playerHp = 0
+        playerHpText.text = `HP: ${playerHp}`
+        if (playerHp <= 0) {
+          battleEnded = true
+          setBattleOver(true)
+          enemyWindingUp = false
+          enemy.scale.set(1)
+          if (aoeOverlay) aoeOverlay.visible = false
+          bossAttackType = null
+          for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
+          projectiles.length = 0
+          const loseStyle = new TextStyle({ fontSize: 48, fill: 0xff3333, fontWeight: 'bold' })
+          const loseText = new Text({ text: 'Поражение', style: loseStyle })
+          loseText.anchor.set(0.5)
+          loseText.x = app!.screen.width / 2
+          loseText.y = app!.screen.height / 2
+          app!.stage.addChild(loseText)
+          endTimer = setTimeout(() => {
+            onBattleEnd({ won: false, damageTaken: maxHp, damageDealt: ENEMY_MAX_HP - enemyHp })
+          }, 1500)
+        }
+      }
 
       attackRef.current = {
         canAttack: true,
@@ -106,6 +146,11 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
             setBattleOver(true)
             app!.stage.removeChild(enemy)
             app!.stage.removeChild(enemyHpText)
+            if (aoeOverlay) aoeOverlay.visible = false
+            enemyWindingUp = false
+            bossAttackType = null
+            for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
+            projectiles.length = 0
             const winStyle = new TextStyle({ fontSize: 48, fill: 0xffd700, fontWeight: 'bold' })
             const winText = new Text({ text: 'Победа!', style: winStyle })
             winText.anchor.set(0.5)
@@ -113,7 +158,7 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
             endTimer = setTimeout(() => {
-              onBattleEnd({ won: true, damageTaken: maxHp - playerHp, damageDealt: 100 - enemyHp })
+              onBattleEnd({ won: true, damageTaken: maxHp - playerHp, damageDealt: ENEMY_MAX_HP - enemyHp })
             }, 1500)
           }
         },
@@ -125,7 +170,12 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
           enemyWindingUp = false
           windupTimer = 0
           enemyAttackTimer = 0
-          enemy.scale.set(1)
+          if (bossAttackType === 'aoe' && aoeOverlay) {
+            aoeOverlay.visible = false
+          } else {
+            enemy.scale.set(1)
+          }
+          bossAttackType = null
         },
       }
 
@@ -147,55 +197,96 @@ export default function Battle({ initialHp, maxHp, onBattleEnd }: BattleProps) {
         }
         playerHpText.x = player.x + PLAYER_W / 2
 
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+          const p = projectiles[i]
+          p.gfx.x += p.dir * 4
+          const reachedTarget = p.dir > 0 ? p.gfx.x >= p.targetX : p.gfx.x <= p.targetX
+          const offScreen = p.gfx.x < -20 || p.gfx.x > app!.screen.width + 20
+          if (reachedTarget || offScreen) {
+            if (reachedTarget) {
+              const playerCenter = player.x + PLAYER_W / 2
+              if (Math.abs(p.gfx.x - playerCenter) < 30) {
+                app!.stage.removeChild(p.gfx)
+                projectiles.splice(i, 1)
+                applyDamageToPlayer()
+                if (battleEnded) return
+                continue
+              }
+            }
+            app!.stage.removeChild(p.gfx)
+            projectiles.splice(i, 1)
+          }
+        }
+
         if (enemyAlive) {
           const dx = player.x - enemy.x
           if (Math.abs(dx) > PLAYER_W) {
             enemy.x += Math.sign(dx) * ENEMY_SPEED
             if (enemy.x < 0) enemy.x = 0
-            else if (enemy.x > app!.screen.width - 40) enemy.x = app!.screen.width - 40
+            else if (enemy.x > app!.screen.width - ENEMY_W) enemy.x = app!.screen.width - ENEMY_W
           }
-          enemyHpText.x = enemy.x + 20
+          enemyHpText.x = enemy.x + ENEMY_W / 2
 
           const dist = Math.abs(player.x - enemy.x)
-          if (dist < ATTACK_RANGE) {
-            if (!enemyWindingUp) {
+
+          if (enemyWindingUp && bossAttackType !== 'aoe' && dist >= ATTACK_RANGE) {
+            enemyWindingUp = false
+            enemy.scale.set(1)
+            windupTimer = 0
+            bossAttackType = null
+          }
+
+          if (!enemyWindingUp) {
+            if (isBoss || dist < ATTACK_RANGE) {
               enemyAttackTimer += ticker.deltaMS / 1000
               if (enemyAttackTimer >= ENEMY_ATTACK_INTERVAL) {
                 enemyAttackTimer = 0
-                enemyWindingUp = true
-                windupTimer = 0
-                enemy.scale.set(1.3)
-              }
-            } else {
-              windupTimer += ticker.deltaMS / 1000
-              if (windupTimer >= ENEMY_WINDUP) {
-                enemyWindingUp = false
-                enemy.scale.set(1)
-                playerHp -= ENEMY_ATTACK_DAMAGE
-                if (playerHp < 0) playerHp = 0
-                playerHpText.text = `HP: ${playerHp}`
-                if (playerHp <= 0) {
-                  battleEnded = true
-                  setBattleOver(true)
-                  const loseStyle = new TextStyle({ fontSize: 48, fill: 0xff3333, fontWeight: 'bold' })
-                  const loseText = new Text({ text: 'Поражение', style: loseStyle })
-                  loseText.anchor.set(0.5)
-                  loseText.x = app!.screen.width / 2
-                  loseText.y = app!.screen.height / 2
-                  app!.stage.addChild(loseText)
-                  endTimer = setTimeout(() => {
-                    onBattleEnd({ won: false, damageTaken: maxHp, damageDealt: 100 - enemyHp })
-                  }, 1500)
+                if (isBoss) {
+                  const roll = Math.random()
+                  if (roll < 1 / 3) {
+                    if (dist < ATTACK_RANGE) {
+                      bossAttackType = 'melee'
+                      enemyWindingUp = true
+                      windupTimer = 0
+                      enemy.scale.set(1.3)
+                    }
+                  } else if (roll < 2 / 3) {
+                    bossAttackType = 'aoe'
+                    enemyWindingUp = true
+                    windupTimer = 0
+                    if (aoeOverlay) aoeOverlay.visible = true
+                  } else {
+                    const gfx = new Graphics()
+                    gfx.circle(0, 0, 6).fill(0xff9800)
+                    gfx.x = enemy.x + ENEMY_W / 2
+                    gfx.y = enemy.y + ENEMY_H / 2
+                    app!.stage.addChild(gfx)
+                    const targetX = player.x + PLAYER_W / 2
+                    const dir = targetX > gfx.x ? 1 : -1
+                    projectiles.push({ gfx, targetX, dir })
+                  }
+                } else {
+                  enemyWindingUp = true
+                  windupTimer = 0
+                  enemy.scale.set(1.3)
                 }
               }
+            } else {
+              enemyAttackTimer = 0
             }
           } else {
-            if (enemyWindingUp) {
+            windupTimer += ticker.deltaMS / 1000
+            if (windupTimer >= ENEMY_WINDUP) {
               enemyWindingUp = false
-              enemy.scale.set(1)
-              windupTimer = 0
+              if (bossAttackType === 'aoe' && aoeOverlay) {
+                aoeOverlay.visible = false
+              } else {
+                enemy.scale.set(1)
+              }
+              bossAttackType = null
+              applyDamageToPlayer()
+              if (battleEnded) return
             }
-            enemyAttackTimer = 0
           }
         }
       })
