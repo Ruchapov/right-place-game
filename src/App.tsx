@@ -197,7 +197,75 @@ export default function App() {
     <div style={{ padding: 20, paddingBottom: 80, fontFamily: 'sans-serif', minHeight: '100vh', background: '#1a1a2e', color: 'white' }}>
       {activeTab !== 'explore' && (
         <div>
-          {activeTab === 'hero' && <div><h2>👤 Персонаж</h2><p>Скоро...</p></div>}
+          {activeTab === 'hero' && (
+            <div style={{ padding: '0 4px' }}>
+              {/* Шапка: аватар + имя + уровень */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 16,
+                padding: '20px 16px 16px',
+              }}>
+                <div style={{
+                  width: 64, height: 64, borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #ffd700, #ff8c00)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 26, fontWeight: 'bold', color: '#0f0f1a',
+                  flexShrink: 0, boxShadow: '0 0 16px rgba(255,215,0,0.4)',
+                }}>
+                  {player?.firstName?.[0]?.toUpperCase() ?? '?'}
+                </div>
+                <div>
+                  <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>
+                    {player?.firstName}
+                  </div>
+                  <div style={{ fontSize: 13, color: '#ffd700', marginTop: 2 }}>
+                    Уровень {player?.level}
+                  </div>
+                </div>
+              </div>
+
+              {/* Разделитель с золотым свечением */}
+              <div style={{
+                height: 1,
+                background: 'linear-gradient(90deg, transparent, #ffd700, transparent)',
+                boxShadow: '0 0 8px rgba(255,215,0,0.5)',
+                margin: '0 16px 20px',
+              }} />
+
+              {/* Сетка статов */}
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 10, padding: '0 8px',
+              }}>
+                {[
+                  { icon: '❤️', value: (player?.endurance ?? 10) * 8, label: 'HP' },
+                  { icon: '💪', value: player?.strength ?? 0, label: 'Сила' },
+                  { icon: '🌀', value: player?.agility ?? 0, label: 'Ловкость' },
+                  { icon: '🛡️', value: 0, label: 'Броня' },
+                  { icon: '💰', value: player?.gold ?? 0, label: 'Золото' },
+                  { icon: '🏆', value: player?.trophies ?? 0, label: 'Трофеи' },
+                  { icon: '⚡', value: energy, label: `Энергия / ${MAX_ENERGY}` },
+                  { icon: '⭐', value: player?.level ?? 1, label: 'Уровень' },
+                  { icon: '🍀', value: 0, label: 'Удача' },
+                ].map((stat, i) => (
+                  <div key={i} style={{
+                    background: '#1a1a2e',
+                    border: '1px solid rgba(255,215,0,0.15)',
+                    borderRadius: 12, padding: '14px 8px',
+                    display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', gap: 4,
+                  }}>
+                    <div style={{ fontSize: 22 }}>{stat.icon}</div>
+                    <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>
+                      {stat.value}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>
+                      {stat.label}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {activeTab === 'shop' && <div><h2>🛒 Магазин</h2><p>Скоро...</p></div>}
           {activeTab === 'gear' && <div><h2>🎒 Снаряжение</h2><p>Скоро...</p></div>}
           {activeTab === 'friends' && <div><h2>👥 Друзья</h2><p>Скоро...</p></div>}
