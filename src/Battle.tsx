@@ -16,7 +16,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
-  const [healCooldown, setHealCooldown] = useState(0)
   const attackRef = useRef<{
     canAttack: boolean
     cooldownLeft: number
@@ -208,7 +207,6 @@ healRef.current = {
     skillUses += 1
     playerHpText.text = `HP: ${playerHp}`
     healCdLeft = 5
-    setHealCooldown(5)
   },
 }
       // --- конец Heal ---
@@ -218,7 +216,6 @@ healRef.current = {
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healCdLeft < 0) healCdLeft = 0
-  setHealCooldown(Math.ceil(healCdLeft))
 }
 
         if (cooldownLeft > 0) {
@@ -360,111 +357,109 @@ healRef.current = {
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {!battleOver && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 40,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            gap: 16,
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 178, pointerEvents: 'none' }}>
+          <canvas
+            ref={(canvas) => {
+              if (!canvas) return
+              const dpr = window.devicePixelRatio || 1
+              canvas.width = window.innerWidth * dpr
+              canvas.height = 178 * dpr
+              canvas.style.width = window.innerWidth + 'px'
+              canvas.style.height = '178px'
+            }}
+            style={{ position: 'absolute', top: 0, left: 0 }}
+          />
+
+          {/* Кнопки движения — левый блок */}
+          <button
+            onTouchStart={() => startMove(-1)} onTouchEnd={stopMove} onTouchCancel={stopMove}
+            onMouseDown={() => startMove(-1)} onMouseUp={stopMove} onMouseLeave={stopMove}
+            style={{
+              position: 'absolute', left: 23, bottom: 42, width: 64, height: 64,
+              borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
+              background: 'rgba(255,255,255,0.1)', color: 'white', fontSize: 24,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none', pointerEvents: 'all',
+            }}>◀</button>
+
+          <button
+            onTouchStart={() => startMove(1)} onTouchEnd={stopMove} onTouchCancel={stopMove}
+            onMouseDown={() => startMove(1)} onMouseUp={stopMove} onMouseLeave={stopMove}
+            style={{
+              position: 'absolute', left: 108, bottom: 42, width: 64, height: 64,
+              borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
+              background: 'rgba(255,255,255,0.1)', color: 'white', fontSize: 24,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none', pointerEvents: 'all',
+            }}>▶</button>
+
+          {/* Правый блок — динамические кнопки через JS */}
+          <div ref={(container) => {
+            if (!container) return
+            const W = window.innerWidth
+            const H = 178
+            const ATK_R = 34
+            const BTN_R = 28
+            const ATK = { x: W - ATK_R - 10, y: H - ATK_R - 10 }
+            const D = ATK_R + BTN_R
+            const cosT = 1 - 2 * Math.pow(BTN_R / D, 2)
+            const theta = Math.acos(cosT)
+            const midAngle = 225 * Math.PI / 180
+            const angles = [midAngle - theta, midAngle, midAngle + theta]
+
+            const skillButtons = [
+              { id: 'dodge',  emoji: '🔄', angle: angles[0], border: 'rgba(60,160,220,0.7)',  bg: 'rgba(60,160,220,0.2)'  },
+              { id: 'skill1', emoji: equippedSkills[0] === 'heal' ? '💊' : equippedSkills[0] === 'fireball' ? '🔥' : equippedSkills[0] === 'slash' ? '🗡️' : equippedSkills[0] === 'iceball' ? '🧊' : equippedSkills[0] === 'dash' ? '⚡' : '', angle: angles[1], border: 'rgba(60,220,100,0.7)', bg: 'rgba(60,220,100,0.2)' },
+              { id: 'skill2', emoji: equippedSkills[1] === 'heal' ? '💊' : equippedSkills[1] === 'fireball' ? '🔥' : equippedSkills[1] === 'slash' ? '🗡️' : equippedSkills[1] === 'iceball' ? '🧊' : equippedSkills[1] === 'dash' ? '⚡' : '', angle: angles[2], border: 'rgba(255,200,0,0.7)',  bg: 'rgba(255,200,0,0.2)'  },
+            ]
+
+            skillButtons.forEach(b => {
+              const x = ATK.x + D * Math.cos(b.angle)
+              const y = ATK.y + D * Math.sin(b.angle)
+              const existing = container.querySelector(`[data-btn="${b.id}"]`) as HTMLElement
+              const el = existing || document.createElement('button')
+              el.dataset.btn = b.id
+              el.textContent = b.emoji
+              el.style.cssText = `
+                position:absolute;
+                left:${x - BTN_R}px; top:${y - BTN_R}px;
+                width:${BTN_R * 2}px; height:${BTN_R * 2}px;
+                border-radius:50%; border:1.5px solid ${b.border};
+                background:${b.bg}; color:white; font-size:19px;
+                display:flex; align-items:center; justify-content:center;
+                touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+                ${!b.emoji ? 'opacity:0.2;' : ''}
+              `
+              if (!existing) container.appendChild(el)
+            })
+
+            const atkEl = container.querySelector('[data-btn="atk"]') as HTMLElement
+            const atk = atkEl || document.createElement('button')
+            atk.dataset.btn = 'atk'
+            atk.textContent = '⚔'
+            atk.style.cssText = `
+              position:absolute;
+              left:${ATK.x - ATK_R}px; top:${ATK.y - ATK_R}px;
+              width:${ATK_R * 2}px; height:${ATK_R * 2}px;
+              border-radius:50%; border:2px solid rgba(255,80,80,0.85);
+              background:rgba(180,30,30,0.6); color:white; font-size:24px;
+              display:flex; align-items:center; justify-content:center;
+              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+            `
+            if (!atkEl) container.appendChild(atk)
+
+            atk.onclick = () => attackRef.current.doAttack()
+
+            const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
+            if (dodgeEl) dodgeEl.onclick = () => dodgeRef.current.doDodge()
+
+            const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
+            if (skill1El && equippedSkills[0] === 'heal') skill1El.onclick = () => healRef.current.doHeal()
+
+            const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
+            if (skill2El && equippedSkills[1] === 'heal') skill2El.onclick = () => healRef.current.doHeal()
           }}
-        >
-          <button
-            onMouseDown={() => startMove(-1)}
-            onMouseUp={stopMove}
-            onMouseLeave={stopMove}
-            onTouchStart={() => startMove(-1)}
-            onTouchEnd={stopMove}
-            onTouchCancel={stopMove}
-            style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(255,255,255,0.2)', color: 'white', fontSize: 28,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}
-          >◀</button>
-
-          <button
-            onMouseDown={() => startMove(1)}
-            onMouseUp={stopMove}
-            onMouseLeave={stopMove}
-            onTouchStart={() => startMove(1)}
-            onTouchEnd={stopMove}
-            onTouchCancel={stopMove}
-            style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(255,255,255,0.2)', color: 'white', fontSize: 28,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}
-          >▶</button>
-
-          <button
-            onClick={() => attackRef.current.doAttack()}
-            style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(220,60,60,0.4)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}
-          >⚔</button>
-
-          <button
-            onClick={() => dodgeRef.current.doDodge()}
-            style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(60,160,220,0.4)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}
-          >🔄</button>
-
-          {equippedSkills.includes('heal') && (
-            <button
-              onClick={() => healRef.current.doHeal()}
-              disabled={healCooldown > 0}
-              style={{
-                width: 64, height: 64, borderRadius: '50%', border: 'none',
-                background: healCooldown > 0 ? 'rgba(100,100,100,0.4)' : 'rgba(60,220,100,0.4)',
-                color: 'white', fontSize: healCooldown > 0 ? 16 : 20,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                touchAction: 'none', userSelect: 'none',
-              }}
-            >{healCooldown > 0 ? healCooldown : '💊'}</button>
-          )}
-          {equippedSkills.includes('dash') && (
-            <button onClick={() => {}} style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(255,200,0,0.3)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}>⚡</button>
-          )}
-          {equippedSkills.includes('fireball') && (
-            <button onClick={() => {}} style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(255,100,0,0.3)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}>🔥</button>
-          )}
-          {equippedSkills.includes('slash') && (
-            <button onClick={() => {}} style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(200,0,0,0.3)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}>🗡️</button>
-          )}
-          {equippedSkills.includes('iceball') && (
-            <button onClick={() => {}} style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(0,150,255,0.3)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}>🧊</button>
-          )}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
       )}
     </div>
