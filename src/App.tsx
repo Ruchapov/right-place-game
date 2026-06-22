@@ -85,16 +85,26 @@ export default function App() {
       setRooms(result.rooms); setRoomIndex(0); setResults([])
       setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
       setRunHp(result.hp); setRunMaxHp(result.maxHp)
-      showRoomIntro(0)
+      showRoomIntro(0, result.rooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Run failed')
     } finally { setRunning(false) }
   }
 
-  async function enterCurrentRoom() {
+  function showRoomIntro(index: number, currentRooms: string[]) {
+    if (index >= currentRooms.length) return
+    setRoomIntro(true)
+    setTimeout(() => {
+      setRoomIntro(false)
+      enterCurrentRoomDirect(index, currentRooms)
+    }, 2000)
+  }
+
+  async function enterCurrentRoomDirect(index: number, currentRooms: string[]) {
     const token = localStorage.getItem('jwt')
-    if (!token || !rooms) return
-    const roomType = rooms[roomIndex]
+    if (!token) return
+    const roomType = currentRooms[index]
+    setRoomIndex(index)
     if (roomType === 'enemy' || roomType === 'boss') {
       setInBattle(true)
       return
@@ -117,22 +127,12 @@ export default function App() {
     try {
       const result = await enterRoom(token)
       setResults((prev) => [...prev, { room: roomType, message: result.message }])
-      setRoomIndex(result.index)
       setRunHp(result.hp)
       setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
-      if (!result.done) showRoomIntro(result.index)
+      if (!result.done) showRoomIntro(result.index, currentRooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Room failed')
     }
-  }
-
-  function showRoomIntro(index: number) {
-    if (!rooms || index >= rooms.length) return
-    setRoomIntro(true)
-    setTimeout(() => {
-      setRoomIntro(false)
-      enterCurrentRoom()
-    }, 2000)
   }
 
   async function handleBattleEnd(result: { won: boolean; damageTaken: number; damageDealt: number }) {
@@ -145,7 +145,7 @@ export default function App() {
       setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
       setRoomIndex(br.index)
       setRunHp(br.hp)
-      if (!br.done && !br.died) showRoomIntro(br.index)
+      if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
@@ -162,7 +162,7 @@ export default function App() {
       setResults((prev) => [...prev, { room: 'smuggler', message: sr.message }])
       setRoomIndex(sr.index)
       setRunHp(sr.hp)
-      if (!sr.done) showRoomIntro(sr.index)
+      if (!sr.done && rooms) showRoomIntro(sr.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Smuggler failed')
@@ -179,7 +179,7 @@ export default function App() {
       setResults((prev) => [...prev, { room: 'puzzle', message: pr.message }])
       setRoomIndex(pr.index)
       setRunHp(pr.hp)
-      if (!pr.done && !pr.died) showRoomIntro(pr.index)
+      if (!pr.done && !pr.died && rooms) showRoomIntro(pr.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Puzzle failed')
