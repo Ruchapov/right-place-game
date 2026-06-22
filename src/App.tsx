@@ -187,7 +187,7 @@ export default function App() {
   }
 
   function backToMenu() {
-    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false)
+    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null)
   }
 
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
