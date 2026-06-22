@@ -27,6 +27,7 @@ function liveEnergy(base: number, baseAt: number, now: number): number {
 
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
+  const [activeTab, setActiveTab] = useState<'hero' | 'shop' | 'explore' | 'gear' | 'friends'>('explore')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [inBattle, setInBattle] = useState(false)
@@ -179,7 +180,16 @@ export default function App() {
   if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
 
   return (
-    <div style={{ padding: 20, fontFamily: 'sans-serif' }}>
+    <div style={{ padding: 20, paddingBottom: 80, fontFamily: 'sans-serif', minHeight: '100vh', background: '#1a1a2e', color: 'white' }}>
+      {activeTab !== 'explore' && (
+        <div>
+          {activeTab === 'hero' && <div><h2>👤 Персонаж</h2><p>Скоро...</p></div>}
+          {activeTab === 'shop' && <div><h2>🛒 Магазин</h2><p>Скоро...</p></div>}
+          {activeTab === 'gear' && <div><h2>🎒 Снаряжение</h2><p>Скоро...</p></div>}
+          {activeTab === 'friends' && <div><h2>👥 Друзья</h2><p>Скоро...</p></div>}
+        </div>
+      )}
+      {activeTab === 'explore' && <div>
       <h1>⚔️ Right Place</h1>
       <div style={{ background: '#f0f0f0', padding: 15, borderRadius: 8 }}>
         <p>👤 {player?.firstName} (ID: {player?.id})</p>
@@ -201,7 +211,7 @@ export default function App() {
         </>
       )}
 
-      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} onBattleEnd={handleBattleEnd} />}
+      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} onBattleEnd={handleBattleEnd} />}
       {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
       {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
       {rooms !== null && (
@@ -232,6 +242,32 @@ export default function App() {
       )}
 
       {runError && <p style={{ color: 'red', marginTop: 8 }}>{runError}</p>}
+      </div>}
+      <div style={{
+        position:'fixed', bottom:0, left:0, right:0,
+        display:'flex', background:'#12122a',
+        borderTop:'1px solid rgba(255,255,255,0.1)',
+        zIndex:999
+      }}>
+        {([
+          {id:'hero', label:'Персонаж', icon:'👤'},
+          {id:'shop', label:'Магазин', icon:'🛒'},
+          {id:'explore', label:'Исследовать', icon:'⚔️'},
+          {id:'gear', label:'Снаряжение', icon:'🎒'},
+          {id:'friends', label:'Друзья', icon:'👥'},
+        ] as const).map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            style={{
+              flex:1, padding:'8px 0', border:'none', background:'none',
+              color: activeTab === tab.id ? '#ffd700' : 'rgba(255,255,255,0.5)',
+              fontSize:10, display:'flex', flexDirection:'column',
+              alignItems:'center', gap:2, cursor:'pointer'
+            }}>
+            <span style={{fontSize:20}}>{tab.icon}</span>
+            {tab.label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
