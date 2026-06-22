@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Application, Graphics, Text, TextStyle } from 'pixi.js'
 
-type BattleResult = { won: boolean; damageTaken: number; damageDealt: number }
+type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number }
 
 type BattleProps = {
   initialHp: number
@@ -82,6 +82,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
       let enemyHp = ENEMY_MAX_HP
       let enemyAlive = true
       let playerHp = initialHp
+      let totalDamageTaken = 0
+      let skillUses = 0
       let battleEnded = false
 
       const hpStyle = new TextStyle({ fontSize: 16, fill: 0xffffff })
@@ -118,6 +120,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
 
       function applyDamageToPlayer() {
         playerHp -= ENEMY_ATTACK_DAMAGE
+        totalDamageTaken += ENEMY_ATTACK_DAMAGE
         if (playerHp < 0) playerHp = 0
         playerHpText.text = `HP: ${playerHp}`
         if (playerHp <= 0) {
@@ -136,7 +139,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
           loseText.y = app!.screen.height / 2
           app!.stage.addChild(loseText)
           endTimer = setTimeout(() => {
-            onBattleEnd({ won: false, damageTaken: maxHp, damageDealt: ENEMY_MAX_HP - enemyHp })
+            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses })
           }, 1500)
         }
       }
@@ -170,7 +173,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
             endTimer = setTimeout(() => {
-              onBattleEnd({ won: true, damageTaken: maxHp - playerHp, damageDealt: ENEMY_MAX_HP - enemyHp })
+              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses })
             }, 1500)
           }
         },
@@ -199,6 +202,7 @@ healRef.current = {
     if (battleEnded || healCdLeft > 0) return
     const healAmount = Math.round(maxHp * 0.1)
     playerHp = Math.min(playerHp + healAmount, maxHp)
+    skillUses += 1
     playerHpText.text = `HP: ${playerHp}`
     healCdLeft = 5
     setHealCooldown(5)
