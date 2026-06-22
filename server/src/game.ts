@@ -105,3 +105,11 @@ export function checkStatLevelUp(
 
   return levelsFromEndurance + levelsFromStrength
 }
+
+export function normalizeDealtDamage(rawDamage: number, level: number): number {
+  return rawDamage / (1 + 0.18 * (level - 1))
+}
+
+export function normalizeReceivedDamage(rawDamage: number, level: number): number {
+  return rawDamage / (1 + 0.12 * (level - 1))
+}

@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 
 const prisma = new PrismaClient()
@@ -141,7 +141,7 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+    const newTotalDamageReceived = character.totalDamageReceived + normalizeReceivedDamage(damageTaken, character.level)
 
     const growth = applyStatGrowth(
       character.totalDamageDealt,
@@ -220,10 +220,11 @@ export async function runRoutes(server: FastifyInstance) {
 
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const maxHp = character.endurance * 8
-    const ENEMY_MAX_HP = isBoss ? 150 : 100 // DEV: matches Battle.tsx's hardcoded enemy HP
-
+    const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (character.level - 1)))
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
-    const damageDealt = Math.max(0, Math.min(rawDamageDealt, ENEMY_MAX_HP))
+    const damageDealt = Math.max(0, Math.min(rawDamageDealt, SCALED_ENEMY_HP))
+    const normalizedDamageDealt = normalizeDealtDamage(damageDealt, character.level)
+    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
     const hp = run.hp - damageTaken
     let trophyGained = 0
@@ -234,8 +235,8 @@ export async function runRoutes(server: FastifyInstance) {
         : Math.floor(Math.random() * (15 - 10 + 1)) + 10
     }
 
-    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
-    const newTotalDamageDealt = character.totalDamageDealt + damageDealt
+    const newTotalDamageReceived = character.totalDamageReceived + normalizedDamageTaken
+    const newTotalDamageDealt = character.totalDamageDealt + normalizedDamageDealt
 
     const bossLevelUp = isBoss && won
     const growth = applyStatGrowth(
@@ -430,7 +431,7 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const newTotalDamageReceived = character.totalDamageReceived + damageTaken
+    const newTotalDamageReceived = character.totalDamageReceived + normalizeReceivedDamage(damageTaken, character.level)
 
     const growth = applyStatGrowth(
       character.totalDamageDealt,
