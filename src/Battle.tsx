@@ -15,6 +15,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
+  const [healCooldown, setHealCooldown] = useState(0)
   const attackRef = useRef<{
     canAttack: boolean
     cooldownLeft: number
@@ -191,18 +192,27 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
       }
 
       // --- Heal ---
-      healRef.current = {
-        doHeal() {
-          if (battleEnded) return
-          const healAmount = Math.round(maxHp * 0.1)
-          playerHp = Math.min(playerHp + healAmount, maxHp)
-          playerHpText.text = `HP: ${playerHp}`
-        },
-      }
+      let healCdLeft = 0
+
+healRef.current = {
+  doHeal() {
+    if (battleEnded || healCdLeft > 0) return
+    const healAmount = Math.round(maxHp * 0.1)
+    playerHp = Math.min(playerHp + healAmount, maxHp)
+    playerHpText.text = `HP: ${playerHp}`
+    healCdLeft = 5
+    setHealCooldown(5)
+  },
+}
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
+        if (healCdLeft > 0) {
+  healCdLeft -= ticker.deltaMS / 1000
+  if (healCdLeft < 0) healCdLeft = 0
+  setHealCooldown(Math.ceil(healCdLeft))
+}
 
         if (cooldownLeft > 0) {
           cooldownLeft -= ticker.deltaMS / 1000
@@ -404,14 +414,16 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
           >🔄</button>
 
           <button
-            onClick={() => healRef.current.doHeal()}
-            style={{
-              width: 64, height: 64, borderRadius: '50%', border: 'none',
-              background: 'rgba(60,220,100,0.4)', color: 'white', fontSize: 20,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              touchAction: 'none', userSelect: 'none',
-            }}
-          >💊</button>
+  onClick={() => healRef.current.doHeal()}
+  disabled={healCooldown > 0}
+  style={{
+    width: 64, height: 64, borderRadius: '50%', border: 'none',
+    background: healCooldown > 0 ? 'rgba(100,100,100,0.4)' : 'rgba(60,220,100,0.4)',
+    color: 'white', fontSize: healCooldown > 0 ? 16 : 20,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    touchAction: 'none', userSelect: 'none',
+  }}
+>{healCooldown > 0 ? healCooldown : '💊'}</button>
         </div>
       )}
     </div>
