@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
 import Battle from './Battle'
 import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[] }
 
 const ROOM_LABELS: Record<string, string> = {
   enemy: '⚔️ Враг',
@@ -28,6 +28,7 @@ function liveEnergy(base: number, baseAt: number, now: number): number {
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
   const [activeTab, setActiveTab] = useState<'hero' | 'shop' | 'explore' | 'gear' | 'friends'>('explore')
+  const [savingSkills, setSavingSkills] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [inBattle, setInBattle] = useState(false)
@@ -61,7 +62,7 @@ export default function App() {
         if (!initDataRaw) throw new Error('No initData from Telegram')
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies })
+        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [] })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
       } catch (e) {
@@ -190,6 +191,29 @@ export default function App() {
     setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null)
   }
 
+  async function handleSkillToggle(skillId: string) {
+    if (!player) return
+    const current = player.equippedSkills ?? []
+    let next: string[]
+    if (current.includes(skillId)) {
+      next = current.filter(s => s !== skillId)
+    } else {
+      if (current.length >= 2) return
+      next = [...current, skillId]
+    }
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setSavingSkills(true)
+    try {
+      const result = await saveEquippedSkills(token, next)
+      setPlayer(prev => prev ? { ...prev, equippedSkills: result.equippedSkills } : prev)
+    } catch (e) {
+      console.error('Save skills failed', e)
+    } finally {
+      setSavingSkills(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
   if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
 
@@ -280,7 +304,52 @@ export default function App() {
             </div>
           )}
           {activeTab === 'shop' && <div><h2>🛒 Магазин</h2><p>Скоро...</p></div>}
-          {activeTab === 'gear' && <div><h2>🎒 Снаряжение</h2><p>Скоро...</p></div>}
+          {activeTab === 'gear' && (
+            <div style={{ padding: '0 4px' }}>
+              <div style={{ padding: '20px 16px 16px' }}>
+                <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>🎒 Снаряжение</div>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>
+                  Выбери 2 скилла {savingSkills ? '...' : ''}
+                </div>
+              </div>
+              <div style={{ height:1, background:'linear-gradient(90deg, transparent, #ffd700, transparent)', boxShadow:'0 0 8px rgba(255,215,0,0.5)', margin:'0 16px 20px' }} />
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:12, padding:'0 8px' }}>
+                {[
+                  { id:'heal',     icon:'💊', name:'Лечение',        desc:'+10% HP. Кулдаун 5с.' },
+                  { id:'dash',     icon:'⚡', name:'Рывок-удар',     desc:'Рывок с уроном.' },
+                  { id:'fireball', icon:'🔥', name:'Огненный шар',   desc:'Дальний урон.' },
+                  { id:'slash',    icon:'🗡️', name:'Разрез',         desc:'Урон + кровотечение.' },
+                  { id:'iceball',  icon:'🧊', name:'Ледяной шар',    desc:'Урон + замедление.' },
+                ].map(skill => {
+                  const equipped = player?.equippedSkills?.includes(skill.id) ?? false
+                  const full = (player?.equippedSkills?.length ?? 0) >= 2 && !equipped
+                  return (
+                    <div key={skill.id} onClick={() => !full && handleSkillToggle(skill.id)}
+                      style={{
+                        background: equipped ? 'rgba(255,215,0,0.1)' : '#1a1a2e',
+                        border: `1px solid ${equipped ? '#ffd700' : 'rgba(255,255,255,0.1)'}`,
+                        borderRadius: 12, padding: '16px 12px',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+                        opacity: full ? 0.4 : 1,
+                        cursor: full ? 'default' : 'pointer',
+                        boxShadow: equipped ? '0 0 12px rgba(255,215,0,0.2)' : 'none',
+                        transition: 'all 0.2s',
+                      }}>
+                      <div style={{ fontSize: 36 }}>{skill.icon}</div>
+                      <div style={{ fontSize: 15, fontWeight: 'bold', color: '#e8e8f0', textAlign:'center' }}>{skill.name}</div>
+                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textAlign:'center' }}>{skill.desc}</div>
+                      <div style={{
+                        marginTop: 4, fontSize: 11, fontWeight: 'bold',
+                        color: equipped ? '#ffd700' : 'rgba(255,255,255,0.3)',
+                      }}>
+                        {equipped ? '✓ Экипирован' : 'Экипировать'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {activeTab === 'friends' && <div><h2>👥 Друзья</h2><p>Скоро...</p></div>}
         </div>
       )}

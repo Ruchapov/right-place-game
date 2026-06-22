@@ -12,6 +12,7 @@ export type LoginResponse = {
     agility: number
     luck: number
     trophies: number
+    equippedSkills: string[]
   }
 }
 
@@ -194,4 +195,20 @@ export async function submitPuzzleResult(token: string, selectedIndex: number): 
     throw new Error(`Puzzle result failed: ${response.status} ${JSON.stringify(err)}`)
   }
   return await response.json() as PuzzleResult
+}
+
+export async function saveEquippedSkills(token: string, skills: string[]): Promise<{ equippedSkills: string[] }> {
+  const response = await fetch(`${SERVER_URL}/character/skills`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ skills }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Save skills failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json()
 }
