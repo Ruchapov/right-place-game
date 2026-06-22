@@ -21,6 +21,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
     doAttack: () => void
   }>({ canAttack: false, cooldownLeft: 0, doAttack: () => {} })
   const dodgeRef = useRef<{ doDodge: () => void }>({ doDodge: () => {} })
+  const healRef = useRef<{ doHeal: () => void }>({ doHeal: () => {} })
 
   useEffect(() => {
     let app: Application | null = null
@@ -61,8 +62,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
       const ENEMY_H = isBoss ? 75 : 60
 
       // --- Scaling по уровню ---
-      // HP растёт на 18% за каждый уровень сверх первого
-      // Урон растёт на 12% за каждый уровень сверх первого
       const hpMultiplier = 1 + 0.18 * (level - 1)
       const dmgMultiplier = 1 + 0.12 * (level - 1)
 
@@ -190,6 +189,17 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
           bossAttackType = null
         },
       }
+
+      // --- Heal ---
+      healRef.current = {
+        doHeal() {
+          if (battleEnded) return
+          const healAmount = Math.round(maxHp * 0.1)
+          playerHp = Math.min(playerHp + healAmount, maxHp)
+          playerHpText.text = `HP: ${playerHp}`
+        },
+      }
+      // --- конец Heal ---
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
@@ -332,103 +342,78 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, on
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {!battleOver && <div
-        style={{
-          position: 'absolute',
-          bottom: 40,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          display: 'flex',
-          gap: 16,
-        }}
-      >
-        <button
-          onMouseDown={() => startMove(-1)}
-          onMouseUp={stopMove}
-          onMouseLeave={stopMove}
-          onTouchStart={() => startMove(-1)}
-          onTouchEnd={stopMove}
-          onTouchCancel={stopMove}
+      {!battleOver && (
+        <div
           style={{
-            width: 64,
-            height: 64,
-            borderRadius: '50%',
-            border: 'none',
-            background: 'rgba(255,255,255,0.2)',
-            color: 'white',
-            fontSize: 28,
+            position: 'absolute',
+            bottom: 40,
+            left: '50%',
+            transform: 'translateX(-50%)',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
+            gap: 16,
           }}
         >
-          ◀
-        </button>
-        <button
-          onMouseDown={() => startMove(1)}
-          onMouseUp={stopMove}
-          onMouseLeave={stopMove}
-          onTouchStart={() => startMove(1)}
-          onTouchEnd={stopMove}
-          onTouchCancel={stopMove}
-          style={{
-            width: 64,
-            height: 64,
-            borderRadius: '50%',
-            border: 'none',
-            background: 'rgba(255,255,255,0.2)',
-            color: 'white',
-            fontSize: 28,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
-          }}
-        >
-          ▶
-        </button>
-        <button
-          onClick={() => attackRef.current.doAttack()}
-          style={{
-            width: 64,
-            height: 64,
-            borderRadius: '50%',
-            border: 'none',
-            background: 'rgba(220,60,60,0.4)',
-            color: 'white',
-            fontSize: 20,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
-          }}
-        >
-          ⚔
-        </button>
-        <button
-          onClick={() => dodgeRef.current.doDodge()}
-          style={{
-            width: 64,
-            height: 64,
-            borderRadius: '50%',
-            border: 'none',
-            background: 'rgba(60,160,220,0.4)',
-            color: 'white',
-            fontSize: 20,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
-          }}
-        >
-          🔄
-        </button>
-      </div>}
+          <button
+            onMouseDown={() => startMove(-1)}
+            onMouseUp={stopMove}
+            onMouseLeave={stopMove}
+            onTouchStart={() => startMove(-1)}
+            onTouchEnd={stopMove}
+            onTouchCancel={stopMove}
+            style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(255,255,255,0.2)', color: 'white', fontSize: 28,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}
+          >◀</button>
+
+          <button
+            onMouseDown={() => startMove(1)}
+            onMouseUp={stopMove}
+            onMouseLeave={stopMove}
+            onTouchStart={() => startMove(1)}
+            onTouchEnd={stopMove}
+            onTouchCancel={stopMove}
+            style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(255,255,255,0.2)', color: 'white', fontSize: 28,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}
+          >▶</button>
+
+          <button
+            onClick={() => attackRef.current.doAttack()}
+            style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(220,60,60,0.4)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}
+          >⚔</button>
+
+          <button
+            onClick={() => dodgeRef.current.doDodge()}
+            style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(60,160,220,0.4)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}
+          >🔄</button>
+
+          <button
+            onClick={() => healRef.current.doHeal()}
+            style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(60,220,100,0.4)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}
+          >💊</button>
+        </div>
+      )}
     </div>
   )
 }
