@@ -7,10 +7,11 @@ type BattleProps = {
   initialHp: number
   maxHp: number
   isBoss?: boolean
+  level?: number
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, isBoss = false, onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -58,7 +59,19 @@ export default function Battle({ initialHp, maxHp, isBoss = false, onBattleEnd }
 
       const ENEMY_W = isBoss ? 50 : 40
       const ENEMY_H = isBoss ? 75 : 60
-      const ENEMY_MAX_HP = isBoss ? 150 : 100
+
+      // --- Scaling по уровню ---
+      // HP растёт на 18% за каждый уровень сверх первого
+      // Урон растёт на 12% за каждый уровень сверх первого
+      const hpMultiplier = 1 + 0.18 * (level - 1)
+      const dmgMultiplier = 1 + 0.12 * (level - 1)
+
+      const BASE_ENEMY_HP = isBoss ? 200 : 120
+      const BASE_ENEMY_DAMAGE = isBoss ? 18 : 14
+
+      const ENEMY_MAX_HP = Math.round(BASE_ENEMY_HP * hpMultiplier)
+      const ENEMY_ATTACK_DAMAGE = Math.round(BASE_ENEMY_DAMAGE * dmgMultiplier)
+      // --- конец scaling ---
 
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
@@ -88,7 +101,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, onBattleEnd }
       let cooldownLeft = 0
       const ENEMY_SPEED = 1
       const ENEMY_ATTACK_INTERVAL = isBoss ? 1.5 : 2
-      const ENEMY_ATTACK_DAMAGE = isBoss ? 15 : 10
       let enemyAttackTimer = 0
       const ENEMY_WINDUP = 0.6
       let enemyWindingUp = false
