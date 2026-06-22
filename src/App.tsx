@@ -376,7 +376,7 @@ export default function App() {
         </>
       )}
 
-      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} onBattleEnd={handleBattleEnd} />}
+      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} equippedSkills={player?.equippedSkills ?? []} onBattleEnd={handleBattleEnd} />}
       {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
       {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
       {roomIntro && rooms && roomIndex < rooms.length && (

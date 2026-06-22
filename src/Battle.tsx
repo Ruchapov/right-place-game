@@ -8,10 +8,11 @@ type BattleProps = {
   maxHp: number
   isBoss?: boolean
   level?: number
+  equippedSkills?: string[]
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -419,17 +420,51 @@ healRef.current = {
             }}
           >🔄</button>
 
-          <button
-  onClick={() => healRef.current.doHeal()}
-  disabled={healCooldown > 0}
-  style={{
-    width: 64, height: 64, borderRadius: '50%', border: 'none',
-    background: healCooldown > 0 ? 'rgba(100,100,100,0.4)' : 'rgba(60,220,100,0.4)',
-    color: 'white', fontSize: healCooldown > 0 ? 16 : 20,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    touchAction: 'none', userSelect: 'none',
-  }}
->{healCooldown > 0 ? healCooldown : '💊'}</button>
+          {equippedSkills.includes('heal') && (
+            <button
+              onClick={() => healRef.current.doHeal()}
+              disabled={healCooldown > 0}
+              style={{
+                width: 64, height: 64, borderRadius: '50%', border: 'none',
+                background: healCooldown > 0 ? 'rgba(100,100,100,0.4)' : 'rgba(60,220,100,0.4)',
+                color: 'white', fontSize: healCooldown > 0 ? 16 : 20,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                touchAction: 'none', userSelect: 'none',
+              }}
+            >{healCooldown > 0 ? healCooldown : '💊'}</button>
+          )}
+          {equippedSkills.includes('dash') && (
+            <button onClick={() => {}} style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(255,200,0,0.3)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}>⚡</button>
+          )}
+          {equippedSkills.includes('fireball') && (
+            <button onClick={() => {}} style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(255,100,0,0.3)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}>🔥</button>
+          )}
+          {equippedSkills.includes('slash') && (
+            <button onClick={() => {}} style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(200,0,0,0.3)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}>🗡️</button>
+          )}
+          {equippedSkills.includes('iceball') && (
+            <button onClick={() => {}} style={{
+              width: 64, height: 64, borderRadius: '50%', border: 'none',
+              background: 'rgba(0,150,255,0.3)', color: 'white', fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              touchAction: 'none', userSelect: 'none',
+            }}>🧊</button>
+          )}
         </div>
       )}
     </div>
