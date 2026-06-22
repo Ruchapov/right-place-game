@@ -492,4 +492,24 @@ export async function runRoutes(server: FastifyInstance) {
       endurance: growth.endurance,
     })
   })
+
+  server.post<{ Body: { skills: string[] } }>('/character/skills', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const { skills } = request.body
+    const VALID_SKILLS = ['heal', 'dash', 'fireball', 'slash', 'iceball']
+    const MAX_SKILLS = 2
+
+    if (!Array.isArray(skills)) return reply.status(400).send({ error: 'skills must be an array' })
+    if (skills.length > MAX_SKILLS) return reply.status(400).send({ error: `Max ${MAX_SKILLS} skills allowed` })
+    if (skills.some(s => !VALID_SKILLS.includes(s))) return reply.status(400).send({ error: 'Invalid skill name' })
+
+    await prisma.character.update({
+      where: { userId },
+      data: { equippedSkills: skills },
+    })
+
+    return reply.send({ equippedSkills: skills })
+  })
 }

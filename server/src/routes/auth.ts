@@ -73,7 +73,7 @@ export async function authRoutes(server: FastifyInstance) {
         firstName: user.firstName,
         username: user.username,
       },
-      character: { ...char, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate) },
+      character: { ...char, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate), equippedSkills: char.equippedSkills },
     })
   })
 }

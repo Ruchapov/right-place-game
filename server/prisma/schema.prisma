@@ -37,6 +37,7 @@ model Character {
   trophies            Int      @default(0)
   crystals            Int      @default(0)
   potionCharges       Int      @default(3)
+  equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
