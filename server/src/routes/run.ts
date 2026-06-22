@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, normalizeDealtDamage, normalizeReceivedDamage, calculateAgility } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 
 const prisma = new PrismaClient()
@@ -220,8 +220,8 @@ export async function runRoutes(server: FastifyInstance) {
 
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const skillUses = request.body.skillUses ?? 0
-    const AGILITY_PER_USES = 5
-    const agilityGained = Math.floor(skillUses / AGILITY_PER_USES)
+    const newTotalSkillUses = character.totalSkillUses + skillUses
+    const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
     const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (character.level - 1)))
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
@@ -265,7 +265,8 @@ export async function runRoutes(server: FastifyInstance) {
         trophies: died ? 0 : newTrophies,
         totalDamageReceived: newTotalDamageReceived,
         totalDamageDealt: newTotalDamageDealt,
-        agility: character.agility + agilityGained,
+        agility: agility,
+        totalSkillUses: newTotalSkillUses,
         strength: growth.strength,
         endurance: growth.endurance,
         level: growth.level,

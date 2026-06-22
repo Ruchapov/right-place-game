@@ -113,3 +113,18 @@ export function normalizeDealtDamage(rawDamage: number, level: number): number {
 export function normalizeReceivedDamage(rawDamage: number, level: number): number {
   return rawDamage / (1 + 0.12 * (level - 1))
 }
+
+// Agility растёт от общего числа использований скиллов за всю жизнь.
+// Порог для каждого следующего уровня: 10 + agility * 5
+// То есть: 0→1 = 10 uses, 1→2 = 15, 2→3 = 20 и т.д.
+export function calculateAgility(totalSkillUses: number): number {
+  let agility = 0
+  let used = 0
+  while (true) {
+    const threshold = 10 + agility * 5
+    if (used + threshold > totalSkillUses) break
+    used += threshold
+    agility++
+  }
+  return agility
+}
