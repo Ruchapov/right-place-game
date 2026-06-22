@@ -71,7 +71,7 @@ function applyStatGrowth(
 // checked against the same question later (puzzles are picked randomly).
 type ActiveRun = { rooms: string[]; index: number; hp: number; puzzleId?: string }
 // Body shape for POST /run/battle-result.
-type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number }
+type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number }
 // Body shape for POST /run/smuggler-result.
 type SmugglerResultBody = { exchange: boolean }
 // Body shape for POST /run/puzzle-result.
@@ -220,6 +220,7 @@ export async function runRoutes(server: FastifyInstance) {
 
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const skillUses = request.body.skillUses ?? 0
+    const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
     const newTotalSkillUses = character.totalSkillUses + skillUses
     const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
@@ -229,7 +230,7 @@ export async function runRoutes(server: FastifyInstance) {
     const normalizedDamageDealt = normalizeDealtDamage(damageDealt, character.level)
     const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
-    const hp = run.hp - damageTaken
+    const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
     let trophyGained = 0
 
     if (won) {
