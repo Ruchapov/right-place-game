@@ -198,72 +198,85 @@ export default function App() {
       {activeTab !== 'explore' && (
         <div>
           {activeTab === 'hero' && (
-            <div style={{ padding: '0 4px' }}>
-              {/* Шапка: аватар + имя + уровень */}
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 16,
-                padding: '20px 16px 16px',
-              }}>
+            <div style={{ padding: '0 4px', paddingBottom: 20 }}>
+
+              {/* Шапка */}
+              <div style={{ display:'flex', alignItems:'center', gap:16, padding:'20px 16px 16px' }}>
                 <div style={{
-                  width: 64, height: 64, borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #ffd700, #ff8c00)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 26, fontWeight: 'bold', color: '#0f0f1a',
-                  flexShrink: 0, boxShadow: '0 0 16px rgba(255,215,0,0.4)',
+                  width:64, height:64, borderRadius:'50%',
+                  background:'linear-gradient(135deg, #ffd700, #ff8c00)',
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  fontSize:26, fontWeight:'bold', color:'#0f0f1a', flexShrink:0,
+                  boxShadow:'0 0 16px rgba(255,215,0,0.4)',
                 }}>
                   {player?.firstName?.[0]?.toUpperCase() ?? '?'}
                 </div>
                 <div>
-                  <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>
+                  <div style={{ fontSize:20, fontWeight:'bold', color:'#e8e8f0' }}>
                     {player?.firstName}
                   </div>
-                  <div style={{ fontSize: 13, color: '#ffd700', marginTop: 2 }}>
-                    Уровень {player?.level}
+                  <div style={{ fontSize:12, color:'rgba(255,255,255,0.35)', marginTop:3 }}>
+                    {(player?.level ?? 1) < 5 ? '— класс не выбран —' : '— класс не выбран —'}
                   </div>
                 </div>
               </div>
 
-              {/* Разделитель с золотым свечением */}
+              {/* Разделитель */}
               <div style={{
-                height: 1,
-                background: 'linear-gradient(90deg, transparent, #ffd700, transparent)',
-                boxShadow: '0 0 8px rgba(255,215,0,0.5)',
-                margin: '0 16px 20px',
+                height:1,
+                background:'linear-gradient(90deg, transparent, #ffd700, transparent)',
+                boxShadow:'0 0 8px rgba(255,215,0,0.5)',
+                margin:'0 16px 20px',
               }} />
 
-              {/* Сетка статов */}
-              <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: 10, padding: '0 8px',
-              }}>
+              {/* Сетка статов 3x3 */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
                 {[
-                  { icon: '❤️', value: (player?.endurance ?? 10) * 8, label: 'HP' },
-                  { icon: '💪', value: player?.strength ?? 0, label: 'Сила' },
-                  { icon: '🌀', value: player?.agility ?? 0, label: 'Ловкость' },
-                  { icon: '🛡️', value: 0, label: 'Броня' },
-                  { icon: '💰', value: player?.gold ?? 0, label: 'Золото' },
-                  { icon: '🏆', value: player?.trophies ?? 0, label: 'Трофеи' },
-                  { icon: '⚡', value: energy, label: `Энергия / ${MAX_ENERGY}` },
-                  { icon: '⭐', value: player?.level ?? 1, label: 'Уровень' },
-                  { icon: '🍀', value: 0, label: 'Удача' },
+                  { icon:'⭐', value: player?.level ?? 1,                          label:'Уровень' },
+                  { icon:'🗡️', value: Math.round((player?.strength ?? 0) / 2),     label:'Урон' },
+                  { icon:'🛡️', value: 0,                                            label:'Броня' },
+                  { icon:'❤️', value: (player?.endurance ?? 10) * 8,               label:'Выносливость' },
+                  { icon:'💪', value: player?.strength ?? 0,                        label:'Сила' },
+                  { icon:'🌀', value: player?.agility ?? 0,                         label:'Ловкость' },
+                  { icon:'🍀', value: 0,                                             label:'Удача' },
+                  { icon:'💰', value: player?.gold ?? 0,                            label:'Золото' },
+                  { icon:'🏆', value: player?.trophies ?? 0,                        label:'Трофеи' },
                 ].map((stat, i) => (
                   <div key={i} style={{
-                    background: '#1a1a2e',
-                    border: '1px solid rgba(255,215,0,0.15)',
-                    borderRadius: 12, padding: '14px 8px',
-                    display: 'flex', flexDirection: 'column',
-                    alignItems: 'center', gap: 4,
+                    background:'#1a1a2e',
+                    border:'1px solid rgba(255,215,0,0.15)',
+                    borderRadius:12, padding:'14px 8px',
+                    display:'flex', flexDirection:'column', alignItems:'center', gap:4,
                   }}>
-                    <div style={{ fontSize: 22 }}>{stat.icon}</div>
-                    <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>
-                      {stat.value}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>
-                      {stat.label}
-                    </div>
+                    <div style={{ fontSize:22 }}>{stat.icon}</div>
+                    <div style={{ fontSize:20, fontWeight:'bold', color:'#e8e8f0' }}>{stat.value}</div>
+                    <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', textAlign:'center' }}>{stat.label}</div>
                   </div>
                 ))}
               </div>
+
+              {/* Энергия внизу */}
+              <div style={{ padding:'24px 8px 0' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                  <div style={{ fontSize:12, color:'rgba(255,255,255,0.4)', letterSpacing:1 }}>ЭНЕРГИЯ</div>
+                  <div style={{ fontSize:13, color:'#ffd700', fontWeight:'bold' }}>{energy} / {MAX_ENERGY}</div>
+                </div>
+                <div style={{ display:'flex', gap:2, alignItems:'flex-end', height:28 }}>
+                  {Array.from({ length: MAX_ENERGY }, (_, i) => (
+                    <div key={i} style={{
+                      flex:1,
+                      height: i < energy ? (16 + Math.sin(i * 0.3) * 6) : 8,
+                      borderRadius:2,
+                      background: i < energy
+                        ? `rgba(255, ${180 + Math.floor(i * 0.35)}, 0, ${0.7 + (i / MAX_ENERGY) * 0.3})`
+                        : 'rgba(255,255,255,0.07)',
+                      transition:'height 0.3s ease',
+                      boxShadow: i < energy ? '0 0 4px rgba(255,200,0,0.4)' : 'none',
+                    }} />
+                  ))}
+                </div>
+              </div>
+
             </div>
           )}
           {activeTab === 'shop' && <div><h2>🛒 Магазин</h2><p>Скоро...</p></div>}
