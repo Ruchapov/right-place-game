@@ -92,6 +92,7 @@ export type BattleResult = {
   levelsGained: number
   strength: number
   endurance: number
+  agility?: number
 }
 
 export async function submitBattleResult(

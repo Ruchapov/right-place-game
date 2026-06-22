@@ -6,7 +6,7 @@ import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; trophies: number }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number }
 
 const ROOM_LABELS: Record<string, string> = {
   enemy: '⚔️ Враг',
@@ -61,7 +61,7 @@ export default function App() {
         if (!initDataRaw) throw new Error('No initData from Telegram')
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, trophies: data.character.trophies })
+        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
       } catch (e) {
@@ -134,7 +134,7 @@ export default function App() {
       setResults((prev) => [...prev, br.message])
       setRoomIndex(br.index)
       setRunHp(br.hp)
-      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, trophies: br.trophies } : prev))
+      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
     } finally { setEntering(false) }
@@ -198,6 +198,7 @@ export default function App() {
         <p>🏆 Трофеи: {player?.trophies}</p>
         <p>💪 Сила: {player?.strength}</p>
         <p>🛡️ Выносливость: {player?.endurance}</p>
+        <p>🌀 Ловкость: {player?.agility}</p>
         <p>⚡ Энергия: {energy} / {MAX_ENERGY}</p>
       </div>
 
