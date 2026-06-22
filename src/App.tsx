@@ -39,10 +39,10 @@ export default function App() {
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
   const [roomIndex, setRoomIndex] = useState(0)
-  const [results, setResults] = useState<string[]>([])
+  const [results, setResults] = useState<{ room: string; message: string }[]>([])
   const [running, setRunning] = useState(false)
-  const [entering, setEntering] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
+  const [roomIntro, setRoomIntro] = useState(false)
 
   // Live energy
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
@@ -75,7 +75,6 @@ export default function App() {
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
-  const runDone = rooms !== null && roomIndex >= rooms.length
 
   async function handleStartRun() {
     const token = localStorage.getItem('jwt')
@@ -86,94 +85,109 @@ export default function App() {
       setRooms(result.rooms); setRoomIndex(0); setResults([])
       setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
       setRunHp(result.hp); setRunMaxHp(result.maxHp)
+      showRoomIntro(0)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Run failed')
     } finally { setRunning(false) }
   }
 
-  async function handleEnterRoom() {
+  async function enterCurrentRoom() {
     const token = localStorage.getItem('jwt')
-    if (!token) return
-    if (rooms && (rooms[roomIndex] === 'enemy' || rooms[roomIndex] === 'boss')) {
+    if (!token || !rooms) return
+    const roomType = rooms[roomIndex]
+    if (roomType === 'enemy' || roomType === 'boss') {
       setInBattle(true)
       return
     }
-    if (rooms && rooms[roomIndex] === 'smuggler') {
+    if (roomType === 'smuggler') {
       setInSmuggler(true)
       return
     }
-    if (rooms && rooms[roomIndex] === 'puzzle') {
-      setEntering(true); setRunError(null)
+    if (roomType === 'puzzle') {
+      setRunError(null)
       try {
         const pz = await getPuzzle(token)
         setPuzzleData(pz)
       } catch (e) {
         setRunError(e instanceof Error ? e.message : 'Puzzle failed')
-      } finally { setEntering(false) }
+      }
       return
     }
-    setEntering(true); setRunError(null)
+    setRunError(null)
     try {
       const result = await enterRoom(token)
-      setResults((prev) => [...prev, result.message])
+      setResults((prev) => [...prev, { room: roomType, message: result.message }])
       setRoomIndex(result.index)
       setRunHp(result.hp)
       setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
+      if (!result.done) showRoomIntro(result.index)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Room failed')
-    } finally { setEntering(false) }
+    }
+  }
+
+  function showRoomIntro(index: number) {
+    if (!rooms || index >= rooms.length) return
+    setRoomIntro(true)
+    setTimeout(() => {
+      setRoomIntro(false)
+      enterCurrentRoom()
+    }, 2000)
   }
 
   async function handleBattleEnd(result: { won: boolean; damageTaken: number; damageDealt: number }) {
     setInBattle(false)
     const token = localStorage.getItem('jwt')
     if (!token) return
-    setEntering(true); setRunError(null)
+    setRunError(null)
     try {
       const br: BattleResult = await submitBattleResult(token, result.won, result.damageTaken, result.damageDealt)
-      setResults((prev) => [...prev, br.message])
+      setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
       setRoomIndex(br.index)
       setRunHp(br.hp)
+      if (!br.done && !br.died) showRoomIntro(br.index)
       setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
-    } finally { setEntering(false) }
+    }
   }
 
   async function handleSmugglerChoice(exchange: boolean) {
     setInSmuggler(false)
     const token = localStorage.getItem('jwt')
     if (!token) return
-    setEntering(true); setRunError(null)
+    setRunError(null)
     try {
       const sr: SmugglerResult = await submitSmugglerResult(token, exchange)
-      setResults((prev) => [...prev, sr.message])
+      setResults((prev) => [...prev, { room: 'smuggler', message: sr.message }])
       setRoomIndex(sr.index)
       setRunHp(sr.hp)
+      if (!sr.done) showRoomIntro(sr.index)
       setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Smuggler failed')
-    } finally { setEntering(false) }
+    }
   }
 
   async function handlePuzzleAnswer(selectedIndex: number) {
     setPuzzleData(null)
     const token = localStorage.getItem('jwt')
     if (!token) return
-    setEntering(true); setRunError(null)
+    setRunError(null)
     try {
       const pr: PuzzleResult = await submitPuzzleResult(token, selectedIndex)
-      setResults((prev) => [...prev, pr.message])
+      setResults((prev) => [...prev, { room: 'puzzle', message: pr.message }])
       setRoomIndex(pr.index)
       setRunHp(pr.hp)
+      if (!pr.done && !pr.died) showRoomIntro(pr.index)
       setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Puzzle failed')
-    } finally { setEntering(false) }
+    }
   }
 
   function backToMenu() {
-    setRooms(null); setRoomIndex(0); setResults([])
+    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false)
   }
 
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
@@ -215,30 +229,40 @@ export default function App() {
       {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} onBattleEnd={handleBattleEnd} />}
       {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
       {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
-      {rooms !== null && (
+      {roomIntro && rooms && roomIndex < rooms.length && (
+        <div style={{
+          position:'fixed', top:0, left:0, right:0, bottom:0,
+          background:'#1a1a2e', display:'flex', flexDirection:'column',
+          alignItems:'center', justifyContent:'center', zIndex:500
+        }}>
+          <div style={{ fontSize: 80 }}>
+            {rooms[roomIndex] === 'enemy' ? '⚔️' :
+             rooms[roomIndex] === 'boss' ? '👹' :
+             rooms[roomIndex] === 'chest' ? '📦' :
+             rooms[roomIndex] === 'trap' ? '💥' :
+             rooms[roomIndex] === 'smuggler' ? '🤝' : '🧩'}
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 'bold', marginTop: 16, color: 'white' }}>
+            {ROOM_LABELS[rooms[roomIndex]]}
+          </div>
+          <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
+            Комната {roomIndex + 1} из {rooms.length}
+          </div>
+        </div>
+      )}
+      {rooms !== null && roomIndex >= rooms.length && (
         <div style={{ marginTop: 20 }}>
-          <h2>Забег: комната {Math.min(roomIndex + 1, rooms.length)} / {rooms.length}</h2>
-          <ol>
-            {rooms.map((r, i) => (
-              <li key={i} style={{ fontSize: 18, marginBottom: 6, opacity: i < roomIndex ? 0.5 : 1 }}>
-                {ROOM_LABELS[r] ?? r}
-                {i < roomIndex && results[i] && <span style={{ color: '#2e7d32' }}> — {results[i]}</span>}
-                {i === roomIndex && !runDone && (
-                  <button onClick={handleEnterRoom} disabled={entering}
-                    style={{ marginLeft: 10, padding: '4px 12px', borderRadius: 6, border: 'none', background: entering ? '#999' : '#1976d2', color: 'white' }}>
-                    {entering ? '...' : 'Войти'}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ol>
-
-          {runDone && (
-            <div style={{ marginTop: 10 }}>
-              <p style={{ fontWeight: 'bold' }}>🏁 Забег завершён!</p>
-              <button onClick={backToMenu} style={{ padding: '10px 18px', borderRadius: 8, border: 'none', background: '#4caf50', color: 'white' }}>В меню</button>
+          <h2>🏆 Забег завершён!</h2>
+          {results.map((r, i) => (
+            <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8, fontSize:16 }}>
+              <span>{ROOM_LABELS[r.room] ?? r.room}</span>
+              <span style={{ color:'#aaa' }}>→</span>
+              <span style={{ color:'#ffd700' }}>{r.message}</span>
             </div>
-          )}
+          ))}
+          <button onClick={backToMenu} style={{ marginTop:16, padding:'12px 24px', borderRadius:8, border:'none', background:'#4caf50', color:'white', fontSize:16 }}>
+            Исследовать снова
+          </button>
         </div>
       )}
 
