@@ -100,6 +100,7 @@ export async function submitBattleResult(
   won: boolean,
   damageTaken: number,
   damageDealt: number,
+  skillUses: number,
 ): Promise<BattleResult> {
   const response = await fetch(`${SERVER_URL}/run/battle-result`, {
     method: 'POST',
@@ -107,7 +108,7 @@ export async function submitBattleResult(
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ won, damageTaken, damageDealt }),
+    body: JSON.stringify({ won, damageTaken, damageDealt, skillUses }),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
