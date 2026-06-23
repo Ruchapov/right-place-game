@@ -128,9 +128,10 @@ export default function App() {
     try {
       const result = await enterRoom(token)
       setResults((prev) => [...prev, { room: roomType, message: result.message }])
+      setRoomIndex(result.index)
       setRunHp(result.hp)
       setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
-      if (!result.done) showRoomIntro(result.index, currentRooms)
+      if (!result.done && !result.died) showRoomIntro(result.index, currentRooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Room failed')
     }
