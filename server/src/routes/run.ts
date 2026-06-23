@@ -514,7 +514,6 @@ export async function runRoutes(server: FastifyInstance) {
   })
 
   server.post('/character/buy-potion', async (request, reply) => {
-    console.log('BUY POTION HIT', request.headers.authorization ? 'auth ok' : 'no auth')
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
