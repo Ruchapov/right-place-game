@@ -197,6 +197,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       // --- Heal ---
       let healCdLeft = 0
+      let healBtnEl: HTMLElement | null = null
 
 healRef.current = {
   doHeal() {
@@ -207,6 +208,10 @@ healRef.current = {
     skillUses += 1
     playerHpText.text = `HP: ${playerHp}`
     healCdLeft = 5
+    if (healBtnEl) {
+      healBtnEl.style.background = 'rgba(60,60,60,0.4)'
+      healBtnEl.style.borderColor = 'rgba(100,100,100,0.5)'
+    }
   },
 }
       // --- конец Heal ---
@@ -215,7 +220,15 @@ healRef.current = {
         if (battleEnded) return
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
+  if (healBtnEl) {
+    healBtnEl.textContent = String(Math.ceil(healCdLeft))
+  }
   if (healCdLeft < 0) healCdLeft = 0
+  if (healCdLeft === 0 && healBtnEl) {
+    healBtnEl.textContent = '💊'
+    healBtnEl.style.background = 'rgba(60,220,100,0.2)'
+    healBtnEl.style.borderColor = 'rgba(60,220,100,0.7)'
+  }
 }
 
         if (cooldownLeft > 0) {
@@ -455,9 +468,11 @@ healRef.current = {
 
             const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
             if (skill1El && equippedSkills[0] === 'heal') skill1El.onclick = () => healRef.current.doHeal()
+            if (skill1El && equippedSkills[0] === 'heal') healBtnEl = skill1El
 
             const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
             if (skill2El && equippedSkills[1] === 'heal') skill2El.onclick = () => healRef.current.doHeal()
+            if (skill2El && equippedSkills[1] === 'heal') healBtnEl = skill2El
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
