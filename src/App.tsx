@@ -163,8 +163,10 @@ export default function App() {
       setResults((prev) => [...prev, { room: 'smuggler', message: sr.message }])
       setRoomIndex(sr.index)
       setRunHp(sr.hp)
-      if (!sr.done && rooms) showRoomIntro(sr.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
+      if (!sr.done && rooms) {
+        setTimeout(() => showRoomIntro(sr.index, rooms), 100)
+      }
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Smuggler failed')
     }
