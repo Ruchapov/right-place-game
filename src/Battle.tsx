@@ -9,10 +9,11 @@ type BattleProps = {
   isBoss?: boolean
   level?: number
   equippedSkills?: string[]
+  potionCharges?: number
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], potionCharges = 0, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -22,8 +23,10 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
     doAttack: () => void
   }>({ canAttack: false, cooldownLeft: 0, doAttack: () => {} })
   const dodgeRef = useRef<{ doDodge: () => void }>({ doDodge: () => {} })
-  const healRef = useRef<{ doHeal: () => void }>({ doHeal: () => {} })
+  const healRef = useRef<{ doHeal: () => void; usePotion?: () => void }>({ doHeal: () => {} })
   const healBtnRef = useRef<HTMLButtonElement | null>(null)
+  const potionsLeftRef = useRef(Math.min(potionCharges, 3))
+  const potionCdRef = useRef(0)
 
   useEffect(() => {
     let app: Application | null = null
@@ -214,6 +217,13 @@ healRef.current = {
     }
   },
 }
+      healRef.current.usePotion = () => {
+        if (battleEnded) return
+        const healAmt = Math.round(maxHp * 0.5)
+        playerHp = Math.min(playerHp + healAmt, maxHp)
+        healedAmount += healAmt
+        playerHpText.text = `HP: ${playerHp}`
+      }
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
@@ -230,6 +240,18 @@ healRef.current = {
     healBtnRef.current.style.borderColor = 'rgba(60,220,100,0.7)'
   }
 }
+        if (potionCdRef.current > 0) {
+          potionCdRef.current -= ticker.deltaMS / 1000
+          if (potionCdRef.current < 0) potionCdRef.current = 0
+          const potBtn = document.querySelector('[data-btn="potion"]') as HTMLButtonElement | null
+          if (potBtn) {
+            if (potionCdRef.current > 0) {
+              potBtn.textContent = String(Math.ceil(potionCdRef.current))
+            } else {
+              potBtn.textContent = potionsLeftRef.current > 0 ? '🧪' : '✕'
+            }
+          }
+        }
 
         if (cooldownLeft > 0) {
           cooldownLeft -= ticker.deltaMS / 1000
@@ -460,6 +482,55 @@ healRef.current = {
               touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
             `
             if (!atkEl) container.appendChild(atk)
+
+            // Зелье
+            const lastSkillX = ATK.x + D * Math.cos(angles[2])
+            const lastSkillY = ATK.y + D * Math.sin(angles[2])
+            const POT_R = 24
+            const potX = lastSkillX
+            const potY = lastSkillY - BTN_R - POT_R - 8
+
+            const potEl = container.querySelector('[data-btn="potion"]') as HTMLButtonElement | null
+            const pot = potEl || document.createElement('button')
+            pot.dataset.btn = 'potion'
+            pot.textContent = potionsLeftRef.current > 0 ? '🧪' : '✕'
+            pot.style.cssText = `
+              position:absolute;
+              left:${potX - POT_R}px; top:${potY - POT_R}px;
+              width:${POT_R * 2}px; height:${POT_R * 2}px;
+              border-radius:50%; border:1.5px solid rgba(255,140,0,0.8);
+              background:rgba(255,140,0,0.2); color:white; font-size:15px;
+              display:flex; align-items:center; justify-content:center;
+              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+              opacity:${potionsLeftRef.current > 0 ? 1 : 0.3};
+            `
+            if (!potEl) container.appendChild(pot)
+
+            // Счётчик зарядов
+            const badgeEl = container.querySelector('[data-badge="potion"]') as HTMLElement | null
+            const badge = badgeEl || document.createElement('div')
+            badge.dataset.badge = 'potion'
+            badge.textContent = String(potionsLeftRef.current)
+            badge.style.cssText = `
+              position:absolute;
+              left:${potX + POT_R - 14}px; top:${potY - POT_R}px;
+              width:18px; height:18px; border-radius:50%;
+              background:#ffd700; color:#1a1a2e;
+              font-size:11px; font-weight:bold;
+              display:flex; align-items:center; justify-content:center;
+              pointer-events:none;
+            `
+            if (!badgeEl) container.appendChild(badge)
+
+            pot.onclick = () => {
+              if (potionsLeftRef.current <= 0 || potionCdRef.current > 0) return
+              potionsLeftRef.current -= 1
+              potionCdRef.current = 2
+              badge.textContent = String(potionsLeftRef.current)
+              pot.style.opacity = potionsLeftRef.current > 0 ? '1' : '0.3'
+              pot.textContent = '2'
+              healRef.current.usePotion?.()
+            }
 
             atk.onclick = () => attackRef.current.doAttack()
 
