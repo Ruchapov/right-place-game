@@ -220,6 +220,7 @@ export type BuyPotionResult = {
 }
 
 export async function buyPotion(token: string): Promise<BuyPotionResult> {
+  console.log('Calling buy-potion endpoint')
   const response = await fetch(`${SERVER_URL}/character/buy-potion`, {
     method: 'POST',
     headers: {

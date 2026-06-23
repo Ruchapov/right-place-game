@@ -512,4 +512,28 @@ export async function runRoutes(server: FastifyInstance) {
 
     return reply.send({ equippedSkills: skills })
   })
+
+  server.post('/character/buy-potion', async (request, reply) => {
+    console.log('BUY POTION HIT', request.headers.authorization ? 'auth ok' : 'no auth')
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const POTION_COST = 20
+    if (character.gold < POTION_COST) {
+      return reply.status(400).send({ error: 'Not enough gold' })
+    }
+
+    const updated = await prisma.character.update({
+      where: { userId },
+      data: {
+        gold: character.gold - POTION_COST,
+        potionCharges: character.potionCharges + 1,
+      },
+    })
+
+    return reply.send({ gold: updated.gold, potionCharges: updated.potionCharges })
+  })
 }
