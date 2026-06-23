@@ -13,6 +13,7 @@ export type LoginResponse = {
     luck: number
     trophies: number
     equippedSkills: string[]
+    potionCharges: number
   }
 }
 
@@ -209,6 +210,25 @@ export async function saveEquippedSkills(token: string, skills: string[]): Promi
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
     throw new Error(`Save skills failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json()
+}
+
+export type BuyPotionResult = {
+  gold: number
+  potionCharges: number
+}
+
+export async function buyPotion(token: string): Promise<BuyPotionResult> {
+  const response = await fetch(`${SERVER_URL}/character/buy-potion`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Buy potion failed: ${response.status} ${JSON.stringify(err)}`)
   }
   return await response.json()
 }
