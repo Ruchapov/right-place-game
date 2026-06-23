@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
 import Battle from './Battle'
 import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[] }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; potionCharges: number }
 
 const ROOM_LABELS: Record<string, string> = {
   enemy: '⚔️ Враг',
@@ -62,7 +62,7 @@ export default function App() {
         if (!initDataRaw) throw new Error('No initData from Telegram')
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [] })
+        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
       } catch (e) {
@@ -216,6 +216,18 @@ export default function App() {
     }
   }
 
+  async function handleBuyPotion() {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) return
+    if (player.gold < 20) return
+    try {
+      const result = await buyPotion(token)
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
+    } catch (e) {
+      console.error('Buy potion failed', e)
+    }
+  }
+
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
   if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
 
@@ -261,7 +273,7 @@ export default function App() {
                   { icon:'⭐', value: player?.level ?? 1,                          label:'Уровень' },
                   { icon:'🗡️', value: Math.round((player?.strength ?? 0) / 2),     label:'Урон' },
                   { icon:'🛡️', value: 0,                                            label:'Броня' },
-                  { icon:'❤️', value: (player?.endurance ?? 10) * 8,               label:'Выносливость' },
+                  { icon:'❤️', value: player?.endurance ?? 10, label:'Выносливость' },
                   { icon:'💪', value: player?.strength ?? 0,                        label:'Сила' },
                   { icon:'🌀', value: player?.agility ?? 0,                         label:'Ловкость' },
                   { icon:'🍀', value: 0,                                             label:'Удача' },
@@ -305,7 +317,57 @@ export default function App() {
 
             </div>
           )}
-          {activeTab === 'shop' && <div><h2>🛒 Магазин</h2><p>Скоро...</p></div>}
+          {activeTab === 'shop' && (
+            <div style={{ padding: '0 4px' }}>
+              <div style={{ padding: '20px 16px 16px' }}>
+                <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>🛒 Магазин</div>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>Трать золото с умом</div>
+              </div>
+              <div style={{ height:1, background:'linear-gradient(90deg, transparent, #ffd700, transparent)', boxShadow:'0 0 8px rgba(255,215,0,0.5)', margin:'0 16px 20px' }} />
+
+              <div style={{ padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* Карточка зелья */}
+                <div style={{
+                  background: '#1a1a2e', border: '1px solid rgba(255,215,0,0.15)',
+                  borderRadius: 12, padding: '16px',
+                  display: 'flex', alignItems: 'center', gap: 16,
+                }}>
+                  <div style={{ fontSize: 48 }}>💊</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 16, fontWeight: 'bold', color: '#e8e8f0' }}>Зелье лечения</div>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>Восстанавливает 50% HP</div>
+                    <div style={{ fontSize: 12, color: '#ffd700', marginTop: 4 }}>
+                      Запас: {player?.potionCharges ?? 0} шт
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleBuyPotion}
+                    disabled={(player?.gold ?? 0) < 20}
+                    style={{
+                      padding: '10px 16px', borderRadius: 8,
+                      background: (player?.gold ?? 0) < 20 ? 'rgba(100,100,100,0.4)' : 'rgba(255,215,0,0.2)',
+                      color: (player?.gold ?? 0) < 20 ? 'rgba(255,255,255,0.3)' : '#ffd700',
+                      fontWeight: 'bold', fontSize: 14, cursor: (player?.gold ?? 0) < 20 ? 'default' : 'pointer',
+                      border: '1px solid ' + ((player?.gold ?? 0) < 20 ? 'rgba(100,100,100,0.3)' : 'rgba(255,215,0,0.4)'),
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    20 💰
+                  </button>
+                </div>
+
+                {/* Баланс */}
+                <div style={{
+                  background: '#1a1a2e', border: '1px solid rgba(255,215,0,0.1)',
+                  borderRadius: 12, padding: '12px 16px',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)' }}>Твоё золото</div>
+                  <div style={{ fontSize: 18, fontWeight: 'bold', color: '#ffd700' }}>💰 {player?.gold ?? 0}</div>
+                </div>
+              </div>
+            </div>
+          )}
           {activeTab === 'gear' && (
             <div style={{ padding: '0 4px' }}>
               <div style={{ padding: '20px 16px 16px' }}>
