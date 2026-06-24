@@ -416,7 +416,44 @@ export default function App() {
               </div>
             </div>
           )}
-          {activeTab === 'friends' && <div><h2>👥 Друзья</h2><p>Скоро...</p></div>}
+          {activeTab === 'friends' && (
+            <div style={{ padding: '0 4px' }}>
+              <div style={{ padding: '20px 16px 16px' }}>
+                <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>👥 Друзья</div>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>Зови друзей в Right Place</div>
+              </div>
+              <div style={{ height:1, background:'linear-gradient(90deg, transparent, #ffd700, transparent)', boxShadow:'0 0 8px rgba(255,215,0,0.5)', margin:'0 16px 20px' }} />
+              <div style={{ padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{
+                  background: '#1a1a2e', border: '1px solid rgba(255,215,0,0.15)',
+                  borderRadius: 12, padding: '20px 16px', textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>⚔️</div>
+                  <div style={{ fontSize: 16, fontWeight: 'bold', color: '#e8e8f0', marginBottom: 8 }}>
+                    Позови друга в бой
+                  </div>
+                  <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)', marginBottom: 20 }}>
+                    Пусть тоже испытает Right Place
+                  </div>
+                  <button
+                    onClick={() => {
+                      const url = 'https://t.me/RightPlaceGame_bot/game'
+                      const text = 'Играю в Right Place — roguelike в Telegram. Присоединяйся!'
+                      window.open(`https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`, '_blank')
+                    }}
+                    style={{
+                      width: '100%', padding: '14px', borderRadius: 10,
+                      border: '1px solid rgba(255,215,0,0.4)',
+                      background: 'rgba(255,215,0,0.15)', color: '#ffd700',
+                      fontSize: 15, fontWeight: 'bold', cursor: 'pointer',
+                    }}
+                  >
+                    📨 Пригласить друга
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {activeTab === 'explore' && <div>
