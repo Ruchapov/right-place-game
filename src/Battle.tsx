@@ -56,13 +56,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         console.error('Failed to load background assets:', e)
       }
 
-      await app.init({
-        width,
-        height,
-        background: 0x0d0820,
-        backgroundAlpha: 1,
-        resizeTo: window,
-      })
+      await app.init({ width, height, background: 0x0d0820, backgroundAlpha: 1, resizeTo: window })
 
       if (cancelled || !containerRef.current) {
         app.destroy(true, { children: true })
@@ -73,28 +67,28 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       // --- Parallax background ---
       const bgBase = new Graphics()
-      bgBase.rect(0, 0, width, height).fill(0x0d0820)
+      bgBase.rect(-100, -100, width + 200, height + 200).fill(0x0d0820)
       app.stage.addChild(bgBase)
 
       const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
       bgSky.width = width
-      bgSky.height = height
+      bgSky.height = height * 0.55
       bgSky.x = 0
       bgSky.y = 0
       app.stage.addChild(bgSky)
 
       const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
       bgRuins.width = width
-      bgRuins.height = height * 0.6
+      bgRuins.height = height * 0.65
       bgRuins.x = 0
-      bgRuins.y = height * 0.4
+      bgRuins.y = height * 0.35
       app.stage.addChild(bgRuins)
 
       const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
       bgFloor.width = width
-      bgFloor.height = height * 0.35
+      bgFloor.height = height * 0.38
       bgFloor.x = 0
-      bgFloor.y = height * 0.65
+      bgFloor.y = height * 0.62
       app.stage.addChild(bgFloor)
       // --- конец background ---
 
