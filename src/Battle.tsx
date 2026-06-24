@@ -70,6 +70,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       containerRef.current.appendChild(app.canvas)
 
+      // --- Parallax background ---
+      const bgBase = new Graphics()
+      bgBase.rect(0, 0, width, height).fill(0x0d0820)
+      app.stage.addChild(bgBase)
+
       const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
       bgSky.width = width
       bgSky.height = height
@@ -79,17 +84,18 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
       bgRuins.width = width
-      bgRuins.height = height
+      bgRuins.height = height * 0.6
       bgRuins.x = 0
-      bgRuins.y = 0
+      bgRuins.y = height * 0.4
       app.stage.addChild(bgRuins)
 
       const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
       bgFloor.width = width
-      bgFloor.height = height
+      bgFloor.height = height * 0.35
       bgFloor.x = 0
-      bgFloor.y = 0
+      bgFloor.y = height * 0.65
       app.stage.addChild(bgFloor)
+      // --- конец background ---
 
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
