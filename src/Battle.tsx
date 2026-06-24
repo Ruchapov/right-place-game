@@ -46,10 +46,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ATTACK_COOLDOWN = 0.5
 
       try {
+        const base = import.meta.env.BASE_URL
         await Assets.load([
-          '/assets/bg-sky.png',
-          '/assets/bg-ruins.png',
-          '/assets/bg-floor.png',
+          `${base}assets/bg-sky.png`,
+          `${base}assets/bg-ruins.png`,
+          `${base}assets/bg-floor.png`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -69,21 +70,21 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       containerRef.current.appendChild(app.canvas)
 
-      const bgSky = new Sprite(Assets.get('/assets/bg-sky.png'))
+      const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
       bgSky.width = width
       bgSky.height = height
       bgSky.x = 0
       bgSky.y = 0
       app.stage.addChild(bgSky)
 
-      const bgRuins = new Sprite(Assets.get('/assets/bg-ruins.png'))
+      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
       bgRuins.width = width
       bgRuins.height = height
       bgRuins.x = 0
       bgRuins.y = 0
       app.stage.addChild(bgRuins)
 
-      const bgFloor = new Sprite(Assets.get('/assets/bg-floor.png'))
+      const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
       bgFloor.width = width
       bgFloor.height = height
       bgFloor.x = 0
