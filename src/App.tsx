@@ -273,7 +273,7 @@ export default function App() {
               <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
                 {[
                   { icon:'⭐', value: player?.level ?? 1,                          label:'Уровень' },
-                  { icon:'🗡️', value: Math.round((player?.strength ?? 0) / 2),     label:'Урон' },
+                  { icon:'🗡️', value: 15 + Math.floor((player?.strength ?? 0) / 2), label:'Урон' },
                   { icon:'🛡️', value: 0,                                            label:'Броня' },
                   { icon:'❤️', value: player?.endurance ?? 10, label:'Выносливость' },
                   { icon:'💪', value: player?.strength ?? 0,                        label:'Сила' },
