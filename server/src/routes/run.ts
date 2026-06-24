@@ -222,6 +222,7 @@ export async function runRoutes(server: FastifyInstance) {
     const skillUses = request.body.skillUses ?? 0
     const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
     const potionsUsed = request.body.potionsUsed ?? 0
+    console.log('potionsUsed received:', potionsUsed, 'potionCharges before:', character.potionCharges)
     const newTotalSkillUses = character.totalSkillUses + skillUses
     const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
