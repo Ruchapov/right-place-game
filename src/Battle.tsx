@@ -37,6 +37,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
     async function setup() {
       app = new Application()
+      const base = import.meta.env.BASE_URL
       const width = window.innerWidth
       const height = window.innerHeight
       const PLAYER_W = 40
@@ -46,7 +47,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ATTACK_COOLDOWN = 0.5
 
       try {
-        const base = import.meta.env.BASE_URL
         await Assets.load([
           `${base}assets/bg-sky.png`,
           `${base}assets/bg-ruins.png`,
