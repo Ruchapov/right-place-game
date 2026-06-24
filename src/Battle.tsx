@@ -45,11 +45,15 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ATTACK_DAMAGE = 15 + Math.floor(strength / 2)
       const ATTACK_COOLDOWN = 0.5
 
-      await Assets.load([
-        '/assets/bg-sky.png',
-        '/assets/bg-ruins.png',
-        '/assets/bg-floor.png',
-      ])
+      try {
+        await Assets.load([
+          '/assets/bg-sky.png',
+          '/assets/bg-ruins.png',
+          '/assets/bg-floor.png',
+        ])
+      } catch (e) {
+        console.error('Failed to load background assets:', e)
+      }
 
       await app.init({
         width,
