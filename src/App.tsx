@@ -86,6 +86,7 @@ export default function App() {
       setRooms(result.rooms); setRoomIndex(0); setResults([])
       setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
       setRunHp(result.hp); setRunMaxHp(result.maxHp)
+      if (result.potions !== undefined) setPlayer(prev => prev ? { ...prev, potionCharges: result.potions! } : prev)
       showRoomIntro(0, result.rooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Run failed')

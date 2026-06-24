@@ -25,7 +25,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const dodgeRef = useRef<{ doDodge: () => void }>({ doDodge: () => {} })
   const healRef = useRef<{ doHeal: () => void; usePotion?: () => void }>({ doHeal: () => {} })
   const healBtnRef = useRef<HTMLButtonElement | null>(null)
-  const potionsLeftRef = useRef(Math.min(potionCharges, 3))
+  const potionsLeftRef = useRef(potionCharges)
   const potionsUsedRef = useRef(0)
   const potionCdRef = useRef(0)
 

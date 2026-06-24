@@ -69,7 +69,7 @@ function applyStatGrowth(
 // puzzleId is set when the current room is 'puzzle' and a question has been
 // generated for it — remembers WHICH puzzle was shown, so the answer can be
 // checked against the same question later (puzzles are picked randomly).
-type ActiveRun = { rooms: string[]; index: number; hp: number; puzzleId?: string }
+type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; puzzleId?: string }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number }
 // Body shape for POST /run/smuggler-result.
@@ -108,11 +108,11 @@ export async function runRoutes(server: FastifyInstance) {
       data: {
         energy: newEnergy,
         lastEnergyUpdate: new Date(),
-        currentRun: { rooms, index: 0, hp: maxHp },
+        currentRun: { rooms, index: 0, hp: maxHp, potions: Math.min(character.potionCharges, 3) },
       },
     })
 
-    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp })
+    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions: Math.min(character.potionCharges, 3) })
   })
 
   // Enter the current room: process it, then advance the run.
@@ -222,7 +222,8 @@ export async function runRoutes(server: FastifyInstance) {
     const skillUses = request.body.skillUses ?? 0
     const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
     const potionsUsed = request.body.potionsUsed ?? 0
-    console.log('potionsUsed received:', potionsUsed, 'potionCharges before:', character.potionCharges)
+    const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
+    const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
     const newTotalSkillUses = character.totalSkillUses + skillUses
     const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
@@ -275,8 +276,8 @@ export async function runRoutes(server: FastifyInstance) {
         level: growth.level,
         enduranceAtLevelUp: growth.enduranceAtLevelUp,
         strengthAtLevelUp: growth.strengthAtLevelUp,
-        potionCharges: Math.max(0, character.potionCharges - potionsUsed),
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
+        potionCharges: newPotionCharges,
+        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp, potions: Math.max(0, potionsInRun) },
       },
     })
 
