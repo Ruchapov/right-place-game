@@ -59,7 +59,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       await app.init({
         width,
         height,
-        backgroundColor: 0x1a1a2e,
+        background: 0x0d0820,
+        backgroundAlpha: 1,
         resizeTo: window,
       })
 
