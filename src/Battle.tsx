@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Application, Graphics, Text, TextStyle } from 'pixi.js'
 
-type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number }
+type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
 type BattleProps = {
   initialHp: number
@@ -26,6 +26,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const healRef = useRef<{ doHeal: () => void; usePotion?: () => void }>({ doHeal: () => {} })
   const healBtnRef = useRef<HTMLButtonElement | null>(null)
   const potionsLeftRef = useRef(Math.min(potionCharges, 3))
+  const potionsUsedRef = useRef(0)
   const potionCdRef = useRef(0)
 
   useEffect(() => {
@@ -144,7 +145,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           loseText.y = app!.screen.height / 2
           app!.stage.addChild(loseText)
           endTimer = setTimeout(() => {
-            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount) })
+            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount), potionsUsed: potionsUsedRef.current })
           }, 1500)
         }
       }
@@ -178,7 +179,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
             endTimer = setTimeout(() => {
-              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount) })
+              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount), potionsUsed: potionsUsedRef.current })
             }, 1500)
           }
         },
@@ -525,6 +526,7 @@ healRef.current = {
             pot.onclick = () => {
               if (potionsLeftRef.current <= 0 || potionCdRef.current > 0) return
               potionsLeftRef.current -= 1
+              potionsUsedRef.current += 1
               potionCdRef.current = 2
               badge.textContent = String(potionsLeftRef.current)
               pot.style.opacity = potionsLeftRef.current > 0 ? '1' : '0.3'

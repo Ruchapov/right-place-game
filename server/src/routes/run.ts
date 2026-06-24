@@ -71,7 +71,7 @@ function applyStatGrowth(
 // checked against the same question later (puzzles are picked randomly).
 type ActiveRun = { rooms: string[]; index: number; hp: number; puzzleId?: string }
 // Body shape for POST /run/battle-result.
-type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number }
+type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number }
 // Body shape for POST /run/smuggler-result.
 type SmugglerResultBody = { exchange: boolean }
 // Body shape for POST /run/puzzle-result.
@@ -221,6 +221,7 @@ export async function runRoutes(server: FastifyInstance) {
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
     const skillUses = request.body.skillUses ?? 0
     const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
+    const potionsUsed = request.body.potionsUsed ?? 0
     const newTotalSkillUses = character.totalSkillUses + skillUses
     const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
@@ -273,6 +274,7 @@ export async function runRoutes(server: FastifyInstance) {
         level: growth.level,
         enduranceAtLevelUp: growth.enduranceAtLevelUp,
         strengthAtLevelUp: growth.strengthAtLevelUp,
+        potionCharges: Math.max(0, character.potionCharges - potionsUsed),
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
