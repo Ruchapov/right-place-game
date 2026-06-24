@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { Application, Graphics, Text, TextStyle } from 'pixi.js'
+import { Application, Graphics, Text, TextStyle, Sprite, Assets } from 'pixi.js'
 
 type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
@@ -45,6 +45,12 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ATTACK_DAMAGE = 15 + Math.floor(strength / 2)
       const ATTACK_COOLDOWN = 0.5
 
+      await Assets.load([
+        '/assets/bg-sky.png',
+        '/assets/bg-ruins.png',
+        '/assets/bg-floor.png',
+      ])
+
       await app.init({
         width,
         height,
@@ -58,6 +64,27 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       }
 
       containerRef.current.appendChild(app.canvas)
+
+      const bgSky = new Sprite(Assets.get('/assets/bg-sky.png'))
+      bgSky.width = width
+      bgSky.height = height
+      bgSky.x = 0
+      bgSky.y = 0
+      app.stage.addChild(bgSky)
+
+      const bgRuins = new Sprite(Assets.get('/assets/bg-ruins.png'))
+      bgRuins.width = width
+      bgRuins.height = height
+      bgRuins.x = 0
+      bgRuins.y = 0
+      app.stage.addChild(bgRuins)
+
+      const bgFloor = new Sprite(Assets.get('/assets/bg-floor.png'))
+      bgFloor.width = width
+      bgFloor.height = height
+      bgFloor.x = 0
+      bgFloor.y = 0
+      app.stage.addChild(bgFloor)
 
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
@@ -230,6 +257,8 @@ healRef.current = {
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
+        bgSky.x = -directionRef.current * 0.3
+        bgRuins.x = -directionRef.current * 0.8
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healBtnRef.current) {
