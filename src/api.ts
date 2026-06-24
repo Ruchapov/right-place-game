@@ -96,6 +96,7 @@ export type BattleResult = {
   strength: number
   endurance: number
   agility?: number
+  potions?: number
 }
 
 export async function submitBattleResult(

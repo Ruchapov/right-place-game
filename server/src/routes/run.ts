@@ -304,6 +304,7 @@ export async function runRoutes(server: FastifyInstance) {
       levelsGained: growth.levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
+      potions: Math.max(0, potionsInRun),
     })
   })
 

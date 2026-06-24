@@ -149,7 +149,7 @@ export default function App() {
       setRoomIndex(br.index)
       setRunHp(br.hp)
       if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
-      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies } : prev))
+      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
     }
