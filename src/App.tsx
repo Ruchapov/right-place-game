@@ -145,6 +145,7 @@ export default function App() {
     setRunError(null)
     try {
       const br: BattleResult = await submitBattleResult(token, result.won, result.damageTaken, result.damageDealt, result.skillUses, result.actualHpLost, result.potionsUsed)
+      console.log('battle-result potions:', br.potions, 'potionsUsed sent:', result.potionsUsed)
       setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
       setRoomIndex(br.index)
       setRunHp(br.hp)
