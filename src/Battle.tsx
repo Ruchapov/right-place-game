@@ -10,10 +10,11 @@ type BattleProps = {
   level?: number
   equippedSkills?: string[]
   potionCharges?: number
+  strength?: number
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], potionCharges = 0, onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], potionCharges = 0, strength = 0, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -41,7 +42,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const PLAYER_W = 40
       const SPEED = 3
       const ATTACK_RANGE = 70
-      const ATTACK_DAMAGE = 15
+      const ATTACK_DAMAGE = 15 + Math.floor(strength / 2)
       const ATTACK_COOLDOWN = 0.5
 
       await app.init({
