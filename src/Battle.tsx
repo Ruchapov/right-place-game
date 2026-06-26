@@ -87,14 +87,14 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
       fitWidth(bgFloor)
       bgFloor.x = 0
-      bgFloor.y = height - bgFloor.height
+      bgFloor.y = height - bgFloor.height + 60
       app.stage.addChild(bgFloor)
 
       // Руины — между небом и полом, нижний край заходит на пол
       const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
       fitWidth(bgRuins)
       bgRuins.x = 0
-      bgRuins.y = bgFloor.y - bgRuins.height + 40
+      bgRuins.y = bgFloor.y - bgRuins.height + 120
       app.stage.addChild(bgRuins)
       // --- конец background ---
 
