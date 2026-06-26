@@ -70,26 +70,32 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       bgBase.rect(-100, -100, width + 200, height + 200).fill(0x0d0820)
       app.stage.addChild(bgBase)
 
+      // Хелпер: масштабирует спрайт по ширине экрана, сохраняя пропорции
+      function fitWidth(sprite: Sprite) {
+        const scale = width / sprite.texture.width
+        sprite.scale.set(scale)
+      }
+
+      // Небо — сверху, прижато к верху
       const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
-      bgSky.width = width
-      bgSky.height = height * 0.55
+      fitWidth(bgSky)
       bgSky.x = 0
       bgSky.y = 0
       app.stage.addChild(bgSky)
 
-      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
-      bgRuins.width = width
-      bgRuins.height = height * 0.65
-      bgRuins.x = 0
-      bgRuins.y = height * 0.35
-      app.stage.addChild(bgRuins)
-
+      // Пол — прижат к низу экрана
       const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
-      bgFloor.width = width
-      bgFloor.height = height * 0.38
+      fitWidth(bgFloor)
       bgFloor.x = 0
-      bgFloor.y = height * 0.62
+      bgFloor.y = height - bgFloor.height
       app.stage.addChild(bgFloor)
+
+      // Руины — между небом и полом, нижний край заходит на пол
+      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
+      fitWidth(bgRuins)
+      bgRuins.x = 0
+      bgRuins.y = bgFloor.y - bgRuins.height + 40
+      app.stage.addChild(bgRuins)
       // --- конец background ---
 
       const player = new Graphics()
