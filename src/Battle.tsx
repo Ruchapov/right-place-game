@@ -42,6 +42,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const height = window.innerHeight
       const PLAYER_W = 40
       const SPEED = 3
+      let cameraX = 0
       const ATTACK_RANGE = 70
       const ATTACK_DAMAGE = 15 + Math.floor(strength / 2)
       const ATTACK_COOLDOWN = 0.5
@@ -93,15 +94,12 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       bgFloor.x = 0
       bgFloor.y = height - bgFloor.height
       app.stage.addChild(bgFloor)
-
-      // Линия пола — Y координата где стоят персонажи
-      const FLOOR_Y = height - bgFloor.height + 20
       // --- конец background ---
 
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
       player.x = width * 0.2
-      player.y = FLOOR_Y - 60
+      player.y = height * 0.72
       app.stage.addChild(player)
 
       const ENEMY_W = isBoss ? 50 : 40
@@ -121,7 +119,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = FLOOR_Y - ENEMY_H
+      enemy.y = height * 0.72 - ENEMY_H + 60
       app.stage.addChild(enemy)
 
       let enemyHp = ENEMY_MAX_HP
@@ -269,8 +267,8 @@ healRef.current = {
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
-        bgSky.x = (width - bgSky.width) / 2 - directionRef.current * 0.5
-        bgRuins.x = -directionRef.current * 1.5
+        bgSky.x = (width - bgSky.width) / 2 - cameraX * 0.15
+        bgRuins.x = -cameraX * 0.4
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healBtnRef.current) {
@@ -305,9 +303,10 @@ healRef.current = {
 
         if (directionRef.current !== 0) {
           player.x += SPEED * directionRef.current
+          cameraX += SPEED * directionRef.current * 0.5
           const maxX = app!.screen.width - PLAYER_W
-          if (player.x < 0) player.x = 0
-          else if (player.x > maxX) player.x = maxX
+          if (player.x < 0) { player.x = 0 }
+          else if (player.x > maxX) { player.x = maxX }
         }
         playerHpText.x = player.x + PLAYER_W / 2
 
