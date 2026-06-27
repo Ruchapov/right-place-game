@@ -106,8 +106,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       app.stage.addChild(underPlatform)
       // --- конец background ---
 
-      const walkSheet = Assets.get(`${base}assets/player-walk.json`) as Spritesheet
-      const walkFrames = Object.keys(walkSheet.textures).map(k => walkSheet.textures[k])
+      const walkSheet = await Assets.load(`${base}assets/player-walk.json`)
+      const walkFrames = Object.keys(walkSheet.textures).map((k: string) => walkSheet.textures[k])
       const player = new AnimatedSprite(walkFrames)
       player.animationSpeed = 0.3
       player.play()
