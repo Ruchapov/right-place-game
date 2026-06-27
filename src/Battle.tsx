@@ -85,9 +85,10 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const bgRuins = new TilingSprite({
         texture: Assets.get(`${base}assets/bg-ruins.png`),
         width: width,
-        height: height * 0.55,
+        height: height * 0.35,
       })
-      bgRuins.y = height * 0.4
+      bgRuins.y = height * 0.35
+      bgRuins.tileScale.set(0.5)
       app.stage.addChild(bgRuins)
 
       // Платформа — тайлинг внизу
@@ -98,6 +99,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       })
       platform.y = FLOOR_Y
       app.stage.addChild(platform)
+      const underPlatform = new Graphics()
+      underPlatform.rect(0, FLOOR_Y + FLOOR_H, width, height).fill(0x000000)
+      app.stage.addChild(underPlatform)
       // --- конец background ---
 
       const player = new Graphics()
