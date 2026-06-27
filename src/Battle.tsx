@@ -126,6 +126,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         (player as AnimatedSprite).stop();
         player.anchor.set(0.5, 1)
         player.scale.set(0.5)
+        player.texture.source.scaleMode = 'nearest'
       }
       player.x = width * 0.2
       player.y = FLOOR_Y
