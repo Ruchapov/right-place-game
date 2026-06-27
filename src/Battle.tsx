@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite, Spritesheet } from 'pixi.js'
+import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite } from 'pixi.js'
 
 type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
