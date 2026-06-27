@@ -87,7 +87,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         width: width,
         height: height * 0.35,
       })
-      bgRuins.y = height * 0.38
+      bgRuins.y = height * 0.42
       bgRuins.tileScale.set(0.5)
       app.stage.addChild(bgRuins)
 
