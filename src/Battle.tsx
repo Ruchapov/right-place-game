@@ -339,10 +339,8 @@ healRef.current = {
           if (playerWorldX > WORLD_WIDTH - PLAYER_W) playerWorldX = WORLD_WIDTH - PLAYER_W
           if (directionRef.current === -1) {
             player.scale.x = -1
-            player.anchor?.set(1, 0)
           } else {
             player.scale.x = 1
-            player.anchor?.set(0, 0)
           }
           if (walkFrames.length > 0) (player as AnimatedSprite).play()
           const targetCameraX = playerWorldX - width / 2
