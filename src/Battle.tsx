@@ -69,7 +69,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       // --- World & Camera ---
       const WORLD_WIDTH = 3000
       const FLOOR_H = 120  // высота платформы на экране
-      const FLOOR_Y = height - 140// Y где стоят персонажи
+      const FLOOR_Y = height - 200  // Y где стоят персонажи
       let cameraX = 0  // мировая X камеры
 
       // Небо — тайлинг на весь экран
@@ -103,7 +103,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
       player.x = width * 0.2
-      player.y = FLOOR_Y - 60
+      player.y = FLOOR_Y - 20
       app.stage.addChild(player)
       let playerWorldX = player.x
 
@@ -124,7 +124,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = FLOOR_Y - ENEMY_H
+      enemy.y = FLOOR_Y - ENEMY_H + 40
       app.stage.addChild(enemy)
       let enemyWorldX = enemy.x
 
