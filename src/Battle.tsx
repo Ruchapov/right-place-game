@@ -99,7 +99,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
       player.x = width * 0.2
-      player.y = height * 0.72
+      player.y = height * 0.82 - 60
       app.stage.addChild(player)
 
       const ENEMY_W = isBoss ? 50 : 40
@@ -119,7 +119,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = height * 0.72 - ENEMY_H + 60
+      enemy.y = height * 0.82 - ENEMY_H
       app.stage.addChild(enemy)
 
       let enemyHp = ENEMY_MAX_HP
@@ -267,8 +267,8 @@ healRef.current = {
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
-        bgSky.x = (width - bgSky.width) / 2 - cameraX * 0.15
-        bgRuins.x = -cameraX * 0.4
+        bgSky.x = (width - bgSky.width) / 2 - cameraX * 0.05
+        bgRuins.x = -cameraX * 0.15
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healBtnRef.current) {
