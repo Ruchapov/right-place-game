@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { Application, Graphics, Text, TextStyle, Sprite, Assets } from 'pixi.js'
+import { Application, Graphics, Text, TextStyle, Assets, TilingSprite } from 'pixi.js'
 
 type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
@@ -42,7 +42,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const height = window.innerHeight
       const PLAYER_W = 40
       const SPEED = 3
-      let cameraX = 0
       const ATTACK_RANGE = 70
       const ATTACK_DAMAGE = 15 + Math.floor(strength / 2)
       const ATTACK_COOLDOWN = 0.5
@@ -52,6 +51,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/bg-sky.png`,
           `${base}assets/bg-ruins.png`,
           `${base}assets/bg-floor.png`,
+          `${base}assets/platform.png`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -66,41 +66,46 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       containerRef.current.appendChild(app.canvas)
 
-      // --- Parallax background ---
-      const bgBase = new Graphics()
-      bgBase.rect(0, 0, width, height).fill(0x0a0818)
-      app.stage.addChild(bgBase)
+      // --- World & Camera ---
+      const WORLD_WIDTH = 3000
+      const FLOOR_H = 120  // высота платформы на экране
+      const FLOOR_Y = height - FLOOR_H  // Y где стоят персонажи
+      let cameraX = 0  // мировая X камеры
 
-      // Небо — на весь экран
-      const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
-      const skyScale = Math.max(width / bgSky.texture.width, height / bgSky.texture.height)
-      bgSky.scale.set(skyScale)
-      bgSky.x = (width - bgSky.width) / 2
+      // Небо — тайлинг на весь экран
+      const bgSky = new TilingSprite({
+        texture: Assets.get(`${base}assets/bg-sky.png`),
+        width: width,
+        height: height,
+      })
       bgSky.y = 0
       app.stage.addChild(bgSky)
 
-      // Руины — нижняя половина экрана
-      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
-      const ruinsScale = width / bgRuins.texture.width
-      bgRuins.scale.set(ruinsScale)
-      bgRuins.x = 0
-      bgRuins.y = height - bgRuins.height
+      // Руины — тайлинг нижняя часть
+      const bgRuins = new TilingSprite({
+        texture: Assets.get(`${base}assets/bg-ruins.png`),
+        width: width,
+        height: height * 0.6,
+      })
+      bgRuins.y = height * 0.4
       app.stage.addChild(bgRuins)
 
-      // Пол — самая нижняя полоска
-      const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
-      const floorScale = width / bgFloor.texture.width
-      bgFloor.scale.set(floorScale)
-      bgFloor.x = 0
-      bgFloor.y = height - bgFloor.height
-      app.stage.addChild(bgFloor)
+      // Платформа — тайлинг внизу
+      const platform = new TilingSprite({
+        texture: Assets.get(`${base}assets/platform.png`),
+        width: width,
+        height: FLOOR_H,
+      })
+      platform.y = FLOOR_Y
+      app.stage.addChild(platform)
       // --- конец background ---
 
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
       player.x = width * 0.2
-      player.y = height * 0.82 - 60
+      player.y = FLOOR_Y - 60
       app.stage.addChild(player)
+      let playerWorldX = player.x
 
       const ENEMY_W = isBoss ? 50 : 40
       const ENEMY_H = isBoss ? 75 : 60
@@ -119,8 +124,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = height * 0.82 - ENEMY_H
+      enemy.y = FLOOR_Y - ENEMY_H
       app.stage.addChild(enemy)
+      let enemyWorldX = enemy.x
 
       let enemyHp = ENEMY_MAX_HP
       let enemyAlive = true
@@ -193,7 +199,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         cooldownLeft: 0,
         doAttack() {
           if (battleEnded || cooldownLeft > 0) return
-          const dist = Math.abs(player.x - enemy.x)
+          const dist = Math.abs(playerWorldX - enemyWorldX)
           if (dist > ATTACK_RANGE) return
           enemyHp -= ATTACK_DAMAGE
           if (enemyHp < 0) enemyHp = 0
@@ -267,8 +273,9 @@ healRef.current = {
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
-        bgSky.x = (width - bgSky.width) / 2 - cameraX * 0.05
-        bgRuins.x = -cameraX * 0.15
+        bgSky.tilePosition.x = -cameraX * 0.1
+        bgRuins.tilePosition.x = -cameraX * 0.3
+        platform.tilePosition.x = -cameraX
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healBtnRef.current) {
@@ -302,12 +309,13 @@ healRef.current = {
         attackRef.current.cooldownLeft = cooldownLeft
 
         if (directionRef.current !== 0) {
-          player.x += SPEED * directionRef.current
-          cameraX += SPEED * directionRef.current * 0.5
-          const maxX = app!.screen.width - PLAYER_W
-          if (player.x < 0) { player.x = 0 }
-          else if (player.x > maxX) { player.x = maxX }
+          playerWorldX += SPEED * directionRef.current
+          if (playerWorldX < 0) playerWorldX = 0
+          if (playerWorldX > WORLD_WIDTH - PLAYER_W) playerWorldX = WORLD_WIDTH - PLAYER_W
+          cameraX = playerWorldX - width * 0.3
+          cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
         }
+        player.x = playerWorldX - cameraX
         playerHpText.x = player.x + PLAYER_W / 2
 
         for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -332,15 +340,16 @@ healRef.current = {
         }
 
         if (enemyAlive) {
-          const dx = player.x - enemy.x
+          const dx = playerWorldX - enemyWorldX
           if (Math.abs(dx) > PLAYER_W) {
-            enemy.x += Math.sign(dx) * ENEMY_SPEED
-            if (enemy.x < 0) enemy.x = 0
-            else if (enemy.x > app!.screen.width - ENEMY_W) enemy.x = app!.screen.width - ENEMY_W
+            enemyWorldX += Math.sign(dx) * ENEMY_SPEED
+            if (enemyWorldX < 0) enemyWorldX = 0
+            else if (enemyWorldX > WORLD_WIDTH - ENEMY_W) enemyWorldX = WORLD_WIDTH - ENEMY_W
           }
+          enemy.x = enemyWorldX - cameraX
           enemyHpText.x = enemy.x + ENEMY_W / 2
 
-          const dist = Math.abs(player.x - enemy.x)
+          const dist = Math.abs(playerWorldX - enemyWorldX)
 
           if (enemyWindingUp && bossAttackType !== 'aoe' && dist >= ATTACK_RANGE) {
             enemyWindingUp = false
