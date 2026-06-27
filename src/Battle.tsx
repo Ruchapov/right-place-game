@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { Application, Graphics, Text, TextStyle, Assets, TilingSprite } from 'pixi.js'
+import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite, Spritesheet } from 'pixi.js'
 
 type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
@@ -52,6 +52,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/bg-ruins.png`,
           `${base}assets/bg-floor.png`,
           `${base}assets/platform.png`,
+          `${base}assets/player-walk.png`,
+          `${base}assets/player-walk.json`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -104,10 +106,15 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       app.stage.addChild(underPlatform)
       // --- конец background ---
 
-      const player = new Graphics()
-      player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
+      const walkSheet = Assets.get(`${base}assets/player-walk.json`) as Spritesheet
+      const walkFrames = Object.keys(walkSheet.textures).map(k => walkSheet.textures[k])
+      const player = new AnimatedSprite(walkFrames)
+      player.animationSpeed = 0.3
+      player.play()
+      player.width = PLAYER_W
+      player.height = 60
       player.x = width * 0.2
-      player.y = FLOOR_Y - 20
+      player.y = FLOOR_Y - 60
       app.stage.addChild(player)
       let playerWorldX = player.x
 
