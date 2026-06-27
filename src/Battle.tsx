@@ -124,12 +124,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       if (walkFrames.length > 0) {
         (player as AnimatedSprite).animationSpeed = 0.3;
         (player as AnimatedSprite).stop();
-        (player as AnimatedSprite).anchor?.set(0.5, 0)
+        player.anchor.set(0.5, 1)
+        player.scale.set(0.5)
       }
-      player.width = PLAYER_W
-      player.height = 60
       player.x = width * 0.2
-      player.y = FLOOR_Y - 60
+      player.y = FLOOR_Y
       app.stage.addChild(player)
       let playerWorldX = player.x
 
