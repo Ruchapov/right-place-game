@@ -123,7 +123,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const player = new AnimatedSprite(walkFrames)
       if (walkFrames.length > 0) {
         (player as AnimatedSprite).animationSpeed = 0.3;
-        (player as AnimatedSprite).stop()
+        (player as AnimatedSprite).stop();
+        (player as AnimatedSprite).anchor?.set(0.5, 0)
       }
       player.width = PLAYER_W
       player.height = 60
@@ -337,11 +338,7 @@ healRef.current = {
           playerWorldX += SPEED * directionRef.current
           if (playerWorldX < 0) playerWorldX = 0
           if (playerWorldX > WORLD_WIDTH - PLAYER_W) playerWorldX = WORLD_WIDTH - PLAYER_W
-          if (directionRef.current === -1) {
-            player.scale.x = -1
-          } else {
-            player.scale.x = 1
-          }
+          player.scale.x = directionRef.current === -1 ? -1 : 1
           if (walkFrames.length > 0) (player as AnimatedSprite).play()
           const targetCameraX = playerWorldX - width / 2
           cameraX += (targetCameraX - cameraX) * 0.1
