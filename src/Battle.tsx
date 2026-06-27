@@ -69,7 +69,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       // --- World & Camera ---
       const WORLD_WIDTH = 3000
       const FLOOR_H = 120  // высота платформы на экране
-      const FLOOR_Y = height - 150  // Y где стоят персонажи
+      const FLOOR_Y = height - 250  // Y где стоят персонажи
       let cameraX = 0  // мировая X камеры
 
       // Небо — тайлинг на весь экран
@@ -85,9 +85,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const bgRuins = new TilingSprite({
         texture: Assets.get(`${base}assets/bg-ruins.png`),
         width: width,
-        height: height * 0.4,
+        height: height * 0.55,
       })
-      bgRuins.y = height * 0.6
+      bgRuins.y = height * 0.38
       app.stage.addChild(bgRuins)
 
       // Платформа — тайлинг внизу
