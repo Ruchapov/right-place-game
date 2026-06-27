@@ -67,41 +67,41 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       // --- Parallax background ---
       const bgBase = new Graphics()
-      bgBase.rect(-100, -100, width + 200, height + 200).fill(0x0d0820)
+      bgBase.rect(0, 0, width, height).fill(0x0a0818)
       app.stage.addChild(bgBase)
 
-      // Хелпер: масштабирует спрайт по ширине экрана, сохраняя пропорции
-      function fitWidth(sprite: Sprite) {
-        const scale = width / sprite.texture.width
-        sprite.scale.set(scale)
-      }
-
-      // Небо — сверху, прижато к верху
+      // Небо — на весь экран
       const bgSky = new Sprite(Assets.get(`${base}assets/bg-sky.png`))
-      fitWidth(bgSky)
-      bgSky.x = 0
+      const skyScale = Math.max(width / bgSky.texture.width, height / bgSky.texture.height)
+      bgSky.scale.set(skyScale)
+      bgSky.x = (width - bgSky.width) / 2
       bgSky.y = 0
       app.stage.addChild(bgSky)
 
-      // Пол — прижат к низу экрана
+      // Руины — нижняя половина экрана
+      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
+      const ruinsScale = width / bgRuins.texture.width
+      bgRuins.scale.set(ruinsScale)
+      bgRuins.x = 0
+      bgRuins.y = height - bgRuins.height
+      app.stage.addChild(bgRuins)
+
+      // Пол — самая нижняя полоска
       const bgFloor = new Sprite(Assets.get(`${base}assets/bg-floor.png`))
-      fitWidth(bgFloor)
+      const floorScale = width / bgFloor.texture.width
+      bgFloor.scale.set(floorScale)
       bgFloor.x = 0
-      bgFloor.y = height - bgFloor.height + 60
+      bgFloor.y = height - bgFloor.height
       app.stage.addChild(bgFloor)
 
-      // Руины — между небом и полом, нижний край заходит на пол
-      const bgRuins = new Sprite(Assets.get(`${base}assets/bg-ruins.png`))
-      fitWidth(bgRuins)
-      bgRuins.x = 0
-      bgRuins.y = bgFloor.y - bgRuins.height + 120
-      app.stage.addChild(bgRuins)
+      // Линия пола — Y координата где стоят персонажи
+      const FLOOR_Y = height - bgFloor.height + 20
       // --- конец background ---
 
       const player = new Graphics()
       player.rect(0, 0, PLAYER_W, 60).fill(0x4caf50)
       player.x = width * 0.2
-      player.y = height / 2 - 30
+      player.y = FLOOR_Y - 60
       app.stage.addChild(player)
 
       const ENEMY_W = isBoss ? 50 : 40
@@ -121,7 +121,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const enemy = new Graphics()
       enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
       enemy.x = width * 0.75
-      enemy.y = height / 2 - ENEMY_H / 2
+      enemy.y = FLOOR_Y - ENEMY_H
       app.stage.addChild(enemy)
 
       let enemyHp = ENEMY_MAX_HP
@@ -269,8 +269,8 @@ healRef.current = {
 
       app.ticker.add((ticker) => {
         if (battleEnded) return
-        bgSky.x = -directionRef.current * 0.3
-        bgRuins.x = -directionRef.current * 0.8
+        bgSky.x = (width - bgSky.width) / 2 - directionRef.current * 0.5
+        bgRuins.x = -directionRef.current * 1.5
         if (healCdLeft > 0) {
   healCdLeft -= ticker.deltaMS / 1000
   if (healBtnRef.current) {
