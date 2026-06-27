@@ -120,14 +120,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         errText.y = 100
         app!.stage.addChild(errText)
       }
-      const framesText = new TextStyle({ fontSize: 20, fill: 0xffff00 })
-      const framesCount = new Text({ text: 'Frames: ' + walkFrames.length, style: framesText })
-      framesCount.x = 10
-      framesCount.y = 130
-      app!.stage.addChild(framesCount)
       const player = new AnimatedSprite(walkFrames)
-      player.animationSpeed = 0.3
-      player.play()
+      if (walkFrames.length > 0) {
+        (player as AnimatedSprite).animationSpeed = 0.3;
+        (player as AnimatedSprite).stop()
+      }
       player.width = PLAYER_W
       player.height = 60
       player.x = width * 0.2
@@ -340,9 +337,18 @@ healRef.current = {
           playerWorldX += SPEED * directionRef.current
           if (playerWorldX < 0) playerWorldX = 0
           if (playerWorldX > WORLD_WIDTH - PLAYER_W) playerWorldX = WORLD_WIDTH - PLAYER_W
+          if (directionRef.current === -1) {
+            player.scale.x = -1
+            player.anchor?.set(1, 0)
+          } else {
+            player.scale.x = 1
+            player.anchor?.set(0, 0)
+          }
+          if (walkFrames.length > 0) (player as AnimatedSprite).play()
           const targetCameraX = playerWorldX - width / 2
           cameraX += (targetCameraX - cameraX) * 0.1
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
+          if (directionRef.current === 0 && walkFrames.length > 0) (player as AnimatedSprite).stop()
         }
         player.x = playerWorldX - cameraX
         playerHpText.x = player.x + PLAYER_W / 2
