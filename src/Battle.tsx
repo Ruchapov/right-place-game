@@ -106,8 +106,25 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       app.stage.addChild(underPlatform)
       // --- конец background ---
 
-      const walkSheet = await Assets.load(`${base}assets/player-walk.json`)
-      const walkFrames = Object.keys(walkSheet.textures).map((k: string) => walkSheet.textures[k])
+      let walkFrames: import('pixi.js').Texture[] = []
+      try {
+        const walkSheet = await Assets.load(`${base}assets/player-walk.json`)
+        if (walkSheet?.textures) {
+          walkFrames = Object.keys(walkSheet.textures).map((k: string) => walkSheet.textures[k])
+        }
+      } catch(e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        const errStyle = new TextStyle({ fontSize: 20, fill: 0xff0000 })
+        const errText = new Text({ text: 'Sheet error: ' + msg, style: errStyle })
+        errText.x = 10
+        errText.y = 100
+        app!.stage.addChild(errText)
+      }
+      const framesText = new TextStyle({ fontSize: 20, fill: 0xffff00 })
+      const framesCount = new Text({ text: 'Frames: ' + walkFrames.length, style: framesText })
+      framesCount.x = 10
+      framesCount.y = 130
+      app!.stage.addChild(framesCount)
       const player = new AnimatedSprite(walkFrames)
       player.animationSpeed = 0.3
       player.play()
