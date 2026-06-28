@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite, Texture, Rectangle } from 'pixi.js'
 
-type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
+type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number; attackDamageDealt: number; skillDamageDealt: number; healedAmount: number }
 
 type BattleProps = {
   initialHp: number
@@ -55,6 +55,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const slashCdRef = useRef(0)
   const bleedingRef = useRef(0)
   const bleedTickRef = useRef(0)
+  const attackDmgRef = useRef(0)
+  const skillDmgRef = useRef(0)
+  const healedRef = useRef(0)
 
   useEffect(() => {
     let app: Application | null = null
@@ -300,6 +303,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       let totalDamageTaken = 0
       let skillUses = 0
       let battleEnded = false
+      attackDmgRef.current = 0
+      skillDmgRef.current = 0
+      healedRef.current = 0
 
       const hpStyle = new TextStyle({ fontSize: 16, fill: 0xffffff })
 
@@ -353,7 +359,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           loseText.y = app!.screen.height / 2
           app!.stage.addChild(loseText)
           endTimer = setTimeout(() => {
-            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current, attackDamageDealt: attackDmgRef.current, skillDamageDealt: skillDmgRef.current, healedAmount: healedRef.current })
           }, 1500)
         }
       }
@@ -382,8 +388,10 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           }
           const dist = Math.abs(playerWorldX - enemyWorldX)
           if (dist > ATTACK_RANGE) return
+          const atkHpBefore = enemyHp
           enemyHp -= ATTACK_DAMAGE
           if (enemyHp < 0) enemyHp = 0
+          attackDmgRef.current += atkHpBefore - enemyHp
           enemyHpText.text = `HP: ${enemyHp}`
           cooldownLeft = ATTACK_COOLDOWN
           if (enemyHp <= 0) {
@@ -404,7 +412,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
             endTimer = setTimeout(() => {
-              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current, attackDamageDealt: attackDmgRef.current, skillDamageDealt: skillDmgRef.current, healedAmount: healedRef.current })
             }, 1500)
           }
         },
@@ -431,7 +439,9 @@ healRef.current = {
   doHeal() {
     if (battleEnded || healCdLeft > 0) return
     const healAmount = Math.round(maxHp * 0.1)
+    const hpBefore = playerHp
     playerHp = Math.min(playerHp + healAmount, maxHp)
+    healedRef.current += playerHp - hpBefore
     skillUses += 1
     playerHpText.text = `HP: ${playerHp}`
     healCdLeft = 5
@@ -683,8 +693,10 @@ healRef.current = {
           dashSpriteRef.current.x = dashWorldX - cameraX
           if (enemyAlive && !dashHitRef.current && Math.abs(dashWorldX - enemyWorldX) < 60) {
             dashHitRef.current = true
+            const dashHpBefore = enemyHp
             enemyHp -= ATTACK_DAMAGE
             if (enemyHp < 0) enemyHp = 0
+            skillDmgRef.current += dashHpBefore - enemyHp
             enemyHpText.text = `HP: ${enemyHp}`
             if (enemyHp <= 0) {
               enemyAlive = false
@@ -704,7 +716,7 @@ healRef.current = {
               winText.y = app!.screen.height / 2
               app!.stage.addChild(winText)
               endTimer = setTimeout(() => {
-                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current, attackDamageDealt: attackDmgRef.current, skillDamageDealt: skillDmgRef.current, healedAmount: healedRef.current })
               }, 1500)
               return
             }
@@ -747,8 +759,10 @@ healRef.current = {
             app!.stage.removeChild(fb.sprite)
             fireballs.splice(i, 1)
             if (hitEnemy) {
+              const fbHpBefore = enemyHp
               enemyHp -= ATTACK_DAMAGE
               if (enemyHp < 0) enemyHp = 0
+              skillDmgRef.current += fbHpBefore - enemyHp
               enemyHpText.text = `HP: ${enemyHp}`
               if (enemyHp <= 0) {
                 enemyAlive = false
@@ -768,7 +782,7 @@ healRef.current = {
                 winText.y = app!.screen.height / 2
                 app!.stage.addChild(winText)
                 endTimer = setTimeout(() => {
-                  onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+                  onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current, attackDamageDealt: attackDmgRef.current, skillDamageDealt: skillDmgRef.current, healedAmount: healedRef.current })
                 }, 1500)
                 return
               }
@@ -798,8 +812,10 @@ healRef.current = {
           if (bleedTickRef.current <= 0) {
             bleedTickRef.current = 1
             const bleedDmg = Math.floor(ENEMY_MAX_HP * 0.03)
+            const bleedHpBefore = enemyHp
             enemyHp -= bleedDmg
             if (enemyHp < 0) enemyHp = 0
+            skillDmgRef.current += bleedHpBefore - enemyHp
             enemyHpText.text = `HP: ${enemyHp}`
             const dmgStyle = new TextStyle({ fontSize: 14, fill: 0xff2222, fontWeight: 'bold' })
             const dmgText = new Text({ text: `-${bleedDmg}`, style: dmgStyle })
@@ -826,7 +842,7 @@ healRef.current = {
               winText.y = app!.screen.height / 2
               app!.stage.addChild(winText)
               endTimer = setTimeout(() => {
-                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current, attackDamageDealt: attackDmgRef.current, skillDamageDealt: skillDmgRef.current, healedAmount: healedRef.current })
               }, 1500)
               return
             }
