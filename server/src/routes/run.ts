@@ -102,17 +102,19 @@ export async function runRoutes(server: FastifyInstance) {
     const newEnergy = currentEnergy - RUN_COST
     const rooms = generateRooms(3)
     const maxHp = character.endurance * 8
+    const existingRun = character.currentRun as ActiveRun | null
+    const potions = existingRun ? existingRun.potions : Math.min(character.potionCharges, 3)
 
     await prisma.character.update({
       where: { userId },
       data: {
         energy: newEnergy,
         lastEnergyUpdate: new Date(),
-        currentRun: { rooms, index: 0, hp: maxHp, potions: Math.min(character.potionCharges, 3) },
+        currentRun: { rooms, index: 0, hp: maxHp, potions },
       },
     })
 
-    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions: Math.min(character.potionCharges, 3) })
+    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions })
   })
 
   // Enter the current room: process it, then advance the run.
