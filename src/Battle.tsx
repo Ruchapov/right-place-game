@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite } from 'pixi.js'
+import { Application, Graphics, Text, TextStyle, Assets, TilingSprite, AnimatedSprite, Texture, Rectangle } from 'pixi.js'
 
 type BattleResult = { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }
 
@@ -52,10 +52,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/bg-ruins.png`,
           `${base}assets/bg-floor.png`,
           `${base}assets/platform.png`,
-          `${base}assets/player-walk.png`,
-          `${base}assets/player-walk.json`,
-          `${base}assets/game_atack1.png`,
-          `${base}assets/game_atack1.json`,
+          `${base}assets/Walk.png`,
+          `${base}assets/Attack_1.png`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -108,29 +106,16 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       app.stage.addChild(underPlatform)
       // --- конец background ---
 
-      let walkFrames: import('pixi.js').Texture[] = []
-      try {
-        const walkSheet = await Assets.load(`${base}assets/player-walk.json`)
-        if (walkSheet?.textures) {
-          walkFrames = Object.keys(walkSheet.textures).map((k: string) => walkSheet.textures[k])
-        }
-      } catch(e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
-        const errStyle = new TextStyle({ fontSize: 20, fill: 0xff0000 })
-        const errText = new Text({ text: 'Sheet error: ' + msg, style: errStyle })
-        errText.x = 10
-        errText.y = 100
-        app!.stage.addChild(errText)
-      }
-      let attackFrames: import('pixi.js').Texture[] = []
-      try {
-        const atkSheet = await Assets.load(`${base}assets/game_atack1.json`)
-        if (atkSheet?.textures) {
-          attackFrames = Object.keys(atkSheet.textures).map((k: string) => atkSheet.textures[k])
-        }
-      } catch(e: unknown) {
-        console.error('attack sheet failed', e)
-      }
+      const FRAME_W = 96
+      const FRAME_H = 64
+      const walkTex = Assets.get(`${base}assets/Walk.png`)
+      const walkFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
+        new Texture({ source: walkTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
+      )
+      const atkTex = Assets.get(`${base}assets/Attack_1.png`)
+      const attackFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
+        new Texture({ source: atkTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
+      )
       const player = new AnimatedSprite(walkFrames)
       let isAttacking = false
       if (walkFrames.length > 0) {
@@ -143,7 +128,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const PLAYER_SCALE_X = PLAYER_W / 128
       const PLAYER_SCALE_Y = 60 / 128
       const ATTACK_SCALE_Y = 0.80
-      player.scale.set(PLAYER_SCALE_X, PLAYER_SCALE_Y)
+      player.scale.set(-PLAYER_SCALE_X, PLAYER_SCALE_Y)
       app.stage.addChild(player)
       let playerWorldX = player.x
 
