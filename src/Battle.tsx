@@ -545,11 +545,15 @@ healRef.current = {
       slashRef.current = {
         doSlash() {
           if (battleEnded || slashCdRef.current > 0 || !slashFrames.length) return
-          const dir = player.scale.x < 0 ? 1 : -1
           const sl = new AnimatedSprite(slashFrames)
           sl.anchor.set(0.5, 0.5)
-          sl.scale.set(dir * SLASH_SCALE_X, SLASH_SCALE_Y)
-          sl.x = (playerWorldX - cameraX) + dir * 60
+          if (player.scale.x > 0) {
+            sl.scale.set(SLASH_SCALE_X, SLASH_SCALE_Y)
+            sl.x = (playerWorldX - cameraX) + 60
+          } else {
+            sl.scale.set(-SLASH_SCALE_X, SLASH_SCALE_Y)
+            sl.x = (playerWorldX - cameraX) - 60
+          }
           sl.y = FLOOR_Y - 30
           sl.loop = false
           sl.animationSpeed = 0.4
