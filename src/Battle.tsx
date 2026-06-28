@@ -485,8 +485,9 @@ healRef.current = {
             player.play()
             currentAnim = 'walk'
           }
-          const targetCameraX = playerWorldX - width / 2
-          cameraX += (targetCameraX - cameraX) * 0.1
+          const playerScreenX = playerWorldX - cameraX
+          if (playerScreenX < width * 0.3) cameraX = playerWorldX - width * 0.3
+          else if (playerScreenX > width * 0.7) cameraX = playerWorldX - width * 0.7
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
         } else if (!isAttacking) {
           if (currentAnim !== 'idle') {
