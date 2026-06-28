@@ -106,14 +106,14 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       app.stage.addChild(underPlatform)
       // --- конец background ---
 
-      const FRAME_W = 96
-      const FRAME_H = 64
+      const FRAME_W = 128
+      const FRAME_H = 128
       const walkTex = Assets.get(`${base}assets/Walk.png`)
       const walkFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
         new Texture({ source: walkTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
       )
       const atkTex = Assets.get(`${base}assets/Attack_1.png`)
-      const attackFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
+      const attackFrames: import('pixi.js').Texture[] = Array.from({ length: 6 }, (_, i) =>
         new Texture({ source: atkTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
       )
       const player = new AnimatedSprite(walkFrames)
