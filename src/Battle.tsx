@@ -492,6 +492,19 @@ healRef.current = {
           } else {
             if (!enemyWindingUp) setOrcAnim('idle')
           }
+          if (playerWorldX < enemyWorldX) {
+            const sx = -Math.abs(orcIdleRef.current!.scale.x)
+            orcIdleRef.current!.scale.x = sx
+            orcRunRef.current!.scale.x = sx
+            orcAttackRef.current!.scale.x = sx
+            orcDeadRef.current!.scale.x = sx
+          } else if (playerWorldX > enemyWorldX) {
+            const sx = Math.abs(orcIdleRef.current!.scale.x)
+            orcIdleRef.current!.scale.x = sx
+            orcRunRef.current!.scale.x = sx
+            orcAttackRef.current!.scale.x = sx
+            orcDeadRef.current!.scale.x = sx
+          }
           const enemyScreenX = enemyWorldX - cameraX
           for (const spr of orcSprites) spr.x = enemyScreenX
           enemyHpText.x = enemyScreenX
