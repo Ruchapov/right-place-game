@@ -44,6 +44,7 @@ export default function App() {
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [roomIntro, setRoomIntro] = useState(false)
+  const [runDied, setRunDied] = useState(false)
 
   // Live energy
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
@@ -148,6 +149,7 @@ export default function App() {
       setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
       setRoomIndex(br.index)
       setRunHp(br.hp)
+      if (br.died) setRunDied(true)
       if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
     } catch (e) {
@@ -192,7 +194,7 @@ export default function App() {
   }
 
   function backToMenu() {
-    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null)
+    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false)
   }
 
   async function handleSkillToggle(skillId: string) {
@@ -503,8 +505,9 @@ export default function App() {
           </div>
         </div>
       )}
-      {rooms !== null && roomIndex >= rooms.length && (
+      {rooms !== null && (roomIndex >= rooms.length || runDied) && (
         <div style={{ marginTop: 20 }}>
+          {runDied && <p style={{ color: '#ff4444', fontWeight: 'bold', fontSize: 18, marginBottom: 12 }}>Вы погибли. Трофеи потеряны.</p>}
           <h2>🏆 Забег завершён!</h2>
           {results.map((r, i) => (
             <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8, fontSize:16 }}>
