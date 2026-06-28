@@ -121,8 +121,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const idleFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
         new Texture({ source: idleTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
       )
-      const player = new AnimatedSprite(walkFrames)
+      const player = new AnimatedSprite(idleFrames)
       let isAttacking = false
+      let currentAnim = 'idle'
       if (walkFrames.length > 0) {
         (player as AnimatedSprite).animationSpeed = 0.3;
         (player as AnimatedSprite).stop();
@@ -231,6 +232,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           if (battleEnded || cooldownLeft > 0) return
           if (attackFrames.length > 0 && !isAttacking) {
             isAttacking = true
+            currentAnim = 'attack'
             const savedScaleX = player.scale.x
             player.textures = attackFrames
             player.loop = false
@@ -240,11 +242,9 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
             player.gotoAndPlay(0)
             player.onComplete = () => {
               isAttacking = false
-              player.textures = walkFrames
-              player.loop = true
+              currentAnim = ''
               player.scale.x = savedScaleX
               player.scale.y = PLAYER_SCALE_Y
-              player.gotoAndStop(0)
             }
           }
           const dist = Math.abs(playerWorldX - enemyWorldX)
@@ -365,24 +365,23 @@ healRef.current = {
           } else {
             player.scale.x = Math.abs(player.scale.x)
           }
-          if (walkFrames.length > 0 && !isAttacking) (player as AnimatedSprite).play()
+          if (!isAttacking && currentAnim !== 'walk') {
+            player.textures = walkFrames
+            player.loop = true
+            player.animationSpeed = 0.3
+            player.play()
+            currentAnim = 'walk'
+          }
           const targetCameraX = playerWorldX - width / 2
           cameraX += (targetCameraX - cameraX) * 0.1
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
-          if (directionRef.current === 0 && !isAttacking) {
-            if (player.textures !== idleFrames) {
-              player.textures = idleFrames
-              player.loop = true
-              player.animationSpeed = 0.15
-              player.play()
-            }
-          } else if (directionRef.current !== 0 && !isAttacking) {
-            if (player.textures !== walkFrames) {
-              player.textures = walkFrames
-              player.loop = true
-              player.animationSpeed = 0.3
-              player.play()
-            }
+        } else if (!isAttacking) {
+          if (currentAnim !== 'idle') {
+            player.textures = idleFrames
+            player.loop = true
+            player.animationSpeed = 0.15
+            player.play()
+            currentAnim = 'idle'
           }
         }
         player.scale.y = isAttacking ? ATTACK_SCALE_Y : PLAYER_SCALE_Y
