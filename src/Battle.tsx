@@ -49,6 +49,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const dashActiveRef = useRef(false)
   const dashDirRef = useRef(1)
   const dashSpriteRef = useRef<AnimatedSprite | null>(null)
+  const dashHitRef = useRef(false)
 
   useEffect(() => {
     let app: Application | null = null
@@ -501,6 +502,7 @@ healRef.current = {
           dashDirRef.current = dir
           dashWorldX = playerWorldX + (dir > 0 ? 40 : -40)
           dashTimer = 0
+          dashHitRef.current = false
           const ds = new AnimatedSprite(dashFramesRef.current)
           ds.anchor.set(0.5, 0.5)
           ds.scale.set(dir, 80 / 128)
@@ -625,11 +627,11 @@ healRef.current = {
           else if (dScreenX > width * 0.9) cameraX = playerWorldX - width * 0.9
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
           dashSpriteRef.current.x = dashWorldX - cameraX
-          if (enemyAlive && Math.abs(dashWorldX - enemyWorldX) < 60) {
+          if (enemyAlive && !dashHitRef.current && Math.abs(dashWorldX - enemyWorldX) < 60) {
+            dashHitRef.current = true
             enemyHp -= ATTACK_DAMAGE
             if (enemyHp < 0) enemyHp = 0
             enemyHpText.text = `HP: ${enemyHp}`
-            endDash()
             if (enemyHp <= 0) {
               enemyAlive = false
               battleEnded = true
