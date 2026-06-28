@@ -535,7 +535,7 @@ healRef.current = {
       // --- Slash ---
       let slashTex: Texture | null = null
       try { slashTex = Assets.get(`${base}assets/skills/slash.png`) } catch { /* not loaded */ }
-      const slashFrames = slashTex ? sliceFrames(slashTex, 11, 568, 395) : []
+      const slashFrames = slashTex ? sliceFrames(slashTex, 8, 496, 496) : []
       slashCdRef.current = 0
       bleedingRef.current = 0
       bleedTickRef.current = 0
