@@ -239,18 +239,20 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           if (battleEnded || cooldownLeft > 0) return
           if (attackFrames.length > 0 && !isAttacking) {
             isAttacking = true
+            const savedScaleX = player.scale.x
+            const savedScaleY = player.scale.y
             player.textures = attackFrames
             player.loop = false
             player.animationSpeed = 0.4
-            const pw = player.width
-            const ph = player.height
+            player.scale.x = savedScaleX
+            player.scale.y = savedScaleY
             player.gotoAndPlay(0)
             player.onComplete = () => {
               isAttacking = false
               player.textures = walkFrames
               player.loop = true
-              player.width = pw
-              player.height = ph
+              player.scale.x = savedScaleX
+              player.scale.y = savedScaleY
               player.gotoAndStop(0)
             }
           }
