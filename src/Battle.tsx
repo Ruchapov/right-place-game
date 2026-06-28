@@ -34,6 +34,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const orcAttackRef = useRef<AnimatedSprite | null>(null)
   const orcDeadRef = useRef<AnimatedSprite | null>(null)
   const orcStateRef = useRef<'idle' | 'run' | 'attack' | 'dead'>('idle')
+  const fireballRef = useRef<{ doFireball: () => void }>({ doFireball: () => {} })
+  const fireballBtnRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     let app: Application | null = null
@@ -68,6 +70,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           await Assets.load(`${base}assets/enemy/orc/Dead.png`)
         } catch {
           console.warn('Orc Dead.png not found, skipping')
+        }
+        try {
+          await Assets.load(`${base}assets/skills/fireball.png`)
+        } catch {
+          console.warn('fireball.png not found, skipping')
         }
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -170,6 +177,12 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           new Texture({ source: texture.source, frame: new Rectangle(i * frameW, 0, frameW, frameH) })
         )
       }
+
+      let fireballTex: Texture | null = null
+      try { fireballTex = Assets.get(`${base}assets/skills/fireball.png`) } catch { /* not loaded */ }
+      const fireballFrames = fireballTex ? sliceFrames(fireballTex, 8, 640, 640) : []
+      const fireballs: { sprite: AnimatedSprite, worldX: number, dir: number }[] = []
+      let fireballCdLeft = 0
 
       const ORC_FRAME_W = 96
       const ORC_FRAME_H = 96
@@ -386,6 +399,29 @@ healRef.current = {
         playerHp = Math.min(playerHp + healAmt, maxHp)
         playerHpText.text = `HP: ${playerHp}`
       }
+      // --- Fireball ---
+      const FIREBALL_SCALE = 60 / 640
+      fireballRef.current = {
+        doFireball() {
+          if (battleEnded || fireballCdLeft > 0 || !fireballFrames.length) return
+          const dir = enemyWorldX >= playerWorldX ? 1 : -1
+          const fb = new AnimatedSprite(fireballFrames)
+          fb.anchor.set(0.5)
+          fb.scale.set(dir * FIREBALL_SCALE, FIREBALL_SCALE)
+          fb.x = playerWorldX - cameraX
+          fb.y = FLOOR_Y - 40
+          fb.loop = true
+          fb.animationSpeed = 0.3
+          fb.play()
+          app!.stage.addChild(fb)
+          fireballs.push({ sprite: fb, worldX: playerWorldX, dir })
+          fireballCdLeft = 5
+          skillUses += 1
+          if (fireballBtnRef.current) fireballBtnRef.current.textContent = '5'
+        },
+      }
+      // --- конец Fireball ---
+
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
@@ -405,6 +441,14 @@ healRef.current = {
     healBtnRef.current.style.borderColor = 'rgba(60,220,100,0.7)'
   }
 }
+        if (fireballCdLeft > 0) {
+          fireballCdLeft -= ticker.deltaMS / 1000
+          if (fireballCdLeft < 0) fireballCdLeft = 0
+          if (fireballBtnRef.current) {
+            fireballBtnRef.current.textContent = fireballCdLeft > 0 ? String(Math.ceil(fireballCdLeft)) : '🔥'
+          }
+        }
+
         if (potionCdRef.current > 0) {
           potionCdRef.current -= ticker.deltaMS / 1000
           if (potionCdRef.current < 0) potionCdRef.current = 0
@@ -475,6 +519,45 @@ healRef.current = {
             }
             app!.stage.removeChild(p.gfx)
             projectiles.splice(i, 1)
+          }
+        }
+
+        for (let i = fireballs.length - 1; i >= 0; i--) {
+          const fb = fireballs[i]
+          fb.worldX += 8 * fb.dir
+          fb.sprite.x = fb.worldX - cameraX
+          const offScreen = fb.worldX < 0 || fb.worldX > WORLD_WIDTH
+          const hitEnemy = enemyAlive && Math.abs(fb.worldX - enemyWorldX) < 40
+          if (hitEnemy || offScreen) {
+            app!.stage.removeChild(fb.sprite)
+            fireballs.splice(i, 1)
+            if (hitEnemy) {
+              enemyHp -= ATTACK_DAMAGE
+              if (enemyHp < 0) enemyHp = 0
+              enemyHpText.text = `HP: ${enemyHp}`
+              if (enemyHp <= 0) {
+                enemyAlive = false
+                battleEnded = true
+                setBattleOver(true)
+                setOrcAnim('dead')
+                app!.stage.removeChild(enemyHpText)
+                if (aoeOverlay) aoeOverlay.visible = false
+                enemyWindingUp = false
+                bossAttackType = null
+                for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
+                projectiles.length = 0
+                const winStyle = new TextStyle({ fontSize: 48, fill: 0xffd700, fontWeight: 'bold' })
+                const winText = new Text({ text: 'Победа!', style: winStyle })
+                winText.anchor.set(0.5)
+                winText.x = app!.screen.width / 2
+                winText.y = app!.screen.height / 2
+                app!.stage.addChild(winText)
+                endTimer = setTimeout(() => {
+                  onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+                }, 1500)
+                return
+              }
+            }
           }
         }
 
@@ -751,6 +834,9 @@ healRef.current = {
             const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
             if (skill2El && equippedSkills[1] === 'heal') skill2El.onclick = () => healRef.current.doHeal()
             if (skill2El && equippedSkills[1] === 'heal') healBtnRef.current = skill2El as HTMLButtonElement
+
+            if (skill1El && equippedSkills[0] === 'fireball') { skill1El.onclick = () => fireballRef.current.doFireball(); fireballBtnRef.current = skill1El as HTMLButtonElement }
+            if (skill2El && equippedSkills[1] === 'fireball') { skill2El.onclick = () => fireballRef.current.doFireball(); fireballBtnRef.current = skill2El as HTMLButtonElement }
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
