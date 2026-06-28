@@ -50,6 +50,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const dashDirRef = useRef(1)
   const dashSpriteRef = useRef<AnimatedSprite | null>(null)
   const dashHitRef = useRef(false)
+  const slashRef = useRef<{ doSlash: () => void }>({ doSlash: () => {} })
+  const slashBtnRef = useRef<HTMLButtonElement | null>(null)
+  const slashCdRef = useRef(0)
+  const bleedingRef = useRef(0)
+  const bleedTickRef = useRef(0)
 
   useEffect(() => {
     let app: Application | null = null
@@ -99,6 +104,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           await Assets.load(`${base}assets/skills/dash.png`)
         } catch {
           console.warn('dash.png not found, skipping')
+        }
+        try {
+          await Assets.load(`${base}assets/skills/slash.png`)
+        } catch {
+          console.warn('slash.png not found, skipping')
         }
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -522,6 +532,39 @@ healRef.current = {
       }
       // --- конец Dash ---
 
+      // --- Slash ---
+      let slashTex: Texture | null = null
+      try { slashTex = Assets.get(`${base}assets/skills/slash.png`) } catch { /* not loaded */ }
+      const slashFrames = slashTex ? sliceFrames(slashTex, 11, 568, 395) : []
+      slashCdRef.current = 0
+      bleedingRef.current = 0
+      bleedTickRef.current = 0
+
+      const SLASH_SCALE_X = 150 / 568
+      const SLASH_SCALE_Y = 100 / 395
+      slashRef.current = {
+        doSlash() {
+          if (battleEnded || slashCdRef.current > 0 || !slashFrames.length) return
+          const dir = player.scale.x < 0 ? 1 : -1
+          const sl = new AnimatedSprite(slashFrames)
+          sl.anchor.set(0.5, 0.5)
+          sl.scale.set(dir * SLASH_SCALE_X, SLASH_SCALE_Y)
+          sl.x = (playerWorldX - cameraX) + dir * 60
+          sl.y = FLOOR_Y - 30
+          sl.loop = false
+          sl.animationSpeed = 0.4
+          sl.onComplete = () => { app?.stage?.removeChild(sl) }
+          sl.play()
+          app!.stage.addChild(sl)
+          bleedingRef.current = 5
+          bleedTickRef.current = 1
+          slashCdRef.current = 10
+          skillUses += 1
+          if (slashBtnRef.current) slashBtnRef.current.textContent = '10'
+        },
+      }
+      // --- конец Slash ---
+
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
@@ -564,6 +607,13 @@ healRef.current = {
           if (dashCdRef.current < 0) dashCdRef.current = 0
           if (dashBtnRef.current) {
             dashBtnRef.current.textContent = dashCdRef.current > 0 ? String(Math.ceil(dashCdRef.current)) : '⚡'
+          }
+        }
+        if (slashCdRef.current > 0) {
+          slashCdRef.current -= ticker.deltaMS / 1000
+          if (slashCdRef.current < 0) slashCdRef.current = 0
+          if (slashBtnRef.current) {
+            slashBtnRef.current.textContent = slashCdRef.current > 0 ? String(Math.ceil(slashCdRef.current)) : '🗡️'
           }
         }
 
@@ -733,6 +783,48 @@ healRef.current = {
             iceballsRef.current.splice(i, 1)
             if (hitEnemy) {
               enemyFrozenRef.current = 3
+            }
+          }
+        }
+
+        if (bleedingRef.current > 0 && enemyAlive) {
+          bleedingRef.current -= ticker.deltaMS / 1000
+          if (bleedingRef.current < 0) bleedingRef.current = 0
+          bleedTickRef.current -= ticker.deltaMS / 1000
+          if (bleedTickRef.current <= 0) {
+            bleedTickRef.current = 1
+            const bleedDmg = Math.floor(ENEMY_MAX_HP * 0.03)
+            enemyHp -= bleedDmg
+            if (enemyHp < 0) enemyHp = 0
+            enemyHpText.text = `HP: ${enemyHp}`
+            const dmgStyle = new TextStyle({ fontSize: 14, fill: 0xff2222, fontWeight: 'bold' })
+            const dmgText = new Text({ text: `-${bleedDmg}`, style: dmgStyle })
+            dmgText.anchor.set(0.5)
+            dmgText.x = enemyWorldX - cameraX
+            dmgText.y = FLOOR_Y - ENEMY_H - 24
+            app!.stage.addChild(dmgText)
+            setTimeout(() => { try { app?.stage?.removeChild(dmgText) } catch { /* app destroyed */ } }, 800)
+            if (enemyHp <= 0) {
+              enemyAlive = false
+              battleEnded = true
+              setBattleOver(true)
+              setOrcAnim('dead')
+              app!.stage.removeChild(enemyHpText)
+              if (aoeOverlay) aoeOverlay.visible = false
+              enemyWindingUp = false
+              bossAttackType = null
+              for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
+              projectiles.length = 0
+              const winStyle = new TextStyle({ fontSize: 48, fill: 0xffd700, fontWeight: 'bold' })
+              const winText = new Text({ text: 'Победа!', style: winStyle })
+              winText.anchor.set(0.5)
+              winText.x = app!.screen.width / 2
+              winText.y = app!.screen.height / 2
+              app!.stage.addChild(winText)
+              endTimer = setTimeout(() => {
+                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+              }, 1500)
+              return
             }
           }
         }
@@ -1021,6 +1113,8 @@ healRef.current = {
             if (skill2El && equippedSkills[1] === 'iceball') { skill2El.onclick = () => iceballRef.current.doIceball(); iceballBtnRef.current = skill2El as HTMLButtonElement }
             if (skill1El && equippedSkills[0] === 'dash') { skill1El.onclick = () => dashRef.current.doDash(); dashBtnRef.current = skill1El as HTMLButtonElement }
             if (skill2El && equippedSkills[1] === 'dash') { skill2El.onclick = () => dashRef.current.doDash(); dashBtnRef.current = skill2El as HTMLButtonElement }
+            if (skill1El && equippedSkills[0] === 'slash') { skill1El.onclick = () => slashRef.current.doSlash(); slashBtnRef.current = skill1El as HTMLButtonElement }
+            if (skill2El && equippedSkills[1] === 'slash') { skill2El.onclick = () => slashRef.current.doSlash(); slashBtnRef.current = skill2El as HTMLButtonElement }
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
