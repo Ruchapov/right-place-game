@@ -11,8 +11,9 @@
 - Beginner solo dev. ONE step at a time. Explain WHAT/WHY, then HOW to verify.
 - Commands for **cmd** (not PowerShell). Russian is fine.
 - When broken: ask for actual error before guessing.
-- Design decisions in chat; Claude Code applies edits in terminal (same usage pool).
-- When giving code: always give FULL file replacements, not partial diffs — reduces errors.
+- Design decisions in chat; Claude Code applies edits in terminal.
+- Never give full file replacements — give precise prompts for Claude Code (anchored edits).
+- Always: plan full feature first → confirm → one step at a time → commit → deploy → test on phone → wait for confirmation.
 
 ## Tech Stack
 - Frontend: React 19 + TypeScript + Vite 8 → GitHub Pages
@@ -30,27 +31,25 @@ npm run deploy            # deploy to GitHub Pages (hard-reload Mini App after!)
 
 # Server
 cd server && npm run dev  # tsx (NOT ts-node), port 3000
-cd server && npm run build && npm start  # local prod test
 git push                  # triggers Render auto-deploy (sometimes needs Manual Deploy)
 ```
 
 ## Critical Gotchas
 - **Server dev runner is `tsx`** — `ts-node --esm` had Windows ERR_MODULE_NOT_FOUND bug.
-  `package.json` dev: `nodemon --watch src --ext ts --exec tsx src/index.ts`
 - **Server imports need .js extension**: `from '../auth.js'` not `from '../auth'` (ESM)
 - **Two auth.ts files**: `server/src/auth.ts` (Telegram verify) vs `server/src/routes/auth.ts` (login route)
 - **Run server from server/**: prompt must read `...\telegram-game\server>`
 - **After `npm run deploy`**: `•••` → Reload Page in Telegram (aggressive caching)
 - **Render auto-deploy sometimes doesn't fire** → Manual Deploy → Deploy latest commit
 - **Prisma `migrate dev` reset prompt**: NEVER auto-confirm — already wiped test data once.
-  Backup via Neon SQL Editor (`SELECT * FROM "Character"`) before risky migrations.
-- **Open as Mini App** (t.me/RightPlaceGame_bot/game) — initData only works in Telegram
+- **Open as Mini App** (t.me/RightPlaceGame_bot/game) — initData only works in Telegram, NOT in browser
 - **VPN blocks localhost** — disable during local dev
-- Render env vars in dashboard: DATABASE_URL, JWT_SECRET, BOT_TOKEN. Don't set PORT.
-- `type nul > path` creates new files in cmd — WARNING: empties existing files
+- **Port 3000 busy?** → `taskkill /F /IM node.exe` then restart server
+- **RUN_COST = 3** in `server/src/routes/run.ts` — keep 3 in dev, restore to 10 before release
+- **Render sometimes deploys old commit** → always check Events tab after push
 
 ## Security TODO (before real users)
-- Rotate JWT_SECRET (weak placeholder) and Neon DB password (shown on screen during setup)
+- Rotate JWT_SECRET (weak placeholder) and Neon DB password
 
 ---
 
@@ -58,100 +57,113 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 
 ### Server (server/src/)
 
-**`routes/run.ts`** — RUN_COST = 3 (DEV, restore to 10 before release)
-
 | Endpoint | Body | Description |
 |---|---|---|
-| `POST /run/start` | — | Spend energy, generate 3 rooms, save `currentRun: {rooms, index, hp}` |
-| `POST /run/room` | — | Process chest/trap (enemy/boss/smuggler/puzzle intercepted on frontend) |
-| `POST /run/battle-result` | `{won, damageTaken, damageDealt}` | After fight: sanity-clamps damage, grants trophies, stat growth + leveling |
-| `POST /run/smuggler-result` | `{exchange: bool}` | 80% → trophies×1.5, 20% → trophies×0.5 (stolen) |
-| `POST /run/puzzle` | — | Returns `{question, options}`, saves puzzleId to currentRun |
-| `POST /run/puzzle-result` | `{selectedIndex}` | Correct → +15-60 gold. Wrong → -20% maxHP |
-
-All run endpoints return `{hp, maxHp, died, level, strength, endurance, index, done, ...}`
-
-**`game.ts`** — `getCurrentEnergy`, `generateRooms`, `calculateStrength`, `calculateEnduranceBonus`
-
-**`puzzles.ts`** — 6 game-mechanics quiz questions (correct answers server-side only)
+| `POST /run/start` | — | Spend energy, generate 3 rooms, save currentRun |
+| `POST /run/room` | — | Process chest/trap |
+| `POST /run/battle-result` | `{won, damageTaken, damageDealt, skillUses, actualHpLost, potionsUsed}` | After fight |
+| `POST /run/smuggler-result` | `{exchange: bool}` | Smuggler choice |
+| `POST /run/puzzle` | — | Get puzzle question |
+| `POST /run/puzzle-result` | `{selectedIndex}` | Submit puzzle answer |
+| `POST /character/skills` | `{skills: string[]}` | Save equipped skills (max 2) |
+| `POST /character/buy-potion` | — | Buy 1 potion for 20 gold |
 
 **Prisma Character fields:**
-`level(1), energy(100), endurance(10), strength(0), agility(0), luck(0), gold(0), trophies(0), crystals(0), potionCharges(3), totalDamageReceived(0), totalDamageDealt(0), totalSkillUses(0), strengthAtLevelUp(0), enduranceAtLevelUp(10), currentRun(Json?)`
+`level, energy, endurance, strength, agility, luck, gold, trophies, crystals, potionCharges, totalDamageReceived, totalDamageDealt, totalSkillUses, strengthAtLevelUp, enduranceAtLevelUp, equippedSkills([]), currentRun(Json?)`
 
-**`currentRun` shape:** `{ rooms: string[], index: number, hp: number, puzzleId?: string } | null`
+**`currentRun` shape:** `{ rooms, index, hp, potions, puzzleId? }`
 
 ### Frontend (src/)
 
-**`Battle.tsx`** — PixiJS v8 fullscreen combat. Props: `{initialHp, maxHp, isBoss?, onBattleEnd}`
-- Player: ◀/▶ (3px/frame), ⚔ Attack (15dmg, <70px, 0.5s cd), 🔄 Dodge (timing during windup)
-- Normal enemy: chases (1px/frame), windup attack every 2s (scale 1.3×), dodgeable
-- Boss: 150HP, 15dmg, 1.5s interval, random attack type:
-  - MELEE: same as normal, requires <70px
-  - AOE: red screen overlay windup, hits anywhere, dodgeable with button
-  - RANGED: orange projectile (4px/frame), dodge by MOVING away (not button)
-- All battle state in JS refs (not React state) — ticker-driven
-- Calls `onBattleEnd({ won, damageTaken, damageDealt })`
+**`Battle.tsx`** — PixiJS v8 fullscreen combat.
+Props: `{initialHp, maxHp, isBoss?, level?, equippedSkills?, potionCharges?, strength?, onBattleEnd}`
 
-**`Smuggler.tsx`** — Fullscreen dialog. Props: `{trophies, onChoice(exchange: bool)}`
+**Спрайты игрока (public/assets/):**
+- Walk.png — 8 кадров, 128×128px, горизонтальный ряд
+- Attack_1.png — 6 кадров, 128×128px, горизонтальный ряд
+- Idle.png — 8 кадров, 128×128px, горизонтальный ряд
+- Hurt.png — в папке, ещё не подключён
+- Все спрайты смотрят влево → в коде scale.x = -1 чтобы смотрел вправо
 
-**`Puzzle.tsx`** — Fullscreen quiz. Props: `{question, options, onAnswer(selectedIndex)}`
-No correct/wrong feedback in component — handled via server message in results list.
+**Координаты в Battle.tsx:**
+- FLOOR_Y = height - 200
+- player.y = FLOOR_Y (anchor = 0.5, 1 — ногами на полу)
+- enemy.y = FLOOR_Y - ENEMY_H + 40
+- WORLD_WIDTH = 3000, камера следует за игроком
 
-**`App.tsx`** — Main state. PlayerData: `{id, firstName, level, gold, trophies, strength, endurance}`
-- Room routing: enemy/boss → `inBattle=true` (Battle), smuggler → `inSmuggler=true`,
-  puzzle → `getPuzzle()` → `puzzleData` set (Puzzle), chest/trap → `enterRoom()`
-- `runHp`/`runMaxHp` tracked across all room results (HP persists full run)
+**Анимации игрока (реализовано):**
+- idle: idleFrames, speed 0.15, когда стоит
+- walk: walkFrames, speed 0.3, когда движется
+- attack: attackFrames, speed 0.4, один раз при нажатии ⚔, потом возврат к idle/walk
+- Флип: scale.x отрицательный = смотрит влево, положительный = вправо
 
-**`api.ts`** — Types: `LoginResponse`, `RunResult`, `RoomResult`, `BattleResult`,
-`SmugglerResult`, `PuzzleQuestion`, `PuzzleResult`. Functions for all endpoints.
+**Параллакс в ticker:**
+- bgSky.tilePosition.x = -cameraX * 0.1
+- bgRuins.tilePosition.x = -cameraX * 0.3
+- platform.tilePosition.x = -cameraX
+
+**`App.tsx`** — Main state.
+PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility, equippedSkills, potionCharges}`
+- Navigation: 5-tab bottom nav (Персонаж / Магазин / Исследовать / Снаряжение / Друзья)
+- Run flow: Start → showRoomIntro(2s) → enterCurrentRoomDirect → auto-next → results screen
 
 ---
 
 ## Stat & Leveling System
 
 ### Growth (IMPLEMENTED)
-- **Endurance**: +1 per 30 dmg received (until End=30), then +1 per 100
-- **Strength**: +1 per 100 dmg dealt (until Str=20), then +1 per 200
-- **Agility**: DEFERRED until skills exist
+- **Endurance**: normalized dmg received / (1+0.12×(lvl-1)). +1 per 80 (until End=30), then +1 per 250
+- **Strength**: normalized dmg dealt / (1+0.18×(lvl-1)). +1 per 150 (until Str=20), then +1 per 350
+- **Agility**: from totalSkillUses. Threshold = 10 + agility×5
+- Attack damage = 15 + Math.floor(strength / 2)
 
-### Leveling (OR logic — IMPLEMENTED)
-- **Method 1**: +3 Endurance OR +6 Strength since last level-up (tracked independently
-  via `enduranceAtLevelUp`/`strengthAtLevelUp`, each advances by its own threshold only)
+### Leveling
+- **Method 1**: +3 Endurance OR +6 Strength since last level-up
 - **Method 2**: boss kill → instant +1 level
-- If Endurance rises mid-run → `currentRun.hp` also increases by the maxHp difference
 
 ---
 
 ## Room System
 
-| Room | Chance | Status | Reward / Penalty |
-|---|---|---|---|
-| Enemy | 60% | ✅ | Trophies 10-15, stat growth |
-| Chest | 15% | ✅ | Gold 10-50 |
-| Trap | 10% | ✅ | −20% maxHP |
-| Puzzle | 10% | ✅ | +15-60 gold OR −20% maxHP |
-| Smuggler | 3% | ✅ | Trophies ×1.5 OR ×0.5 (20% steal) |
-| Boss | 2% | ✅ | Trophies 15-22, instant level-up |
+| Room | Chance | Reward |
+|---|---|---|
+| Enemy | 60% | Trophies 10-15 |
+| Chest | 15% | Gold 10-50 |
+| Trap | 10% | −20% maxHP |
+| Puzzle | 10% | +15-60 gold OR −20% maxHP |
+| Smuggler | 3% | Trophies ×1.5 OR ×0.5 |
+| Boss | 2% | Trophies 15-22, level-up |
 
 ---
 
-## 🔜 Next Steps
-
-1. **Fix Puzzle 404** — `/run/puzzle` returns 404 in production (last commit may not have deployed).
-   Check Render Events, Manual Deploy if needed. This is the immediate blocker.
-2. **Boss reward choice** — instant level-up works, but no stat reward selection UI yet.
-3. **Enemy scaling by level** — each level → enemy HP +10%, Damage +8%. Not coded.
-4. **Skills** — 5 designed (Dash Strike, Fireball, Slash, Heal, Ice Ball), none built.
-   Needed for Agility growth. Equip 2 of 5, 5s cooldown, no mana.
-5. **Potions** — 3 charges, heal 50% maxHP, 2s cooldown, buy with gold. Not built.
-6. **Equipment** — 6 slots, tier every 5 levels up to 50. Not built.
-7. **RUN_COST**: restore to 10 before real users.
+## Economy
+- Trophies = risky currency, lost on death/abandon
+- Gold = stable, used for potions (20 gold each)
+- Trophies ≈ Gold 1:1 (exchange planned)
+- Potions: max 3 per run, tracked in currentRun.potions
 
 ---
 
-## Design Decisions (changed from original doc)
+## Skills (реализовано частично)
+- Игрок экипирует 2 скилла из 5: heal, dash, fireball, slash, iceball
+- heal — РЕАЛИЗОВАН: восстанавливает 10% maxHp, кулдаун 5с
+- dash, fireball, slash, iceball — кнопки есть в UI, логика НЕ реализована
+- Все скиллы: кулдаун 5с, инкрементируют skillUses
 
-- **Leveling OR not AND**: original "Endurance +3 AND Strength+Agility +6" → changed to OR.
-- **Puzzle mechanic**: original "TBD" → game-mechanics quiz (6 questions about own game).
-- **Trophy drops**: original 1 per kill → 10-15 (enemy) / 15-22 (boss).
-- **Boss attacks**: 3 types (melee/AoE/ranged), random per attack, 1.5s interval.
+## Next Steps (приоритет)
+1. **Skills** — реализовать dash, fireball, slash, iceball в бою
+2. **Equipment** — 6 слотов, тиры каждые 5 уровней
+3. **Boss reward** — UI выбора стат-награды
+4. **RUN_COST** — вернуть 10 перед релизом
+
+---
+
+## Design Decisions
+- Leveling OR not AND (Method 1: +3 End OR +6 Str+Agi combined)
+- Puzzle = game-mechanics quiz
+- Stat normalization by level factor
+- Heal/potions don't affect Endurance growth (totalDamageTaken tracked separately)
+- actualHpLost sent to server for correct HP carry between rooms
+- Enemy base stats: normal 120HP/14dmg, boss 200HP/18dmg
+- Wide arena (3000px) with camera follow
+- Sprites face left by default → flipped with scale.x = -1 in code
