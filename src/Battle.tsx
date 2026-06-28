@@ -237,20 +237,25 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         cooldownLeft: 0,
         doAttack() {
           if (battleEnded || cooldownLeft > 0) return
-          const dist = Math.abs(playerWorldX - enemyWorldX)
-          if (dist > ATTACK_RANGE) return
           if (attackFrames.length > 0 && !isAttacking) {
             isAttacking = true
             player.textures = attackFrames
             player.loop = false
+            player.animationSpeed = 0.4
+            const pw = player.width
+            const ph = player.height
             player.gotoAndPlay(0)
             player.onComplete = () => {
               isAttacking = false
               player.textures = walkFrames
               player.loop = true
+              player.width = pw
+              player.height = ph
               player.gotoAndStop(0)
             }
           }
+          const dist = Math.abs(playerWorldX - enemyWorldX)
+          if (dist > ATTACK_RANGE) return
           enemyHp -= ATTACK_DAMAGE
           if (enemyHp < 0) enemyHp = 0
           enemyHpText.text = `HP: ${enemyHp}`
