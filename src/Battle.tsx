@@ -54,6 +54,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/platform.png`,
           `${base}assets/Walk.png`,
           `${base}assets/Attack_1.png`,
+          `${base}assets/Idle.png`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -115,6 +116,10 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const atkTex = Assets.get(`${base}assets/Attack_1.png`)
       const attackFrames: import('pixi.js').Texture[] = Array.from({ length: 6 }, (_, i) =>
         new Texture({ source: atkTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
+      )
+      const idleTex = Assets.get(`${base}assets/Idle.png`)
+      const idleFrames: import('pixi.js').Texture[] = Array.from({ length: 8 }, (_, i) =>
+        new Texture({ source: idleTex.source, frame: new Rectangle(i * FRAME_W, 0, FRAME_W, FRAME_H) })
       )
       const player = new AnimatedSprite(walkFrames)
       let isAttacking = false
@@ -364,7 +369,21 @@ healRef.current = {
           const targetCameraX = playerWorldX - width / 2
           cameraX += (targetCameraX - cameraX) * 0.1
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
-          if (directionRef.current === 0 && walkFrames.length > 0 && !isAttacking) (player as AnimatedSprite).stop()
+          if (directionRef.current === 0 && !isAttacking) {
+            if (player.textures !== idleFrames) {
+              player.textures = idleFrames
+              player.loop = true
+              player.animationSpeed = 0.15
+              player.play()
+            }
+          } else if (directionRef.current !== 0 && !isAttacking) {
+            if (player.textures !== walkFrames) {
+              player.textures = walkFrames
+              player.loop = true
+              player.animationSpeed = 0.3
+              player.play()
+            }
+          }
         }
         player.scale.y = isAttacking ? ATTACK_SCALE_Y : PLAYER_SCALE_Y
         player.x = playerWorldX - cameraX
