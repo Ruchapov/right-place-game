@@ -49,6 +49,7 @@
 - Never paste a whole file unless creating a brand-new file.
 - One file per step when possible; never dump multiple big files at once.
 - Be explicit: "add after", "replace", "in both places", so Claude Code can't misplace code.
+- For complex logic fixes — describe the GOAL and REQUIREMENTS, not the exact code. Claude Code sees the file and can find the right place itself. Example: "Fix idle animation: when standing show idleFrames, when moving show walkFrames" is better than pasting exact line replacements.
 - Keep prompts plain text inside one ``` block so it pastes cleanly.
 
 ---
