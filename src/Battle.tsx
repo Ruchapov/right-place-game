@@ -127,7 +127,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       player.y = FLOOR_Y
       const PLAYER_SCALE_X = PLAYER_W / 128
       const PLAYER_SCALE_Y = 60 / 128
-      const ATTACK_SCALE_Y = 0.80
+      const ATTACK_SCALE_Y = PLAYER_SCALE_Y
       player.scale.set(-PLAYER_SCALE_X, PLAYER_SCALE_Y)
       app.stage.addChild(player)
       let playerWorldX = player.x
