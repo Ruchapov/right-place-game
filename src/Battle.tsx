@@ -29,6 +29,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const potionsLeftRef = useRef(potionCharges)
   const potionsUsedRef = useRef(0)
   const potionCdRef = useRef(0)
+  const orcIdleRef = useRef<AnimatedSprite | null>(null)
+  const orcRunRef = useRef<AnimatedSprite | null>(null)
+  const orcAttackRef = useRef<AnimatedSprite | null>(null)
+  const orcDeadRef = useRef<AnimatedSprite | null>(null)
+  const orcStateRef = useRef<'idle' | 'run' | 'attack' | 'dead'>('idle')
 
   useEffect(() => {
     let app: Application | null = null
@@ -55,7 +60,15 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/Walk.png`,
           `${base}assets/Attack_1.png`,
           `${base}assets/Idle.png`,
+          `${base}assets/enemy/orc/Idle.png`,
+          `${base}assets/enemy/orc/Run.png`,
+          `${base}assets/enemy/orc/Attack_1.png`,
         ])
+        try {
+          await Assets.load(`${base}assets/enemy/orc/Dead.png`)
+        } catch {
+          console.warn('Orc Dead.png not found, skipping')
+        }
       } catch (e) {
         console.error('Failed to load background assets:', e)
       }
@@ -152,12 +165,73 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ENEMY_ATTACK_DAMAGE = Math.round(BASE_ENEMY_DAMAGE * dmgMultiplier)
       // --- конец scaling ---
 
-      const enemy = new Graphics()
-      enemy.rect(0, 0, ENEMY_W, ENEMY_H).fill(isBoss ? 0xb71c1c : 0xd32f2f)
-      enemy.x = width * 0.75
-      enemy.y = FLOOR_Y - ENEMY_H + 40
-      app.stage.addChild(enemy)
-      let enemyWorldX = enemy.x
+      function sliceFrames(texture: Texture, frameCount: number, frameW: number, frameH: number): Texture[] {
+        return Array.from({ length: frameCount }, (_, i) =>
+          new Texture({ source: texture.source, frame: new Rectangle(i * frameW, 0, frameW, frameH) })
+        )
+      }
+
+      const ORC_FRAME_W = 96
+      const ORC_FRAME_H = 96
+      const ENEMY_SCALE_X = ENEMY_W / ORC_FRAME_W
+      const ENEMY_SCALE_Y = ENEMY_H / ORC_FRAME_H
+
+      const orcIdleTex = Assets.get(`${base}assets/enemy/orc/Idle.png`)
+      const orcRunTex = Assets.get(`${base}assets/enemy/orc/Run.png`)
+      const orcAttackTex = Assets.get(`${base}assets/enemy/orc/Attack_1.png`)
+      let orcDeadTex: Texture | null = null
+      try { orcDeadTex = Assets.get(`${base}assets/enemy/orc/Dead.png`) } catch { /* not loaded */ }
+
+      const orcIdle = new AnimatedSprite(sliceFrames(orcIdleTex, 5, ORC_FRAME_W, ORC_FRAME_H))
+      const orcRun  = new AnimatedSprite(sliceFrames(orcRunTex,  6, ORC_FRAME_W, ORC_FRAME_H))
+      const orcAtk  = new AnimatedSprite(sliceFrames(orcAttackTex, 4, ORC_FRAME_W, ORC_FRAME_H))
+      const orcDead = new AnimatedSprite(
+        orcDeadTex
+          ? sliceFrames(orcDeadTex, 4, ORC_FRAME_W, ORC_FRAME_H)
+          : sliceFrames(orcIdleTex, 5, ORC_FRAME_W, ORC_FRAME_H)
+      )
+
+      const orcSprites = [orcIdle, orcRun, orcAtk, orcDead]
+      const enemySpawnX = width * 0.75
+      for (const spr of orcSprites) {
+        spr.anchor.set(0.5, 1)
+        spr.x = enemySpawnX
+        spr.y = FLOOR_Y
+        spr.scale.set(-ENEMY_SCALE_X, ENEMY_SCALE_Y)
+        spr.visible = false
+        app.stage.addChild(spr)
+      }
+      orcIdle.loop = true
+      orcIdle.animationSpeed = 0.12
+      orcIdle.visible = true
+      orcIdle.play()
+
+      orcIdleRef.current = orcIdle
+      orcRunRef.current  = orcRun
+      orcAttackRef.current = orcAtk
+      orcDeadRef.current = orcDead
+      orcStateRef.current = 'idle'
+
+      function setOrcAnim(state: 'idle' | 'run' | 'attack' | 'dead') {
+        if (orcStateRef.current === state) return
+        orcStateRef.current = state
+        for (const spr of orcSprites) spr.visible = false
+        if (state === 'idle') {
+          orcIdle.loop = true; orcIdle.animationSpeed = 0.12
+          orcIdle.visible = true; orcIdle.gotoAndPlay(0)
+        } else if (state === 'run') {
+          orcRun.loop = true; orcRun.animationSpeed = 0.15
+          orcRun.visible = true; orcRun.gotoAndPlay(0)
+        } else if (state === 'attack') {
+          orcAtk.loop = true; orcAtk.animationSpeed = 0.15
+          orcAtk.visible = true; orcAtk.gotoAndPlay(0)
+        } else {
+          orcDead.loop = false; orcDead.animationSpeed = 0.1
+          orcDead.visible = true; orcDead.gotoAndPlay(0)
+        }
+      }
+
+      let enemyWorldX = enemySpawnX
 
       let enemyHp = ENEMY_MAX_HP
       let enemyAlive = true
@@ -171,8 +245,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       const enemyHpText = new Text({ text: `HP: ${enemyHp}`, style: hpStyle })
       enemyHpText.anchor.set(0.5, 1)
-      enemyHpText.x = enemy.x + ENEMY_W / 2
-      enemyHpText.y = enemy.y - 6
+      enemyHpText.x = enemySpawnX
+      enemyHpText.y = FLOOR_Y - ENEMY_H - 6
       app.stage.addChild(enemyHpText)
 
       const playerHpText = new Text({ text: `HP: ${playerHp}`, style: hpStyle })
@@ -208,7 +282,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           battleEnded = true
           setBattleOver(true)
           enemyWindingUp = false
-          enemy.scale.set(1)
           if (aoeOverlay) aoeOverlay.visible = false
           bossAttackType = null
           for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
@@ -257,7 +330,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
             enemyAlive = false
             battleEnded = true
             setBattleOver(true)
-            app!.stage.removeChild(enemy)
+            setOrcAnim('dead')
             app!.stage.removeChild(enemyHpText)
             if (aoeOverlay) aoeOverlay.visible = false
             enemyWindingUp = false
@@ -285,9 +358,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           enemyAttackTimer = 0
           if (bossAttackType === 'aoe' && aoeOverlay) {
             aoeOverlay.visible = false
-          } else {
-            enemy.scale.set(1)
           }
+          setOrcAnim('idle')
           bossAttackType = null
         },
       }
@@ -411,21 +483,24 @@ healRef.current = {
 
         if (enemyAlive) {
           const dx = playerWorldX - enemyWorldX
-          if (Math.abs(dx) > PLAYER_W) {
+          const dist = Math.abs(dx)
+          if (dist > PLAYER_W) {
             enemyWorldX += Math.sign(dx) * ENEMY_SPEED
             if (enemyWorldX < 0) enemyWorldX = 0
             else if (enemyWorldX > WORLD_WIDTH - ENEMY_W) enemyWorldX = WORLD_WIDTH - ENEMY_W
+            if (!enemyWindingUp) setOrcAnim('run')
+          } else {
+            if (!enemyWindingUp) setOrcAnim('idle')
           }
-          enemy.x = enemyWorldX - cameraX
-          enemyHpText.x = enemy.x + ENEMY_W / 2
-
-          const dist = Math.abs(playerWorldX - enemyWorldX)
+          const enemyScreenX = enemyWorldX - cameraX
+          for (const spr of orcSprites) spr.x = enemyScreenX
+          enemyHpText.x = enemyScreenX
 
           if (enemyWindingUp && bossAttackType !== 'aoe' && dist >= ATTACK_RANGE) {
             enemyWindingUp = false
-            enemy.scale.set(1)
             windupTimer = 0
             bossAttackType = null
+            setOrcAnim('idle')
           }
 
           if (!enemyWindingUp) {
@@ -440,18 +515,19 @@ healRef.current = {
                       bossAttackType = 'melee'
                       enemyWindingUp = true
                       windupTimer = 0
-                      enemy.scale.set(1.3)
+                      setOrcAnim('attack')
                     }
                   } else if (roll < 2 / 3) {
                     bossAttackType = 'aoe'
                     enemyWindingUp = true
                     windupTimer = 0
                     if (aoeOverlay) aoeOverlay.visible = true
+                    setOrcAnim('attack')
                   } else {
                     const gfx = new Graphics()
                     gfx.circle(0, 0, 6).fill(0xff9800)
-                    gfx.x = enemy.x + ENEMY_W / 2
-                    gfx.y = enemy.y + ENEMY_H / 2
+                    gfx.x = enemyScreenX
+                    gfx.y = FLOOR_Y - ENEMY_H / 2
                     app!.stage.addChild(gfx)
                     const targetX = player.x + PLAYER_W / 2
                     const dir = targetX > gfx.x ? 1 : -1
@@ -460,7 +536,7 @@ healRef.current = {
                 } else {
                   enemyWindingUp = true
                   windupTimer = 0
-                  enemy.scale.set(1.3)
+                  setOrcAnim('attack')
                 }
               }
             } else {
@@ -472,10 +548,9 @@ healRef.current = {
               enemyWindingUp = false
               if (bossAttackType === 'aoe' && aoeOverlay) {
                 aoeOverlay.visible = false
-              } else {
-                enemy.scale.set(1)
               }
               bossAttackType = null
+              setOrcAnim('idle')
               applyDamageToPlayer()
               if (battleEnded) return
             }
