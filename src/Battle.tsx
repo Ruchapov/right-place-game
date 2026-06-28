@@ -42,6 +42,13 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const iceballsRef = useRef<{ sprite: AnimatedSprite, worldX: number, dir: number }[]>([])
   const iceballCdRef = useRef(0)
   const enemyFrozenRef = useRef(0)
+  const dashRef = useRef<{ doDash: () => void }>({ doDash: () => {} })
+  const dashBtnRef = useRef<HTMLButtonElement | null>(null)
+  const dashFramesRef = useRef<Texture[]>([])
+  const dashCdRef = useRef(0)
+  const dashActiveRef = useRef(false)
+  const dashDirRef = useRef(1)
+  const dashSpriteRef = useRef<AnimatedSprite | null>(null)
 
   useEffect(() => {
     let app: Application | null = null
@@ -86,6 +93,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           await Assets.load(`${base}assets/skills/iceball.png`)
         } catch {
           console.warn('iceball.png not found, skipping')
+        }
+        try {
+          await Assets.load(`${base}assets/skills/dash.png`)
+        } catch {
+          console.warn('dash.png not found, skipping')
         }
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -201,6 +213,13 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       iceballsRef.current = []
       iceballCdRef.current = 0
       enemyFrozenRef.current = 0
+
+      let dashTex: Texture | null = null
+      try { dashTex = Assets.get(`${base}assets/skills/dash.png`) } catch { /* not loaded */ }
+      dashFramesRef.current = dashTex ? sliceFrames(dashTex, 41, 200, 128) : []
+      dashCdRef.current = 0
+      dashActiveRef.current = false
+      dashSpriteRef.current = null
 
       const ORC_FRAME_W = 96
       const ORC_FRAME_H = 96
@@ -463,6 +482,44 @@ healRef.current = {
       }
       // --- конец Iceball ---
 
+      // --- Dash ---
+      let dashWorldX = 0
+      let dashTimer = 0
+
+      function endDash() {
+        dashActiveRef.current = false
+        if (dashSpriteRef.current) {
+          app!.stage.removeChild(dashSpriteRef.current)
+          dashSpriteRef.current = null
+        }
+      }
+
+      dashRef.current = {
+        doDash() {
+          if (battleEnded || dashCdRef.current > 0 || dashActiveRef.current || !dashFramesRef.current.length) return
+          const dir = enemyWorldX >= playerWorldX ? 1 : -1
+          dashDirRef.current = dir
+          dashWorldX = playerWorldX + (dir > 0 ? 40 : -40)
+          dashTimer = 0
+          const ds = new AnimatedSprite(dashFramesRef.current)
+          ds.anchor.set(0.5, 0.5)
+          ds.scale.set(dir, 80 / 128)
+          ds.x = dashWorldX - cameraX
+          ds.y = FLOOR_Y - 40
+          ds.loop = false
+          ds.animationSpeed = 0.4
+          ds.onComplete = () => endDash()
+          ds.play()
+          app!.stage.addChild(ds)
+          dashSpriteRef.current = ds
+          dashActiveRef.current = true
+          dashCdRef.current = 5
+          skillUses += 1
+          if (dashBtnRef.current) dashBtnRef.current.textContent = '5'
+        },
+      }
+      // --- конец Dash ---
+
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
@@ -499,6 +556,13 @@ healRef.current = {
         if (enemyFrozenRef.current > 0) {
           enemyFrozenRef.current -= ticker.deltaMS / 1000
           if (enemyFrozenRef.current < 0) enemyFrozenRef.current = 0
+        }
+        if (dashCdRef.current > 0) {
+          dashCdRef.current -= ticker.deltaMS / 1000
+          if (dashCdRef.current < 0) dashCdRef.current = 0
+          if (dashBtnRef.current) {
+            dashBtnRef.current.textContent = dashCdRef.current > 0 ? String(Math.ceil(dashCdRef.current)) : '⚡'
+          }
         }
 
         if (potionCdRef.current > 0) {
@@ -550,6 +614,48 @@ healRef.current = {
             currentAnim = 'idle'
           }
         }
+        if (dashActiveRef.current && dashSpriteRef.current) {
+          dashTimer += ticker.deltaMS / 1000
+          playerWorldX += 12 * dashDirRef.current
+          if (playerWorldX < 0) playerWorldX = 0
+          if (playerWorldX > WORLD_WIDTH - PLAYER_W) playerWorldX = WORLD_WIDTH - PLAYER_W
+          dashWorldX += 12 * dashDirRef.current
+          const dScreenX = playerWorldX - cameraX
+          if (dScreenX < width * 0.1) cameraX = playerWorldX - width * 0.1
+          else if (dScreenX > width * 0.9) cameraX = playerWorldX - width * 0.9
+          cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
+          dashSpriteRef.current.x = dashWorldX - cameraX
+          if (enemyAlive && Math.abs(dashWorldX - enemyWorldX) < 60) {
+            enemyHp -= ATTACK_DAMAGE
+            if (enemyHp < 0) enemyHp = 0
+            enemyHpText.text = `HP: ${enemyHp}`
+            endDash()
+            if (enemyHp <= 0) {
+              enemyAlive = false
+              battleEnded = true
+              setBattleOver(true)
+              setOrcAnim('dead')
+              app!.stage.removeChild(enemyHpText)
+              if (aoeOverlay) aoeOverlay.visible = false
+              enemyWindingUp = false
+              bossAttackType = null
+              for (const proj of projectiles) app!.stage.removeChild(proj.gfx)
+              projectiles.length = 0
+              const winStyle = new TextStyle({ fontSize: 48, fill: 0xffd700, fontWeight: 'bold' })
+              const winText = new Text({ text: 'Победа!', style: winStyle })
+              winText.anchor.set(0.5)
+              winText.x = app!.screen.width / 2
+              winText.y = app!.screen.height / 2
+              app!.stage.addChild(winText)
+              endTimer = setTimeout(() => {
+                onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
+              }, 1500)
+              return
+            }
+          }
+          if (dashTimer >= 0.4) endDash()
+        }
+
         player.scale.y = isAttacking ? ATTACK_SCALE_Y : PLAYER_SCALE_Y
         player.x = playerWorldX - cameraX
         playerHpText.x = player.x + PLAYER_W / 2
@@ -911,6 +1017,8 @@ healRef.current = {
             if (skill2El && equippedSkills[1] === 'fireball') { skill2El.onclick = () => fireballRef.current.doFireball(); fireballBtnRef.current = skill2El as HTMLButtonElement }
             if (skill1El && equippedSkills[0] === 'iceball') { skill1El.onclick = () => iceballRef.current.doIceball(); iceballBtnRef.current = skill1El as HTMLButtonElement }
             if (skill2El && equippedSkills[1] === 'iceball') { skill2El.onclick = () => iceballRef.current.doIceball(); iceballBtnRef.current = skill2El as HTMLButtonElement }
+            if (skill1El && equippedSkills[0] === 'dash') { skill1El.onclick = () => dashRef.current.doDash(); dashBtnRef.current = skill1El as HTMLButtonElement }
+            if (skill2El && equippedSkills[1] === 'dash') { skill2El.onclick = () => dashRef.current.doDash(); dashBtnRef.current = skill2El as HTMLButtonElement }
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
