@@ -237,7 +237,6 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       let enemyAlive = true
       let playerHp = initialHp
       let totalDamageTaken = 0
-      let healedAmount = 0
       let skillUses = 0
       let battleEnded = false
 
@@ -293,7 +292,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           loseText.y = app!.screen.height / 2
           app!.stage.addChild(loseText)
           endTimer = setTimeout(() => {
-            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount), potionsUsed: potionsUsedRef.current })
+            onBattleEnd({ won: false, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
           }, 1500)
         }
       }
@@ -344,7 +343,7 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
             winText.y = app!.screen.height / 2
             app!.stage.addChild(winText)
             endTimer = setTimeout(() => {
-              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, totalDamageTaken - healedAmount), potionsUsed: potionsUsedRef.current })
+              onBattleEnd({ won: true, damageTaken: totalDamageTaken, damageDealt: ENEMY_MAX_HP - enemyHp, skillUses: skillUses, actualHpLost: Math.max(0, initialHp - Math.max(0, playerHp)), potionsUsed: potionsUsedRef.current })
             }, 1500)
           }
         },
@@ -372,7 +371,6 @@ healRef.current = {
     if (battleEnded || healCdLeft > 0) return
     const healAmount = Math.round(maxHp * 0.1)
     playerHp = Math.min(playerHp + healAmount, maxHp)
-    healedAmount += healAmount
     skillUses += 1
     playerHpText.text = `HP: ${playerHp}`
     healCdLeft = 5
@@ -386,7 +384,6 @@ healRef.current = {
         if (battleEnded) return
         const healAmt = Math.round(maxHp * 0.5)
         playerHp = Math.min(playerHp + healAmt, maxHp)
-        healedAmount += healAmt
         playerHpText.text = `HP: ${playerHp}`
       }
       // --- конец Heal ---
