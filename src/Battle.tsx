@@ -36,6 +36,12 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
   const orcStateRef = useRef<'idle' | 'run' | 'attack' | 'dead'>('idle')
   const fireballRef = useRef<{ doFireball: () => void }>({ doFireball: () => {} })
   const fireballBtnRef = useRef<HTMLButtonElement | null>(null)
+  const iceballRef = useRef<{ doIceball: () => void }>({ doIceball: () => {} })
+  const iceballBtnRef = useRef<HTMLButtonElement | null>(null)
+  const iceballFramesRef = useRef<Texture[]>([])
+  const iceballsRef = useRef<{ sprite: AnimatedSprite, worldX: number, dir: number }[]>([])
+  const iceballCdRef = useRef(0)
+  const enemyFrozenRef = useRef(0)
 
   useEffect(() => {
     let app: Application | null = null
@@ -75,6 +81,11 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           await Assets.load(`${base}assets/skills/fireball.png`)
         } catch {
           console.warn('fireball.png not found, skipping')
+        }
+        try {
+          await Assets.load(`${base}assets/skills/iceball.png`)
+        } catch {
+          console.warn('iceball.png not found, skipping')
         }
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -183,6 +194,13 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const fireballFrames = fireballTex ? sliceFrames(fireballTex, 8, 640, 640) : []
       const fireballs: { sprite: AnimatedSprite, worldX: number, dir: number }[] = []
       let fireballCdLeft = 0
+
+      let iceballTex: Texture | null = null
+      try { iceballTex = Assets.get(`${base}assets/skills/iceball.png`) } catch { /* not loaded */ }
+      iceballFramesRef.current = iceballTex ? sliceFrames(iceballTex, 12, 640, 640) : []
+      iceballsRef.current = []
+      iceballCdRef.current = 0
+      enemyFrozenRef.current = 0
 
       const ORC_FRAME_W = 96
       const ORC_FRAME_H = 96
@@ -422,6 +440,29 @@ healRef.current = {
       }
       // --- конец Fireball ---
 
+      // --- Iceball ---
+      const ICEBALL_SCALE = 60 / 640
+      iceballRef.current = {
+        doIceball() {
+          if (battleEnded || iceballCdRef.current > 0 || !iceballFramesRef.current.length) return
+          const dir = enemyWorldX >= playerWorldX ? 1 : -1
+          const ib = new AnimatedSprite(iceballFramesRef.current)
+          ib.anchor.set(0.5)
+          ib.scale.set(dir * ICEBALL_SCALE, ICEBALL_SCALE)
+          ib.x = playerWorldX - cameraX
+          ib.y = FLOOR_Y - 40
+          ib.loop = true
+          ib.animationSpeed = 0.3
+          ib.play()
+          app!.stage.addChild(ib)
+          iceballsRef.current.push({ sprite: ib, worldX: playerWorldX, dir })
+          iceballCdRef.current = 5
+          skillUses += 1
+          if (iceballBtnRef.current) iceballBtnRef.current.textContent = '5'
+        },
+      }
+      // --- конец Iceball ---
+
       // --- конец Heal ---
 
       app.ticker.add((ticker) => {
@@ -447,6 +488,17 @@ healRef.current = {
           if (fireballBtnRef.current) {
             fireballBtnRef.current.textContent = fireballCdLeft > 0 ? String(Math.ceil(fireballCdLeft)) : '🔥'
           }
+        }
+        if (iceballCdRef.current > 0) {
+          iceballCdRef.current -= ticker.deltaMS / 1000
+          if (iceballCdRef.current < 0) iceballCdRef.current = 0
+          if (iceballBtnRef.current) {
+            iceballBtnRef.current.textContent = iceballCdRef.current > 0 ? String(Math.ceil(iceballCdRef.current)) : '🧊'
+          }
+        }
+        if (enemyFrozenRef.current > 0) {
+          enemyFrozenRef.current -= ticker.deltaMS / 1000
+          if (enemyFrozenRef.current < 0) enemyFrozenRef.current = 0
         }
 
         if (potionCdRef.current > 0) {
@@ -562,14 +614,31 @@ healRef.current = {
           }
         }
 
+        for (let i = iceballsRef.current.length - 1; i >= 0; i--) {
+          const ib = iceballsRef.current[i]
+          ib.worldX += 4 * ib.dir
+          ib.sprite.x = ib.worldX - cameraX
+          const offScreen = ib.worldX < 0 || ib.worldX > WORLD_WIDTH
+          const hitEnemy = enemyAlive && Math.abs(ib.worldX - enemyWorldX) < 40
+          if (hitEnemy || offScreen) {
+            app!.stage.removeChild(ib.sprite)
+            iceballsRef.current.splice(i, 1)
+            if (hitEnemy) {
+              enemyFrozenRef.current = 3
+            }
+          }
+        }
+
         if (enemyAlive) {
           const dx = playerWorldX - enemyWorldX
           const dist = Math.abs(dx)
           if (dist > PLAYER_W) {
-            enemyWorldX += Math.sign(dx) * ENEMY_SPEED
-            if (enemyWorldX < 0) enemyWorldX = 0
-            else if (enemyWorldX > WORLD_WIDTH - ENEMY_W) enemyWorldX = WORLD_WIDTH - ENEMY_W
-            if (!enemyWindingUp) setOrcAnim('run')
+            if (enemyFrozenRef.current <= 0) {
+              enemyWorldX += Math.sign(dx) * ENEMY_SPEED
+              if (enemyWorldX < 0) enemyWorldX = 0
+              else if (enemyWorldX > WORLD_WIDTH - ENEMY_W) enemyWorldX = WORLD_WIDTH - ENEMY_W
+            }
+            if (!enemyWindingUp) setOrcAnim(enemyFrozenRef.current > 0 ? 'idle' : 'run')
           } else {
             if (!enemyWindingUp) setOrcAnim('idle')
           }
@@ -597,6 +666,7 @@ healRef.current = {
             setOrcAnim('idle')
           }
 
+          if (enemyFrozenRef.current <= 0) {
           if (!enemyWindingUp) {
             if (isBoss || dist < ATTACK_RANGE) {
               enemyAttackTimer += ticker.deltaMS / 1000
@@ -649,6 +719,7 @@ healRef.current = {
               if (battleEnded) return
             }
           }
+          } // end enemyFrozenRef check
         }
       })
     }
@@ -838,6 +909,8 @@ healRef.current = {
 
             if (skill1El && equippedSkills[0] === 'fireball') { skill1El.onclick = () => fireballRef.current.doFireball(); fireballBtnRef.current = skill1El as HTMLButtonElement }
             if (skill2El && equippedSkills[1] === 'fireball') { skill2El.onclick = () => fireballRef.current.doFireball(); fireballBtnRef.current = skill2El as HTMLButtonElement }
+            if (skill1El && equippedSkills[0] === 'iceball') { skill1El.onclick = () => iceballRef.current.doIceball(); iceballBtnRef.current = skill1El as HTMLButtonElement }
+            if (skill2El && equippedSkills[1] === 'iceball') { skill2El.onclick = () => iceballRef.current.doIceball(); iceballBtnRef.current = skill2El as HTMLButtonElement }
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }} />
         </div>
