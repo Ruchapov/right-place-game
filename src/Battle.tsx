@@ -524,7 +524,7 @@ healRef.current = {
 
         for (let i = fireballs.length - 1; i >= 0; i--) {
           const fb = fireballs[i]
-          fb.worldX += 8 * fb.dir
+          fb.worldX += 4 * fb.dir
           fb.sprite.x = fb.worldX - cameraX
           const offScreen = fb.worldX < 0 || fb.worldX > WORLD_WIDTH
           const hitEnemy = enemyAlive && Math.abs(fb.worldX - enemyWorldX) < 40
