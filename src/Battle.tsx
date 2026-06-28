@@ -381,6 +381,7 @@ healRef.current = {
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
           if (directionRef.current === 0 && walkFrames.length > 0 && !isAttacking) (player as AnimatedSprite).stop()
         }
+        player.scale.y = isAttacking ? ATTACK_SCALE_Y : PLAYER_SCALE_Y
         player.x = playerWorldX - cameraX
         playerHpText.x = player.x + PLAYER_W / 2
 
