@@ -54,6 +54,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           `${base}assets/platform.png`,
           `${base}assets/player-walk.png`,
           `${base}assets/player-walk.json`,
+          `${base}assets/game_atack1.png`,
+          `${base}assets/game_atack1.json`,
         ])
       } catch (e) {
         console.error('Failed to load background assets:', e)
@@ -120,7 +122,17 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
         errText.y = 100
         app!.stage.addChild(errText)
       }
+      let attackFrames: import('pixi.js').Texture[] = []
+      try {
+        const atkSheet = await Assets.load(`${base}assets/game_atack1.json`)
+        if (atkSheet?.textures) {
+          attackFrames = Object.keys(atkSheet.textures).map((k: string) => atkSheet.textures[k])
+        }
+      } catch(e: unknown) {
+        console.error('attack sheet failed', e)
+      }
       const player = new AnimatedSprite(walkFrames)
+      let isAttacking = false
       if (walkFrames.length > 0) {
         (player as AnimatedSprite).animationSpeed = 0.3;
         (player as AnimatedSprite).stop();
@@ -172,8 +184,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
 
       const playerHpText = new Text({ text: `HP: ${playerHp}`, style: hpStyle })
       playerHpText.anchor.set(0.5, 1)
-      playerHpText.x = player.x + PLAYER_W / 2
-      playerHpText.y = player.y - 6
+      playerHpText.x = player.x
+      playerHpText.y = player.y - 70
       app.stage.addChild(playerHpText)
 
       let cooldownLeft = 0
@@ -227,6 +239,18 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
           if (battleEnded || cooldownLeft > 0) return
           const dist = Math.abs(playerWorldX - enemyWorldX)
           if (dist > ATTACK_RANGE) return
+          if (attackFrames.length > 0 && !isAttacking) {
+            isAttacking = true
+            player.textures = attackFrames
+            player.loop = false
+            player.gotoAndPlay(0)
+            player.onComplete = () => {
+              isAttacking = false
+              player.textures = walkFrames
+              player.loop = true
+              player.gotoAndStop(0)
+            }
+          }
           enemyHp -= ATTACK_DAMAGE
           if (enemyHp < 0) enemyHp = 0
           enemyHpText.text = `HP: ${enemyHp}`
@@ -343,11 +367,11 @@ healRef.current = {
           } else {
             player.scale.x = Math.abs(player.scale.x)
           }
-          if (walkFrames.length > 0) (player as AnimatedSprite).play()
+          if (walkFrames.length > 0 && !isAttacking) (player as AnimatedSprite).play()
           const targetCameraX = playerWorldX - width / 2
           cameraX += (targetCameraX - cameraX) * 0.1
           cameraX = Math.max(0, Math.min(WORLD_WIDTH - width, cameraX))
-          if (directionRef.current === 0 && walkFrames.length > 0) (player as AnimatedSprite).stop()
+          if (directionRef.current === 0 && walkFrames.length > 0 && !isAttacking) (player as AnimatedSprite).stop()
         }
         player.x = playerWorldX - cameraX
         playerHpText.x = player.x + PLAYER_W / 2
