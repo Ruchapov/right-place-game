@@ -71,7 +71,7 @@ function applyStatGrowth(
 // checked against the same question later (puzzles are picked randomly).
 type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; puzzleId?: string }
 // Body shape for POST /run/battle-result.
-type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number }
+type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
 // Body shape for POST /run/smuggler-result.
 type SmugglerResultBody = { exchange: boolean }
 // Body shape for POST /run/puzzle-result.
@@ -224,6 +224,9 @@ export async function runRoutes(server: FastifyInstance) {
     const skillUses = request.body.skillUses ?? 0
     const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
     const potionsUsed = request.body.potionsUsed ?? 0
+    const attackDamageDealt = request.body.attackDamageDealt ?? 0
+    const skillDamageDealt = request.body.skillDamageDealt ?? 0
+    const healedAmount = request.body.healedAmount ?? 0
     const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
     const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
     const newTotalSkillUses = character.totalSkillUses + skillUses
@@ -232,6 +235,13 @@ export async function runRoutes(server: FastifyInstance) {
     const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (character.level - 1)))
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
     const damageDealt = Math.max(0, Math.min(rawDamageDealt, SCALED_ENEMY_HP))
+    const safeAttackDamageDealt = Math.max(0, attackDamageDealt)
+    const safeSkillDamageDealt = Math.max(0, skillDamageDealt)
+    const combinedAttackSkill = safeAttackDamageDealt + safeSkillDamageDealt
+    const attackSkillScale = combinedAttackSkill > SCALED_ENEMY_HP ? SCALED_ENEMY_HP / combinedAttackSkill : 1
+    const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
+    const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
+    const clampedHealedAmount = Math.max(0, Math.min(healedAmount, maxHp))
     const normalizedDamageDealt = normalizeDealtDamage(damageDealt, character.level)
     const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
