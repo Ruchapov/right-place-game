@@ -41,42 +41,26 @@ export function generateRooms(count = 3): RoomType[] {
 }
 // --- Stat growth from cumulative damage ---
 
-// Strength grows from damage dealt: +1 per 100 damage, then +1 per 200 after Strength 20.
-const STRENGTH_THRESHOLD = 20
-const STRENGTH_COST_EARLY = 100
-const STRENGTH_COST_LATE = 200
-
-export function calculateStrength(totalDamageDealt: number): number {
-  const earlyDamage = Math.min(totalDamageDealt, STRENGTH_THRESHOLD * STRENGTH_COST_EARLY)
-  const earlyStrength = Math.floor(earlyDamage / STRENGTH_COST_EARLY)
-
-  if (totalDamageDealt <= STRENGTH_THRESHOLD * STRENGTH_COST_EARLY) {
-    return earlyStrength
+// Each next stat point costs Math.round(base * Math.pow(growth, stat - 10)) accumulated units.
+// All three stats start at 10 so threshold exponent is 0 (cost = base) at the starting value.
+function calcStatPoints(accumulated: number, base: number, growth: number, startStat = 10): number {
+  let stat = startStat
+  let used = 0
+  while (true) {
+    const threshold = Math.round(base * Math.pow(growth, stat - 10))
+    if (used + threshold > accumulated) break
+    used += threshold
+    stat++
   }
-
-  const remainingDamage = totalDamageDealt - STRENGTH_THRESHOLD * STRENGTH_COST_EARLY
-  const lateStrength = Math.floor(remainingDamage / STRENGTH_COST_LATE)
-  return STRENGTH_THRESHOLD + lateStrength
+  return stat
 }
 
-// Endurance grows from damage received: +1 per 30 damage, then +1 per 100 after Endurance 30.
-// NOTE: this is total Endurance, not bonus — base starting Endurance (10) is added on top
-// by the caller, since this function only knows about damage-driven growth.
-const ENDURANCE_THRESHOLD = 30
-const ENDURANCE_COST_EARLY = 30
-const ENDURANCE_COST_LATE = 100
+export function calculateStrength(totalDamageDealt: number): number {
+  return calcStatPoints(totalDamageDealt, 300, 1.15)
+}
 
-export function calculateEnduranceBonus(totalDamageReceived: number): number {
-  const earlyDamage = Math.min(totalDamageReceived, ENDURANCE_THRESHOLD * ENDURANCE_COST_EARLY)
-  const earlyBonus = Math.floor(earlyDamage / ENDURANCE_COST_EARLY)
-
-  if (totalDamageReceived <= ENDURANCE_THRESHOLD * ENDURANCE_COST_EARLY) {
-    return earlyBonus
-  }
-
-  const remainingDamage = totalDamageReceived - ENDURANCE_THRESHOLD * ENDURANCE_COST_EARLY
-  const lateBonus = Math.floor(remainingDamage / ENDURANCE_COST_LATE)
-  return ENDURANCE_THRESHOLD + lateBonus
+export function calculateEndurance(totalDamageReceived: number): number {
+  return calcStatPoints(totalDamageReceived, 120, 1.20)
 }
 // --- Leveling (Method 1: stat progression) ---
 
@@ -114,17 +98,6 @@ export function normalizeReceivedDamage(rawDamage: number, level: number): numbe
   return rawDamage / (1 + 0.12 * (level - 1))
 }
 
-// Agility растёт от общего числа использований скиллов за всю жизнь.
-// Порог для каждого следующего уровня: 10 + agility * 5
-// То есть: 0→1 = 10 uses, 1→2 = 15, 2→3 = 20 и т.д.
-export function calculateAgility(totalSkillUses: number): number {
-  let agility = 0
-  let used = 0
-  while (true) {
-    const threshold = 10 + agility * 5
-    if (used + threshold > totalSkillUses) break
-    used += threshold
-    agility++
-  }
-  return agility
+export function calculateAgility(totalSkillDamage: number): number {
+  return calcStatPoints(totalSkillDamage, 300, 1.15)
 }

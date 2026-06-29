@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEnduranceBonus, normalizeDealtDamage, normalizeReceivedDamage, calculateAgility } from '../game.js'
+import { getCurrentEnergy, generateRooms, calculateStrength, calculateEndurance, normalizeDealtDamage, normalizeReceivedDamage, calculateAgility } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 
 const prisma = new PrismaClient()
@@ -22,7 +22,6 @@ function getUserId(request: FastifyRequest): number | null {
   }
 }
 
-const BASE_ENDURANCE = 10 // starting Endurance before any damage-driven growth
 const LEVELUP_ENDURANCE_GAIN = 3
 const LEVELUP_STRENGTH_GAIN = 6
 
@@ -41,7 +40,7 @@ function applyStatGrowth(
   strengthAtLevelUp: number,
 ) {
   const strength = calculateStrength(totalDamageDealt)
-  const endurance = BASE_ENDURANCE + calculateEnduranceBonus(totalDamageReceived)
+  const endurance = calculateEndurance(totalDamageReceived)
   const maxHp = endurance * 8
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
@@ -221,7 +220,6 @@ export async function runRoutes(server: FastifyInstance) {
     const isBoss = roomType === 'boss'
 
     const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
-    const skillUses = request.body.skillUses ?? 0
     const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
     const potionsUsed = request.body.potionsUsed ?? 0
     const attackDamageDealt = request.body.attackDamageDealt ?? 0
@@ -229,8 +227,6 @@ export async function runRoutes(server: FastifyInstance) {
     const healedAmount = request.body.healedAmount ?? 0
     const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
     const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
-    const newTotalSkillUses = character.totalSkillUses + skillUses
-    const agility = calculateAgility(newTotalSkillUses)
     const maxHp = character.endurance * 8
     const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (character.level - 1)))
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
@@ -242,8 +238,11 @@ export async function runRoutes(server: FastifyInstance) {
     const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
     const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
     const clampedHealedAmount = Math.max(0, Math.min(healedAmount, maxHp))
-    const normalizedDamageDealt = normalizeDealtDamage(damageDealt, character.level)
+    const normalizedAttackDamage = normalizeDealtDamage(clampedAttackDamageDealt, character.level)
+    const normalizedSkillDamage = normalizeDealtDamage(clampedSkillDamageDealt + clampedHealedAmount, character.level)
     const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
+    const newTotalSkillUses = character.totalSkillUses + normalizedSkillDamage
+    const agility = calculateAgility(newTotalSkillUses)
 
     const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
     let trophyGained = 0
@@ -255,7 +254,7 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newTotalDamageReceived = character.totalDamageReceived + normalizedDamageTaken
-    const newTotalDamageDealt = character.totalDamageDealt + normalizedDamageDealt
+    const newTotalDamageDealt = character.totalDamageDealt + normalizedAttackDamage
 
     const bossLevelUp = isBoss && won
     const growth = applyStatGrowth(
