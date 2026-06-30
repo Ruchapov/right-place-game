@@ -41,4 +41,31 @@ model Character {
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  inventoryItems      InventoryItem[]
+}
+
+model Item {
+  id            String   @id @default(cuid())
+  slot          String   // "weapon" | "armor" | "helmet" | "boots" | "gloves" | "amulet"
+  tier          Int      // 1-10 for weapon/armor, 1-5 for helmet/boots/gloves/amulet
+  nameRu        String   // Russian display name, e.g. "Стальной длинный меч"
+  iconPath      String   // e.g. "weapons/weapon_07.png"
+  levelRequired Int      // minimum character level to equip
+  damage        Int?     // weapon only
+  armor         Int?     // armor/helmet/gloves only
+  moveSpeed     Float?   // boots only
+  luck          Int?     // amulet only
+  inventoryItems InventoryItem[]
+}
+
+model InventoryItem {
+  id          String    @id @default(cuid())
+  characterId Int
+  character   Character @relation(fields: [characterId], references: [id])
+  itemId      String
+  item        Item      @relation(fields: [itemId], references: [id])
+  equipped    Boolean   @default(false)
+  acquiredAt  DateTime  @default(now())
+
+  @@index([characterId])
 }
