@@ -7,6 +7,24 @@ import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
 
+async function rollRandomItem(characterLevel: number) {
+  const eligible = await prisma.item.findMany({
+    where: { levelRequired: { lte: characterLevel } },
+  })
+  if (eligible.length === 0) return null
+  return eligible[Math.floor(Math.random() * eligible.length)]
+}
+
+async function grantItem(characterId: number, item: { id: string }) {
+  const existing = await prisma.inventoryItem.findFirst({
+    where: { characterId, itemId: item.id },
+  })
+  if (existing) return null // already owned, skip silently
+  return prisma.inventoryItem.create({
+    data: { characterId, itemId: item.id, equipped: false },
+  })
+}
+
 // Read & verify the JWT from the Authorization header. Returns userId or null.
 function getUserId(request: FastifyRequest): number | null {
   const auth = request.headers.authorization
@@ -133,9 +151,15 @@ export async function runRoutes(server: FastifyInstance) {
     let goldGained = 0
     let damageTaken = 0
     let hp = run.hp
+    let droppedItem: { name: string; slot: string; iconPath: string } | null = null
 
     if (roomType === 'chest') {
       goldGained = 10 + Math.floor(Math.random() * 41) // 10..50
+      const item = await rollRandomItem(character.level)
+      if (item) {
+        await grantItem(character.id, item)
+        droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
+      }
     } else if (roomType === 'trap') {
       damageTaken = Math.ceil(maxHp * 0.2) // DEV: 20% макс. HP, балансим позже
       hp = hp - damageTaken
@@ -199,6 +223,7 @@ export async function runRoutes(server: FastifyInstance) {
       levelsGained: growth.levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
+      droppedItem,
     })
   })
 
@@ -246,11 +271,23 @@ export async function runRoutes(server: FastifyInstance) {
 
     const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
     let trophyGained = 0
+    let droppedItem: { name: string; slot: string; iconPath: string } | null = null
 
     if (won) {
       trophyGained = isBoss
         ? Math.floor(Math.random() * (22 - 15 + 1)) + 15
         : Math.floor(Math.random() * (15 - 10 + 1)) + 10
+    }
+
+    if (won && !isBoss) {
+      const dropChance = 1.0 // TODO: lower to 0.15 after testing
+      if (Math.random() < dropChance) {
+        const item = await rollRandomItem(character.level)
+        if (item) {
+          await grantItem(character.id, item)
+          droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
+        }
+      }
     }
 
     const newTotalDamageReceived = character.totalDamageReceived + normalizedDamageTaken
@@ -316,6 +353,7 @@ export async function runRoutes(server: FastifyInstance) {
       strength: growth.strength,
       endurance: growth.endurance,
       potions: Math.max(0, potionsInRun),
+      droppedItem,
     })
   })
 
