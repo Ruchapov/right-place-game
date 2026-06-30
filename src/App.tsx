@@ -144,13 +144,13 @@ export default function App() {
     }
   }
 
-  async function handleBattleEnd(result: { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number }) {
+  async function handleBattleEnd(result: { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number; attackDamageDealt: number; skillDamageDealt: number; healedAmount: number }) {
     setInBattle(false)
     const token = localStorage.getItem('jwt')
     if (!token) return
     setRunError(null)
     try {
-      const br: BattleResult = await submitBattleResult(token, result.won, result.damageTaken, result.damageDealt, result.skillUses, result.actualHpLost, result.potionsUsed)
+      const br: BattleResult = await submitBattleResult(token, result.won, result.damageTaken, result.damageDealt, result.skillUses, result.actualHpLost, result.potionsUsed, result.attackDamageDealt, result.skillDamageDealt, result.healedAmount)
       setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
       setRoomIndex(br.index)
       setRunHp(br.hp)
