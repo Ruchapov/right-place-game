@@ -258,6 +258,13 @@ export async function runRoutes(server: FastifyInstance) {
     const attackDamageDealt = request.body.attackDamageDealt ?? 0
     const skillDamageDealt = request.body.skillDamageDealt ?? 0
     const healedAmount = request.body.healedAmount ?? 0
+    console.log('[DEBUG battle-result]', {
+      won: request.body.won,
+      attackDamageDealt: request.body.attackDamageDealt,
+      skillDamageDealt: request.body.skillDamageDealt,
+      healedAmount: request.body.healedAmount,
+      damageDealt: request.body.damageDealt,
+    })
     const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
     const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
     const maxHp = character.endurance * 8
