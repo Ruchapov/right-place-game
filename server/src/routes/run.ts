@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, calculateStrength, calculateEndurance, normalizeDealtDamage, normalizeReceivedDamage, calculateAgility } from '../game.js'
+import { getCurrentEnergy, generateRooms, applyStatProgress, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 
 const prisma = new PrismaClient()
@@ -43,36 +43,40 @@ function getUserId(request: FastifyRequest): number | null {
 const LEVELUP_ENDURANCE_GAIN = 3
 const LEVELUP_STRENGTH_GAIN = 6
 
-// Recalculates Strength/Endurance from cumulative damage, grows currentRun.hp by the
-// same amount maxHp increased (so an Endurance level-up mid-run feels like real
-// healing, not just a higher ceiling), and applies any stat-based level-ups earned.
-// Returns the new stat values, new level, new "at last level-up" markers, the new
-// maxHp, and the (possibly increased) currentRun.hp to save.
+// Applies one fight's worth of normalized damage to all three stats via applyStatProgress,
+// then checks for level-ups from Endurance/Strength gains and adjusts HP for any maxHp increase.
 function applyStatGrowth(
-  totalDamageDealt: number,
-  totalDamageReceived: number,
+  currentStrength: number, currentStrengthProgress: number, normalizedAttackDamage: number,
+  currentEndurance: number, currentEnduranceProgress: number, normalizedDamageTaken: number,
+  currentAgility: number, currentAgilityProgress: number, normalizedSkillDamage: number,
   previousMaxHp: number,
   currentHp: number,
   currentLevel: number,
   enduranceAtLevelUp: number,
   strengthAtLevelUp: number,
 ) {
-  const strength = calculateStrength(totalDamageDealt)
-  const endurance = calculateEndurance(totalDamageReceived)
-  const maxHp = endurance * 8
+  const strResult = applyStatProgress(currentStrength, currentStrengthProgress, normalizedAttackDamage, 300, 1.15)
+  const endResult = applyStatProgress(currentEndurance, currentEnduranceProgress, normalizedDamageTaken, 120, 1.20)
+  const agiResult = applyStatProgress(currentAgility, currentAgilityProgress, normalizedSkillDamage, 300, 1.15)
+
+  const maxHp = endResult.stat * 8
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
 
-  const levelsFromEndurance = Math.floor((endurance - enduranceAtLevelUp) / LEVELUP_ENDURANCE_GAIN)
-  const levelsFromStrength = Math.floor((strength - strengthAtLevelUp) / LEVELUP_STRENGTH_GAIN)
+  const levelsFromEndurance = Math.floor((endResult.stat - enduranceAtLevelUp) / LEVELUP_ENDURANCE_GAIN)
+  const levelsFromStrength = Math.floor((strResult.stat - strengthAtLevelUp) / LEVELUP_STRENGTH_GAIN)
   const levelsGained = levelsFromEndurance + levelsFromStrength
   const level = currentLevel + levelsGained
   const newEnduranceAtLevelUp = enduranceAtLevelUp + levelsFromEndurance * LEVELUP_ENDURANCE_GAIN
   const newStrengthAtLevelUp = strengthAtLevelUp + levelsFromStrength * LEVELUP_STRENGTH_GAIN
 
   return {
-    strength,
-    endurance,
+    strength: strResult.stat,
+    strengthProgress: strResult.progress,
+    endurance: endResult.stat,
+    enduranceProgress: endResult.progress,
+    agility: agiResult.stat,
+    agilityProgress: agiResult.progress,
     maxHp,
     hp,
     level,
@@ -166,11 +170,12 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const newTotalDamageReceived = character.totalDamageReceived + normalizeReceivedDamage(damageTaken, character.level)
+    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
     const growth = applyStatGrowth(
-      character.totalDamageDealt,
-      newTotalDamageReceived,
+      character.strength, character.strengthProgress, 0,
+      character.endurance, character.enduranceProgress, normalizedDamageTaken,
+      character.agility, character.agilityProgress, 0,
       maxHp,
       hp,
       character.level,
@@ -187,9 +192,12 @@ export async function runRoutes(server: FastifyInstance) {
       where: { userId },
       data: {
         gold: newGold,
-        totalDamageReceived: newTotalDamageReceived,
         strength: growth.strength,
+        strengthProgress: growth.strengthProgress,
         endurance: growth.endurance,
+        enduranceProgress: growth.enduranceProgress,
+        agility: growth.agility,
+        agilityProgress: growth.agilityProgress,
         level: growth.level,
         enduranceAtLevelUp: growth.enduranceAtLevelUp,
         strengthAtLevelUp: growth.strengthAtLevelUp,
@@ -266,8 +274,6 @@ export async function runRoutes(server: FastifyInstance) {
     const normalizedAttackDamage = normalizeDealtDamage(clampedAttackDamageDealt, character.level)
     const normalizedSkillDamage = normalizeDealtDamage(clampedSkillDamageDealt + clampedHealedAmount, character.level)
     const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
-    const newTotalSkillUses = character.totalSkillUses + normalizedSkillDamage
-    const agility = calculateAgility(newTotalSkillUses)
 
     const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
     let trophyGained = 0
@@ -290,13 +296,11 @@ export async function runRoutes(server: FastifyInstance) {
       }
     }
 
-    const newTotalDamageReceived = character.totalDamageReceived + normalizedDamageTaken
-    const newTotalDamageDealt = character.totalDamageDealt + normalizedAttackDamage
-
     const bossLevelUp = isBoss && won
     const growth = applyStatGrowth(
-      newTotalDamageDealt,
-      newTotalDamageReceived,
+      character.strength, character.strengthProgress, normalizedAttackDamage,
+      character.endurance, character.enduranceProgress, normalizedDamageTaken,
+      character.agility, character.agilityProgress, normalizedSkillDamage,
       maxHp,
       hp,
       character.level + (bossLevelUp ? 1 : 0),
@@ -315,12 +319,12 @@ export async function runRoutes(server: FastifyInstance) {
       where: { userId },
       data: {
         trophies: died ? 0 : newTrophies,
-        totalDamageReceived: newTotalDamageReceived,
-        totalDamageDealt: newTotalDamageDealt,
-        agility: agility,
-        totalSkillUses: newTotalSkillUses,
         strength: growth.strength,
+        strengthProgress: growth.strengthProgress,
         endurance: growth.endurance,
+        enduranceProgress: growth.enduranceProgress,
+        agility: growth.agility,
+        agilityProgress: growth.agilityProgress,
         level: growth.level,
         enduranceAtLevelUp: growth.enduranceAtLevelUp,
         strengthAtLevelUp: growth.strengthAtLevelUp,
@@ -491,11 +495,12 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const newTotalDamageReceived = character.totalDamageReceived + normalizeReceivedDamage(damageTaken, character.level)
+    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
     const growth = applyStatGrowth(
-      character.totalDamageDealt,
-      newTotalDamageReceived,
+      character.strength, character.strengthProgress, 0,
+      character.endurance, character.enduranceProgress, normalizedDamageTaken,
+      character.agility, character.agilityProgress, 0,
       maxHp,
       hp,
       character.level,
@@ -512,9 +517,12 @@ export async function runRoutes(server: FastifyInstance) {
       where: { userId },
       data: {
         gold: newGold,
-        totalDamageReceived: newTotalDamageReceived,
         strength: growth.strength,
+        strengthProgress: growth.strengthProgress,
         endurance: growth.endurance,
+        enduranceProgress: growth.enduranceProgress,
+        agility: growth.agility,
+        agilityProgress: growth.agilityProgress,
         level: growth.level,
         enduranceAtLevelUp: growth.enduranceAtLevelUp,
         strengthAtLevelUp: growth.strengthAtLevelUp,

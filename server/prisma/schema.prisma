@@ -25,14 +25,14 @@ model Character {
   energy              Int      @default(100)
   lastEnergyUpdate    DateTime @default(now())
   endurance           Int      @default(10)
-  strength            Int      @default(0)
+  strength            Int      @default(10)
   strengthAtLevelUp   Int      @default(0)
-  agility             Int      @default(0)
+  agility             Int      @default(10)
   enduranceAtLevelUp  Int      @default(10)
   luck                Int      @default(0)
-  totalDamageReceived Float    @default(0)
-  totalDamageDealt    Float    @default(0)
-  totalSkillUses      Int      @default(0)
+  strengthProgress    Float    @default(0)   // accumulated normalized attack damage toward next Strength point
+  enduranceProgress   Float    @default(0)   // accumulated normalized damage taken toward next Endurance point
+  agilityProgress     Float    @default(0)   // accumulated normalized skill damage + healed amount toward next Agility point
   gold                Int      @default(0)
   trophies            Int      @default(0)
   crystals            Int      @default(0)

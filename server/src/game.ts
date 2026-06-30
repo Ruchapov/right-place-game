@@ -39,28 +39,27 @@ function pickRoom(): RoomType {
 export function generateRooms(count = 3): RoomType[] {
   return Array.from({ length: count }, () => pickRoom())
 }
-// --- Stat growth from cumulative damage ---
+// --- Stat growth: incremental accumulation ---
 
-// Each next stat point costs Math.round(base * Math.pow(growth, stat - 10)) accumulated units.
-// All three stats start at 10 so threshold exponent is 0 (cost = base) at the starting value.
-function calcStatPoints(accumulated: number, base: number, growth: number, startStat = 10): number {
-  let stat = startStat
-  let used = 0
+// Given the current stat value, current leftover progress, and new damage dealt this fight,
+// returns the new stat (incremented for each threshold crossed) and new leftover progress.
+// Constants per stat — Strength/Agility: base=300, growth=1.15 | Endurance: base=120, growth=1.20
+export function applyStatProgress(
+  currentStat: number,
+  currentProgress: number,
+  newDamage: number,
+  base: number,
+  growth: number,
+): { stat: number; progress: number } {
+  let stat = currentStat
+  let progress = currentProgress + newDamage
   while (true) {
     const threshold = Math.round(base * Math.pow(growth, stat - 10))
-    if (used + threshold > accumulated) break
-    used += threshold
+    if (progress < threshold) break
+    progress -= threshold
     stat++
   }
-  return stat
-}
-
-export function calculateStrength(totalDamageDealt: number): number {
-  return calcStatPoints(totalDamageDealt, 300, 1.15)
-}
-
-export function calculateEndurance(totalDamageReceived: number): number {
-  return calcStatPoints(totalDamageReceived, 120, 1.20)
+  return { stat, progress }
 }
 // --- Leveling (Method 1: stat progression) ---
 
@@ -98,6 +97,3 @@ export function normalizeReceivedDamage(rawDamage: number, level: number): numbe
   return rawDamage / (1 + 0.12 * (level - 1))
 }
 
-export function calculateAgility(totalSkillDamage: number): number {
-  return calcStatPoints(totalSkillDamage, 300, 1.15)
-}
