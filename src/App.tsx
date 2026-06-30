@@ -45,6 +45,7 @@ export default function App() {
   const [runError, setRunError] = useState<string | null>(null)
   const [roomIntro, setRoomIntro] = useState(false)
   const [runDied, setRunDied] = useState(false)
+  const [itemDropToast, setItemDropToast] = useState<{ name: string; slot: string } | null>(null)
 
   // Live energy
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
@@ -133,6 +134,10 @@ export default function App() {
       setRoomIndex(result.index)
       setRunHp(result.hp)
       setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
+      if (result.droppedItem) {
+        setItemDropToast({ name: result.droppedItem.name, slot: result.droppedItem.slot })
+        setTimeout(() => setItemDropToast(null), 3000)
+      }
       if (!result.done && !result.died) showRoomIntro(result.index, currentRooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Room failed')
@@ -152,6 +157,10 @@ export default function App() {
       if (br.died) setRunDied(true)
       if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
       setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
+      if (br.droppedItem) {
+        setItemDropToast({ name: br.droppedItem.name, slot: br.droppedItem.slot })
+        setTimeout(() => setItemDropToast(null), 3000)
+      }
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Battle result failed')
     }
@@ -237,6 +246,11 @@ export default function App() {
 
   return (
     <div style={{ padding: 20, paddingBottom: 80, fontFamily: 'sans-serif', minHeight: '100vh', background: '#1a1a2e', color: 'white' }}>
+      {itemDropToast && (
+        <div style={{ position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)', background: '#221E2B', border: '1px solid #E8B23A', color: '#EDE7F2', padding: '10px 20px', borderRadius: 8, zIndex: 9999 }}>
+          🎁 Выпал предмет: {itemDropToast.name}
+        </div>
+      )}
       {activeTab !== 'explore' && (
         <div>
           {activeTab === 'hero' && (
