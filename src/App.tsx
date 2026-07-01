@@ -402,10 +402,10 @@ export default function App() {
                     <div key={slot}
                       onClick={() => { setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot) }}
                       style={{
-                        width:'100%', minHeight:0, borderRadius:12, padding:'10px 6px',
                         background: equippedItem ? '#221E2B' : 'rgba(255,255,255,0.03)',
                         border: `1px solid ${equippedItem ? '#E8B23A' : '#3A3344'}`,
-                        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4,
+                        borderRadius:12, padding:'10px 6px',
+                        display:'flex', flexDirection:'column', alignItems:'center', gap:4,
                         cursor:'pointer',
                       }}>
                       {equippedItem ? (
