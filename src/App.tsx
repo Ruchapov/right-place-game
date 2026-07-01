@@ -17,7 +17,6 @@ const ROOM_LABELS: Record<string, string> = {
   puzzle: '🧩 Загадка',
 }
 
-const SLOT_ORDER = ['weapon', 'armor', 'helmet', 'boots', 'gloves', 'amulet'] as const
 const SLOT_LABELS: Record<string, string> = {
   weapon: 'Оружие',
   armor: 'Броня',
@@ -25,6 +24,34 @@ const SLOT_LABELS: Record<string, string> = {
   boots: 'Сапоги',
   gloves: 'Перчатки',
   amulet: 'Амулет',
+}
+
+const HERO_SLOTS: { slot: string; label: string }[] = [
+  { slot: 'weapon', label: 'Оружие' },
+  { slot: 'helmet', label: 'Шлем' },
+  { slot: 'armor', label: 'Броня' },
+  { slot: 'gloves', label: 'Перчатки' },
+  { slot: 'boots', label: 'Сапоги' },
+  { slot: 'amulet', label: 'Амулет' },
+]
+
+const SLOT_SVG_PATHS: Record<string, string> = {
+  weapon: 'M20.7 3.3a1 1 0 0 0-1.4 0L14 8.6l-1.3-1.3-1.4 1.4 1.3 1.3-7 7A2 2 0 1 0 8.4 19.8l7-7 1.3 1.3 1.4-1.4-1.3-1.3 5.3-5.3a1 1 0 0 0 0-1.8z',
+  helmet: 'M12 2C8.1 2 5 5.1 5 9v2h2v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h2V9c0-3.9-3.1-7-7-7zm3 10H9v-1h6v1z',
+  armor: 'M12 1L3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4zm0 10.9L6.8 9 12 6.1 17.2 9 12 11.9z',
+  gloves: 'M9 5v5H7V5a1 1 0 0 0-2 0v6H4V8a1 1 0 0 0-2 0v5c0 2.8 2.2 5 5 5h.5A4.5 4.5 0 0 0 12 13.5V5a1 1 0 0 0-2 0zm9 0a1 1 0 0 0-1 1v4h-1V5a1 1 0 0 0-2 0v5h-1V7a1 1 0 0 0-2 0v6.5A4.5 4.5 0 0 0 16.5 18H17c2.8 0 5-2.2 5-5V8a1 1 0 0 0-1-1z',
+  boots: 'M18 14c0-2-1.3-3.7-3-4.5V4a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v5.5C5.3 10.3 4 12 4 14v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4zM9 5h4v4H9V5z',
+  amulet: 'M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z',
+}
+
+function SlotIcon({ slot, size = 24, color = '#3A3344' }: { slot: string; size?: number; color?: string }) {
+  const d = SLOT_SVG_PATHS[slot]
+  if (!d) return null
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" style={{ color }}>
+      <path d={d} />
+    </svg>
+  )
 }
 
 const MAX_ENERGY = 100
@@ -48,6 +75,7 @@ export default function App() {
   const [runMaxHp, setRunMaxHp] = useState(80)
   const [runArmor, setRunArmor] = useState(0)
   const [gearTab, setGearTab] = useState<'skills' | 'equipment' | 'consumables'>('skills')
+  const [slotFilter, setSlotFilter] = useState<string | null>(null)
   const [inventory, setInventory] = useState<InventoryItem[]>([])
   const [inventoryLoading, setInventoryLoading] = useState(false)
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
@@ -94,7 +122,12 @@ export default function App() {
 
   useEffect(() => {
     if (gearTab === 'equipment') loadInventory()
+    else setSlotFilter(null)
   }, [gearTab])
+
+  useEffect(() => {
+    if (slotFilter !== null) loadInventory()
+  }, [slotFilter])
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
@@ -340,11 +373,11 @@ export default function App() {
                 {[
                   { icon:'⭐', value: player?.level ?? 1,                          label:'Уровень' },
                   { icon:'🗡️', value: 15 + Math.floor((player?.strength ?? 0) / 2), label:'Урон' },
-                  { icon:'🛡️', value: 0,                                            label:'Броня' },
+                  { icon:'🛡️', value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0), label:'Броня' },
                   { icon:'❤️', value: player?.endurance ?? 10, label:'Выносливость' },
                   { icon:'💪', value: player?.strength ?? 0,                        label:'Сила' },
                   { icon:'🌀', value: player?.agility ?? 0,                         label:'Ловкость' },
-                  { icon:'🍀', value: 0,                                             label:'Удача' },
+                  { icon:'🍀', value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0), label:'Удача' },
                   { icon:'💰', value: player?.gold ?? 0,                            label:'Золото' },
                   { icon:'🏆', value: player?.trophies ?? 0,                        label:'Трофеи' },
                 ].map((stat, i) => (
@@ -359,6 +392,35 @@ export default function App() {
                     <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', textAlign:'center' }}>{stat.label}</div>
                   </div>
                 ))}
+              </div>
+
+              {/* Снаряжение */}
+              <div style={{ fontSize:12, color:'rgba(255,255,255,0.4)', letterSpacing:1, margin:'24px 8px 12px' }}>СНАРЯЖЕНИЕ</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
+                {HERO_SLOTS.map(({ slot, label }) => {
+                  const equippedItem = inventory.find(i => i.equipped && i.item.slot === slot)
+                  return (
+                    <div key={slot}
+                      onClick={() => { setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot) }}
+                      style={{
+                        width:'100%', aspectRatio:'1', borderRadius:12,
+                        background: equippedItem ? '#221E2B' : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${equippedItem ? '#E8B23A' : '#3A3344'}`,
+                        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4,
+                        cursor:'pointer',
+                      }}>
+                      {equippedItem ? (
+                        <img
+                          src={`${import.meta.env.BASE_URL}assets/equipment/processed/${equippedItem.item.iconPath}`}
+                          style={{ width:40, height:40, objectFit:'contain' }}
+                        />
+                      ) : (
+                        <SlotIcon slot={slot} size={24} color="#3A3344" />
+                      )}
+                      <div style={{ fontSize:9, color: equippedItem ? '#9C93AD' : '#3A3344' }}>{label}</div>
+                    </div>
+                  )
+                })}
               </div>
 
               {/* Энергия внизу */}
@@ -510,38 +572,99 @@ export default function App() {
                   {inventoryLoading && (
                     <div style={{ textAlign:'center', padding:'40px 0', color:'#9C93AD', fontSize:13 }}>⏳ Загрузка...</div>
                   )}
-                  {!inventoryLoading && inventory.length === 0 && (
-                    <div style={{ textAlign:'center', padding:'40px 0', color:'#9C93AD', fontSize:13 }}>Пока нет предметов</div>
+
+                  {!inventoryLoading && slotFilter === null && (
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
+                      {HERO_SLOTS.map(({ slot, label }) => {
+                        const equippedItem = inventory.find(i => i.equipped && i.item.slot === slot)
+                        return (
+                          <div key={slot}
+                            onClick={() => setSlotFilter(slot)}
+                            style={{
+                              width:'100%', aspectRatio:'1', borderRadius:12, padding:8,
+                              background: equippedItem ? '#221E2B' : 'rgba(255,255,255,0.03)',
+                              border: `1px solid ${equippedItem ? '#E8B23A' : '#3A3344'}`,
+                              display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4,
+                              cursor:'pointer',
+                            }}>
+                            {equippedItem ? (
+                              <img
+                                src={`${import.meta.env.BASE_URL}assets/equipment/processed/${equippedItem.item.iconPath}`}
+                                style={{ width:40, height:40, objectFit:'contain' }}
+                              />
+                            ) : (
+                              <SlotIcon slot={slot} size={24} color="#3A3344" />
+                            )}
+                            <div style={{ fontSize:9, color: equippedItem ? '#9C93AD' : '#3A3344' }}>{label}</div>
+                            {equippedItem && (
+                              <div style={{ fontSize:9, color:'#9C93AD', maxWidth:'90%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                {equippedItem.item.nameRu}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
                   )}
-                  {!inventoryLoading && SLOT_ORDER.map(slot => {
-                    const itemsInSlot = inventory.filter(inv => inv.item.slot === slot)
-                    if (itemsInSlot.length === 0) return null
-                    return (
-                      <div key={slot} style={{ marginBottom: 20 }}>
-                        <div style={{ fontSize: 12, color: '#9C93AD', padding: '0 8px', marginBottom: 8 }}>{SLOT_LABELS[slot]}</div>
-                        <div style={{ display:'flex', gap:10, overflowX:'auto', padding:'0 8px', flexWrap: itemsInSlot.length <= 3 ? 'wrap' : 'nowrap' }}>
-                          {itemsInSlot.map(invItem => (
+
+                  {!inventoryLoading && slotFilter !== null && (
+                    <div style={{ padding:'0 8px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                        <button onClick={() => setSlotFilter(null)} style={{
+                          background:'none', border:'none', color:'#9C93AD', fontSize:13, cursor:'pointer',
+                          minHeight:44, padding:'0 8px 0 0',
+                        }}>← Назад</button>
+                        <div style={{ fontSize:14, fontWeight:'bold', color:'#EDE7F2' }}>{SLOT_LABELS[slotFilter]}</div>
+                      </div>
+                      {inventory
+                        .filter(inv => inv.item.slot === slotFilter)
+                        .sort((a, b) => a.item.tier - b.item.tier)
+                        .map(invItem => {
+                          const levelOk = (player?.level ?? 0) >= invItem.item.levelRequired
+                          const statsLine = [
+                            invItem.item.damage !== null ? `⚔️+${invItem.item.damage}` : null,
+                            invItem.item.armor !== null ? `🛡️+${invItem.item.armor}` : null,
+                            invItem.item.moveSpeed !== null ? `👟×${invItem.item.moveSpeed}` : null,
+                            invItem.item.luck !== null ? `🍀+${invItem.item.luck}` : null,
+                          ].filter(Boolean).join('  ')
+                          return (
                             <div key={invItem.inventoryItemId} onClick={() => setSelectedItem(invItem)}
                               style={{
-                                width:80, minWidth:80, height:100, background:'#221E2B',
+                                display:'flex', flexDirection:'row', alignItems:'center', gap:12, padding:12,
+                                background:'#221E2B', borderRadius:12,
                                 border: `1px solid ${invItem.equipped ? '#E8B23A' : '#3A3344'}`,
-                                borderRadius:10, display:'flex', flexDirection:'column', alignItems:'center',
-                                justifyContent:'center', gap:6, padding:6, cursor:'pointer',
-                                boxShadow: invItem.equipped ? '0 0 10px rgba(232,178,58,0.35)' : 'none',
+                                marginBottom:8, cursor:'pointer',
                               }}>
                               <img
                                 src={`${import.meta.env.BASE_URL}assets/equipment/processed/${invItem.item.iconPath}`}
-                                width={48} height={48} style={{ objectFit:'contain' }}
+                                width={48} height={48} style={{ objectFit:'contain', flexShrink:0 }}
                               />
-                              <div style={{ fontSize:9, color:'#9C93AD', textAlign:'center', lineHeight:'11px', maxHeight:22, overflow:'hidden' }}>
-                                {invItem.item.nameRu}
+                              <div style={{ flex:1, minWidth:0 }}>
+                                <div style={{ fontSize:14, fontWeight:'bold', color:'#EDE7F2' }}>{invItem.item.nameRu}</div>
+                                <div style={{ fontSize:11, color:'#9C93AD', marginTop:2 }}>
+                                  Тир {invItem.item.tier} · Требуется ур. {invItem.item.levelRequired}
+                                </div>
+                                {statsLine && (
+                                  <div style={{ fontSize:11, color:'#9C93AD', marginTop:2 }}>{statsLine}</div>
+                                )}
                               </div>
+                              {invItem.equipped ? (
+                                <div style={{ fontSize:18, color:'#E8B23A', flexShrink:0 }}>✓</div>
+                              ) : levelOk ? (
+                                <button style={{
+                                  background:'#E8B23A', color:'#15131A', borderRadius:8, padding:'4px 10px',
+                                  fontSize:11, border:'none', cursor:'pointer', flexShrink:0,
+                                }}>
+                                  Надеть
+                                </button>
+                              ) : (
+                                <div style={{ fontSize:11, color:'#E0353B', flexShrink:0 }}>Ур.{invItem.item.levelRequired}</div>
+                              )}
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
+                          )
+                        })}
+                    </div>
+                  )}
                 </div>
               )}
 
