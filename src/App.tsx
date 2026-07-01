@@ -36,6 +36,7 @@ export default function App() {
   const [puzzleData, setPuzzleData] = useState<{ question: string; options: string[] } | null>(null)
   const [runHp, setRunHp] = useState(80)
   const [runMaxHp, setRunMaxHp] = useState(80)
+  const [runArmor, setRunArmor] = useState(0)
 
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -88,6 +89,7 @@ export default function App() {
       setRooms(result.rooms); setRoomIndex(0); setResults([])
       setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
       setRunHp(result.hp); setRunMaxHp(result.maxHp)
+      if (result.armor !== undefined) setRunArmor(result.armor)
       if (result.potions !== undefined) setPlayer(prev => prev ? { ...prev, potionCharges: result.potions! } : prev)
       showRoomIntro(0, result.rooms)
     } catch (e) {
@@ -203,7 +205,7 @@ export default function App() {
   }
 
   function backToMenu() {
-    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false)
+    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false); setRunArmor(0)
   }
 
   async function handleSkillToggle(skillId: string) {
@@ -495,7 +497,7 @@ export default function App() {
         </>
       )}
 
-      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} equippedSkills={player?.equippedSkills ?? []} potionCharges={player?.potionCharges ?? 0} strength={player?.strength ?? 0} onBattleEnd={handleBattleEnd} />}
+      {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} equippedSkills={player?.equippedSkills ?? []} potionCharges={player?.potionCharges ?? 0} strength={player?.strength ?? 0} armor={runArmor} onBattleEnd={handleBattleEnd} />}
       {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
       {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
       {roomIntro && rooms && roomIndex < rooms.length && (

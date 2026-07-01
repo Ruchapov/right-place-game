@@ -126,6 +126,12 @@ export async function runRoutes(server: FastifyInstance) {
     const existingRun = character.currentRun as ActiveRun | null
     const potions = existingRun ? existingRun.potions : Math.min(character.potionCharges, 3)
 
+    const equippedItems = await prisma.inventoryItem.findMany({
+      where: { characterId: character.id, equipped: true },
+      include: { item: true },
+    })
+    const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
+
     await prisma.character.update({
       where: { userId },
       data: {
@@ -135,7 +141,7 @@ export async function runRoutes(server: FastifyInstance) {
       },
     })
 
-    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions })
+    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions, armor: totalArmor })
   })
 
   // Enter the current room: process it, then advance the run.

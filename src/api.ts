@@ -37,6 +37,7 @@ export type RunResult = {
   hp: number
   maxHp: number
   potions?: number
+  armor?: number
 }
 
 export async function startRun(token: string): Promise<RunResult> {

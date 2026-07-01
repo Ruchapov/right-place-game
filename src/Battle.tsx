@@ -11,10 +11,11 @@ type BattleProps = {
   equippedSkills?: string[]
   potionCharges?: number
   strength?: number
+  armor?: number
   onBattleEnd: (result: BattleResult) => void
 }
 
-export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], potionCharges = 0, strength = 0, onBattleEnd }: BattleProps) {
+export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, equippedSkills = [], potionCharges = 0, strength = 0, armor, onBattleEnd }: BattleProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const directionRef = useRef(0)
   const [battleOver, setBattleOver] = useState(false)
@@ -209,6 +210,14 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       const ENEMY_ATTACK_DAMAGE = Math.round(BASE_ENEMY_DAMAGE * dmgMultiplier)
       // --- конец scaling ---
 
+      // --- Armor reduction ---
+      const armorValue = armor ?? 0
+      const level_val = level ?? 1
+      const K = 5
+      const absorb = armorValue / (armorValue + level_val * K)
+      const EFFECTIVE_ENEMY_DAMAGE = Math.max(1, Math.round(ENEMY_ATTACK_DAMAGE * (1 - absorb)))
+      // --- конец armor reduction ---
+
       function sliceFrames(texture: Texture, frameCount: number, frameW: number, frameH: number): Texture[] {
         return Array.from({ length: frameCount }, (_, i) =>
           new Texture({ source: texture.source, frame: new Rectangle(i * frameW, 0, frameW, frameH) })
@@ -340,8 +349,8 @@ export default function Battle({ initialHp, maxHp, isBoss = false, level = 1, eq
       }
 
       function applyDamageToPlayer() {
-        playerHp -= ENEMY_ATTACK_DAMAGE
-        totalDamageTaken += ENEMY_ATTACK_DAMAGE
+        playerHp -= EFFECTIVE_ENEMY_DAMAGE
+        totalDamageTaken += EFFECTIVE_ENEMY_DAMAGE
         if (playerHp < 0) playerHp = 0
         playerHpText.text = `HP: ${playerHp}`
         if (playerHp <= 0) {
