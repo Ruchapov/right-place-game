@@ -122,7 +122,6 @@ export default function App() {
 
   useEffect(() => {
     if (gearTab === 'equipment') loadInventory()
-    else setSlotFilter(null)
   }, [gearTab])
 
   useEffect(() => {
@@ -369,7 +368,7 @@ export default function App() {
               }} />
 
               {/* Сетка статов 3x3 */}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
                 {[
                   { icon:'⭐', value: player?.level ?? 1,                          label:'Уровень' },
                   { icon:'🗡️', value: 15 + Math.floor((player?.strength ?? 0) / 2), label:'Урон' },
@@ -384,26 +383,26 @@ export default function App() {
                   <div key={i} style={{
                     background:'#1a1a2e',
                     border:'1px solid rgba(255,215,0,0.15)',
-                    borderRadius:12, padding:'14px 8px',
+                    borderRadius:12, padding:'10px 6px',
                     display:'flex', flexDirection:'column', alignItems:'center', gap:4,
                   }}>
-                    <div style={{ fontSize:22 }}>{stat.icon}</div>
-                    <div style={{ fontSize:20, fontWeight:'bold', color:'#e8e8f0' }}>{stat.value}</div>
-                    <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', textAlign:'center' }}>{stat.label}</div>
+                    <div style={{ fontSize:18 }}>{stat.icon}</div>
+                    <div style={{ fontSize:16, fontWeight:'bold', color:'#e8e8f0' }}>{stat.value}</div>
+                    <div style={{ fontSize:10, color:'rgba(255,255,255,0.4)', textAlign:'center' }}>{stat.label}</div>
                   </div>
                 ))}
               </div>
 
               {/* Снаряжение */}
-              <div style={{ fontSize:12, color:'rgba(255,255,255,0.4)', letterSpacing:1, margin:'24px 8px 12px' }}>СНАРЯЖЕНИЕ</div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:10, padding:'0 8px' }}>
+              <div style={{ fontSize:12, color:'rgba(255,255,255,0.4)', letterSpacing:1, margin:'16px 8px 12px' }}>СНАРЯЖЕНИЕ</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
                 {HERO_SLOTS.map(({ slot, label }) => {
                   const equippedItem = inventory.find(i => i.equipped && i.item.slot === slot)
                   return (
                     <div key={slot}
                       onClick={() => { setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot) }}
                       style={{
-                        width:'100%', aspectRatio:'1', borderRadius:12,
+                        width:'100%', minHeight:0, borderRadius:12, padding:'10px 6px',
                         background: equippedItem ? '#221E2B' : 'rgba(255,255,255,0.03)',
                         border: `1px solid ${equippedItem ? '#E8B23A' : '#3A3344'}`,
                         display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4,
@@ -412,12 +411,12 @@ export default function App() {
                       {equippedItem ? (
                         <img
                           src={`${import.meta.env.BASE_URL}assets/equipment/processed/${equippedItem.item.iconPath}`}
-                          style={{ width:40, height:40, objectFit:'contain' }}
+                          style={{ width:36, height:36, objectFit:'contain' }}
                         />
                       ) : (
-                        <SlotIcon slot={slot} size={24} color="#3A3344" />
+                        <SlotIcon slot={slot} size={20} color="#3A3344" />
                       )}
-                      <div style={{ fontSize:9, color: equippedItem ? '#9C93AD' : '#3A3344' }}>{label}</div>
+                      <div style={{ fontSize:10, color: equippedItem ? '#9C93AD' : '#3A3344' }}>{label}</div>
                     </div>
                   )
                 })}
@@ -511,7 +510,7 @@ export default function App() {
                   { id:'equipment', label:'Экипировка' },
                   { id:'consumables', label:'Расходуемые' },
                 ] as const).map(t => (
-                  <button key={t.id} onClick={() => setGearTab(t.id)}
+                  <button key={t.id} onClick={() => { setGearTab(t.id); if (t.id !== 'equipment') setSlotFilter(null) }}
                     style={{
                       flex:1, padding:'10px 4px', minHeight:44, background:'none',
                       border:'none', borderBottom: `2px solid ${gearTab === t.id ? '#E8B23A' : 'transparent'}`,
