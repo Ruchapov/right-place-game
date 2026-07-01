@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { retrieveRawInitData } from '@telegram-apps/sdk'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult, type InventoryItem } from './api'
 import Battle from './Battle'
 import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
@@ -15,6 +15,16 @@ const ROOM_LABELS: Record<string, string> = {
   trap: '💥 Ловушка',
   smuggler: '🤝 Контрабандист',
   puzzle: '🧩 Загадка',
+}
+
+const SLOT_ORDER = ['weapon', 'armor', 'helmet', 'boots', 'gloves', 'amulet'] as const
+const SLOT_LABELS: Record<string, string> = {
+  weapon: 'Оружие',
+  armor: 'Броня',
+  helmet: 'Шлем',
+  boots: 'Сапоги',
+  gloves: 'Перчатки',
+  amulet: 'Амулет',
 }
 
 const MAX_ENERGY = 100
@@ -37,6 +47,11 @@ export default function App() {
   const [runHp, setRunHp] = useState(80)
   const [runMaxHp, setRunMaxHp] = useState(80)
   const [runArmor, setRunArmor] = useState(0)
+  const [gearTab, setGearTab] = useState<'skills' | 'equipment' | 'consumables'>('skills')
+  const [inventory, setInventory] = useState<InventoryItem[]>([])
+  const [inventoryLoading, setInventoryLoading] = useState(false)
+  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
+  const [equipping, setEquipping] = useState(false)
 
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -76,6 +91,10 @@ export default function App() {
     }
     init()
   }, [])
+
+  useEffect(() => {
+    if (gearTab === 'equipment') loadInventory()
+  }, [gearTab])
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
@@ -243,6 +262,35 @@ export default function App() {
     }
   }
 
+  async function loadInventory() {
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setInventoryLoading(true)
+    try {
+      const res = await fetchInventory(token)
+      setInventory(res.inventory)
+    } catch (e) {
+      console.error('Load inventory failed', e)
+    } finally {
+      setInventoryLoading(false)
+    }
+  }
+
+  async function handleEquipItem(inventoryItemId: string, equip: boolean) {
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    setEquipping(true)
+    try {
+      await equipItem(token, inventoryItemId, equip)
+      await loadInventory()
+      setSelectedItem(null)
+    } catch (e) {
+      console.error('Equip item failed', e)
+    } finally {
+      setEquipping(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
   if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
 
@@ -392,46 +440,196 @@ export default function App() {
             <div style={{ padding: '0 4px' }}>
               <div style={{ padding: '20px 16px 16px' }}>
                 <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e8e8f0' }}>🎒 Снаряжение</div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>
-                  Выбери 2 скилла {savingSkills ? '...' : ''}
+              </div>
+              <div style={{ height:1, background:'linear-gradient(90deg, transparent, #ffd700, transparent)', boxShadow:'0 0 8px rgba(255,215,0,0.5)', margin:'0 16px 16px' }} />
+
+              <div style={{ display:'flex', gap:4, padding:'0 8px', marginBottom:16 }}>
+                {([
+                  { id:'skills', label:'Навыки' },
+                  { id:'equipment', label:'Экипировка' },
+                  { id:'consumables', label:'Расходуемые' },
+                ] as const).map(t => (
+                  <button key={t.id} onClick={() => setGearTab(t.id)}
+                    style={{
+                      flex:1, padding:'10px 4px', minHeight:44, background:'none',
+                      border:'none', borderBottom: `2px solid ${gearTab === t.id ? '#E8B23A' : 'transparent'}`,
+                      color: gearTab === t.id ? '#E8B23A' : '#9C93AD',
+                      fontSize:13, fontWeight: gearTab === t.id ? 700 : 400,
+                      cursor:'pointer',
+                    }}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {gearTab === 'skills' && (
+                <div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', padding: '0 8px', marginBottom: 12 }}>
+                    Выбери 2 скилла {savingSkills ? '...' : ''}
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:12, padding:'0 8px' }}>
+                    {[
+                      { id:'heal',     icon:'💊', name:'Лечение',        desc:'+10% HP. Кулдаун 5с.' },
+                      { id:'dash',     icon:'⚡', name:'Рывок-удар',     desc:'Рывок с уроном.' },
+                      { id:'fireball', icon:'🔥', name:'Огненный шар',   desc:'Дальний урон.' },
+                      { id:'slash',    icon:'🗡️', name:'Разрез',         desc:'Урон + кровотечение.' },
+                      { id:'iceball',  icon:'🧊', name:'Ледяной шар',    desc:'Урон + замедление.' },
+                    ].map(skill => {
+                      const equipped = player?.equippedSkills?.includes(skill.id) ?? false
+                      const full = (player?.equippedSkills?.length ?? 0) >= 2 && !equipped
+                      return (
+                        <div key={skill.id} onClick={() => !full && handleSkillToggle(skill.id)}
+                          style={{
+                            background: equipped ? 'rgba(255,215,0,0.1)' : '#1a1a2e',
+                            border: `1px solid ${equipped ? '#ffd700' : 'rgba(255,255,255,0.1)'}`,
+                            borderRadius: 12, padding: '12px 8px',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+                            opacity: full ? 0.4 : 1,
+                            cursor: full ? 'default' : 'pointer',
+                            boxShadow: equipped ? '0 0 12px rgba(255,215,0,0.2)' : 'none',
+                            transition: 'all 0.2s',
+                          }}>
+                          <div style={{ fontSize: 28 }}>{skill.icon}</div>
+                          <div style={{ fontSize: 13, fontWeight: 'bold', color: '#e8e8f0', textAlign:'center' }}>{skill.name}</div>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', textAlign:'center' }}>{skill.desc}</div>
+                          <div style={{
+                            marginTop: 4, fontSize: 11, fontWeight: 'bold',
+                            color: equipped ? '#ffd700' : 'rgba(255,255,255,0.3)',
+                          }}>
+                            {equipped ? '✓ Экипирован' : 'Экипировать'}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
-              <div style={{ height:1, background:'linear-gradient(90deg, transparent, #ffd700, transparent)', boxShadow:'0 0 8px rgba(255,215,0,0.5)', margin:'0 16px 20px' }} />
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:12, padding:'0 8px' }}>
-                {[
-                  { id:'heal',     icon:'💊', name:'Лечение',        desc:'+10% HP. Кулдаун 5с.' },
-                  { id:'dash',     icon:'⚡', name:'Рывок-удар',     desc:'Рывок с уроном.' },
-                  { id:'fireball', icon:'🔥', name:'Огненный шар',   desc:'Дальний урон.' },
-                  { id:'slash',    icon:'🗡️', name:'Разрез',         desc:'Урон + кровотечение.' },
-                  { id:'iceball',  icon:'🧊', name:'Ледяной шар',    desc:'Урон + замедление.' },
-                ].map(skill => {
-                  const equipped = player?.equippedSkills?.includes(skill.id) ?? false
-                  const full = (player?.equippedSkills?.length ?? 0) >= 2 && !equipped
-                  return (
-                    <div key={skill.id} onClick={() => !full && handleSkillToggle(skill.id)}
-                      style={{
-                        background: equipped ? 'rgba(255,215,0,0.1)' : '#1a1a2e',
-                        border: `1px solid ${equipped ? '#ffd700' : 'rgba(255,255,255,0.1)'}`,
-                        borderRadius: 12, padding: '16px 12px',
-                        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-                        opacity: full ? 0.4 : 1,
-                        cursor: full ? 'default' : 'pointer',
-                        boxShadow: equipped ? '0 0 12px rgba(255,215,0,0.2)' : 'none',
-                        transition: 'all 0.2s',
-                      }}>
-                      <div style={{ fontSize: 36 }}>{skill.icon}</div>
-                      <div style={{ fontSize: 15, fontWeight: 'bold', color: '#e8e8f0', textAlign:'center' }}>{skill.name}</div>
-                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textAlign:'center' }}>{skill.desc}</div>
-                      <div style={{
-                        marginTop: 4, fontSize: 11, fontWeight: 'bold',
-                        color: equipped ? '#ffd700' : 'rgba(255,255,255,0.3)',
-                      }}>
-                        {equipped ? '✓ Экипирован' : 'Экипировать'}
+              )}
+
+              {gearTab === 'equipment' && (
+                <div>
+                  {inventoryLoading && (
+                    <div style={{ textAlign:'center', padding:'40px 0', color:'#9C93AD', fontSize:13 }}>⏳ Загрузка...</div>
+                  )}
+                  {!inventoryLoading && inventory.length === 0 && (
+                    <div style={{ textAlign:'center', padding:'40px 0', color:'#9C93AD', fontSize:13 }}>Пока нет предметов</div>
+                  )}
+                  {!inventoryLoading && SLOT_ORDER.map(slot => {
+                    const itemsInSlot = inventory.filter(inv => inv.item.slot === slot)
+                    if (itemsInSlot.length === 0) return null
+                    return (
+                      <div key={slot} style={{ marginBottom: 20 }}>
+                        <div style={{ fontSize: 12, color: '#9C93AD', padding: '0 8px', marginBottom: 8 }}>{SLOT_LABELS[slot]}</div>
+                        <div style={{ display:'flex', gap:10, overflowX:'auto', padding:'0 8px', flexWrap: itemsInSlot.length <= 3 ? 'wrap' : 'nowrap' }}>
+                          {itemsInSlot.map(invItem => (
+                            <div key={invItem.inventoryItemId} onClick={() => setSelectedItem(invItem)}
+                              style={{
+                                width:80, minWidth:80, height:100, background:'#221E2B',
+                                border: `1px solid ${invItem.equipped ? '#E8B23A' : '#3A3344'}`,
+                                borderRadius:10, display:'flex', flexDirection:'column', alignItems:'center',
+                                justifyContent:'center', gap:6, padding:6, cursor:'pointer',
+                                boxShadow: invItem.equipped ? '0 0 10px rgba(232,178,58,0.35)' : 'none',
+                              }}>
+                              <img
+                                src={`${import.meta.env.BASE_URL}assets/equipment/processed/${invItem.item.iconPath}`}
+                                width={48} height={48} style={{ objectFit:'contain' }}
+                              />
+                              <div style={{ fontSize:9, color:'#9C93AD', textAlign:'center', lineHeight:'11px', maxHeight:22, overflow:'hidden' }}>
+                                {invItem.item.nameRu}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {gearTab === 'consumables' && (
+                <div style={{ textAlign:'center', padding:'60px 20px', color:'#9C93AD' }}>
+                  <div style={{ fontSize:48, marginBottom:12 }}>🧪</div>
+                  <div style={{ fontSize:14 }}>Расходуемые предметы появятся здесь</div>
+                </div>
+              )}
+
+              {selectedItem && (
+                <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000 }} onClick={() => setSelectedItem(null)}>
+                  <div onClick={(e) => e.stopPropagation()} style={{
+                    position:'fixed', bottom:0, left:0, right:0, background:'#221E2B',
+                    borderRadius:'16px 16px 0 0', padding:20, zIndex:1001,
+                  }}>
+                    <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                      <button onClick={() => setSelectedItem(null)} style={{
+                        background:'none', border:'none', color:'#9C93AD', fontSize:24, cursor:'pointer',
+                        width:44, height:44, display:'flex', alignItems:'center', justifyContent:'center',
+                      }}>×</button>
                     </div>
-                  )
-                })}
-              </div>
+                    <div style={{ display:'flex', justifyContent:'center', marginBottom:12 }}>
+                      <img
+                        src={`${import.meta.env.BASE_URL}assets/equipment/processed/${selectedItem.item.iconPath}`}
+                        width={80} height={80} style={{ objectFit:'contain' }}
+                      />
+                    </div>
+                    <div style={{ fontSize:18, fontWeight:'bold', color:'#EDE7F2', textAlign:'center' }}>{selectedItem.item.nameRu}</div>
+                    <div style={{ fontSize:12, color:'#9C93AD', textAlign:'center', marginTop:4, marginBottom:16 }}>
+                      {SLOT_LABELS[selectedItem.item.slot] ?? selectedItem.item.slot} · Тир {selectedItem.item.tier}
+                    </div>
+                    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, marginBottom: 12 }}>
+                      {selectedItem.item.damage !== null && (
+                        <div style={{ fontSize:14, color:'#EDE7F2', margin:'4px 0' }}>⚔️ Урон +{selectedItem.item.damage}</div>
+                      )}
+                      {selectedItem.item.armor !== null && (
+                        <div style={{ fontSize:14, color:'#EDE7F2', margin:'4px 0' }}>🛡️ Броня +{selectedItem.item.armor}</div>
+                      )}
+                      {selectedItem.item.moveSpeed !== null && (
+                        <div style={{ fontSize:14, color:'#EDE7F2', margin:'4px 0' }}>👟 Скорость ×{selectedItem.item.moveSpeed}</div>
+                      )}
+                      {selectedItem.item.luck !== null && (
+                        <div style={{ fontSize:14, color:'#EDE7F2', margin:'4px 0' }}>🍀 Удача +{selectedItem.item.luck}</div>
+                      )}
+                    </div>
+                    <div style={{
+                      fontSize:12, textAlign:'center', marginBottom:16,
+                      color: (player?.level ?? 0) >= selectedItem.item.levelRequired ? '#4FB477' : '#E0353B',
+                    }}>
+                      Требуется уровень {selectedItem.item.levelRequired}
+                    </div>
+                    {selectedItem.equipped ? (
+                      <button
+                        disabled={equipping}
+                        onClick={() => handleEquipItem(selectedItem.inventoryItemId, false)}
+                        style={{
+                          width:'100%', padding:'14px', borderRadius:10, minHeight:44,
+                          border:'1px solid #E0353B', background:'transparent', color:'#E0353B',
+                          fontSize:15, fontWeight:'bold', cursor: equipping ? 'default' : 'pointer',
+                          opacity: equipping ? 0.6 : 1,
+                        }}>
+                        {equipping ? '...' : 'Снять'}
+                      </button>
+                    ) : (player?.level ?? 0) >= selectedItem.item.levelRequired ? (
+                      <button
+                        disabled={equipping}
+                        onClick={() => handleEquipItem(selectedItem.inventoryItemId, true)}
+                        style={{
+                          width:'100%', padding:'14px', borderRadius:10, minHeight:44,
+                          border:'none', background:'#E8B23A', color:'#15131A',
+                          fontSize:15, fontWeight:'bold', cursor: equipping ? 'default' : 'pointer',
+                          opacity: equipping ? 0.6 : 1,
+                        }}>
+                        {equipping ? '...' : 'Надеть'}
+                      </button>
+                    ) : (
+                      <button disabled style={{
+                        width:'100%', padding:'14px', borderRadius:10, minHeight:44,
+                        border:'none', background:'#3A3344', color:'#9C93AD',
+                        fontSize:15, fontWeight:'bold', opacity:0.4, cursor:'default',
+                      }}>
+                        Недостаточный уровень
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {activeTab === 'friends' && (

@@ -241,3 +241,54 @@ export async function buyPotion(token: string): Promise<BuyPotionResult> {
   }
   return await response.json()
 }
+
+export type InventoryItem = {
+  inventoryItemId: string
+  equipped: boolean
+  item: {
+    id: string
+    slot: string
+    tier: number
+    nameRu: string
+    iconPath: string
+    levelRequired: number
+    damage: number | null
+    armor: number | null
+    moveSpeed: number | null
+    luck: number | null
+  }
+}
+
+export type InventoryResponse = { inventory: InventoryItem[] }
+
+export async function fetchInventory(token: string): Promise<InventoryResponse> {
+  const response = await fetch(`${SERVER_URL}/character/inventory`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Fetch inventory failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as InventoryResponse
+}
+
+export type EquipResponse = { success: boolean; equippedItemId: string | null; unequippedItemId: string | null }
+
+export async function equipItem(token: string, inventoryItemId: string, equip: boolean): Promise<EquipResponse> {
+  const response = await fetch(`${SERVER_URL}/character/equip`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ inventoryItemId, equip }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Equip item failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as EquipResponse
+}
