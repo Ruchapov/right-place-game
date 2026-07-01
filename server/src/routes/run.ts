@@ -603,4 +603,91 @@ export async function runRoutes(server: FastifyInstance) {
 
     return reply.send({ gold: updated.gold, potionCharges: updated.potionCharges })
   })
+
+  server.get('/character/inventory', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const inventoryItems = await prisma.inventoryItem.findMany({
+      where: { characterId: character.id },
+      include: { item: true },
+      orderBy: { acquiredAt: 'asc' },
+    })
+
+    return reply.send({
+      inventory: inventoryItems.map((inv) => ({
+        inventoryItemId: inv.id,
+        equipped: inv.equipped,
+        item: {
+          id: inv.item.id,
+          slot: inv.item.slot,
+          tier: inv.item.tier,
+          nameRu: inv.item.nameRu,
+          iconPath: inv.item.iconPath,
+          levelRequired: inv.item.levelRequired,
+          damage: inv.item.damage,
+          armor: inv.item.armor,
+          moveSpeed: inv.item.moveSpeed,
+          luck: inv.item.luck,
+        },
+      })),
+    })
+  })
+
+  server.post<{ Body: { inventoryItemId: string; equip: boolean } }>('/character/equip', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const { inventoryItemId, equip } = request.body
+
+    const inventoryItem = await prisma.inventoryItem.findUnique({
+      where: { id: inventoryItemId },
+      include: { item: true },
+    })
+    if (!inventoryItem || inventoryItem.characterId !== character.id) {
+      return reply.status(404).send({ error: 'Inventory item not found' })
+    }
+
+    if (equip === true) {
+      if (character.level < inventoryItem.item.levelRequired) {
+        return reply.status(400).send({ error: 'Недостаточный уровень' })
+      }
+
+      const currentlyEquipped = await prisma.inventoryItem.findFirst({
+        where: { characterId: character.id, equipped: true, item: { slot: inventoryItem.item.slot } },
+        include: { item: true },
+      })
+
+      if (currentlyEquipped) {
+        await prisma.inventoryItem.update({
+          where: { id: currentlyEquipped.id },
+          data: { equipped: false },
+        })
+      }
+
+      await prisma.inventoryItem.update({
+        where: { id: inventoryItem.id },
+        data: { equipped: true },
+      })
+
+      return reply.send({
+        success: true,
+        equippedItemId: inventoryItem.id,
+        unequippedItemId: currentlyEquipped ? currentlyEquipped.id : null,
+      })
+    } else {
+      await prisma.inventoryItem.update({
+        where: { id: inventoryItem.id },
+        data: { equipped: false },
+      })
+
+      return reply.send({ success: true, equippedItemId: null, unequippedItemId: inventoryItem.id })
+    }
+  })
 }
