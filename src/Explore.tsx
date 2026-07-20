@@ -11,6 +11,12 @@ type DebugInfo = {
   gridLength: number
   tileCount: number
   fetchStatus: string
+  canvasStyleWidth?: string
+  canvasStyleHeight?: string
+  canvasOffsetWidth?: number
+  canvasOffsetHeight?: number
+  canvasAttrWidth?: number
+  canvasAttrHeight?: number
 }
 
 const TILE_SIZE = 64
@@ -72,6 +78,7 @@ export default function Explore({ onClose }: ExploreProps) {
       }
 
       containerRef.current.appendChild(app.canvas)
+      app.canvas.style.border = '5px solid red'
 
       const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
 
@@ -99,6 +106,12 @@ export default function Explore({ onClose }: ExploreProps) {
         gridLength: grid.length,
         tileCount,
         fetchStatus: 'ok',
+        canvasStyleWidth: app.canvas.style.width,
+        canvasStyleHeight: app.canvas.style.height,
+        canvasOffsetWidth: app.canvas.offsetWidth,
+        canvasOffsetHeight: app.canvas.offsetHeight,
+        canvasAttrWidth: app.canvas.width,
+        canvasAttrHeight: app.canvas.height,
       })
     }
 
@@ -149,7 +162,13 @@ mapWidthPx: ${debugInfo.mapWidthPx}
 mapHeightPx: ${debugInfo.mapHeightPx}
 grid.length: ${debugInfo.gridLength}
 tileCount: ${debugInfo.tileCount}
-fetchStatus: ${debugInfo.fetchStatus}`}
+fetchStatus: ${debugInfo.fetchStatus}
+canvasStyleWidth: ${debugInfo.canvasStyleWidth ?? '-'}
+canvasStyleHeight: ${debugInfo.canvasStyleHeight ?? '-'}
+canvasOffsetWidth: ${debugInfo.canvasOffsetWidth ?? '-'}
+canvasOffsetHeight: ${debugInfo.canvasOffsetHeight ?? '-'}
+canvasAttrWidth: ${debugInfo.canvasAttrWidth ?? '-'}
+canvasAttrHeight: ${debugInfo.canvasAttrHeight ?? '-'}`}
         </div>
       )}
 
