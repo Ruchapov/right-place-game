@@ -4,6 +4,7 @@ import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugg
 import Battle from './Battle'
 import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
+import Explore from './Explore'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; potionCharges: number }
@@ -80,6 +81,7 @@ export default function App() {
   const [inventoryLoading, setInventoryLoading] = useState(false)
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
   const [equipping, setEquipping] = useState(false)
+  const [showExploreTest, setShowExploreTest] = useState(false)
 
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -860,6 +862,15 @@ export default function App() {
 
       {runError && <p style={{ color: 'red', marginTop: 8 }}>{runError}</p>}
       </div>}
+      <button onClick={() => setShowExploreTest(true)}
+        style={{
+          position:'fixed', bottom:60, left:'50%', transform:'translateX(-50%)',
+          zIndex:999, padding:'10px 16px', borderRadius:8, border:'1px solid #ffd700',
+          background:'#221E2B', color:'#ffd700', fontSize:13, fontWeight:'bold', cursor:'pointer'
+        }}>
+        TEST: Explore Map A
+      </button>
+
       <div style={{
         position:'fixed', bottom:0, left:0, right:0,
         display:'flex', background:'#12122a',
@@ -885,6 +896,8 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} />}
     </div>
   )
 }
