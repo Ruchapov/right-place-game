@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Assets, Sprite, Texture } from 'pixi.js'
+import { Application, Graphics } from 'pixi.js'
+// import { Assets, Sprite, Texture } from 'pixi.js' // временно отключено — проверка геометрии через Graphics
 
 type ExploreProps = {
   onClose?: () => void
@@ -17,6 +18,9 @@ type DebugInfo = {
   canvasOffsetHeight?: number
   canvasAttrWidth?: number
   canvasAttrHeight?: number
+  gridRow0?: string
+  gridRow1?: string
+  gridRow2?: string
 }
 
 const TILE_SIZE = 64
@@ -35,11 +39,8 @@ export default function Explore({ onClose }: ExploreProps) {
 
       let mapText: string
       try {
-        const [text] = await Promise.all([
-          fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
-          Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
-        ])
-        mapText = text
+        // Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`) — временно отключено, проверяем геометрию через Graphics
+        mapText = await fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text())
       } catch (e) {
         if (!cancelled) {
           setDebugInfo({
@@ -80,7 +81,7 @@ export default function Explore({ onClose }: ExploreProps) {
       containerRef.current.appendChild(app.canvas)
       app.canvas.style.touchAction = 'auto'
 
-      const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
+      // const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`) — временно отключено
 
       let tileCount = 0
       for (let y = 0; y < grid.length; y++) {
@@ -88,11 +89,11 @@ export default function Explore({ onClose }: ExploreProps) {
         for (let x = 0; x < row.length; x++) {
           const cell = row[x]
           if (cell === '#') {
-            const tile = new Sprite(tileTexture)
-            tile.width = TILE_SIZE
-            tile.height = TILE_SIZE
-            tile.x = x * TILE_SIZE
-            tile.y = y * TILE_SIZE
+            const tile = new Graphics()
+            tile
+              .rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+              .fill(0x555566)
+              .stroke({ width: 2, color: 0x1a1a2a })
             app.stage.addChild(tile)
             tileCount += 1
           }
@@ -112,6 +113,9 @@ export default function Explore({ onClose }: ExploreProps) {
         canvasOffsetHeight: app.canvas.offsetHeight,
         canvasAttrWidth: app.canvas.width,
         canvasAttrHeight: app.canvas.height,
+        gridRow0: grid[0]?.join('') ?? '',
+        gridRow1: grid[1]?.join('') ?? '',
+        gridRow2: grid[2]?.join('') ?? '',
       })
     }
 
@@ -168,7 +172,10 @@ canvasStyleHeight: ${debugInfo.canvasStyleHeight ?? '-'}
 canvasOffsetWidth: ${debugInfo.canvasOffsetWidth ?? '-'}
 canvasOffsetHeight: ${debugInfo.canvasOffsetHeight ?? '-'}
 canvasAttrWidth: ${debugInfo.canvasAttrWidth ?? '-'}
-canvasAttrHeight: ${debugInfo.canvasAttrHeight ?? '-'}`}
+canvasAttrHeight: ${debugInfo.canvasAttrHeight ?? '-'}
+grid[0]: ${debugInfo.gridRow0 ?? '-'}
+grid[1]: ${debugInfo.gridRow1 ?? '-'}
+grid[2]: ${debugInfo.gridRow2 ?? '-'}`}
         </div>
       )}
 
