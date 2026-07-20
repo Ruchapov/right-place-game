@@ -78,7 +78,7 @@ export default function Explore({ onClose }: ExploreProps) {
       }
 
       containerRef.current.appendChild(app.canvas)
-      app.canvas.style.border = '5px solid red'
+      app.canvas.style.touchAction = 'auto'
 
       const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
 
