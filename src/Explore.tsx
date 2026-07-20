@@ -1,36 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Graphics } from 'pixi.js'
-// import { Assets, Sprite, Texture } from 'pixi.js' // временно отключено — проверка геометрии через Graphics
+import { Application, Assets, Sprite, Texture } from 'pixi.js'
 
 type ExploreProps = {
   onClose?: () => void
 }
 
-type DebugInfo = {
-  mapWidthPx: number
-  mapHeightPx: number
-  gridLength: number
-  tileCount: number
-  fetchStatus: string
-  canvasStyleWidth?: string
-  canvasStyleHeight?: string
-  canvasOffsetWidth?: number
-  canvasOffsetHeight?: number
-  canvasAttrWidth?: number
-  canvasAttrHeight?: number
-  gridRow0?: string
-  gridRow1?: string
-  gridRow2?: string
-}
-
 const TILE_SIZE = 64
-
+const PLATFORM_H = 16
 const ZOOM_INITIAL = 0.3
 
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
-  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [zoom, setZoom] = useState(ZOOM_INITIAL)
 
   useEffect(() => {
@@ -42,35 +23,10 @@ export default function Explore({ onClose }: ExploreProps) {
       appRef.current = app
       const base = import.meta.env.BASE_URL
 
-      let mapText: string
-      try {
-        // Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`) — временно отключено, проверяем геометрию через Graphics
-        mapText = await fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text())
-      } catch (e) {
-        if (!cancelled) {
-          setDebugInfo({
-            mapWidthPx: 0,
-            mapHeightPx: 0,
-            gridLength: 0,
-            tileCount: 0,
-            fetchStatus: `ошибка загрузки: ${e instanceof Error ? e.message : String(e)}`,
-          })
-        }
-        return
-      }
-
-      if (!mapText) {
-        if (!cancelled) {
-          setDebugInfo({
-            mapWidthPx: 0,
-            mapHeightPx: 0,
-            gridLength: 0,
-            tileCount: 0,
-            fetchStatus: 'ошибка: mapText пустой',
-          })
-        }
-        return
-      }
+      const [mapText] = await Promise.all([
+        fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
+        Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
+      ])
 
       const grid = mapText.split('\n').map((line) => line.split(''))
       const mapWidthPx = Math.max(0, ...grid.map((row) => row.length)) * TILE_SIZE
@@ -87,52 +43,30 @@ export default function Explore({ onClose }: ExploreProps) {
       app.canvas.style.touchAction = 'auto'
       app.stage.scale.set(ZOOM_INITIAL)
 
-      // const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`) — временно отключено
+      const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
 
-      const PLATFORM_H = 16
-
-      let tileCount = 0
       for (let y = 0; y < grid.length; y++) {
         const row = grid[y]
         for (let x = 0; x < row.length; x++) {
           const cell = row[x]
           if (cell === '#') {
-            const tile = new Graphics()
-            tile
-              .rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-              .fill(0x555566)
-              .stroke({ width: 2, color: 0x1a1a2a })
+            const tile = new Sprite(tileTexture)
+            tile.width = TILE_SIZE
+            tile.height = TILE_SIZE
+            tile.x = x * TILE_SIZE
+            tile.y = y * TILE_SIZE
             app.stage.addChild(tile)
-            tileCount += 1
           } else if (cell === '=') {
-            const platform = new Graphics()
-            platform
-              .rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, PLATFORM_H)
-              .fill(0x8a7a5a)
-              .stroke({ width: 2, color: 0x1a1a2a })
+            const platform = new Sprite(tileTexture)
+            platform.width = TILE_SIZE
+            platform.height = PLATFORM_H
+            platform.x = x * TILE_SIZE
+            platform.y = y * TILE_SIZE
             app.stage.addChild(platform)
-            tileCount += 1
           }
-          // '.' = воздух, ничего не рисуем; '^','C','E','B','N','Q','R','P' пока игнорируем
+          // '.' = воздух, ничего не рисуем; остальные символы пока игнорируем
         }
       }
-
-      setDebugInfo({
-        mapWidthPx,
-        mapHeightPx,
-        gridLength: grid.length,
-        tileCount,
-        fetchStatus: 'ok',
-        canvasStyleWidth: app.canvas.style.width,
-        canvasStyleHeight: app.canvas.style.height,
-        canvasOffsetWidth: app.canvas.offsetWidth,
-        canvasOffsetHeight: app.canvas.offsetHeight,
-        canvasAttrWidth: app.canvas.width,
-        canvasAttrHeight: app.canvas.height,
-        gridRow0: grid[0]?.join('') ?? '',
-        gridRow1: grid[1]?.join('') ?? '',
-        gridRow2: grid[2]?.join('') ?? '',
-      })
     }
 
     setup()
@@ -160,41 +94,6 @@ export default function Explore({ onClose }: ExploreProps) {
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-      {debugInfo && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 16,
-            left: 16,
-            zIndex: 1002,
-            padding: '12px 16px',
-            borderRadius: 8,
-            background: 'rgba(0,0,0,0.75)',
-            color: 'white',
-            fontSize: 16,
-            lineHeight: 1.5,
-            whiteSpace: 'pre-line',
-            pointerEvents: 'none',
-          }}
-        >
-          {`DEBUG
-mapWidthPx: ${debugInfo.mapWidthPx}
-mapHeightPx: ${debugInfo.mapHeightPx}
-grid.length: ${debugInfo.gridLength}
-tileCount: ${debugInfo.tileCount}
-fetchStatus: ${debugInfo.fetchStatus}
-canvasStyleWidth: ${debugInfo.canvasStyleWidth ?? '-'}
-canvasStyleHeight: ${debugInfo.canvasStyleHeight ?? '-'}
-canvasOffsetWidth: ${debugInfo.canvasOffsetWidth ?? '-'}
-canvasOffsetHeight: ${debugInfo.canvasOffsetHeight ?? '-'}
-canvasAttrWidth: ${debugInfo.canvasAttrWidth ?? '-'}
-canvasAttrHeight: ${debugInfo.canvasAttrHeight ?? '-'}
-grid[0]: ${debugInfo.gridRow0 ?? '-'}
-grid[1]: ${debugInfo.gridRow1 ?? '-'}
-grid[2]: ${debugInfo.gridRow2 ?? '-'}`}
-        </div>
-      )}
 
       <div
         style={{
