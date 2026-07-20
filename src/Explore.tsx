@@ -1,14 +1,23 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Application, Assets, Sprite, Texture } from 'pixi.js'
 
 type ExploreProps = {
   onClose?: () => void
 }
 
+type DebugInfo = {
+  mapWidthPx: number
+  mapHeightPx: number
+  gridLength: number
+  tileCount: number
+  fetchStatus: string
+}
+
 const TILE_SIZE = 64
 
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
 
   useEffect(() => {
     let app: Application | null = null
@@ -18,10 +27,38 @@ export default function Explore({ onClose }: ExploreProps) {
       app = new Application()
       const base = import.meta.env.BASE_URL
 
-      const [mapText] = await Promise.all([
-        fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
-        Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
-      ])
+      let mapText: string
+      try {
+        const [text] = await Promise.all([
+          fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
+          Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
+        ])
+        mapText = text
+      } catch (e) {
+        if (!cancelled) {
+          setDebugInfo({
+            mapWidthPx: 0,
+            mapHeightPx: 0,
+            gridLength: 0,
+            tileCount: 0,
+            fetchStatus: `ошибка загрузки: ${e instanceof Error ? e.message : String(e)}`,
+          })
+        }
+        return
+      }
+
+      if (!mapText) {
+        if (!cancelled) {
+          setDebugInfo({
+            mapWidthPx: 0,
+            mapHeightPx: 0,
+            gridLength: 0,
+            tileCount: 0,
+            fetchStatus: 'ошибка: mapText пустой',
+          })
+        }
+        return
+      }
 
       const grid = mapText.split('\n').map((line) => line.split(''))
       const mapWidthPx = Math.max(0, ...grid.map((row) => row.length)) * TILE_SIZE
@@ -38,6 +75,7 @@ export default function Explore({ onClose }: ExploreProps) {
 
       const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
 
+      let tileCount = 0
       for (let y = 0; y < grid.length; y++) {
         const row = grid[y]
         for (let x = 0; x < row.length; x++) {
@@ -49,10 +87,19 @@ export default function Explore({ onClose }: ExploreProps) {
             tile.x = x * TILE_SIZE
             tile.y = y * TILE_SIZE
             app.stage.addChild(tile)
+            tileCount += 1
           }
           // '.' = воздух, ничего не рисуем; остальные символы пока игнорируем
         }
       }
+
+      setDebugInfo({
+        mapWidthPx,
+        mapHeightPx,
+        gridLength: grid.length,
+        tileCount,
+        fetchStatus: 'ok',
+      })
     }
 
     setup()
@@ -79,6 +126,32 @@ export default function Explore({ onClose }: ExploreProps) {
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {debugInfo && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 16,
+            left: 16,
+            zIndex: 1002,
+            padding: '12px 16px',
+            borderRadius: 8,
+            background: 'rgba(0,0,0,0.75)',
+            color: 'white',
+            fontSize: 16,
+            lineHeight: 1.5,
+            whiteSpace: 'pre-line',
+            pointerEvents: 'none',
+          }}
+        >
+          {`DEBUG
+mapWidthPx: ${debugInfo.mapWidthPx}
+mapHeightPx: ${debugInfo.mapHeightPx}
+grid.length: ${debugInfo.gridLength}
+tileCount: ${debugInfo.tileCount}
+fetchStatus: ${debugInfo.fetchStatus}`}
+        </div>
+      )}
 
       {onClose && (
         <button
