@@ -17,15 +17,17 @@ export default function Explore({ onClose }: ExploreProps) {
     async function setup() {
       app = new Application()
       const base = import.meta.env.BASE_URL
-      const width = window.innerWidth
-      const height = window.innerHeight
 
       const [mapText] = await Promise.all([
         fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
         Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
       ])
 
-      await app.init({ width, height, background: 0x0d0820, backgroundAlpha: 1 })
+      const grid = mapText.split('\n').map((line) => line.split(''))
+      const mapWidthPx = Math.max(0, ...grid.map((row) => row.length)) * TILE_SIZE
+      const mapHeightPx = grid.length * TILE_SIZE
+
+      await app.init({ width: mapWidthPx, height: mapHeightPx, background: 0x0d0820, backgroundAlpha: 1 })
 
       if (cancelled || !containerRef.current) {
         app.destroy(true, { children: true })
@@ -35,7 +37,6 @@ export default function Explore({ onClose }: ExploreProps) {
       containerRef.current.appendChild(app.canvas)
 
       const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
-      const grid = mapText.split('\n').map((line) => line.split(''))
 
       for (let y = 0; y < grid.length; y++) {
         const row = grid[y]
