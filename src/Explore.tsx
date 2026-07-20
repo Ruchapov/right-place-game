@@ -25,9 +25,13 @@ type DebugInfo = {
 
 const TILE_SIZE = 64
 
+const ZOOM_INITIAL = 0.3
+
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const appRef = useRef<Application | null>(null)
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
+  const [zoom, setZoom] = useState(ZOOM_INITIAL)
 
   useEffect(() => {
     let app: Application | null = null
@@ -35,6 +39,7 @@ export default function Explore({ onClose }: ExploreProps) {
 
     async function setup() {
       app = new Application()
+      appRef.current = app
       const base = import.meta.env.BASE_URL
 
       let mapText: string
@@ -80,8 +85,11 @@ export default function Explore({ onClose }: ExploreProps) {
 
       containerRef.current.appendChild(app.canvas)
       app.canvas.style.touchAction = 'auto'
+      app.stage.scale.set(ZOOM_INITIAL)
 
       // const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`) — временно отключено
+
+      const PLATFORM_H = 16
 
       let tileCount = 0
       for (let y = 0; y < grid.length; y++) {
@@ -96,8 +104,16 @@ export default function Explore({ onClose }: ExploreProps) {
               .stroke({ width: 2, color: 0x1a1a2a })
             app.stage.addChild(tile)
             tileCount += 1
+          } else if (cell === '=') {
+            const platform = new Graphics()
+            platform
+              .rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, PLATFORM_H)
+              .fill(0x8a7a5a)
+              .stroke({ width: 2, color: 0x1a1a2a })
+            app.stage.addChild(platform)
+            tileCount += 1
           }
-          // '.' = воздух, ничего не рисуем; остальные символы пока игнорируем
+          // '.' = воздух, ничего не рисуем; '^','C','E','B','N','Q','R','P' пока игнорируем
         }
       }
 
@@ -126,6 +142,7 @@ export default function Explore({ onClose }: ExploreProps) {
       if (app) {
         app.destroy(true, { children: true })
       }
+      appRef.current = null
     }
   }, [])
 
@@ -178,6 +195,39 @@ grid[1]: ${debugInfo.gridRow1 ?? '-'}
 grid[2]: ${debugInfo.gridRow2 ?? '-'}`}
         </div>
       )}
+
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 16,
+          left: 16,
+          right: 16,
+          zIndex: 1002,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '10px 16px',
+          borderRadius: 8,
+          background: 'rgba(0,0,0,0.75)',
+          color: 'white',
+          fontSize: 16,
+        }}
+      >
+        <input
+          type="range"
+          min={0.1}
+          max={1.0}
+          step={0.05}
+          value={zoom}
+          onChange={(e) => {
+            const v = parseFloat(e.target.value)
+            setZoom(v)
+            appRef.current?.stage.scale.set(v)
+          }}
+          style={{ flex: 1 }}
+        />
+        <span>Zoom: {zoom.toFixed(2)}</span>
+      </div>
 
       {onClose && (
         <button
