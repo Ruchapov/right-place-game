@@ -136,6 +136,14 @@ PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility
 
 ---
 
+## Maps System — Рендер карты
+- Красивый рендер (как "mapA final") делает НЕ `render_lib.py` (он процедурный, даёт рябь), а модуль `src/mapRenderer.ts` — перенесён из редактора карт `_ref/map_editor.html` (Canvas2D).
+- Ключ красоты: `drawSolid` берёт КУСОК текстуры masonry под каждый тайл (`drawImage` с обрезкой sx,sy,tp), а не ужимает весь PNG; обводка — только по краям, смотрящим в воздух (air-проверки); `=` платформы берут нижние 45% текстуры.
+- `renderMapToCanvas({grid, decor, tileSize}) -> HTMLCanvasElement`, в `Explore.tsx` оборачивается в `Texture.from(canvas)` и показывается как фоновый Sprite. Коллизия — отдельно, из .txt сетки.
+- Текстура masonry и декор-спрайты вшиты в `mapRenderer.ts` как base64 (взяты из `_ref/map_editor.html`). Папка `_ref/` в `.gitignore`.
+
+---
+
 ## Economy
 - Trophies = risky currency, lost on death/abandon
 - Gold = stable, used for potions (20 gold each)
