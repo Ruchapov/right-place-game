@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Assets, Sprite, Texture } from 'pixi.js'
+import { Application, Sprite, Texture } from 'pixi.js'
+import { renderMapToCanvas } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
 }
 
 const TILE_SIZE = 64
-const PLATFORM_H = 16
 const ZOOM_INITIAL = 0.3
 
 export default function Explore({ onClose }: ExploreProps) {
@@ -23,16 +23,27 @@ export default function Explore({ onClose }: ExploreProps) {
       appRef.current = app
       const base = import.meta.env.BASE_URL
 
-      const [mapText] = await Promise.all([
+      const [mapText, slots] = await Promise.all([
         fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
-        Assets.load(`${base}assets/maps/tileset/stone_tile_seamless.png`),
+        fetch(`${base}assets/maps/map_A_slots.json`).then((res) => res.json()),
       ])
 
       const grid = mapText.split('\n').map((line) => line.split(''))
-      const mapWidthPx = Math.max(0, ...grid.map((row) => row.length)) * TILE_SIZE
-      const mapHeightPx = grid.length * TILE_SIZE
+      const decor = slots.decor ?? []
 
-      await app.init({ width: mapWidthPx, height: mapHeightPx, background: 0x0d0820, backgroundAlpha: 1 })
+      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
+
+      if (cancelled || !containerRef.current) {
+        app.destroy(true, { children: true })
+        return
+      }
+
+      await app.init({
+        width: mapCanvas.width,
+        height: mapCanvas.height,
+        background: 0x15131a,
+        backgroundAlpha: 1,
+      })
 
       if (cancelled || !containerRef.current) {
         app.destroy(true, { children: true })
@@ -43,30 +54,11 @@ export default function Explore({ onClose }: ExploreProps) {
       app.canvas.style.touchAction = 'auto'
       app.stage.scale.set(ZOOM_INITIAL)
 
-      const tileTexture: Texture = Assets.get(`${base}assets/maps/tileset/stone_tile_seamless.png`)
-
-      for (let y = 0; y < grid.length; y++) {
-        const row = grid[y]
-        for (let x = 0; x < row.length; x++) {
-          const cell = row[x]
-          if (cell === '#') {
-            const tile = new Sprite(tileTexture)
-            tile.width = TILE_SIZE
-            tile.height = TILE_SIZE
-            tile.x = x * TILE_SIZE
-            tile.y = y * TILE_SIZE
-            app.stage.addChild(tile)
-          } else if (cell === '=') {
-            const platform = new Sprite(tileTexture)
-            platform.width = TILE_SIZE
-            platform.height = PLATFORM_H
-            platform.x = x * TILE_SIZE
-            platform.y = y * TILE_SIZE
-            app.stage.addChild(platform)
-          }
-          // '.' = воздух, ничего не рисуем; остальные символы пока игнорируем
-        }
-      }
+      const mapTexture = Texture.from(mapCanvas)
+      const mapSprite = new Sprite(mapTexture)
+      mapSprite.x = 0
+      mapSprite.y = 0
+      app.stage.addChild(mapSprite)
     }
 
     setup()
