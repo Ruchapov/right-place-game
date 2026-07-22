@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Application, Sprite, Texture } from 'pixi.js'
+import { useEffect, useRef } from 'react'
+import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { renderMapToCanvas } from './mapRenderer'
 
 type ExploreProps = {
@@ -7,12 +7,48 @@ type ExploreProps = {
 }
 
 const TILE_SIZE = 64
-const ZOOM_INITIAL = 0.3
+const PLAYER_COLOR = 0xe0353b
+
+type Grid = string[][]
+
+const SOLID_CHARS = '#=^'
+
+function isAirChar(ch: string | undefined): boolean {
+  return ch !== undefined && !SOLID_CHARS.includes(ch)
+}
+
+function isStandChar(ch: string | undefined): boolean {
+  return ch === '#' || ch === '='
+}
+
+// Сканирует колонки слева направо, в каждой — сверху вниз. Первая клетка
+// стояния: сама клетка и клетка над ней — воздух, клетка под ней — твёрдая.
+function findStart(grid: Grid): { x: number; y: number } {
+  const height = grid.length
+  const width = height > 0 ? grid[0].length : 0
+
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      const here = grid[y]?.[x]
+      const above = y > 0 ? grid[y - 1]?.[x] : undefined
+      const below = grid[y + 1]?.[x]
+      if (isAirChar(here) && (above === undefined || isAirChar(above)) && isStandChar(below)) {
+        return { x, y }
+      }
+    }
+  }
+  return { x: 0, y: 0 }
+}
+
+// Камера центрирует игрока, но не показывает пустоту за краями карты.
+function clampCamera(desired: number, worldSize: number, screenSize: number): number {
+  if (worldSize <= screenSize) return (screenSize - worldSize) / 2
+  return Math.min(0, Math.max(screenSize - worldSize, desired))
+}
 
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
-  const [zoom, setZoom] = useState(ZOOM_INITIAL)
 
   useEffect(() => {
     let app: Application | null = null
@@ -28,7 +64,7 @@ export default function Explore({ onClose }: ExploreProps) {
         fetch(`${base}assets/maps/map_A_slots.json`).then((res) => res.json()),
       ])
 
-      const grid = mapText.split('\n').map((line) => line.split(''))
+      const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
 
       const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
@@ -39,10 +75,11 @@ export default function Explore({ onClose }: ExploreProps) {
       }
 
       await app.init({
-        width: mapCanvas.width,
-        height: mapCanvas.height,
+        width: window.innerWidth,
+        height: window.innerHeight,
         background: 0x15131a,
         backgroundAlpha: 1,
+        resizeTo: window,
       })
 
       if (cancelled || !containerRef.current) {
@@ -51,14 +88,36 @@ export default function Explore({ onClose }: ExploreProps) {
       }
 
       containerRef.current.appendChild(app.canvas)
-      app.canvas.style.touchAction = 'auto'
-      app.stage.scale.set(ZOOM_INITIAL)
+      app.canvas.style.touchAction = 'none'
+
+      // Мир: фон-карта и игрок в одном контейнере, двигаются вместе камерой.
+      const worldContainer = new Container()
+      app.stage.addChild(worldContainer)
 
       const mapTexture = Texture.from(mapCanvas)
       const mapSprite = new Sprite(mapTexture)
       mapSprite.x = 0
       mapSprite.y = 0
-      app.stage.addChild(mapSprite)
+      worldContainer.addChild(mapSprite)
+
+      const start = findStart(grid)
+      const player = new Graphics()
+        .rect(0, 0, TILE_SIZE, TILE_SIZE * 2)
+        .fill(PLAYER_COLOR)
+        .stroke({ width: 2, color: 0xffffff })
+      player.x = start.x * TILE_SIZE
+      player.y = (start.y + 1) * TILE_SIZE - TILE_SIZE * 2
+      worldContainer.addChild(player)
+
+      // Камера: центрируем игрока на экране, зажимая по границам карты.
+      // Игрок пока неподвижен, поэтому позиция камеры считается один раз
+      // (когда появится движение — этот расчёт переедет в ticker).
+      const worldWidth = mapCanvas.width
+      const worldHeight = mapCanvas.height
+      const playerCenterX = player.x + TILE_SIZE / 2
+      const playerCenterY = player.y + TILE_SIZE
+      worldContainer.x = clampCamera(app.screen.width / 2 - playerCenterX, worldWidth, app.screen.width)
+      worldContainer.y = clampCamera(app.screen.height / 2 - playerCenterY, worldHeight, app.screen.height)
     }
 
     setup()
@@ -82,43 +141,10 @@ export default function Explore({ onClose }: ExploreProps) {
         height: '100vh',
         zIndex: 1000,
         background: '#0d0820',
-        overflow: 'auto',
+        overflow: 'hidden',
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 16,
-          left: 16,
-          right: 16,
-          zIndex: 1002,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '10px 16px',
-          borderRadius: 8,
-          background: 'rgba(0,0,0,0.75)',
-          color: 'white',
-          fontSize: 16,
-        }}
-      >
-        <input
-          type="range"
-          min={0.1}
-          max={1.0}
-          step={0.05}
-          value={zoom}
-          onChange={(e) => {
-            const v = parseFloat(e.target.value)
-            setZoom(v)
-            appRef.current?.stage.scale.set(v)
-          }}
-          style={{ flex: 1 }}
-        />
-        <span>Zoom: {zoom.toFixed(2)}</span>
-      </div>
 
       {onClose && (
         <button
