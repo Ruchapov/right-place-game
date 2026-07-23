@@ -14,6 +14,7 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 // Физика (калибруется отдельным шагом вместе с прыжком)
 const GRAVITY = 0.8
 const MAX_FALL = 20
+const MOVE_SPEED = 4 // px/кадр, подберём на телефоне
 
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
 
@@ -51,6 +52,7 @@ export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
+  const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
 
   useEffect(() => {
     let app: Application | null = null
@@ -143,10 +145,42 @@ export default function Explore({ onClose }: ExploreProps) {
 
       updateCamera()
 
-      // Гравитация + приземление на твердь. Ходьба/прыжки/управление — следующие шаги.
+      // Ходьба влево/вправо + коллизия со стенами, гравитация + приземление на твердь.
+      // Прыжок и платформы '=' — следующие шаги.
+      const worldWidthPx = grid[0].length * TILE_SIZE
+
       app.ticker.add((ticker) => {
         const dt = ticker.deltaTime
 
+        // Горизонтальное движение
+        phys.vx = dirRef.current * MOVE_SPEED
+        phys.x += phys.vx * dt
+
+        if (phys.vx > 0) {
+          const px = phys.x + PLAYER_WIDTH - 1
+          const hit =
+            isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
+          if (hit) {
+            phys.x = Math.floor((phys.x + PLAYER_WIDTH) / TILE_SIZE) * TILE_SIZE - PLAYER_WIDTH
+            phys.vx = 0
+          }
+        } else if (phys.vx < 0) {
+          const px = phys.x
+          const hit =
+            isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
+          if (hit) {
+            phys.x = (Math.floor(phys.x / TILE_SIZE) + 1) * TILE_SIZE
+            phys.vx = 0
+          }
+        }
+
+        phys.x = clamp(phys.x, 0, worldWidthPx - PLAYER_WIDTH)
+
+        // Вертикальная физика (гравитация + приземление)
         phys.vy = Math.min(phys.vy + GRAVITY * dt, MAX_FALL)
         phys.y += phys.vy * dt
 
@@ -194,6 +228,66 @@ export default function Explore({ onClose }: ExploreProps) {
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      <div
+        style={{
+          position: 'fixed',
+          left: 16,
+          bottom: 'calc(16px + env(safe-area-inset-bottom))',
+          zIndex: 1001,
+          display: 'flex',
+          gap: 12,
+        }}
+      >
+        <button
+          aria-label="Влево"
+          onPointerDown={() => { dirRef.current = -1 }}
+          onPointerUp={() => { dirRef.current = 0 }}
+          onPointerLeave={() => { dirRef.current = 0 }}
+          onPointerCancel={() => { dirRef.current = 0 }}
+          style={{
+            width: 72,
+            height: 72,
+            borderRadius: 12,
+            background: '#221E2B',
+            border: '1px solid #3A3344',
+            color: '#EDE7F2',
+            fontSize: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+          }}
+        >
+          ◀
+        </button>
+        <button
+          aria-label="Вправо"
+          onPointerDown={() => { dirRef.current = 1 }}
+          onPointerUp={() => { dirRef.current = 0 }}
+          onPointerLeave={() => { dirRef.current = 0 }}
+          onPointerCancel={() => { dirRef.current = 0 }}
+          style={{
+            width: 72,
+            height: 72,
+            borderRadius: 12,
+            background: '#221E2B',
+            border: '1px solid #3A3344',
+            color: '#EDE7F2',
+            fontSize: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+          }}
+        >
+          ▶
+        </button>
+      </div>
 
       {onClose && (
         <button
