@@ -77,7 +77,9 @@ export default function Explore({ onClose }: ExploreProps) {
         app.destroy(true, { children: true })
         return
       }
-      const start = { x: startRaw[0], y: startRaw[1] }
+      // TEST ONLY: временный подъём старта для проверки приземления. Убрать после теста.
+      const START_Y_TEST_OFFSET = 3
+      const start = { x: startRaw[0], y: startRaw[1] - START_Y_TEST_OFFSET }
 
       const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
 
