@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { renderMapToCanvas } from './mapRenderer'
 
@@ -11,10 +11,12 @@ const PLAYER_COLOR = 0xe0353b
 const PLAYER_WIDTH = TILE_SIZE
 const PLAYER_HEIGHT = TILE_SIZE * 2
 
-// Физика (калибруется отдельным шагом вместе с прыжком)
-const GRAVITY = 0.8
+// Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
+// берутся, вверх 3 — нет; по прямой до 4 тайлов)
+const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
 const MAX_FALL = 20
 const MOVE_SPEED = 4 // px/кадр, подберём на телефоне
+const JUMP_VELOCITY = 10 // сила толчка вверх
 
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
 const WORLD_SCALE = 0.75 // 1 = как сейчас, меньше = видно больше карты
@@ -54,6 +56,10 @@ export default function Explore({ onClose }: ExploreProps) {
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
+  const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
+
+  // DEBUG ONLY — убрать после калибровки прыжка
+  const [debugInfo, setDebugInfo] = useState({ onGround: false, jumpTiles: 0 })
 
   useEffect(() => {
     let app: Application | null = null
@@ -151,12 +157,20 @@ export default function Explore({ onClose }: ExploreProps) {
 
       updateCamera()
 
-      // Ходьба влево/вправо + коллизия со стенами, гравитация + приземление на твердь.
-      // Прыжок и платформы '=' — следующие шаги.
+      // Ходьба влево/вправо + прыжок + коллизия со стенами, гравитация и
+      // приземление на твердь. Платформы '=' — следующий шаг.
       const worldWidthPx = grid[0].length * TILE_SIZE
+
+      // DEBUG ONLY — убрать после калибровки прыжка
+      let debugFrameCounter = 0
+      let airborneStartY: number | null = null
+      let minYDuringFlight = 0
+      let lastJumpTiles = 0
 
       app.ticker.add((ticker) => {
         const dt = ticker.deltaTime
+        const startY = phys.y
+        const wasOnGround = phys.onGround
 
         // Горизонтальное движение
         phys.vx = dirRef.current * MOVE_SPEED
@@ -186,6 +200,16 @@ export default function Explore({ onClose }: ExploreProps) {
 
         phys.x = clamp(phys.x, 0, worldWidthPx - PLAYER_WIDTH)
 
+        // Прыжок: только с тверди, двойного прыжка нет. Одно нажатие —
+        // ровно один прыжок, флаг сразу сбрасывается.
+        if (jumpPressedRef.current) {
+          jumpPressedRef.current = false
+          if (phys.onGround) {
+            phys.vy = -JUMP_VELOCITY
+            phys.onGround = false
+          }
+        }
+
         // Вертикальная физика (гравитация + приземление)
         phys.vy = Math.min(phys.vy + GRAVITY * dt, MAX_FALL)
         phys.y += phys.vy * dt
@@ -202,10 +226,32 @@ export default function Explore({ onClose }: ExploreProps) {
           }
         }
 
+        // DEBUG ONLY — убрать после калибровки прыжка
+        if (wasOnGround && !phys.onGround) {
+          airborneStartY = startY
+          minYDuringFlight = phys.y
+        } else if (!phys.onGround && airborneStartY !== null) {
+          minYDuringFlight = Math.min(minYDuringFlight, phys.y)
+        } else if (!wasOnGround && phys.onGround && airborneStartY !== null) {
+          lastJumpTiles = (airborneStartY - minYDuringFlight) / TILE_SIZE
+          airborneStartY = null
+        }
+
         player.x = phys.x
         player.y = phys.y
 
         updateCamera()
+
+        // DEBUG ONLY — троттлим React-обновление, не дёргаем setState каждый кадр
+        debugFrameCounter++
+        if (debugFrameCounter % 15 === 0) {
+          const currentJumpTiles =
+            airborneStartY !== null ? (airborneStartY - minYDuringFlight) / TILE_SIZE : lastJumpTiles
+          setDebugInfo({
+            onGround: phys.onGround,
+            jumpTiles: Math.round(currentJumpTiles * 10) / 10,
+          })
+        }
       })
     }
 
@@ -293,6 +339,51 @@ export default function Explore({ onClose }: ExploreProps) {
         >
           ▶
         </button>
+      </div>
+
+      <button
+        aria-label="Прыжок"
+        onPointerDown={() => { jumpPressedRef.current = true }}
+        style={{
+          position: 'fixed',
+          right: 16,
+          bottom: 'calc(16px + env(safe-area-inset-bottom))',
+          zIndex: 1001,
+          width: 80,
+          height: 80,
+          borderRadius: 16,
+          background: '#221E2B',
+          border: '1px solid #3A3344',
+          color: '#EDE7F2',
+          fontSize: 32,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          touchAction: 'none',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+        }}
+      >
+        ▲
+      </button>
+
+      {/* DEBUG ONLY — убрать после калибровки прыжка */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 16,
+          left: 16,
+          zIndex: 1001,
+          padding: '4px 8px',
+          borderRadius: 6,
+          background: 'rgba(0,0,0,0.6)',
+          color: '#EDE7F2',
+          fontSize: 11,
+          fontFamily: 'monospace',
+          pointerEvents: 'none',
+        }}
+      >
+        jump: {debugInfo.jumpTiles.toFixed(1)} | onGround: {String(debugInfo.onGround)}
       </div>
 
       {onClose && (
