@@ -231,6 +231,13 @@ export default function Explore({ onClose }: ExploreProps) {
       player.y = phys.y
       worldContainer.addChild(player)
 
+      // DEBUG ONLY — убрать после диагностики. Чисто визуальный слой поверх
+      // карты, физику/коллизии не трогает. Один объект на всё время жизни,
+      // не пересоздаётся каждый кадр.
+      const DEBUG_CELL_RADIUS = 8
+      const debugGraphics = new Graphics()
+      worldContainer.addChild(debugGraphics)
+
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
@@ -345,6 +352,34 @@ export default function Explore({ onClose }: ExploreProps) {
 
         player.x = phys.x
         player.y = phys.y
+
+        // DEBUG ONLY — убрать после диагностики. Рисует по тем же grid/
+        // TILE_SIZE/PLATFORM_H_RATIO, что использует физика выше, — чтобы
+        // видеть именно то, что она считает препятствием.
+        debugGraphics.clear()
+        const dbgCx = Math.floor((phys.x + PLAYER_WIDTH / 2) / TILE_SIZE)
+        const dbgCy = Math.floor((phys.y + PLAYER_HEIGHT / 2) / TILE_SIZE)
+        for (let cy = dbgCy - DEBUG_CELL_RADIUS; cy <= dbgCy + DEBUG_CELL_RADIUS; cy++) {
+          if (cy < 0 || cy >= grid.length) continue
+          for (let cx = dbgCx - DEBUG_CELL_RADIUS; cx <= dbgCx + DEBUG_CELL_RADIUS; cx++) {
+            if (cx < 0 || cx >= grid[0].length) continue
+            const ch = grid[cy][cx]
+            if (ch === '#') {
+              debugGraphics
+                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                .fill({ color: 0xe0353b, alpha: 0.12 })
+                .stroke({ width: 2, color: 0xe0353b })
+            } else if (ch === '=') {
+              debugGraphics
+                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE * PLATFORM_H_RATIO)
+                .fill({ color: 0xe8b23a, alpha: 0.25 })
+                .stroke({ width: 2, color: 0xe8b23a })
+            }
+          }
+        }
+        debugGraphics
+          .rect(phys.x, phys.y, PLAYER_WIDTH, PLAYER_HEIGHT)
+          .stroke({ width: 2, color: 0x46c4e8 })
 
         updateCamera()
 
