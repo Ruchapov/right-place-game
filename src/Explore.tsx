@@ -11,39 +11,11 @@ const PLAYER_COLOR = 0xe0353b
 
 type Grid = string[][]
 
-const SOLID_CHARS = '#=^'
-
-function isAirChar(ch: string | undefined): boolean {
-  return ch !== undefined && !SOLID_CHARS.includes(ch)
-}
-
-function isStandChar(ch: string | undefined): boolean {
-  return ch === '#' || ch === '='
-}
-
-// Сканирует колонки слева направо, в каждой — сверху вниз. Первая клетка
-// стояния: сама клетка и клетка над ней — воздух, клетка под ней — твёрдая.
-function findStart(grid: Grid): { x: number; y: number } {
-  const height = grid.length
-  const width = height > 0 ? grid[0].length : 0
-
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      const here = grid[y]?.[x]
-      const above = y > 0 ? grid[y - 1]?.[x] : undefined
-      const below = grid[y + 1]?.[x]
-      if (isAirChar(here) && (above === undefined || isAirChar(above)) && isStandChar(below)) {
-        return { x, y }
-      }
-    }
-  }
-  return { x: 0, y: 0 }
-}
-
-// Камера центрирует игрока, но не показывает пустоту за краями карты.
-function clampCamera(desired: number, worldSize: number, screenSize: number): number {
-  if (worldSize <= screenSize) return (screenSize - worldSize) / 2
-  return Math.min(0, Math.max(screenSize - worldSize, desired))
+// Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
+// оси), выворачивать диапазон нельзя — ставим 0.
+function clamp(value: number, min: number, max: number): number {
+  if (min > max) return 0
+  return Math.min(max, Math.max(min, value))
 }
 
 export default function Explore({ onClose }: ExploreProps) {
@@ -66,6 +38,18 @@ export default function Explore({ onClose }: ExploreProps) {
 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
+
+      const startRaw = slots?.start
+      if (
+        !Array.isArray(startRaw) ||
+        typeof startRaw[0] !== 'number' ||
+        typeof startRaw[1] !== 'number'
+      ) {
+        console.error('Explore: слот-файл карты не содержит корректный start:[x,y]', slots)
+        app.destroy(true, { children: true })
+        return
+      }
+      const start = { x: startRaw[0], y: startRaw[1] }
 
       const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
 
@@ -100,7 +84,6 @@ export default function Explore({ onClose }: ExploreProps) {
       mapSprite.y = 0
       worldContainer.addChild(mapSprite)
 
-      const start = findStart(grid)
       const player = new Graphics()
         .rect(0, 0, TILE_SIZE, TILE_SIZE * 2)
         .fill(PLAYER_COLOR)
@@ -112,12 +95,14 @@ export default function Explore({ onClose }: ExploreProps) {
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       // Игрок пока неподвижен, поэтому позиция камеры считается один раз
       // (когда появится движение — этот расчёт переедет в ticker).
-      const worldWidth = mapCanvas.width
-      const worldHeight = mapCanvas.height
-      const playerCenterX = player.x + TILE_SIZE / 2
-      const playerCenterY = player.y + TILE_SIZE
-      worldContainer.x = clampCamera(app.screen.width / 2 - playerCenterX, worldWidth, app.screen.width)
-      worldContainer.y = clampCamera(app.screen.height / 2 - playerCenterY, worldHeight, app.screen.height)
+      const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
+      const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
+
+      const targetX = app.screen.width / 2 - (player.x + player.width / 2)
+      worldContainer.x = clamp(targetX, app.screen.width - worldWidth, 0)
+
+      const targetY = app.screen.height / 2 - (player.y + player.height / 2)
+      worldContainer.y = clamp(targetY, app.screen.height - worldHeight, 0)
     }
 
     setup()
