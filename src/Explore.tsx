@@ -51,6 +51,23 @@ function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean 
   return grid[cy][cx] === '#'
 }
 
+// Как isSolid, но '=' тоже считается твердью — для ВЕРТИКАЛЬНОЙ коллизии
+// (приземление сверху и удар головой снизу). Соулс-лайк: сквозь '=' по
+// вертикали пройти нельзя (расходится со SKILL-maps, где '=' one-way —
+// скилл и карты приведут в соответствие отдельной задачей). По горизонтали
+// '=' остаётся проходимой — там по-прежнему используется isSolid.
+function isVerticalSolid(grid: Grid, tileSize: number, px: number, py: number): boolean {
+  const cx = Math.floor(px / tileSize)
+  const cy = Math.floor(py / tileSize)
+  const width = grid[0]?.length ?? 0
+  const height = grid.length
+  if (cy < 0) return false
+  if (cy >= height) return true
+  if (cx < 0 || cx >= width) return true
+  const ch = grid[cy][cx]
+  return ch === '#' || ch === '='
+}
+
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
@@ -216,13 +233,23 @@ export default function Explore({ onClose }: ExploreProps) {
 
         phys.onGround = false
         if (phys.vy > 0) {
+          // Приземление сверху: '#' и '=' — обе твердь.
           const footY = phys.y + PLAYER_HEIGHT
-          const leftSolid = isSolid(grid, TILE_SIZE, phys.x + 1, footY)
-          const rightSolid = isSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, footY)
+          const leftSolid = isVerticalSolid(grid, TILE_SIZE, phys.x + 1, footY)
+          const rightSolid = isVerticalSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, footY)
           if (leftSolid || rightSolid) {
             phys.y = Math.floor(footY / TILE_SIZE) * TILE_SIZE - PLAYER_HEIGHT
             phys.vy = 0
             phys.onGround = true
+          }
+        } else if (phys.vy < 0) {
+          // Удар головой снизу вверх: '=' блокирует так же, как '#'.
+          const headY = phys.y
+          const leftBlocked = isVerticalSolid(grid, TILE_SIZE, phys.x + 1, headY)
+          const rightBlocked = isVerticalSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, headY)
+          if (leftBlocked || rightBlocked) {
+            phys.y = (Math.floor(headY / TILE_SIZE) + 1) * TILE_SIZE
+            phys.vy = 0
           }
         }
 
