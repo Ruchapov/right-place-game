@@ -8,8 +8,22 @@ type ExploreProps = {
 
 const TILE_SIZE = 64
 const PLAYER_COLOR = 0xe0353b
+const PLAYER_WIDTH = TILE_SIZE
+const PLAYER_HEIGHT = TILE_SIZE * 2
+
+// Физика (калибруется отдельным шагом вместе с прыжком)
+const GRAVITY = 0.8
+const MAX_FALL = 20
 
 type Grid = string[][]
+
+type PlayerPhysics = {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  onGround: boolean
+}
 
 // Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
 // оси), выворачивать диапазон нельзя — ставим 0.
@@ -18,9 +32,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+// '#' — твердь. За боковыми и нижним краем сетки тоже твердь (чтобы не
+// улететь за карту), выше верхнего края — воздух. '=' здесь не учитываем.
+function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean {
+  const cx = Math.floor(px / tileSize)
+  const cy = Math.floor(py / tileSize)
+  const width = grid[0]?.length ?? 0
+  const height = grid.length
+  if (cy < 0) return false
+  if (cy >= height) return true
+  if (cx < 0 || cx >= width) return true
+  return grid[cy][cx] === '#'
+}
+
 export default function Explore({ onClose }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
+  const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
 
   useEffect(() => {
     let app: Application | null = null
@@ -84,25 +112,59 @@ export default function Explore({ onClose }: ExploreProps) {
       mapSprite.y = 0
       worldContainer.addChild(mapSprite)
 
+      const phys = physicsRef.current
+      phys.x = start.x * TILE_SIZE
+      phys.y = (start.y + 1) * TILE_SIZE - PLAYER_HEIGHT
+      phys.vx = 0
+      phys.vy = 0
+      phys.onGround = false
+
       const player = new Graphics()
-        .rect(0, 0, TILE_SIZE, TILE_SIZE * 2)
+        .rect(0, 0, PLAYER_WIDTH, PLAYER_HEIGHT)
         .fill(PLAYER_COLOR)
         .stroke({ width: 2, color: 0xffffff })
-      player.x = start.x * TILE_SIZE
-      player.y = (start.y + 1) * TILE_SIZE - TILE_SIZE * 2
+      player.x = phys.x
+      player.y = phys.y
       worldContainer.addChild(player)
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
-      // Игрок пока неподвижен, поэтому позиция камеры считается один раз
-      // (когда появится движение — этот расчёт переедет в ticker).
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
 
-      const targetX = app.screen.width / 2 - (player.x + player.width / 2)
-      worldContainer.x = clamp(targetX, app.screen.width - worldWidth, 0)
+      const updateCamera = () => {
+        const targetX = app!.screen.width / 2 - (player.x + player.width / 2)
+        worldContainer.x = clamp(targetX, app!.screen.width - worldWidth, 0)
 
-      const targetY = app.screen.height / 2 - (player.y + player.height / 2)
-      worldContainer.y = clamp(targetY, app.screen.height - worldHeight, 0)
+        const targetY = app!.screen.height / 2 - (player.y + player.height / 2)
+        worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
+      }
+
+      updateCamera()
+
+      // Гравитация + приземление на твердь. Ходьба/прыжки/управление — следующие шаги.
+      app.ticker.add((ticker) => {
+        const dt = ticker.deltaTime
+
+        phys.vy = Math.min(phys.vy + GRAVITY * dt, MAX_FALL)
+        phys.y += phys.vy * dt
+
+        phys.onGround = false
+        if (phys.vy > 0) {
+          const footY = phys.y + PLAYER_HEIGHT
+          const leftSolid = isSolid(grid, TILE_SIZE, phys.x + 1, footY)
+          const rightSolid = isSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, footY)
+          if (leftSolid || rightSolid) {
+            phys.y = Math.floor(footY / TILE_SIZE) * TILE_SIZE - PLAYER_HEIGHT
+            phys.vy = 0
+            phys.onGround = true
+          }
+        }
+
+        player.x = phys.x
+        player.y = phys.y
+
+        updateCamera()
+      })
     }
 
     setup()
