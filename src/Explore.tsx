@@ -17,6 +17,7 @@ const MAX_FALL = 20
 const MOVE_SPEED = 4 // px/кадр, подберём на телефоне
 
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
+const WORLD_SCALE = 0.75 // 1 = как сейчас, меньше = видно больше карты
 
 type Grid = string[][]
 
@@ -108,6 +109,7 @@ export default function Explore({ onClose }: ExploreProps) {
 
       // Мир: фон-карта и игрок в одном контейнере, двигаются вместе камерой.
       const worldContainer = new Container()
+      worldContainer.scale.set(WORLD_SCALE)
       app.stage.addChild(worldContainer)
 
       const mapTexture = Texture.from(mapCanvas)
@@ -136,10 +138,14 @@ export default function Explore({ onClose }: ExploreProps) {
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
 
       const updateCamera = () => {
-        const targetX = app!.screen.width / 2 - (player.x + player.width / 2)
+        // player.x/y и player.width/height — координаты МИРА (локальные для
+        // worldContainer), а worldContainer.x/y — координаты ЭКРАНА. При
+        // scale != 1 их нельзя смешивать без множителя s.
+        const s = WORLD_SCALE
+        const targetX = app!.screen.width / 2 - (player.x + player.width / 2) * s
         worldContainer.x = clamp(targetX, app!.screen.width - worldWidth, 0)
 
-        const targetY = app!.screen.height * CAMERA_V_ANCHOR - (player.y + player.height / 2)
+        const targetY = app!.screen.height * CAMERA_V_ANCHOR - (player.y + player.height / 2) * s
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
       }
 
