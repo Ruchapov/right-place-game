@@ -51,96 +51,47 @@ function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean 
   return grid[cy][cx] === '#'
 }
 
-// Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
-// если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
-// (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
-function cellHeadBlockBottom(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
+type Rect = { x: number; y: number; w: number; h: number }
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+// Блокирующий прямоугольник клетки (cx,cy), или null если клетка не твердь.
+// '#' — вся клетка. '=' — только полоса сверху (PLATFORM_H_RATIO), см.
+// drawPlatform в mapRenderer.ts. Край сетки (снизу/по бокам) — твердь на всю
+// клетку, чтобы не улететь за карту; выше верхнего края — воздух (null).
+function cellBlockRect(grid: Grid, tileSize: number, cx: number, cy: number): Rect | null {
   const width = grid[0]?.length ?? 0
   const height = grid.length
-  const cellTop = cy * tileSize
-  if (cy < 0) return null // выше карты — воздух
-  if (cy >= height || cx < 0 || cx >= width) return cellTop + tileSize // край сетки — твердь
+  if (cy < 0) return null
+  if (cy >= height || cx < 0 || cx >= width) {
+    return { x: cx * tileSize, y: cy * tileSize, w: tileSize, h: tileSize }
+  }
   const ch = grid[cy][cx]
-  if (ch === '#') return cellTop + tileSize
-  if (ch === '=') return cellTop + tileSize * PLATFORM_H_RATIO
+  if (ch === '#') return { x: cx * tileSize, y: cy * tileSize, w: tileSize, h: tileSize }
+  if (ch === '=') return { x: cx * tileSize, y: cy * tileSize, w: tileSize, h: tileSize * PLATFORM_H_RATIO }
   return null
 }
 
-// Верхняя граница поверхности в клетке (cx,cy) для приземления СВЕРХУ, или
-// null, если клетка не твердь. '#' и '=' — обе твердь, верх полосы совпадает
-// с верхом клетки, поэтому поверхность на одной высоте для обоих символов.
-function cellFootBlockTop(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  const cellTop = cy * tileSize
-  if (cy < 0) return null // выше карты — воздух
-  if (cy >= height || cx < 0 || cx >= width) return cellTop // край сетки — твердь
-  const ch = grid[cy][cx]
-  if (ch === '#' || ch === '=') return cellTop
-  return null
-}
+// Все блокирующие прямоугольники клеток, перекрывающих габарит игрока —
+// AABB против AABB, весь диапазон клеток по X и Y, без выборочных точек.
+// Срабатывает и на случай "уже внутри на старте кадра": проверяется факт
+// пересечения ТЕКУЩИХ габаритов, а не движение/пересечение границы во времени.
+function overlappingBlockRects(grid: Grid, tileSize: number, player: Rect): Rect[] {
+  const cx0 = Math.floor(player.x / tileSize)
+  const cx1 = Math.floor((player.x + player.w - 1) / tileSize)
+  const cy0 = Math.floor(player.y / tileSize)
+  const cy1 = Math.floor((player.y + player.h - 1) / tileSize)
 
-// Проверяет весь путь головы за кадр [headY, prevHeadY] (headY < prevHeadY,
-// движение вверх), а не только конечную точку — иначе на просевшем кадре
-// голова может перескочить всю полосу '=' (~28px), ни разу не попав внутрь
-// (туннелирование). Три колонки на путь: края + центр. Если пересекли
-// несколько границ — берём САМУЮ НИЖНЮЮ (max blockBottom): это первая, во
-// что игрок упёрся бы, двигаясь снизу вверх.
-function sweepHeadBlock(
-  grid: Grid,
-  tileSize: number,
-  playerX: number,
-  playerWidth: number,
-  prevHeadY: number,
-  headY: number,
-): number | null {
-  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
-  const cyTop = Math.floor(headY / tileSize)
-  const cyBottom = Math.floor(prevHeadY / tileSize)
-
-  let pushTo: number | null = null
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    for (const px of xPoints) {
-      const cx = Math.floor(px / tileSize)
-      const blockBottom = cellHeadBlockBottom(grid, tileSize, cx, cy)
-      if (blockBottom === null) continue
-      // Пересекли границу снизу вверх именно за этот кадр.
-      if (prevHeadY >= blockBottom && headY < blockBottom) {
-        pushTo = pushTo === null ? blockBottom : Math.max(pushTo, blockBottom)
-      }
+  const rects: Rect[] = []
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const rect = cellBlockRect(grid, tileSize, cx, cy)
+      if (rect && rectsOverlap(player, rect)) rects.push(rect)
     }
   }
-  return pushTo
-}
-
-// Симметрично sweepHeadBlock, но для падения: путь [prevFootY, footY]
-// (footY > prevFootY, движение вниз). Берём САМУЮ ВЕРХНЮЮ пересечённую
-// границу (min blockTop) — первая поверхность, на которую падает игрок.
-function sweepFootBlock(
-  grid: Grid,
-  tileSize: number,
-  playerX: number,
-  playerWidth: number,
-  prevFootY: number,
-  footY: number,
-): number | null {
-  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
-  const cyTop = Math.floor(prevFootY / tileSize)
-  const cyBottom = Math.floor(footY / tileSize)
-
-  let pushTo: number | null = null
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    for (const px of xPoints) {
-      const cx = Math.floor(px / tileSize)
-      const blockTop = cellFootBlockTop(grid, tileSize, cx, cy)
-      if (blockTop === null) continue
-      // Пересекли границу сверху вниз именно за этот кадр.
-      if (prevFootY <= blockTop && footY > blockTop) {
-        pushTo = pushTo === null ? blockTop : Math.min(pushTo, blockTop)
-      }
-    }
-  }
-  return pushTo
+  return rects
 }
 
 export default function Explore({ onClose }: ExploreProps) {
@@ -231,6 +182,13 @@ export default function Explore({ onClose }: ExploreProps) {
       player.y = phys.y
       worldContainer.addChild(player)
 
+      // DEBUG ONLY — визуализация коллизии, убрать после калибровки.
+      // Один объект на всё время жизни, каждый кадр только clear()+redraw —
+      // никаких new Graphics() в ticker (просадка на телефоне).
+      const DEBUG_CELL_RADIUS = 8
+      const debugGraphics = new Graphics()
+      worldContainer.addChild(debugGraphics)
+
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
@@ -308,26 +266,25 @@ export default function Explore({ onClose }: ExploreProps) {
 
         phys.onGround = false
         if (phys.vy > 0) {
-          // Приземление сверху: проверяем весь путь ног за кадр, не только
-          // конечную точку — иначе на просевшем кадре можно провалиться
-          // сквозь тонкую полосу '=', не попав в неё ни разу.
-          const prevFootY = startY + PLAYER_HEIGHT
-          const footY = phys.y + PLAYER_HEIGHT
-          const blockTop = sweepFootBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevFootY, footY)
-          if (blockTop !== null) {
+          // Приземление сверху: AABB игрока (после движения) против всех
+          // перекрытых клеток. Самая верхняя пересечённая граница (min top).
+          const playerBox: Rect = { x: phys.x, y: phys.y, w: PLAYER_WIDTH, h: PLAYER_HEIGHT }
+          const hits = overlappingBlockRects(grid, TILE_SIZE, playerBox)
+          if (hits.length > 0) {
+            const blockTop = Math.min(...hits.map((r) => r.y))
             phys.y = blockTop - PLAYER_HEIGHT
             phys.vy = 0
             phys.onGround = true
           }
         } else if (phys.vy < 0) {
-          // Удар головой снизу вверх: та же защита от туннелирования —
-          // проверяем весь путь [headY, prevHeadY] за кадр. '#' — вся
-          // клетка, '=' — только полоса.
-          const prevHeadY = startY // y ДО y += vy*dt (startY захвачен в начале тика)
-          const headY = phys.y
-          const pushTo = sweepHeadBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, headY)
-          if (pushTo !== null) {
-            phys.y = pushTo
+          // Удар головой снизу вверх: та же AABB-проверка. Самая нижняя
+          // пересечённая граница (max bottom) — если застряли внутри уже на
+          // старте кадра, вытолкнет вниз тем же способом.
+          const playerBox: Rect = { x: phys.x, y: phys.y, w: PLAYER_WIDTH, h: PLAYER_HEIGHT }
+          const hits = overlappingBlockRects(grid, TILE_SIZE, playerBox)
+          if (hits.length > 0) {
+            const blockBottom = Math.max(...hits.map((r) => r.y + r.h))
+            phys.y = blockBottom
             phys.vy = 0
           }
         }
@@ -345,6 +302,32 @@ export default function Explore({ onClose }: ExploreProps) {
 
         player.x = phys.x
         player.y = phys.y
+
+        // DEBUG ONLY — перерисовка коллизионных прямоугольников вокруг игрока.
+        debugGraphics.clear()
+        const dbgCx = Math.floor((phys.x + PLAYER_WIDTH / 2) / TILE_SIZE)
+        const dbgCy = Math.floor((phys.y + PLAYER_HEIGHT / 2) / TILE_SIZE)
+        for (let cy = dbgCy - DEBUG_CELL_RADIUS; cy <= dbgCy + DEBUG_CELL_RADIUS; cy++) {
+          if (cy < 0 || cy >= grid.length) continue
+          for (let cx = dbgCx - DEBUG_CELL_RADIUS; cx <= dbgCx + DEBUG_CELL_RADIUS; cx++) {
+            if (cx < 0 || cx >= grid[0].length) continue
+            const ch = grid[cy][cx]
+            if (ch === '#') {
+              debugGraphics
+                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                .fill({ color: 0xff0000, alpha: 0.15 })
+                .stroke({ width: 1, color: 0xff0000, alpha: 0.7 })
+            } else if (ch === '=') {
+              debugGraphics
+                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE * PLATFORM_H_RATIO)
+                .fill({ color: 0xffff00, alpha: 0.25 })
+                .stroke({ width: 1, color: 0xffff00, alpha: 0.8 })
+            }
+          }
+        }
+        debugGraphics
+          .rect(phys.x, phys.y, PLAYER_WIDTH, PLAYER_HEIGHT)
+          .stroke({ width: 2, color: 0x4488ff })
 
         updateCamera()
 
