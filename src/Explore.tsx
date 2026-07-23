@@ -51,45 +51,96 @@ function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean 
   return grid[cy][cx] === '#'
 }
 
-// Как isSolid, но '=' тоже считается твердью — для ВЕРТИКАЛЬНОЙ коллизии
-// (приземление сверху и удар головой снизу). Соулс-лайк: сквозь '=' по
-// вертикали пройти нельзя (расходится со SKILL-maps, где '=' one-way —
-// скилл и карты приведут в соответствие отдельной задачей). По горизонтали
-// '=' остаётся проходимой — там по-прежнему используется isSolid.
-function isVerticalSolid(grid: Grid, tileSize: number, px: number, py: number): boolean {
-  const cx = Math.floor(px / tileSize)
-  const cy = Math.floor(py / tileSize)
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  if (cy < 0) return false
-  if (cy >= height) return true
-  if (cx < 0 || cx >= width) return true
-  const ch = grid[cy][cx]
-  return ch === '#' || ch === '='
-}
-
-// Для удара головой снизу вверх: '#' блокирует по всей клетке, '='
-// блокирует только внутри своей полосы (см. drawPlatform/PLATFORM_H_RATIO
-// в mapRenderer.ts) — голова должна реально войти в нарисованный камень,
-// а не удариться о пустоту под ним. Возвращает Y, ниже которой не пройти,
-// или null, если в этой точке препятствия нет.
-function headBlockBottom(grid: Grid, tileSize: number, px: number, py: number): number | null {
-  const cx = Math.floor(px / tileSize)
-  const cy = Math.floor(py / tileSize)
+// Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
+// если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
+// (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
+function cellHeadBlockBottom(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
   const width = grid[0]?.length ?? 0
   const height = grid.length
   const cellTop = cy * tileSize
-  if (cy < 0) return null
-  if (cy >= height) return cellTop + tileSize
-  if (cx < 0 || cx >= width) return cellTop + tileSize
+  if (cy < 0) return null // выше карты — воздух
+  if (cy >= height || cx < 0 || cx >= width) return cellTop + tileSize // край сетки — твердь
   const ch = grid[cy][cx]
   if (ch === '#') return cellTop + tileSize
-  if (ch === '=') {
-    const bandH = tileSize * PLATFORM_H_RATIO
-    if (py < cellTop + bandH) return cellTop + bandH
-    return null
-  }
+  if (ch === '=') return cellTop + tileSize * PLATFORM_H_RATIO
   return null
+}
+
+// Верхняя граница поверхности в клетке (cx,cy) для приземления СВЕРХУ, или
+// null, если клетка не твердь. '#' и '=' — обе твердь, верх полосы совпадает
+// с верхом клетки, поэтому поверхность на одной высоте для обоих символов.
+function cellFootBlockTop(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
+  const width = grid[0]?.length ?? 0
+  const height = grid.length
+  const cellTop = cy * tileSize
+  if (cy < 0) return null // выше карты — воздух
+  if (cy >= height || cx < 0 || cx >= width) return cellTop // край сетки — твердь
+  const ch = grid[cy][cx]
+  if (ch === '#' || ch === '=') return cellTop
+  return null
+}
+
+// Проверяет весь путь головы за кадр [headY, prevHeadY] (headY < prevHeadY,
+// движение вверх), а не только конечную точку — иначе на просевшем кадре
+// голова может перескочить всю полосу '=' (~28px), ни разу не попав внутрь
+// (туннелирование). Три колонки на путь: края + центр. Если пересекли
+// несколько границ — берём САМУЮ НИЖНЮЮ (max blockBottom): это первая, во
+// что игрок упёрся бы, двигаясь снизу вверх.
+function sweepHeadBlock(
+  grid: Grid,
+  tileSize: number,
+  playerX: number,
+  playerWidth: number,
+  prevHeadY: number,
+  headY: number,
+): number | null {
+  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
+  const cyTop = Math.floor(headY / tileSize)
+  const cyBottom = Math.floor(prevHeadY / tileSize)
+
+  let pushTo: number | null = null
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    for (const px of xPoints) {
+      const cx = Math.floor(px / tileSize)
+      const blockBottom = cellHeadBlockBottom(grid, tileSize, cx, cy)
+      if (blockBottom === null) continue
+      // Пересекли границу снизу вверх именно за этот кадр.
+      if (prevHeadY >= blockBottom && headY < blockBottom) {
+        pushTo = pushTo === null ? blockBottom : Math.max(pushTo, blockBottom)
+      }
+    }
+  }
+  return pushTo
+}
+
+// Симметрично sweepHeadBlock, но для падения: путь [prevFootY, footY]
+// (footY > prevFootY, движение вниз). Берём САМУЮ ВЕРХНЮЮ пересечённую
+// границу (min blockTop) — первая поверхность, на которую падает игрок.
+function sweepFootBlock(
+  grid: Grid,
+  tileSize: number,
+  playerX: number,
+  playerWidth: number,
+  prevFootY: number,
+  footY: number,
+): number | null {
+  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
+  const cyTop = Math.floor(prevFootY / tileSize)
+  const cyBottom = Math.floor(footY / tileSize)
+
+  let pushTo: number | null = null
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    for (const px of xPoints) {
+      const cx = Math.floor(px / tileSize)
+      const blockTop = cellFootBlockTop(grid, tileSize, cx, cy)
+      if (blockTop === null) continue
+      // Пересекли границу сверху вниз именно за этот кадр.
+      if (prevFootY <= blockTop && footY > blockTop) {
+        pushTo = pushTo === null ? blockTop : Math.min(pushTo, blockTop)
+      }
+    }
+  }
+  return pushTo
 }
 
 export default function Explore({ onClose }: ExploreProps) {
@@ -257,29 +308,24 @@ export default function Explore({ onClose }: ExploreProps) {
 
         phys.onGround = false
         if (phys.vy > 0) {
-          // Приземление сверху: '#' и '=' — обе твердь.
+          // Приземление сверху: проверяем весь путь ног за кадр, не только
+          // конечную точку — иначе на просевшем кадре можно провалиться
+          // сквозь тонкую полосу '=', не попав в неё ни разу.
+          const prevFootY = startY + PLAYER_HEIGHT
           const footY = phys.y + PLAYER_HEIGHT
-          const leftSolid = isVerticalSolid(grid, TILE_SIZE, phys.x + 1, footY)
-          const rightSolid = isVerticalSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, footY)
-          if (leftSolid || rightSolid) {
-            phys.y = Math.floor(footY / TILE_SIZE) * TILE_SIZE - PLAYER_HEIGHT
+          const blockTop = sweepFootBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevFootY, footY)
+          if (blockTop !== null) {
+            phys.y = blockTop - PLAYER_HEIGHT
             phys.vy = 0
             phys.onGround = true
           }
         } else if (phys.vy < 0) {
-          // Удар головой снизу вверх: '#' — вся клетка, '=' — только полоса.
-          // Координата берётся ПОСЛЕ y += vy*dt (phys.y уже обновлён выше).
-          // Три точки (края + центр) — узкую платформу не проскочить между
-          // двумя крайними при негрид-выровненном x.
+          // Удар головой снизу вверх: та же защита от туннелирования —
+          // проверяем весь путь [headY, prevHeadY] за кадр. '#' — вся
+          // клетка, '=' — только полоса.
+          const prevHeadY = startY // y ДО y += vy*dt (startY захвачен в начале тика)
           const headY = phys.y
-          const headPoints = [phys.x + 1, phys.x + PLAYER_WIDTH / 2, phys.x + PLAYER_WIDTH - 1]
-          let pushTo: number | null = null
-          for (const px of headPoints) {
-            const blockBottom = headBlockBottom(grid, TILE_SIZE, px, headY)
-            if (blockBottom !== null) {
-              pushTo = pushTo === null ? blockBottom : Math.max(pushTo, blockBottom)
-            }
-          }
+          const pushTo = sweepHeadBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, headY)
           if (pushTo !== null) {
             phys.y = pushTo
             phys.vy = 0
