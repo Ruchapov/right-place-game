@@ -15,6 +15,8 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 const GRAVITY = 0.8
 const MAX_FALL = 20
 
+const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
+
 type Grid = string[][]
 
 type PlayerPhysics = {
@@ -77,9 +79,7 @@ export default function Explore({ onClose }: ExploreProps) {
         app.destroy(true, { children: true })
         return
       }
-      // TEST ONLY: временный подъём старта для проверки приземления. Убрать после теста.
-      const START_Y_TEST_OFFSET = 3
-      const start = { x: startRaw[0], y: startRaw[1] - START_Y_TEST_OFFSET }
+      const start = { x: startRaw[0], y: startRaw[1] }
 
       const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
 
@@ -137,7 +137,7 @@ export default function Explore({ onClose }: ExploreProps) {
         const targetX = app!.screen.width / 2 - (player.x + player.width / 2)
         worldContainer.x = clamp(targetX, app!.screen.width - worldWidth, 0)
 
-        const targetY = app!.screen.height / 2 - (player.y + player.height / 2)
+        const targetY = app!.screen.height * CAMERA_V_ANCHOR - (player.y + player.height / 2)
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
       }
 
