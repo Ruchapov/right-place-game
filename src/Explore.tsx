@@ -113,6 +113,35 @@ function sweepHeadBlock(
   return pushTo
 }
 
+// Случай "уже перекрываемся на начало кадра": игрок зашёл сбоку и на старте
+// кадра голова уже внутри полосы '=' (или клетки '#') — пересечения границы
+// не было, поэтому sweepHeadBlock ничего не находит и пропускает движение
+// вверх насквозь. Проверяет те же три колонки на пересечение прямоугольника
+// игрока (prevTop..prevBottom) с блокирующим прямоугольником клетки.
+function isOverlappingAtFrameStart(
+  grid: Grid,
+  tileSize: number,
+  playerX: number,
+  playerWidth: number,
+  prevTop: number,
+  prevBottom: number,
+): boolean {
+  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
+  const cyTop = Math.floor(prevTop / tileSize)
+  const cyBottom = Math.floor((prevBottom - 1) / tileSize)
+
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    for (const px of xPoints) {
+      const cx = Math.floor(px / tileSize)
+      const blockBottom = cellHeadBlockBottom(grid, tileSize, cx, cy)
+      if (blockBottom === null) continue
+      const cellTop = cy * tileSize
+      if (prevTop < blockBottom && prevBottom > cellTop) return true
+    }
+  }
+  return false
+}
+
 // Симметрично sweepHeadBlock, но для падения: путь [prevFootY, footY]
 // (footY > prevFootY, движение вниз). Берём САМУЮ ВЕРХНЮЮ пересечённую
 // границу (min blockTop) — первая поверхность, на которую падает игрок.
@@ -335,6 +364,15 @@ export default function Explore({ onClose }: ExploreProps) {
           const pushTo = sweepHeadBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, headY)
           if (pushTo !== null) {
             phys.y = pushTo
+            phys.vy = 0
+          } else if (
+            isOverlappingAtFrameStart(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, prevHeadY + PLAYER_HEIGHT)
+          ) {
+            // Зашли сбоку под ступень: пересечения границы за кадр не было
+            // (голова уже была внутри полосы на старте кадра), sweep выше
+            // ничего не нашёл. Откатываем движение вверх за этот кадр —
+            // без перепозиционирования по blockBottom, никакого телепорта.
+            phys.y = prevHeadY
             phys.vy = 0
           }
         }
