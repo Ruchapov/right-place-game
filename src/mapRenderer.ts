@@ -113,7 +113,7 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
   }
 
   function drawPlatform(x: number, y: number) {
-    const px = x * TS, py = y * TS, h = TS * 0.44, top = py + TS - h;
+    const px = x * TS, py = y * TS, h = TS * 0.44, top = py;
     if (ready('masonry')) { const { sx, sy, tp } = texSrc(x, y); ctx.drawImage(IMG.masonry, sx, sy + tp * 0.55, tp, tp * 0.45, px, top, TS, h); }
     else { ctx.fillStyle = '#3A3344'; ctx.fillRect(px, top, TS, h); }
     ctx.strokeStyle = 'rgba(237,231,242,0.24)'; ctx.lineWidth = 2;
