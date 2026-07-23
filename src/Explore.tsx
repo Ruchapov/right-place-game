@@ -265,25 +265,39 @@ export default function Explore({ onClose }: ExploreProps) {
         phys.y += phys.vy * dt
 
         phys.onGround = false
+        // prevTop/prevBottom — габарит игрока ДО движения по Y в этом кадре
+        // (startY захвачен в начале тика, до горизонтали/прыжка/гравитации).
+        const prevTop = startY
+        const prevBottom = startY + PLAYER_HEIGHT
         if (phys.vy > 0) {
-          // Приземление сверху: AABB игрока (после движения) против всех
-          // перекрытых клеток. Самая верхняя пересечённая граница (min top).
+          // Падение — разрешена ТОЛЬКО постановка СВЕРХУ. Кандидат блокирует,
+          // только если ноги пересекли его верхнюю границу именно в этом
+          // кадре (были выше — стали ниже). Просто пересечение AABB без
+          // этого условия не считается: 2-тайловый игрок может перекрывать
+          // клетку '=' головой, находясь ещё высоко над ней при падении —
+          // это не приземление, и раньше именно так телепортировало наверх.
+          const newBottom = phys.y + PLAYER_HEIGHT
           const playerBox: Rect = { x: phys.x, y: phys.y, w: PLAYER_WIDTH, h: PLAYER_HEIGHT }
-          const hits = overlappingBlockRects(grid, TILE_SIZE, playerBox)
-          if (hits.length > 0) {
-            const blockTop = Math.min(...hits.map((r) => r.y))
+          const candidates = overlappingBlockRects(grid, TILE_SIZE, playerBox)
+            .filter((r) => prevBottom <= r.y && newBottom > r.y)
+          if (candidates.length > 0) {
+            const blockTop = Math.min(...candidates.map((r) => r.y))
             phys.y = blockTop - PLAYER_HEIGHT
             phys.vy = 0
             phys.onGround = true
           }
         } else if (phys.vy < 0) {
-          // Удар головой снизу вверх: та же AABB-проверка. Самая нижняя
-          // пересечённая граница (max bottom) — если застряли внутри уже на
-          // старте кадра, вытолкнет вниз тем же способом.
+          // Подъём — разрешён ТОЛЬКО удар ГОЛОВОЙ. Кандидат блокирует, только
+          // если голова пересекла его нижнюю границу именно в этом кадре
+          // (были ниже — стали выше). Если игрок оказался внутри полосы без
+          // пересечения границы (застрял) — кандидат не пройдёт фильтр,
+          // клетка просто игнорируется, никакого телепорта.
+          const newTop = phys.y
           const playerBox: Rect = { x: phys.x, y: phys.y, w: PLAYER_WIDTH, h: PLAYER_HEIGHT }
-          const hits = overlappingBlockRects(grid, TILE_SIZE, playerBox)
-          if (hits.length > 0) {
-            const blockBottom = Math.max(...hits.map((r) => r.y + r.h))
+          const candidates = overlappingBlockRects(grid, TILE_SIZE, playerBox)
+            .filter((r) => prevTop >= r.y + r.h && newTop < r.y + r.h)
+          if (candidates.length > 0) {
+            const blockBottom = Math.max(...candidates.map((r) => r.y + r.h))
             phys.y = blockBottom
             phys.vy = 0
           }
