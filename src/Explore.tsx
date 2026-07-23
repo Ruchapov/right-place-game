@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
-import { renderMapToCanvas } from './mapRenderer'
+import { renderMapToCanvas, PLATFORM_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
@@ -66,6 +66,30 @@ function isVerticalSolid(grid: Grid, tileSize: number, px: number, py: number): 
   if (cx < 0 || cx >= width) return true
   const ch = grid[cy][cx]
   return ch === '#' || ch === '='
+}
+
+// Для удара головой снизу вверх: '#' блокирует по всей клетке, '='
+// блокирует только внутри своей полосы (см. drawPlatform/PLATFORM_H_RATIO
+// в mapRenderer.ts) — голова должна реально войти в нарисованный камень,
+// а не удариться о пустоту под ним. Возвращает Y, ниже которой не пройти,
+// или null, если в этой точке препятствия нет.
+function headBlockBottom(grid: Grid, tileSize: number, px: number, py: number): number | null {
+  const cx = Math.floor(px / tileSize)
+  const cy = Math.floor(py / tileSize)
+  const width = grid[0]?.length ?? 0
+  const height = grid.length
+  const cellTop = cy * tileSize
+  if (cy < 0) return null
+  if (cy >= height) return cellTop + tileSize
+  if (cx < 0 || cx >= width) return cellTop + tileSize
+  const ch = grid[cy][cx]
+  if (ch === '#') return cellTop + tileSize
+  if (ch === '=') {
+    const bandH = tileSize * PLATFORM_H_RATIO
+    if (py < cellTop + bandH) return cellTop + bandH
+    return null
+  }
+  return null
 }
 
 export default function Explore({ onClose }: ExploreProps) {
@@ -243,12 +267,21 @@ export default function Explore({ onClose }: ExploreProps) {
             phys.onGround = true
           }
         } else if (phys.vy < 0) {
-          // Удар головой снизу вверх: '=' блокирует так же, как '#'.
+          // Удар головой снизу вверх: '#' — вся клетка, '=' — только полоса.
+          // Координата берётся ПОСЛЕ y += vy*dt (phys.y уже обновлён выше).
+          // Три точки (края + центр) — узкую платформу не проскочить между
+          // двумя крайними при негрид-выровненном x.
           const headY = phys.y
-          const leftBlocked = isVerticalSolid(grid, TILE_SIZE, phys.x + 1, headY)
-          const rightBlocked = isVerticalSolid(grid, TILE_SIZE, phys.x + PLAYER_WIDTH - 1, headY)
-          if (leftBlocked || rightBlocked) {
-            phys.y = (Math.floor(headY / TILE_SIZE) + 1) * TILE_SIZE
+          const headPoints = [phys.x + 1, phys.x + PLAYER_WIDTH / 2, phys.x + PLAYER_WIDTH - 1]
+          let pushTo: number | null = null
+          for (const px of headPoints) {
+            const blockBottom = headBlockBottom(grid, TILE_SIZE, px, headY)
+            if (blockBottom !== null) {
+              pushTo = pushTo === null ? blockBottom : Math.max(pushTo, blockBottom)
+            }
+          }
+          if (pushTo !== null) {
+            phys.y = pushTo
             phys.vy = 0
           }
         }

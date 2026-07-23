@@ -25,6 +25,10 @@ export const DECOR: Record<string, DecorDef> = {
   rubble: { sprite: 'rubble', tiles: 1.0, anchor: 'bottom', label: 'Обломки' },
 };
 
+// Доля высоты тайла, которую занимает полоса '=' (прижата к верху клетки).
+// Единый источник правды — коллизия в Explore.tsx использует то же число.
+export const PLATFORM_H_RATIO = 0.44;
+
 function loadSprites(sprites: Record<string, string>): Promise<Record<string, HTMLImageElement>> {
   const keys = Object.keys(sprites);
   const images: Record<string, HTMLImageElement> = {};
@@ -113,7 +117,7 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
   }
 
   function drawPlatform(x: number, y: number) {
-    const px = x * TS, py = y * TS, h = TS * 0.44, top = py;
+    const px = x * TS, py = y * TS, h = TS * PLATFORM_H_RATIO, top = py;
     if (ready('masonry')) { const { sx, sy, tp } = texSrc(x, y); ctx.drawImage(IMG.masonry, sx, sy + tp * 0.55, tp, tp * 0.45, px, top, TS, h); }
     else { ctx.fillStyle = '#3A3344'; ctx.fillRect(px, top, TS, h); }
     ctx.strokeStyle = 'rgba(237,231,242,0.24)'; ctx.lineWidth = 2;
