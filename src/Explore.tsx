@@ -80,15 +80,38 @@ function isPlatformBandBlocking(
   return null
 }
 
-// ЗАЩИТА ОТ ЗАСТРЕВАНИЯ по горизонтали: если игрок на начало кадра уже был
-// в том же столбце cx (headroom/полоса и так пересекается вертикально — Y
-// в этом кадре ещё не двигалась, тот же top/bottom), не блокируем движение
-// вбок в этот кадр — иначе игрок внутри полосы окажется зажат стенкой.
-function wasColumnAlreadyOverlapping(prevLeft: number, width: number, tileSize: number, cx: number): boolean {
-  const prevRight = prevLeft + width
-  const cellLeft = cx * tileSize
-  const cellRight = cellLeft + tileSize
-  return prevLeft < cellRight && prevRight > cellLeft
+// ЗАЩИТА ОТ ЗАСТРЕВАНИЯ по горизонтали: проверяет ТЕКУЩЕЕ положение игрока
+// (на начало кадра — left/top/bottom ещё не двигались в этом кадре), а не
+// целевую клетку. Если габарит [left,left+width)×[top,bottom) пересекает
+// полосу '=' хотя бы в ОДНОЙ из клеток, которые игрок сейчас занимает по
+// горизонтали (не только та, куда он движется), — значит он уже внутри
+// полосы (например, после прыжка). В этом состоянии блокировка по '=' не
+// применяется ни в одну сторону, пока игрок не выйдет из полосы целиком.
+function isOverlappingPlatformBand(
+  grid: Grid,
+  tileSize: number,
+  left: number,
+  width: number,
+  top: number,
+  bottom: number,
+): boolean {
+  const gridWidth = grid[0]?.length ?? 0
+  const gridHeight = grid.length
+  const cxLeft = Math.floor(left / tileSize)
+  const cxRight = Math.floor((left + width - 1) / tileSize)
+  const cyTop = Math.floor(top / tileSize)
+  const cyBottom = Math.floor((bottom - 1) / tileSize)
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    if (cy < 0 || cy >= gridHeight) continue
+    const cellTop = cy * tileSize
+    const bandBottom = cellTop + tileSize * PLATFORM_H_RATIO
+    if (!(top < bandBottom && bottom > cellTop)) continue
+    for (let cx = cxLeft; cx <= cxRight; cx++) {
+      if (cx < 0 || cx >= gridWidth) continue
+      if (grid[cy][cx] === '=') return true
+    }
+  }
+  return false
 }
 
 // Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
@@ -352,9 +375,11 @@ export default function Explore({ onClose }: ExploreProps) {
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
           if (!hit) {
-            const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
-            if (band && !wasColumnAlreadyOverlapping(startX, PLAYER_WIDTH, TILE_SIZE, band.cx)) {
-              hit = true
+            // Сначала: уже внутри полосы (по текущему положению, не по цели)?
+            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+            if (!stuckInBand) {
+              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+              if (band) hit = true
             }
           }
           if (hit) {
@@ -368,9 +393,11 @@ export default function Explore({ onClose }: ExploreProps) {
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
           if (!hit) {
-            const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
-            if (band && !wasColumnAlreadyOverlapping(startX, PLAYER_WIDTH, TILE_SIZE, band.cx)) {
-              hit = true
+            // Сначала: уже внутри полосы (по текущему положению, не по цели)?
+            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+            if (!stuckInBand) {
+              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+              if (band) hit = true
             }
           }
           if (hit) {
