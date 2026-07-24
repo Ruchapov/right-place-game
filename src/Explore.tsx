@@ -51,6 +51,46 @@ function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean 
   return grid[cy][cx] === '#'
 }
 
+// Горизонтальная коллизия с полосой '=': блокирует ТОЛЬКО полоса сверху
+// клетки (bandH = tileSize*PLATFORM_H_RATIO), нижние ~56% клетки остаются
+// проходимы вбок. Проверяет реальное пересечение интервалов [top,bottom) и
+// [cellTop,cellTop+bandH) по всем строкам, которые занимает габарит игрока
+// — не точки выборки, иначе полоса может провалиться между сэмплами (как
+// уже было с вертикалью). '#' здесь не трогаем — для неё уже есть isSolid.
+function isPlatformBandBlocking(
+  grid: Grid,
+  tileSize: number,
+  px: number,
+  top: number,
+  bottom: number,
+): { cx: number; cy: number } | null {
+  const cx = Math.floor(px / tileSize)
+  const width = grid[0]?.length ?? 0
+  const height = grid.length
+  if (cx < 0 || cx >= width) return null
+  const cyTop = Math.floor(top / tileSize)
+  const cyBottom = Math.floor((bottom - 1) / tileSize)
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    if (cy < 0 || cy >= height) continue
+    if (grid[cy][cx] !== '=') continue
+    const cellTop = cy * tileSize
+    const bandBottom = cellTop + tileSize * PLATFORM_H_RATIO
+    if (top < bandBottom && bottom > cellTop) return { cx, cy }
+  }
+  return null
+}
+
+// ЗАЩИТА ОТ ЗАСТРЕВАНИЯ по горизонтали: если игрок на начало кадра уже был
+// в том же столбце cx (headroom/полоса и так пересекается вертикально — Y
+// в этом кадре ещё не двигалась, тот же top/bottom), не блокируем движение
+// вбок в этот кадр — иначе игрок внутри полосы окажется зажат стенкой.
+function wasColumnAlreadyOverlapping(prevLeft: number, width: number, tileSize: number, cx: number): boolean {
+  const prevRight = prevLeft + width
+  const cellLeft = cx * tileSize
+  const cellRight = cellLeft + tileSize
+  return prevLeft < cellRight && prevRight > cellLeft
+}
+
 // Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
 // если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
 // (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
@@ -297,6 +337,7 @@ export default function Explore({ onClose }: ExploreProps) {
 
       app.ticker.add((ticker) => {
         const dt = ticker.deltaTime
+        const startX = phys.x
         const startY = phys.y
         const wasOnGround = phys.onGround
 
@@ -306,20 +347,32 @@ export default function Explore({ onClose }: ExploreProps) {
 
         if (phys.vx > 0) {
           const px = phys.x + PLAYER_WIDTH - 1
-          const hit =
+          let hit =
             isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
+          if (!hit) {
+            const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+            if (band && !wasColumnAlreadyOverlapping(startX, PLAYER_WIDTH, TILE_SIZE, band.cx)) {
+              hit = true
+            }
+          }
           if (hit) {
             phys.x = Math.floor((phys.x + PLAYER_WIDTH) / TILE_SIZE) * TILE_SIZE - PLAYER_WIDTH
             phys.vx = 0
           }
         } else if (phys.vx < 0) {
           const px = phys.x
-          const hit =
+          let hit =
             isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
+          if (!hit) {
+            const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+            if (band && !wasColumnAlreadyOverlapping(startX, PLAYER_WIDTH, TILE_SIZE, band.cx)) {
+              hit = true
+            }
+          }
           if (hit) {
             phys.x = (Math.floor(phys.x / TILE_SIZE) + 1) * TILE_SIZE
             phys.vx = 0
