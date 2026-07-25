@@ -4,12 +4,16 @@ import { renderMapToCanvas, PLATFORM_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
+  endurance?: number
 }
 
 const TILE_SIZE = 64
 const PLAYER_COLOR = 0xe0353b
 const PLAYER_WIDTH = TILE_SIZE
 const PLAYER_HEIGHT = TILE_SIZE * 2
+
+const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
+const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
 
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
@@ -235,12 +239,52 @@ function sweepFootBlock(
   return pushTo
 }
 
-export default function Explore({ onClose }: ExploreProps) {
+export default function Explore({ onClose, endurance }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
+
+  // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
+  const maxHp = endurance && endurance > 0 ? endurance * HP_PER_ENDURANCE : FALLBACK_MAX_HP
+  // Текущее hp — в ref, не в state: меняется в игровом цикле каждый кадр,
+  // ререндер React на это не нужен. HP-бар обновляется вручную через DOM-refs.
+  const hpRef = useRef(maxHp)
+  const hpFillRef = useRef<HTMLDivElement>(null)
+  const hpTextRef = useRef<HTMLSpanElement>(null)
+  // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
+  // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
+  // takeDamageRef.current(amount), не импортируя функцию напрямую.
+  const takeDamageRef = useRef<(amount: number) => void>(() => {})
+
+  function updateHpBar() {
+    const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
+    if (hpFillRef.current) {
+      hpFillRef.current.style.width = `${pct}%`
+      hpFillRef.current.style.background = pct <= 30 ? '#E0353B' : '#4FB477'
+    }
+    if (hpTextRef.current) {
+      hpTextRef.current.textContent = `${hpRef.current}/${maxHp}`
+    }
+  }
+
+  // Пока никто не вызывает — понадобится шипам и другим источникам урона.
+  // Смерть (hp <= 0) завершает забег тем же путём, что и кнопка выхода —
+  // потеря трофеев на abandon обрабатывается там же, где обрабатывается onClose.
+  function takeDamage(amount: number) {
+    hpRef.current = Math.max(0, hpRef.current - amount)
+    updateHpBar()
+    if (hpRef.current <= 0) {
+      onClose?.()
+    }
+  }
+
+  // "Свежая" ссылка на takeDamage кладётся в ref эффектом (не во время рендера),
+  // чтобы будущий hazard-код внутри ticker'а всегда вызывал актуальную версию.
+  useEffect(() => {
+    takeDamageRef.current = takeDamage
+  })
 
   useEffect(() => {
     let app: Application | null = null
@@ -472,6 +516,47 @@ export default function Explore({ onClose }: ExploreProps) {
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      <div
+        style={{
+          position: 'fixed',
+          top: 'calc(16px + env(safe-area-inset-top))',
+          left: 16,
+          zIndex: 1001,
+          width: 160,
+          height: 20,
+          borderRadius: 6,
+          background: '#221E2B',
+          border: '1px solid #3A3344',
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <div
+          ref={hpFillRef}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: '100%',
+            background: '#4FB477',
+          }}
+        />
+        <span
+          ref={hpTextRef}
+          style={{
+            position: 'relative',
+            color: '#EDE7F2',
+            fontSize: 11,
+            fontFamily: 'monospace',
+          }}
+        >
+          {maxHp}/{maxHp}
+        </span>
+      </div>
 
       <div
         style={{
