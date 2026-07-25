@@ -15,6 +15,9 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
 
+const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
+const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
+
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
 const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
@@ -113,6 +116,34 @@ function isOverlappingPlatformBand(
     for (let cx = cxLeft; cx <= cxRight; cx++) {
       if (cx < 0 || cx >= gridWidth) continue
       if (grid[cy][cx] === '=') return true
+    }
+  }
+  return false
+}
+
+// Шипы '^' не твердь ни для одной из сторон (не проверяются в isSolid/
+// cellHeadBlockBottom/cellFootBlockTop выше) — игрок проходит/проваливается
+// сквозь них как через воздух. Здесь только определяем КАСАНИЕ: пересекает ли
+// хитбокс игрока хотя бы одну клетку '^', для урона в ticker'е.
+function isTouchingSpikes(
+  grid: Grid,
+  tileSize: number,
+  left: number,
+  width: number,
+  top: number,
+  bottom: number,
+): boolean {
+  const gridWidth = grid[0]?.length ?? 0
+  const gridHeight = grid.length
+  const cxLeft = Math.floor(left / tileSize)
+  const cxRight = Math.floor((left + width - 1) / tileSize)
+  const cyTop = Math.floor(top / tileSize)
+  const cyBottom = Math.floor((bottom - 1) / tileSize)
+  for (let cy = cyTop; cy <= cyBottom; cy++) {
+    if (cy < 0 || cy >= gridHeight) continue
+    for (let cx = cxLeft; cx <= cxRight; cx++) {
+      if (cx < 0 || cx >= gridWidth) continue
+      if (grid[cy][cx] === '^') return true
     }
   }
   return false
@@ -257,6 +288,13 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
   const takeDamageRef = useRef<(amount: number) => void>(() => {})
+  // Готовый вызов "нанести урон шипов" с уже посчитанной дозой (maxHp * ratio).
+  // Обновляется тем же эффектом, что и takeDamageRef — так основной ticker-эффект
+  // (mount-once, deps []) не должен напрямую читать maxHp из тела компонента.
+  const applySpikeDamageRef = useRef<() => void>(() => {})
+  // Остаток неуязвимости после касания шипов, мс. Тикает в ticker'е по
+  // ticker.deltaMS (реальное время), не по dt-кадрам — 1 секунда буквально.
+  const spikeIframeRef = useRef(0)
 
   function updateHpBar() {
     const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
@@ -284,6 +322,7 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
   // чтобы будущий hazard-код внутри ticker'а всегда вызывал актуальную версию.
   useEffect(() => {
     takeDamageRef.current = takeDamage
+    applySpikeDamageRef.current = () => takeDamage(maxHp * SPIKE_DAMAGE_RATIO)
   })
 
   useEffect(() => {
@@ -482,6 +521,17 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
             phys.y = prevHeadY
             phys.vy = 0
           }
+        }
+
+        // Шипы: неуязвимость тикает каждый кадр независимо от касания;
+        // урон только когда истекла и хитбокс реально пересекает '^'.
+        spikeIframeRef.current = Math.max(0, spikeIframeRef.current - ticker.deltaMS)
+        if (
+          spikeIframeRef.current <= 0 &&
+          isTouchingSpikes(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+        ) {
+          spikeIframeRef.current = SPIKE_IFRAME_MS
+          applySpikeDamageRef.current()
         }
 
         player.x = phys.x
