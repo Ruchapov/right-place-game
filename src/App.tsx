@@ -261,6 +261,17 @@ export default function App() {
     setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false); setRunArmor(0)
   }
 
+  // ВРЕМЕННО: Explore ещё не ходит на сервер за наградой (нет /run/* вызовов
+  // для новой модели событий) — переиспользуем старый results-экран только
+  // визуально, message ниже не отражает реальную награду. См. разбор в ответе
+  // на задачу "3 события за забег".
+  function handleExploreRunComplete(closedEvents: { kind: string }[]) {
+    setShowExploreTest(false)
+    setRooms(closedEvents.map((e) => e.kind))
+    setRoomIndex(closedEvents.length)
+    setResults(closedEvents.map((e) => ({ room: e.kind, message: '(заглушка) награда не подключена' })))
+  }
+
   async function handleSkillToggle(skillId: string) {
     if (!player) return
     const current = player.equippedSkills ?? []
@@ -897,7 +908,7 @@ export default function App() {
         ))}
       </div>
 
-      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} endurance={player?.endurance} />}
+      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} endurance={player?.endurance} onRunComplete={handleExploreRunComplete} />}
     </div>
   )
 }

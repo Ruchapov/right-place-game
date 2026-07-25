@@ -1,10 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { renderMapToCanvas, PLATFORM_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
   endurance?: number
+  // Временный каркас "3 события за забег": вызывается ровно один раз, когда
+  // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
+  // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
+  onRunComplete?: (closedEvents: { kind: EventKind }[]) => void
 }
 
 const MAP_FILE = 'map_A_serpentine.txt' // TODO: сделать выбираемым, когда появится выбор карты в UI
@@ -47,6 +51,72 @@ type PlayerPhysics = {
   vx: number
   vy: number
   onGround: boolean
+}
+
+// "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
+// со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
+// результат забега можно было отдать старому results-экрану без маппинга.
+export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss'
+
+type EventCandidate = { kind: EventKind; x: number; y: number }
+
+type MapEvent = EventCandidate & { marker: Graphics; closed: boolean }
+
+const EVENT_MARKER_COLOR: Record<EventKind, number> = {
+  enemy: 0xe0353b,
+  chest: 0xe8b23a,
+  smuggler: 0x8fd9f0,
+  puzzle: 0x46c4e8,
+  boss: 0xf08a24,
+}
+
+const EVENTS_PER_RUN = 3
+
+function isPointXY(value: unknown): value is [number, number] {
+  return Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'number'
+}
+
+// Собирает ВСЕ доступные точки-кандидаты события из пулов слот-файла карты.
+// enemyCluster (3 врага) считается ОДНИМ событием — метка ставится в первую
+// точку кластера. npc.smuggler/npc.puzzle/boss могут отсутствовать (null) —
+// на карте A их нет, но механизм общий для всех карт A-F.
+function buildEventCandidates(slots: unknown): EventCandidate[] {
+  const s = slots as {
+    enemyClusters?: { points?: unknown }[]
+    reward?: unknown[]
+    npc?: { smuggler?: unknown; puzzle?: unknown }
+    boss?: unknown
+  } | null
+  const candidates: EventCandidate[] = []
+
+  for (const cluster of s?.enemyClusters ?? []) {
+    const first = Array.isArray(cluster?.points) ? cluster.points[0] : null
+    if (isPointXY(first)) candidates.push({ kind: 'enemy', x: first[0], y: first[1] })
+  }
+  for (const point of s?.reward ?? []) {
+    if (isPointXY(point)) candidates.push({ kind: 'chest', x: point[0], y: point[1] })
+  }
+  for (const point of Array.isArray(s?.npc?.smuggler) ? s.npc.smuggler : []) {
+    if (isPointXY(point)) candidates.push({ kind: 'smuggler', x: point[0], y: point[1] })
+  }
+  for (const point of Array.isArray(s?.npc?.puzzle) ? s.npc.puzzle : []) {
+    if (isPointXY(point)) candidates.push({ kind: 'puzzle', x: point[0], y: point[1] })
+  }
+  if (isPointXY(s?.boss)) candidates.push({ kind: 'boss', x: s.boss[0], y: s.boss[1] })
+
+  return candidates
+}
+
+// Без повторов: выбранные кандидаты удаляются из пула перед следующим выбором.
+function pickRandomEvents(candidates: EventCandidate[], count: number): EventCandidate[] {
+  const pool = [...candidates]
+  const picked: EventCandidate[] = []
+  while (pool.length > 0 && picked.length < count) {
+    const i = Math.floor(Math.random() * pool.length)
+    picked.push(pool[i])
+    pool.splice(i, 1)
+  }
+  return picked
 }
 
 // Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
@@ -281,12 +351,21 @@ function sweepFootBlock(
   return pushTo
 }
 
-export default function Explore({ onClose, endurance }: ExploreProps) {
+export default function Explore({ onClose, endurance, onRunComplete }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
+
+  // "3 события за забег" — временный каркас. eventsRef хранит выбранные события
+  // и их Pixi-маркеры (заполняется в setup(), после загрузки слот-файла).
+  // eventClosed — состояние ТОЛЬКО для HUD-иконок сверху (закрытий мало, до 3
+  // за забег, — в отличие от HP лишний ререндер тут не проблема).
+  const eventsRef = useRef<MapEvent[]>([])
+  const runCompleteFiredRef = useRef(false)
+  const onRunCompleteRef = useRef<(closedEvents: { kind: EventKind }[]) => void>(() => {})
+  const [eventClosed, setEventClosed] = useState<boolean[]>(Array(EVENTS_PER_RUN).fill(false))
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * HP_PER_ENDURANCE : FALLBACK_MAX_HP
@@ -334,6 +413,7 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
   useEffect(() => {
     takeDamageRef.current = takeDamage
     applySpikeDamageRef.current = () => takeDamage(maxHp * SPIKE_DAMAGE_RATIO)
+    onRunCompleteRef.current = onRunComplete ?? (() => {})
   })
 
   useEffect(() => {
@@ -366,6 +446,12 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
           }
         }
       }
+
+      // "3 события за забег" — временный каркас: выбираем случайно, без повторов,
+      // из общего пула (enemyCluster / сундук / смуглер / загадка / босс — что
+      // есть у карты). На карте A есть только enemyClusters и reward.
+      const chosenEvents = pickRandomEvents(buildEventCandidates(slots), EVENTS_PER_RUN)
+      setEventClosed(Array(chosenEvents.length).fill(false))
 
       const startRaw = slots?.start
       if (
@@ -427,6 +513,20 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
       player.x = phys.x
       player.y = phys.y
       worldContainer.addChild(player)
+
+      // Временные метки-заглушки на местах выбранных событий (см. chosenEvents
+      // выше). Настоящие спрайты подключим, когда появится реальная логика
+      // "убить 3 врагов" / "открыть сундук атакой".
+      eventsRef.current = chosenEvents.map((ev) => {
+        const marker = new Graphics()
+          .circle(0, 0, TILE_SIZE * 0.35)
+          .fill({ color: EVENT_MARKER_COLOR[ev.kind], alpha: 0.85 })
+          .stroke({ width: 3, color: 0xffffff })
+        marker.x = ev.x * TILE_SIZE + TILE_SIZE / 2
+        marker.y = ev.y * TILE_SIZE + TILE_SIZE / 2
+        worldContainer.addChild(marker)
+        return { ...ev, marker, closed: false }
+      })
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
@@ -559,6 +659,35 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
           applySpikeDamageRef.current()
         }
 
+        // "3 события за забег" — временное закрытие простым касанием хитбокса.
+        // Настоящую логику (убить 3 врагов / открыть сундук атакой) навесим
+        // отдельно — здесь только счётчик и HUD-иконки.
+        for (let i = 0; i < eventsRef.current.length; i++) {
+          const ev = eventsRef.current[i]
+          if (ev.closed) continue
+          const evLeft = ev.x * TILE_SIZE
+          const evTop = ev.y * TILE_SIZE
+          const touching =
+            phys.x < evLeft + TILE_SIZE &&
+            phys.x + PLAYER_WIDTH > evLeft &&
+            phys.y < evTop + TILE_SIZE &&
+            phys.y + PLAYER_HEIGHT > evTop
+          if (!touching) continue
+
+          ev.closed = true
+          ev.marker.visible = false
+          setEventClosed((prev) => {
+            const next = [...prev]
+            next[i] = true
+            return next
+          })
+
+          if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
+            runCompleteFiredRef.current = true
+            onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
+          }
+        }
+
         player.x = phys.x
         player.y = phys.y
 
@@ -631,6 +760,31 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
         >
           {maxHp}/{maxHp}
         </span>
+      </div>
+
+      <div
+        style={{
+          position: 'fixed',
+          top: 'calc(16px + env(safe-area-inset-top))',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 1001,
+          display: 'flex',
+          gap: 10,
+        }}
+      >
+        {eventClosed.map((closed, i) => (
+          <div
+            key={i}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              background: closed ? '#E8B23A' : '#9C93AD',
+              border: '2px solid #221E2B',
+            }}
+          />
+        ))}
       </div>
 
       <div
