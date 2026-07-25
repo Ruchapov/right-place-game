@@ -7,6 +7,17 @@ type ExploreProps = {
   endurance?: number
 }
 
+const MAP_FILE = 'map_A_serpentine.txt' // TODO: сделать выбираемым, когда появится выбор карты в UI
+
+// Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt
+// и map_C_boss_descent.txt (два слова после id) оба -> map_<id>_slots.json.
+// Берём именно первый токен после "map_", а не отбрасываем последний "_xxx.txt" —
+// иначе на многословных именах (boss_descent) получим не тот файл.
+function slotsFileForMap(mapFile: string): string {
+  const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
+  return `map_${mapId}_slots.json`
+}
+
 const TILE_SIZE = 64
 const PLAYER_COLOR = 0xe0353b
 const PLAYER_WIDTH = TILE_SIZE
@@ -335,12 +346,26 @@ export default function Explore({ onClose, endurance }: ExploreProps) {
       const base = import.meta.env.BASE_URL
 
       const [mapText, slots] = await Promise.all([
-        fetch(`${base}assets/maps/map_A_serpentine.txt`).then((res) => res.text()),
-        fetch(`${base}assets/maps/map_A_slots.json`).then((res) => res.json()),
+        fetch(`${base}assets/maps/${MAP_FILE}`).then((res) => res.text()),
+        fetch(`${base}assets/maps/${slotsFileForMap(MAP_FILE)}`).then((res) => res.json()),
       ])
 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
+
+      // Шипы из слотов карты — прямо в рабочую сетку, ДО renderMapToCanvas и
+      // ДО первого кадра физики: коллизия и рендер читают один и тот же grid,
+      // значит '^' должен попасть именно сюда, а не в отдельную структуру.
+      const hazardPoints: unknown = slots.hazard
+      if (Array.isArray(hazardPoints)) {
+        for (const point of hazardPoints) {
+          if (!Array.isArray(point) || typeof point[0] !== 'number' || typeof point[1] !== 'number') continue
+          const [hx, hy] = point
+          if (grid[hy] && hx >= 0 && hx < grid[hy].length) {
+            grid[hy][hx] = '^'
+          }
+        }
+      }
 
       const startRaw = slots?.start
       if (
