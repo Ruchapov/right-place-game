@@ -29,6 +29,20 @@ export const DECOR: Record<string, DecorDef> = {
 // Единый источник правды — коллизия в Explore.tsx использует то же число.
 export const PLATFORM_H_RATIO = 0.44;
 
+// Доля высоты тайла под спрайтом шипов '^' — прижат к НИЗУ клетки (зубья стоят
+// на полу), в отличие от '=', который прижат к верху. spikes.png сам по себе
+// почти квадратный (541×547) — вписать в тайл по ширине БЕЗ искажения дало бы
+// ~100% высоты клетки, а не 40-50%; в рамках заданного диапазона берём верхнюю
+// границу (0.48), чтобы минимально сплющить зубья.
+const SPIKE_H_RATIO = 0.48;
+
+// В отличие от SPRITES (вшиты как base64 в этот файл), объекты карты —
+// обычные public-ассеты, грузятся по сети с учётом Vite BASE_URL (важно для
+// GitHub Pages, где base — не "/").
+const OBJECT_SPRITES: Record<string, string> = {
+  spikes: `${import.meta.env.BASE_URL}assets/objects/spikes.png`,
+};
+
 function loadSprites(sprites: Record<string, string>): Promise<Record<string, HTMLImageElement>> {
   const keys = Object.keys(sprites);
   const images: Record<string, HTMLImageElement> = {};
@@ -56,7 +70,10 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
   const H = grid.length;
   const W = H > 0 ? grid[0].length : 0;
 
-  const IMG = await loadSprites(SPRITES);
+  // Обе группы грузятся параллельно и ждутся здесь же — до первой отрисовки,
+  // так что '^' не пропадёт из-за того, что spikes.png ещё не успел загрузиться.
+  const [baseImg, objectImg] = await Promise.all([loadSprites(SPRITES), loadSprites(OBJECT_SPRITES)]);
+  const IMG = { ...baseImg, ...objectImg };
 
   const canvas = document.createElement('canvas');
   canvas.width = W * TS;
@@ -129,12 +146,19 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
     ctx.stroke();
   }
 
+  function drawSpikes(x: number, y: number) {
+    const px = x * TS, bottom = (y + 1) * TS, h = TS * SPIKE_H_RATIO, top = bottom - h;
+    if (ready('spikes')) ctx.drawImage(IMG.spikes, px, top, TS, h);
+    else { ctx.fillStyle = '#E0353B'; ctx.fillRect(px, top, TS, h); }
+  }
+
   drawBackdrop();
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const ch = grid[y][x];
       if (ch === '#') drawSolid(x, y);
       else if (ch === '=') drawPlatform(x, y);
+      else if (ch === '^') drawSpikes(x, y);
     }
   }
   for (const d of decor) {
