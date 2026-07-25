@@ -32,6 +32,7 @@ const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/н
 
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
+const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
 
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
@@ -107,10 +108,12 @@ function buildEventCandidates(slots: unknown): EventCandidate[] {
   return candidates
 }
 
-// Без повторов: выбранные кандидаты удаляются из пула перед следующим выбором.
-function pickRandomEvents(candidates: EventCandidate[], count: number): EventCandidate[] {
-  const pool = [...candidates]
-  const picked: EventCandidate[] = []
+// Общий выбор "N случайных без повторов" — используется и для событий (3 из
+// пула), и для шипов (10 из hazard). Если в пуле меньше count элементов —
+// отдаёт весь пул как есть, без падения.
+function pickRandom<T>(items: T[], count: number): T[] {
+  const pool = [...items]
+  const picked: T[] = []
   while (pool.length > 0 && picked.length < count) {
     const i = Math.floor(Math.random() * pool.length)
     picked.push(pool[i])
@@ -439,24 +442,23 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
 
-      // Шипы из слотов карты — прямо в рабочую сетку, ДО renderMapToCanvas и
-      // ДО первого кадра физики: коллизия и рендер читают один и тот же grid,
-      // значит '^' должен попасть именно сюда, а не в отдельную структуру.
-      const hazardPoints: unknown = slots.hazard
-      if (Array.isArray(hazardPoints)) {
-        for (const point of hazardPoints) {
-          if (!Array.isArray(point) || typeof point[0] !== 'number' || typeof point[1] !== 'number') continue
-          const [hx, hy] = point
-          if (grid[hy] && hx >= 0 && hx < grid[hy].length) {
-            grid[hy][hx] = '^'
-          }
+      // Шипы из слотов карты — не весь пул, а HAZARD_SPIKES_PER_RUN случайных
+      // точек за забег (меньше пула — берём сколько есть). Вставляем прямо в
+      // рабочую сетку, ДО renderMapToCanvas и ДО первого кадра физики:
+      // коллизия и рендер читают один и тот же grid, значит '^' должен
+      // попасть именно сюда, а не в отдельную структуру.
+      const hazardPool: [number, number][] = Array.isArray(slots.hazard) ? slots.hazard.filter(isPointXY) : []
+      const chosenHazards = pickRandom(hazardPool, HAZARD_SPIKES_PER_RUN)
+      for (const [hx, hy] of chosenHazards) {
+        if (grid[hy] && hx >= 0 && hx < grid[hy].length) {
+          grid[hy][hx] = '^'
         }
       }
 
       // "3 события за забег" — временный каркас: выбираем случайно, без повторов,
       // из общего пула (enemyCluster / сундук / смуглер / загадка / босс — что
       // есть у карты). На карте A есть только enemyClusters и reward.
-      const chosenEvents = pickRandomEvents(buildEventCandidates(slots), EVENTS_PER_RUN)
+      const chosenEvents = pickRandom(buildEventCandidates(slots), EVENTS_PER_RUN)
       setEventClosed(Array(chosenEvents.length).fill(false))
 
       const startRaw = slots?.start
