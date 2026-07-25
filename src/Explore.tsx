@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
-import { renderMapToCanvas, PLATFORM_H_RATIO } from './mapRenderer'
+import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
@@ -204,8 +204,10 @@ function isOverlappingPlatformBand(
 
 // Шипы '^' не твердь ни для одной из сторон (не проверяются в isSolid/
 // cellHeadBlockBottom/cellFootBlockTop выше) — игрок проходит/проваливается
-// сквозь них как через воздух. Здесь только определяем КАСАНИЕ: пересекает ли
-// хитбокс игрока хотя бы одну клетку '^', для урона в ticker'е.
+// сквозь них как через воздух. Здесь только определяем КАСАНИЕ — и только с
+// зоной ЗУБЬЕВ (нижние SPIKE_H_RATIO клетки, прижаты к низу — см. drawSpikes/
+// SPIKE_H_RATIO в mapRenderer.ts), а не со всей клеткой: иначе нельзя было бы
+// перепрыгнуть шип — урон бил бы и по воздуху над видимыми зубьями.
 function isTouchingSpikes(
   grid: Grid,
   tileSize: number,
@@ -222,6 +224,10 @@ function isTouchingSpikes(
   const cyBottom = Math.floor((bottom - 1) / tileSize)
   for (let cy = cyTop; cy <= cyBottom; cy++) {
     if (cy < 0 || cy >= gridHeight) continue
+    const cellBottom = (cy + 1) * tileSize
+    const bandTop = cellBottom - tileSize * SPIKE_H_RATIO
+    // Хитбокс вообще пересекает полосу зубьев в этой строке клеток?
+    if (!(top < cellBottom && bottom > bandTop)) continue
     for (let cx = cxLeft; cx <= cxRight; cx++) {
       if (cx < 0 || cx >= gridWidth) continue
       if (grid[cy][cx] === '^') return true
