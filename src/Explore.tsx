@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { renderMapToCanvas, PLATFORM_H_RATIO } from './mapRenderer'
 
@@ -242,9 +242,6 @@ export default function Explore({ onClose }: ExploreProps) {
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
-  // DEBUG ONLY — убрать после калибровки прыжка
-  const [debugInfo, setDebugInfo] = useState({ onGround: false, jumpTiles: 0 })
-
   useEffect(() => {
     let app: Application | null = null
     let cancelled = false
@@ -323,13 +320,6 @@ export default function Explore({ onClose }: ExploreProps) {
       player.y = phys.y
       worldContainer.addChild(player)
 
-      // DEBUG ONLY — убрать после диагностики. Чисто визуальный слой поверх
-      // карты, физику/коллизии не трогает. Один объект на всё время жизни,
-      // не пересоздаётся каждый кадр.
-      const DEBUG_CELL_RADIUS = 8
-      const debugGraphics = new Graphics()
-      worldContainer.addChild(debugGraphics)
-
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
@@ -352,17 +342,10 @@ export default function Explore({ onClose }: ExploreProps) {
       // приземление на твердь. Платформы '=' — следующий шаг.
       const worldWidthPx = grid[0].length * TILE_SIZE
 
-      // DEBUG ONLY — убрать после калибровки прыжка
-      let debugFrameCounter = 0
-      let airborneStartY: number | null = null
-      let minYDuringFlight = 0
-      let lastJumpTiles = 0
-
       app.ticker.add((ticker) => {
         const dt = ticker.deltaTime
         const startX = phys.x
         const startY = phys.y
-        const wasOnGround = phys.onGround
 
         // Горизонтальное движение
         phys.vx = dirRef.current * MOVE_SPEED
@@ -457,60 +440,10 @@ export default function Explore({ onClose }: ExploreProps) {
           }
         }
 
-        // DEBUG ONLY — убрать после калибровки прыжка
-        if (wasOnGround && !phys.onGround) {
-          airborneStartY = startY
-          minYDuringFlight = phys.y
-        } else if (!phys.onGround && airborneStartY !== null) {
-          minYDuringFlight = Math.min(minYDuringFlight, phys.y)
-        } else if (!wasOnGround && phys.onGround && airborneStartY !== null) {
-          lastJumpTiles = (airborneStartY - minYDuringFlight) / TILE_SIZE
-          airborneStartY = null
-        }
-
         player.x = phys.x
         player.y = phys.y
 
-        // DEBUG ONLY — убрать после диагностики. Рисует по тем же grid/
-        // TILE_SIZE/PLATFORM_H_RATIO, что использует физика выше, — чтобы
-        // видеть именно то, что она считает препятствием.
-        debugGraphics.clear()
-        const dbgCx = Math.floor((phys.x + PLAYER_WIDTH / 2) / TILE_SIZE)
-        const dbgCy = Math.floor((phys.y + PLAYER_HEIGHT / 2) / TILE_SIZE)
-        for (let cy = dbgCy - DEBUG_CELL_RADIUS; cy <= dbgCy + DEBUG_CELL_RADIUS; cy++) {
-          if (cy < 0 || cy >= grid.length) continue
-          for (let cx = dbgCx - DEBUG_CELL_RADIUS; cx <= dbgCx + DEBUG_CELL_RADIUS; cx++) {
-            if (cx < 0 || cx >= grid[0].length) continue
-            const ch = grid[cy][cx]
-            if (ch === '#') {
-              debugGraphics
-                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-                .fill({ color: 0xe0353b, alpha: 0.12 })
-                .stroke({ width: 2, color: 0xe0353b })
-            } else if (ch === '=') {
-              debugGraphics
-                .rect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE * PLATFORM_H_RATIO)
-                .fill({ color: 0xe8b23a, alpha: 0.25 })
-                .stroke({ width: 2, color: 0xe8b23a })
-            }
-          }
-        }
-        debugGraphics
-          .rect(phys.x, phys.y, PLAYER_WIDTH, PLAYER_HEIGHT)
-          .stroke({ width: 2, color: 0x46c4e8 })
-
         updateCamera()
-
-        // DEBUG ONLY — троттлим React-обновление, не дёргаем setState каждый кадр
-        debugFrameCounter++
-        if (debugFrameCounter % 15 === 0) {
-          const currentJumpTiles =
-            airborneStartY !== null ? (airborneStartY - minYDuringFlight) / TILE_SIZE : lastJumpTiles
-          setDebugInfo({
-            onGround: phys.onGround,
-            jumpTiles: Math.round(currentJumpTiles * 10) / 10,
-          })
-        }
       })
     }
 
@@ -625,25 +558,6 @@ export default function Explore({ onClose }: ExploreProps) {
       >
         ▲
       </button>
-
-      {/* DEBUG ONLY — убрать после калибровки прыжка */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 16,
-          left: 16,
-          zIndex: 1001,
-          padding: '4px 8px',
-          borderRadius: 6,
-          background: 'rgba(0,0,0,0.6)',
-          color: '#EDE7F2',
-          fontSize: 11,
-          fontFamily: 'monospace',
-          pointerEvents: 'none',
-        }}
-      >
-        jump: {debugInfo.jumpTiles.toFixed(1)} | onGround: {String(debugInfo.onGround)}
-      </div>
 
       {onClose && (
         <button
