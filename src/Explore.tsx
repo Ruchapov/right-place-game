@@ -67,18 +67,32 @@ const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и г
 // - ENEMY_SPEED=1 px/кадр в Battle БЕЗ dt (там ticker вообще не масштабирует
 //   движение врага по deltaTime) — здесь то же число, но умножаем на dt, как
 //   уже сделано для игрока (MOVE_SPEED*dt).
-// - "dist > PLAYER_W" — порог, начиная с которого враг ещё идёт к игроку
-//   (не пытается влезть точно в его клетку); аналог — ширина игрока.
-// - ENEMY_ATTACK_INTERVAL=2с (обычный, не boss) — кулдаун между попытками атаки.
-// - ENEMY_WINDUP=0.6с — длительность замаха.
+// - ENEMY_ATTACK_INTERVAL=2с (обычный, не boss) — кулдаун МЕЖДУ атаками:
+//   стартует ПОСЛЕ удара (см. ниже), не перед первым — см. настройку боя.
 // - BASE_ENEMY_DAMAGE=14 (обычный, не boss) — урон удара, без dmgMultiplier
 //   по той же причине (нет level).
 // - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
-//   же константа используется и для атаки игрока, и для дальности врага.
+//   же константа используется и для атаки игрока, и для дальности врага; это
+//   по-прежнему радиус ПОПАДАНИЯ удара, отдельно от ATTACK_STOP_DIST ниже.
 const ENEMY_CHASE_SPEED = 1
-const ENEMY_CHASE_STOP_DIST = PLAYER_WIDTH
+
+// Настройка боя (правки после первой версии AI):
+// - ATTACK_STOP_DIST — НЕ из Battle: там 1D-дорожка со своим PLAYER_W-порогом,
+//   здесь подобрано отдельно под ощущение боя в Explore — враг перестаёт
+//   сближаться заметно РАНЬШЕ края ATTACK_RANGE (не долезает вплотную), но и
+//   не останавливается на самом краю дальности (иначе от него легко отбежать
+//   шагом) — ~64% от ATTACK_RANGE=70.
+// - WINDUP_MS — заменяет прежний ENEMY_WINDUP_S (был 0.6с = 600мс), в мс (как
+//   остальные *_MS-константы в файле), значение из разрешённого диапазона
+//   задачи (600-700). Телеграф (см. tint ниже) остаётся видимым всё окно —
+//   укоротили длительность, не тронув сам факт телеграфа.
+//   ⚠️ Ощущение "замах ~2с" в исходной версии давала не длительность windup
+//   (она и была 0.6с), а ENEMY_ATTACK_INTERVAL, накапливавшийся ДО первого
+//   windup как пауза "подумать" — эта пауза убрана отдельно, см. ниже.
+const ATTACK_STOP_DIST = 45
+const WINDUP_MS = 650
+
 const ENEMY_ATTACK_INTERVAL = 2
-const ENEMY_WINDUP_S = 0.6
 const ENEMY_ATTACK_DAMAGE = 14
 
 // Кнопка dodge (Шаг 2-2) — окно неуязвимости и кулдаун кнопки. НЕ из Battle.tsx:
@@ -118,9 +132,10 @@ type AttackHitbox = { x: number; y: number; width: number; height: number }
 // угол в мировых координатах (как у phys игрока). lastHitSwingId — id взмаха
 // атаки игрока, который этому врагу уже засчитан, чтобы один активный хитбокс
 // не бил его каждый кадр, пока длится (см. attackSwingIdRef).
-// attackTimer/windingUp/windupTimer — AI атаки врага (Шаг 2-2, см. ENEMY_*
-// константы выше): копится, пока игрок в ATTACK_RANGE, при готовности —
-// windingUp на ENEMY_WINDUP_S, удар — ровно в момент истечения замаха.
+// attackTimer/windingUp/windupTimer — AI атаки врага: attackTimer — КУЛДАУН
+// (считает ВНИЗ до 0, а не вверх), 0 = готов бить немедленно по достижении
+// ATTACK_STOP_DIST; windingUp держится WINDUP_MS, удар — ровно в момент
+// истечения замаха (см. ENEMY_*/ATTACK_STOP_DIST/WINDUP_MS константы выше).
 type Enemy = {
   x: number
   y: number
@@ -981,8 +996,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           const verticalReach = phys.y < livingEnemy.y + ENEMY_HEIGHT && phys.y + PLAYER_HEIGHT > livingEnemy.y
           const inMeleeReach = dist < ATTACK_RANGE && verticalReach
 
+          // Достиг ли враг стоп-дистанции (~64% ATTACK_RANGE, см. константу
+          // выше) — используется И для остановки сближения, И как порог для
+          // немедленного windup ниже (пока чисто горизонтально, как и раньше
+          // у преследования — вертикаль добавляется отдельно, только к
+          // windup-гейту, см. verticalReach).
+          const reachedStopDist = dist <= ATTACK_STOP_DIST
+
           if (!livingEnemy.windingUp) {
-            if (dist > ENEMY_CHASE_STOP_DIST) {
+            if (!reachedStopDist) {
               const dir = Math.sign(dx)
               const nextX = livingEnemy.x + dir * ENEMY_CHASE_SPEED * dt
               const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
@@ -995,27 +1017,29 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               }
             }
 
-            // Копим таймер атаки, только пока игрок в радиусе — как в Battle.tsx
-            // (вне радиуса таймер сбрасывается, а не просто стоит на паузе).
-            if (inMeleeReach) {
-              livingEnemy.attackTimer += ticker.deltaMS / 1000
-              if (livingEnemy.attackTimer >= ENEMY_ATTACK_INTERVAL) {
-                livingEnemy.attackTimer = 0
-                livingEnemy.windingUp = true
-                livingEnemy.windupTimer = 0
-              }
-            } else {
-              livingEnemy.attackTimer = 0
+            // Кулдаун считаем ВНИЗ до 0 (не вверх до интервала) — 0 по
+            // умолчанию, поэтому по достижении стоп-дистанции В ПЕРВЫЙ РАЗ
+            // windup стартует НЕМЕДЛЕННО, без паузы "подумать". Кулдаун
+            // появляется только ПОСЛЕ удара (см. ветку windingUp ниже).
+            if (livingEnemy.attackTimer > 0) {
+              livingEnemy.attackTimer = Math.max(0, livingEnemy.attackTimer - ticker.deltaMS / 1000)
+            }
+            if (reachedStopDist && verticalReach && livingEnemy.attackTimer <= 0) {
+              livingEnemy.windingUp = true
+              livingEnemy.windupTimer = 0
             }
           } else {
-            livingEnemy.windupTimer += ticker.deltaMS / 1000
-            if (livingEnemy.windupTimer >= ENEMY_WINDUP_S) {
+            livingEnemy.windupTimer += ticker.deltaMS
+            if (livingEnemy.windupTimer >= WINDUP_MS) {
               livingEnemy.windingUp = false
               livingEnemy.windupTimer = 0
+              livingEnemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
               // Момент удара: дистанция (и вертикальный охват) проверяются
               // ЗАНОВО, здесь и сейчас — не те, что были в начале замаха. Если
               // игрок отбежал/отпрыгнул за время windup, удар промахивается
-              // (способ уклонения "отход", требование 3а).
+              // (способ уклонения "отход", требование 3а). Радиус попадания —
+              // по-прежнему ATTACK_RANGE (inMeleeReach), НЕ ATTACK_STOP_DIST —
+              // это разный, более широкий радиус, его не трогали.
               if (inMeleeReach && dodgeIframeRef.current <= 0) {
                 takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
               }
