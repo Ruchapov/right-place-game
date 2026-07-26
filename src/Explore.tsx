@@ -46,6 +46,22 @@ const ATTACK_RANGE = 70
 const ATTACK_COOLDOWN = 0.5
 const ATTACK_ACTIVE_MS = 150
 
+// Враг (Шаг 2-1) — пока НЕПОДВИЖНЫЙ прямоугольник-заглушка, спрайт зверя
+// подключим отдельным шагом. Габариты — не из Battle.tsx (там это размер
+// PixiJS-спрайта на весь экран боя, с тайлами Explore не сравнить напрямую),
+// а по описанию "шире игрока, приземистый" (см. CLAUDE.md, Враг №1 "Зверь" —
+// тяжёлый сгорбленный четвероногий монстр): шире игрока (1 тайл), ниже его
+// (2 тайла).
+const ENEMY_WIDTH = TILE_SIZE * 1.5
+const ENEMY_HEIGHT = TILE_SIZE
+const ENEMY_COLOR = 0x4a3728
+// BASE_ENEMY_HP обычного (не boss) врага из Battle.tsx — берём как есть, БЕЗ
+// level-scaling (там `Math.round(BASE_ENEMY_HP * (1 + 0.18*(level-1)))` — в
+// Explore пока нет level, это база "как в бою"; см. CLAUDE.md "normal 120HP".
+const ENEMY_MAX_HP = 120
+const ENEMY_HP_BAR_HEIGHT = 8
+const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
+
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
 const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
@@ -69,6 +85,21 @@ type PlayerPhysics = {
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
+
+// Единственный неподвижный враг (Шаг 2-1). x/y — верхний левый угол в мировых
+// координатах (как у phys игрока). lastHitSwingId — id взмаха атаки, который
+// этому врагу уже засчитан, чтобы один активный хитбокс не бил его каждый
+// кадр, пока длится (см. attackSwingIdRef).
+type Enemy = {
+  x: number
+  y: number
+  hp: number
+  maxHp: number
+  lastHitSwingId: number
+  rect: Graphics
+  hpBarBg: Graphics
+  hpBarFill: Graphics
+}
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
@@ -429,6 +460,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // Зона удара в мировых координатах на время активности — читает будущий
   // hit-test врага/сундука. null, когда удара сейчас нет.
   const attackHitboxRef = useRef<AttackHitbox | null>(null)
+  // Увеличивается на 1 при каждом НОВОМ взмахе (см. attackPressedRef ниже) —
+  // враг сверяет его со своим lastHitSwingId, чтобы засчитать один взмах
+  // ровно один раз, даже если хитбокс активен несколько кадров подряд.
+  const attackSwingIdRef = useRef(0)
+
+  // Единственный враг этого шага (Шаг 2-1) — неподвижный, спавнится в setup()
+  // из первой точки первого enemyCluster карты.
+  const enemyRef = useRef<Enemy | null>(null)
 
   function updateHpBar() {
     const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
@@ -438,6 +477,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     }
     if (hpTextRef.current) {
       hpTextRef.current.textContent = `${hpRef.current}/${maxHp}`
+    }
+  }
+
+  // HP-бар врага — в мире (Pixi Graphics над его головой), а не DOM-оверлей,
+  // как у игрока: враг двигается вместе с камерой, а не фиксирован на экране.
+  function redrawEnemyHpBar(enemy: Enemy) {
+    const pct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp))
+    enemy.hpBarFill.clear()
+    if (pct > 0) {
+      enemy.hpBarFill.rect(0, 0, ENEMY_WIDTH * pct, ENEMY_HP_BAR_HEIGHT).fill(0xe0353b)
     }
   }
 
@@ -496,6 +545,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // есть у карты). На карте A есть только enemyClusters и reward.
       const chosenEvents = pickRandom(buildEventCandidates(slots), EVENTS_PER_RUN)
       setEventClosed(Array(chosenEvents.length).fill(false))
+
+      // Шаг 2-1: один неподвижный враг — первая точка первого enemyCluster.
+      // Полный кластер из 3 и засчёт события как "убить всех" — позже.
+      const firstClusterPoint = Array.isArray(slots?.enemyClusters) ? slots.enemyClusters[0]?.points?.[0] : null
+      const enemySpawn = isPointXY(firstClusterPoint) ? { x: firstClusterPoint[0], y: firstClusterPoint[1] } : null
 
       const startRaw = slots?.start
       if (
@@ -557,6 +611,46 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       player.x = phys.x
       player.y = phys.y
       worldContainer.addChild(player)
+
+      // Враг (Шаг 2-1) — неподвижный прямоугольник-заглушка, спрайт зверя
+      // подключим отдельным шагом. Ставим ногами на пол клетки, как игрока.
+      if (enemySpawn) {
+        const enemyWorldX = enemySpawn.x * TILE_SIZE + TILE_SIZE / 2 - ENEMY_WIDTH / 2
+        const enemyWorldY = (enemySpawn.y + 1) * TILE_SIZE - ENEMY_HEIGHT
+
+        const enemyRect = new Graphics()
+          .rect(0, 0, ENEMY_WIDTH, ENEMY_HEIGHT)
+          .fill(ENEMY_COLOR)
+          .stroke({ width: 2, color: 0xffffff })
+        enemyRect.x = enemyWorldX
+        enemyRect.y = enemyWorldY
+        worldContainer.addChild(enemyRect)
+
+        const hpBarBg = new Graphics().rect(0, 0, ENEMY_WIDTH, ENEMY_HP_BAR_HEIGHT).fill(0x221e2b)
+        hpBarBg.x = enemyWorldX
+        hpBarBg.y = enemyWorldY - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
+        worldContainer.addChild(hpBarBg)
+
+        const hpBarFill = new Graphics()
+        hpBarFill.x = enemyWorldX
+        hpBarFill.y = hpBarBg.y
+        worldContainer.addChild(hpBarFill)
+
+        const enemy: Enemy = {
+          x: enemyWorldX,
+          y: enemyWorldY,
+          hp: ENEMY_MAX_HP,
+          maxHp: ENEMY_MAX_HP,
+          lastHitSwingId: 0,
+          rect: enemyRect,
+          hpBarBg,
+          hpBarFill,
+        }
+        enemyRef.current = enemy
+        redrawEnemyHpBar(enemy)
+      } else {
+        console.error('Explore: у карты нет enemyClusters[0].points[0] — враг не заспавнен', slots)
+      }
 
       // Временные метки-заглушки на местах выбранных событий (см. chosenEvents
       // выше). Настоящие спрайты подключим, когда появится реальная логика
@@ -739,8 +833,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           }
         }
 
-        // Атака игрока — пока только хитбокс, без врагов (следующий шаг).
-        // Кулдаун тикает в секундах, как cooldownLeft в Battle.tsx.
+        // Атака игрока. Кулдаун тикает в секундах, как cooldownLeft в Battle.tsx.
         if (attackCooldownRef.current > 0) {
           attackCooldownRef.current = Math.max(0, attackCooldownRef.current - ticker.deltaMS / 1000)
         }
@@ -751,6 +844,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             attackCooldownRef.current = ATTACK_COOLDOWN
             attackActiveRef.current = true
             attackActiveTimerRef.current = ATTACK_ACTIVE_MS
+            attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
             // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
             // направлению взгляда (facingRef), высотой в его рост. Считается
             // один раз на старте удара (снимок, как мгновенная проверка
@@ -775,6 +869,38 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         if (attackActiveRef.current && attackHitboxRef.current) {
           const hb = attackHitboxRef.current
           attackHitboxGraphics.rect(hb.x, hb.y, hb.width, hb.height).stroke({ width: 2, color: 0xffd700 })
+        }
+
+        // Враг (Шаг 2-1): неподвижный, не атакует. "Один удар = один засчёт" —
+        // сверяем attackSwingIdRef с lastHitSwingId, а не просто "хитбокс
+        // активен", иначе все ~9 кадров окна ATTACK_ACTIVE_MS нанесли бы урон
+        // отдельно.
+        const enemy = enemyRef.current
+        if (
+          enemy &&
+          attackActiveRef.current &&
+          attackHitboxRef.current &&
+          enemy.lastHitSwingId !== attackSwingIdRef.current
+        ) {
+          const hb = attackHitboxRef.current
+          const overlap =
+            hb.x < enemy.x + ENEMY_WIDTH &&
+            hb.x + hb.width > enemy.x &&
+            hb.y < enemy.y + ENEMY_HEIGHT &&
+            hb.y + hb.height > enemy.y
+          if (overlap) {
+            enemy.lastHitSwingId = attackSwingIdRef.current
+            enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
+            if (enemy.hp <= 0) {
+              worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
+              enemy.rect.destroy()
+              enemy.hpBarBg.destroy()
+              enemy.hpBarFill.destroy()
+              enemyRef.current = null
+            } else {
+              redrawEnemyHpBar(enemy)
+            }
+          }
         }
 
         player.x = phys.x
