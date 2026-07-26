@@ -62,6 +62,34 @@ const ENEMY_MAX_HP = 120
 const ENEMY_HP_BAR_HEIGHT = 8
 const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
 
+// AI зверя (Шаг 2-2) — числа из Battle.tsx (обычный враг, БЕЗ level-scaling —
+// как и ENEMY_MAX_HP выше, в Explore пока нет level):
+// - ENEMY_SPEED=1 px/кадр в Battle БЕЗ dt (там ticker вообще не масштабирует
+//   движение врага по deltaTime) — здесь то же число, но умножаем на dt, как
+//   уже сделано для игрока (MOVE_SPEED*dt).
+// - "dist > PLAYER_W" — порог, начиная с которого враг ещё идёт к игроку
+//   (не пытается влезть точно в его клетку); аналог — ширина игрока.
+// - ENEMY_ATTACK_INTERVAL=2с (обычный, не boss) — кулдаун между попытками атаки.
+// - ENEMY_WINDUP=0.6с — длительность замаха.
+// - BASE_ENEMY_DAMAGE=14 (обычный, не boss) — урон удара, без dmgMultiplier
+//   по той же причине (нет level).
+// - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
+//   же константа используется и для атаки игрока, и для дальности врага.
+const ENEMY_CHASE_SPEED = 1
+const ENEMY_CHASE_STOP_DIST = PLAYER_WIDTH
+const ENEMY_ATTACK_INTERVAL = 2
+const ENEMY_WINDUP_S = 0.6
+const ENEMY_ATTACK_DAMAGE = 14
+
+// Кнопка dodge (Шаг 2-2) — окно неуязвимости и кулдаун кнопки. НЕ из Battle.tsx:
+// там dodge — не таймер неуязвимости, а мгновенная отмена текущего замаха
+// врага (`enemyWindingUp = false`) БЕЗ какого-либо окна и БЕЗ кулдауна кнопки.
+// Здесь по прямому заданию задачи — именно окно i-frames; длительность и
+// кулдаун — в разрешённом задачей диапазоне (0.4-0.5с / "небольшой"), не
+// перенесены из Battle, потому что там такого механизма попросту нет.
+const PLAYER_DODGE_IFRAME_MS = 450
+const PLAYER_DODGE_COOLDOWN_MS = 1000
+
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
 const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
@@ -86,16 +114,22 @@ type PlayerPhysics = {
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
 
-// Единственный неподвижный враг (Шаг 2-1). x/y — верхний левый угол в мировых
-// координатах (как у phys игрока). lastHitSwingId — id взмаха атаки, который
-// этому врагу уже засчитан, чтобы один активный хитбокс не бил его каждый
-// кадр, пока длится (см. attackSwingIdRef).
+// Единственный враг (Шаг 2-1: неподвижный; Шаг 2-2: AI). x/y — верхний левый
+// угол в мировых координатах (как у phys игрока). lastHitSwingId — id взмаха
+// атаки игрока, который этому врагу уже засчитан, чтобы один активный хитбокс
+// не бил его каждый кадр, пока длится (см. attackSwingIdRef).
+// attackTimer/windingUp/windupTimer — AI атаки врага (Шаг 2-2, см. ENEMY_*
+// константы выше): копится, пока игрок в ATTACK_RANGE, при готовности —
+// windingUp на ENEMY_WINDUP_S, удар — ровно в момент истечения замаха.
 type Enemy = {
   x: number
   y: number
   hp: number
   maxHp: number
   lastHitSwingId: number
+  attackTimer: number
+  windingUp: boolean
+  windupTimer: number
   rect: Graphics
   hpBarBg: Graphics
   hpBarFill: Graphics
@@ -465,9 +499,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // ровно один раз, даже если хитбокс активен несколько кадров подряд.
   const attackSwingIdRef = useRef(0)
 
-  // Единственный враг этого шага (Шаг 2-1) — неподвижный, спавнится в setup()
-  // из первой точки первого enemyCluster карты.
+  // Единственный враг этого шага — спавнится в setup() из первой точки
+  // первого enemyCluster карты; с Шага 2-2 преследует игрока и атакует.
   const enemyRef = useRef<Enemy | null>(null)
+
+  // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
+  const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
+  const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
+  const dodgeCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
 
   function updateHpBar() {
     const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
@@ -642,6 +681,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           hp: ENEMY_MAX_HP,
           maxHp: ENEMY_MAX_HP,
           lastHitSwingId: 0,
+          attackTimer: 0,
+          windingUp: false,
+          windupTimer: 0,
           rect: enemyRect,
           hpBarBg,
           hpBarFill,
@@ -903,6 +945,81 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           }
         }
 
+        // Dodge игрока (Шаг 2-2): окно неуязвимости от удара врага + кулдаун
+        // самой кнопки, независимо от i-frames шипов (spikeIframeRef) — это
+        // отдельный механизм именно от атаки врага.
+        dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
+        dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
+        if (dodgePressedRef.current) {
+          dodgePressedRef.current = false
+          if (dodgeCooldownRef.current <= 0) {
+            dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
+            dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
+          }
+        }
+
+        // AI зверя (Шаг 2-2): преследование по горизонтали на своём этаже (без
+        // прыжков/спуска между этажами — не в этом шаге) + windup-атака.
+        // Враг мог погибнуть от удара игрока строчкой выше — берём свежее
+        // значение, а не устаревшую переменную enemy.
+        const livingEnemy = enemyRef.current
+        if (livingEnemy) {
+          const dx = (phys.x + PLAYER_WIDTH / 2) - (livingEnemy.x + ENEMY_WIDTH / 2)
+          const dist = Math.abs(dx)
+          // Battle.tsx сравнивает только X (там бой на одной 1D-дорожке — по
+          // вертикали фигуры всегда совпадают). В Explore игрок может
+          // запрыгнуть НАД врагом — если ноги игрока выше головы врага, удар
+          // по вертикали физически не должен доставать, иначе "отпрыгнул"
+          // (способ уклонения из требования 3а) не работал бы вообще.
+          const verticalReach = phys.y < livingEnemy.y + ENEMY_HEIGHT && phys.y + PLAYER_HEIGHT > livingEnemy.y
+          const inMeleeReach = dist < ATTACK_RANGE && verticalReach
+
+          if (!livingEnemy.windingUp) {
+            if (dist > ENEMY_CHASE_STOP_DIST) {
+              const dir = Math.sign(dx)
+              const nextX = livingEnemy.x + dir * ENEMY_CHASE_SPEED * dt
+              const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
+              const hitWall =
+                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + 1) ||
+                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + ENEMY_HEIGHT / 2) ||
+                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + ENEMY_HEIGHT - 1)
+              if (!hitWall) {
+                livingEnemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
+              }
+            }
+
+            // Копим таймер атаки, только пока игрок в радиусе — как в Battle.tsx
+            // (вне радиуса таймер сбрасывается, а не просто стоит на паузе).
+            if (inMeleeReach) {
+              livingEnemy.attackTimer += ticker.deltaMS / 1000
+              if (livingEnemy.attackTimer >= ENEMY_ATTACK_INTERVAL) {
+                livingEnemy.attackTimer = 0
+                livingEnemy.windingUp = true
+                livingEnemy.windupTimer = 0
+              }
+            } else {
+              livingEnemy.attackTimer = 0
+            }
+          } else {
+            livingEnemy.windupTimer += ticker.deltaMS / 1000
+            if (livingEnemy.windupTimer >= ENEMY_WINDUP_S) {
+              livingEnemy.windingUp = false
+              livingEnemy.windupTimer = 0
+              // Момент удара: дистанция (и вертикальный охват) проверяются
+              // ЗАНОВО, здесь и сейчас — не те, что были в начале замаха. Если
+              // игрок отбежал/отпрыгнул за время windup, удар промахивается
+              // (способ уклонения "отход", требование 3а).
+              if (inMeleeReach && dodgeIframeRef.current <= 0) {
+                takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
+              }
+            }
+          }
+
+          // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
+          // спрайта — краснеет (danger), пока windingUp истинно.
+          livingEnemy.rect.tint = livingEnemy.windingUp ? 0xe0353b : 0xffffff
+        }
+
         player.x = phys.x
         player.y = phys.y
 
@@ -1112,6 +1229,32 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }}
       >
         ⚔
+      </button>
+
+      <button
+        aria-label="Уклонение"
+        onPointerDown={() => { dodgePressedRef.current = true }}
+        style={{
+          position: 'fixed',
+          right: 112,
+          bottom: 'calc(16px + 80px + 12px + env(safe-area-inset-bottom))',
+          zIndex: 1001,
+          width: 70,
+          height: 70,
+          borderRadius: 16,
+          background: '#221E2B',
+          border: '1px solid #3A3344',
+          color: '#EDE7F2',
+          fontSize: 28,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          touchAction: 'none',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+        }}
+      >
+        🔄
       </button>
 
       {onClose && (
