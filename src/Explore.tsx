@@ -1022,6 +1022,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             }
           }
 
+          // ФИКС: rect/hpBar выставлялись только один раз при спавне и больше
+          // никогда не синхронизировались с livingEnemy.x — враг логически
+          // двигался (и корректно бился по дистанции), но визуально стоял на
+          // месте спавна. Синк каждый кадр, независимо от того, какая ветка
+          // выше сработала.
+          livingEnemy.rect.x = livingEnemy.x
+          livingEnemy.hpBarBg.x = livingEnemy.x
+          livingEnemy.hpBarFill.x = livingEnemy.x
+
           // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
           // спрайта — краснеет (danger), пока windingUp истинно.
           livingEnemy.rect.tint = livingEnemy.windingUp ? 0xe0353b : 0xffffff
