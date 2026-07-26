@@ -588,7 +588,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // Шаг 2-1: один неподвижный враг — первая точка первого enemyCluster.
       // Полный кластер из 3 и засчёт события как "убить всех" — позже.
       const firstClusterPoint = Array.isArray(slots?.enemyClusters) ? slots.enemyClusters[0]?.points?.[0] : null
-      const enemySpawn = isPointXY(firstClusterPoint) ? { x: firstClusterPoint[0], y: firstClusterPoint[1] } : null
+      // TEMP TEST SPAWN — вернуть на enemyCluster points[0] после отладки боя.
+      // Точка [5,20]: тот же нижний этаж, что старт карты A ([0,20]), пол '#'
+      // на y=21 (row21 сплошная кладка), клетка [5,20] в сетке свободна ('.') —
+      // игрок доходит до врага за пару секунд, удобно для теста боя.
+      const enemySpawn = { x: 5, y: 20 }
+      void firstClusterPoint // оставлено для быстрого возврата — см. комментарий выше
+      // ОРИГИНАЛ (вернуть после отладки):
+      // const enemySpawn = isPointXY(firstClusterPoint) ? { x: firstClusterPoint[0], y: firstClusterPoint[1] } : null
 
       const startRaw = slots?.start
       if (
