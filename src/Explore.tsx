@@ -128,14 +128,16 @@ type PlayerPhysics = {
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
 
-// Единственный враг (Шаг 2-1: неподвижный; Шаг 2-2: AI). x/y — верхний левый
-// угол в мировых координатах (как у phys игрока). lastHitSwingId — id взмаха
-// атаки игрока, который этому врагу уже засчитан, чтобы один активный хитбокс
-// не бил его каждый кадр, пока длится (см. attackSwingIdRef).
+// Один враг из СПИСКА (Шаг 2-3: кластер = 3 врага, каждый — свой Enemy). x/y —
+// верхний левый угол в мировых координатах (как у phys игрока). lastHitSwingId
+// — id взмаха атаки игрока, который этому врагу уже засчитан, чтобы один
+// активный хитбокс не бил его каждый кадр, пока длится (см. attackSwingIdRef).
 // attackTimer/windingUp/windupTimer — AI атаки врага: attackTimer — КУЛДАУН
 // (считает ВНИЗ до 0, а не вверх), 0 = готов бить немедленно по достижении
 // ATTACK_STOP_DIST; windingUp держится WINDUP_MS, удар — ровно в момент
 // истечения замаха (см. ENEMY_*/ATTACK_STOP_DIST/WINDUP_MS константы выше).
+// eventIndex — индекс "родительского" enemy-события в eventsRef.current: при
+// смерти врага декрементируем remainingEnemies именно этого события.
 type Enemy = {
   x: number
   y: number
@@ -145,6 +147,7 @@ type Enemy = {
   attackTimer: number
   windingUp: boolean
   windupTimer: number
+  eventIndex: number
   rect: Graphics
   hpBarBg: Graphics
   hpBarFill: Graphics
@@ -155,9 +158,15 @@ type Enemy = {
 // результат забега можно было отдать старому results-экрану без маппинга.
 export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss'
 
-type EventCandidate = { kind: EventKind; x: number; y: number }
+// clusterPoints — ТОЛЬКО для kind='enemy': все 3 точки кластера (не только
+// points[0]) — нужны, чтобы заспавнить весь кластер, а не одного врага.
+type EventCandidate = { kind: EventKind; x: number; y: number; clusterPoints?: [number, number][] }
 
-type MapEvent = EventCandidate & { marker: Graphics; closed: boolean }
+// marker — для enemy-события НЕ создаётся (визуал — сами враги, реальные
+// прямоугольники); для остальных типов (пока заглушки) — как раньше, кружок
+// + закрытие касанием. remainingEnemies — только для kind='enemy': сколько
+// врагов кластера ещё живы; событие закрывается, когда доходит до 0.
+type MapEvent = EventCandidate & { marker?: Graphics; closed: boolean; remainingEnemies?: number }
 
 const EVENT_MARKER_COLOR: Record<EventKind, number> = {
   enemy: 0xe0353b,
@@ -174,9 +183,11 @@ function isPointXY(value: unknown): value is [number, number] {
 }
 
 // Собирает ВСЕ доступные точки-кандидаты события из пулов слот-файла карты.
-// enemyCluster (3 врага) считается ОДНИМ событием — метка ставится в первую
-// точку кластера. npc.smuggler/npc.puzzle/boss могут отсутствовать (null) —
-// на карте A их нет, но механизм общий для всех карт A-F.
+// enemyCluster (3 врага) считается ОДНИМ событием — x/y (для HUD/логов) берём
+// из первой точки, но clusterPoints несёт ВСЕ валидные точки кластера, чтобы
+// на споне поставить весь кластер, а не одного врага. npc.smuggler/npc.puzzle/
+// boss могут отсутствовать (null) — на карте A их нет, но механизм общий для
+// всех карт A-F.
 function buildEventCandidates(slots: unknown): EventCandidate[] {
   const s = slots as {
     enemyClusters?: { points?: unknown }[]
@@ -187,8 +198,9 @@ function buildEventCandidates(slots: unknown): EventCandidate[] {
   const candidates: EventCandidate[] = []
 
   for (const cluster of s?.enemyClusters ?? []) {
-    const first = Array.isArray(cluster?.points) ? cluster.points[0] : null
-    if (isPointXY(first)) candidates.push({ kind: 'enemy', x: first[0], y: first[1] })
+    const points = Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : []
+    const first = points[0]
+    if (first) candidates.push({ kind: 'enemy', x: first[0], y: first[1], clusterPoints: points })
   }
   for (const point of s?.reward ?? []) {
     if (isPointXY(point)) candidates.push({ kind: 'chest', x: point[0], y: point[1] })
@@ -514,9 +526,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // ровно один раз, даже если хитбокс активен несколько кадров подряд.
   const attackSwingIdRef = useRef(0)
 
-  // Единственный враг этого шага — спавнится в setup() из первой точки
-  // первого enemyCluster карты; с Шага 2-2 преследует игрока и атакует.
-  const enemyRef = useRef<Enemy | null>(null)
+  // СПИСОК врагов (Шаг 2-3): по одному enemy-событию — до 3 врагов (весь
+  // кластер), может быть несколько enemy-событий за забег — значит и больше
+  // 3 суммарно. Каждый обрабатывается независимо в тикере (движение,
+  // преследование, windup, удар по игроку, приём урона, смерть).
+  const enemiesRef = useRef<Enemy[]>([])
 
   // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
@@ -594,23 +608,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
       }
 
-      // "3 события за забег" — временный каркас: выбираем случайно, без повторов,
-      // из общего пула (enemyCluster / сундук / смуглер / загадка / босс — что
-      // есть у карты). На карте A есть только enemyClusters и reward.
+      // "3 события за забег" — выбираем случайно, без повторов, из общего пула
+      // (enemyCluster / сундук / смуглер / загадка / босс — что есть у карты).
+      // На карте A есть только enemyClusters и reward. enemy-событие несёт
+      // clusterPoints (все 3 точки кластера) — враги спавнятся ниже, после
+      // создания worldContainer.
       const chosenEvents = pickRandom(buildEventCandidates(slots), EVENTS_PER_RUN)
       setEventClosed(Array(chosenEvents.length).fill(false))
-
-      // Шаг 2-1: один неподвижный враг — первая точка первого enemyCluster.
-      // Полный кластер из 3 и засчёт события как "убить всех" — позже.
-      const firstClusterPoint = Array.isArray(slots?.enemyClusters) ? slots.enemyClusters[0]?.points?.[0] : null
-      // TEMP TEST SPAWN — вернуть на enemyCluster points[0] после отладки боя.
-      // Точка [5,20]: тот же нижний этаж, что старт карты A ([0,20]), пол '#'
-      // на y=21 (row21 сплошная кладка), клетка [5,20] в сетке свободна ('.') —
-      // игрок доходит до врага за пару секунд, удобно для теста боя.
-      const enemySpawn = { x: 5, y: 20 }
-      void firstClusterPoint // оставлено для быстрого возврата — см. комментарий выше
-      // ОРИГИНАЛ (вернуть после отладки):
-      // const enemySpawn = isPointXY(firstClusterPoint) ? { x: firstClusterPoint[0], y: firstClusterPoint[1] } : null
 
       const startRaw = slots?.start
       if (
@@ -673,19 +677,21 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       player.y = phys.y
       worldContainer.addChild(player)
 
-      // Враг (Шаг 2-1) — неподвижный прямоугольник-заглушка, спрайт зверя
-      // подключим отдельным шагом. Ставим ногами на пол клетки, как игрока.
-      if (enemySpawn) {
-        const enemyWorldX = enemySpawn.x * TILE_SIZE + TILE_SIZE / 2 - ENEMY_WIDTH / 2
-        const enemyWorldY = (enemySpawn.y + 1) * TILE_SIZE - ENEMY_HEIGHT
+      // Спавнит ОДНОГО врага-прямоугольник (см. Шаг 2-1/2-2) в тайловых
+      // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
+      // (для декремента remainingEnemies при смерти). Ставит ногами на пол
+      // клетки, как игрока.
+      function spawnEnemy(tileX: number, tileY: number, eventIndex: number): Enemy {
+        const enemyWorldX = tileX * TILE_SIZE + TILE_SIZE / 2 - ENEMY_WIDTH / 2
+        const enemyWorldY = (tileY + 1) * TILE_SIZE - ENEMY_HEIGHT
 
-        const enemyRect = new Graphics()
+        const rect = new Graphics()
           .rect(0, 0, ENEMY_WIDTH, ENEMY_HEIGHT)
           .fill(ENEMY_COLOR)
           .stroke({ width: 2, color: 0xffffff })
-        enemyRect.x = enemyWorldX
-        enemyRect.y = enemyWorldY
-        worldContainer.addChild(enemyRect)
+        rect.x = enemyWorldX
+        rect.y = enemyWorldY
+        worldContainer.addChild(rect)
 
         const hpBarBg = new Graphics().rect(0, 0, ENEMY_WIDTH, ENEMY_HP_BAR_HEIGHT).fill(0x221e2b)
         hpBarBg.x = enemyWorldX
@@ -706,20 +712,34 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           attackTimer: 0,
           windingUp: false,
           windupTimer: 0,
-          rect: enemyRect,
+          eventIndex,
+          rect,
           hpBarBg,
           hpBarFill,
         }
-        enemyRef.current = enemy
         redrawEnemyHpBar(enemy)
-      } else {
-        console.error('Explore: у карты нет enemyClusters[0].points[0] — враг не заспавнен', slots)
+        return enemy
       }
 
-      // Временные метки-заглушки на местах выбранных событий (см. chosenEvents
-      // выше). Настоящие спрайты подключим, когда появится реальная логика
-      // "убить 3 врагов" / "открыть сундук атакой".
-      eventsRef.current = chosenEvents.map((ev) => {
+      // "3 события за забег": enemy-событие спавнит ВЕСЬ кластер (все точки
+      // clusterPoints, не только points[0]) реальными врагами вместо метки —
+      // засчитывается убийством всех, не касанием (см. touch-цикл в ticker'е,
+      // который теперь явно пропускает kind==='enemy'). Остальные типы
+      // (сундук и т.д.) — по-прежнему временная метка-заглушка + касание.
+      const spawnedEnemies: Enemy[] = []
+      eventsRef.current = chosenEvents.map((ev, eventIndex) => {
+        if (ev.kind === 'enemy') {
+          const points = ev.clusterPoints ?? []
+          if (points.length === 0) {
+            console.error('Explore: enemy-событие без валидных точек кластера — нечего убивать', ev)
+            return { ...ev, closed: true, remainingEnemies: 0 }
+          }
+          for (const [ex, ey] of points) {
+            spawnedEnemies.push(spawnEnemy(ex, ey, eventIndex))
+          }
+          return { ...ev, closed: false, remainingEnemies: points.length }
+        }
+
         const marker = new Graphics()
           .circle(0, 0, TILE_SIZE * 0.35)
           .fill({ color: EVENT_MARKER_COLOR[ev.kind], alpha: 0.85 })
@@ -729,6 +749,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         worldContainer.addChild(marker)
         return { ...ev, marker, closed: false }
       })
+      enemiesRef.current = spawnedEnemies
 
       // DEBUG ONLY — тонкая рамка зоны удара, пока она активна. Чисто
       // визуальный слой, на хитбокс/урон не влияет; убрать когда атака
@@ -753,6 +774,25 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
 
       updateCamera()
+
+      // Общие для обоих способов закрытия события (касание — chest/т.п.,
+      // убийство кластера — enemy): красит HUD-иконку и проверяет "все 3
+      // закрыты?" -> onRunComplete. Вызывается из touch-цикла ниже И из
+      // enemy-цикла, когда remainingEnemies кластера доходит до 0.
+      function closeEvent(index: number) {
+        const ev = eventsRef.current[index]
+        if (!ev || ev.closed) return
+        ev.closed = true
+        setEventClosed((prev) => {
+          const next = [...prev]
+          next[index] = true
+          return next
+        })
+        if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
+          runCompleteFiredRef.current = true
+          onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
+        }
+      }
 
       // Ходьба влево/вправо + прыжок + коллизия со стенами, гравитация и
       // приземление на твердь. Платформы '=' — следующий шаг.
@@ -869,11 +909,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
 
         // "3 события за забег" — временное закрытие простым касанием хитбокса.
-        // Настоящую логику (убить 3 врагов / открыть сундук атакой) навесим
-        // отдельно — здесь только счётчик и HUD-иконки.
+        // enemy-события сюда НЕ попадают — они закрываются убийством кластера
+        // (см. enemy-цикл ниже), не касанием. Остальные типы (сундук и т.п.,
+        // пока заглушки) — как раньше.
         for (let i = 0; i < eventsRef.current.length; i++) {
           const ev = eventsRef.current[i]
-          if (ev.closed) continue
+          if (ev.closed || ev.kind === 'enemy') continue
           const evLeft = ev.x * TILE_SIZE
           const evTop = ev.y * TILE_SIZE
           const touching =
@@ -883,18 +924,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             phys.y + PLAYER_HEIGHT > evTop
           if (!touching) continue
 
-          ev.closed = true
-          ev.marker.visible = false
-          setEventClosed((prev) => {
-            const next = [...prev]
-            next[i] = true
-            return next
-          })
-
-          if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
-            runCompleteFiredRef.current = true
-            onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
-          }
+          if (ev.marker) ev.marker.visible = false
+          closeEvent(i)
         }
 
         // Атака игрока. Кулдаун тикает в секундах, как cooldownLeft в Battle.tsx.
@@ -935,41 +966,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           attackHitboxGraphics.rect(hb.x, hb.y, hb.width, hb.height).stroke({ width: 2, color: 0xffd700 })
         }
 
-        // Враг (Шаг 2-1): неподвижный, не атакует. "Один удар = один засчёт" —
-        // сверяем attackSwingIdRef с lastHitSwingId, а не просто "хитбокс
-        // активен", иначе все ~9 кадров окна ATTACK_ACTIVE_MS нанесли бы урон
-        // отдельно.
-        const enemy = enemyRef.current
-        if (
-          enemy &&
-          attackActiveRef.current &&
-          attackHitboxRef.current &&
-          enemy.lastHitSwingId !== attackSwingIdRef.current
-        ) {
-          const hb = attackHitboxRef.current
-          const overlap =
-            hb.x < enemy.x + ENEMY_WIDTH &&
-            hb.x + hb.width > enemy.x &&
-            hb.y < enemy.y + ENEMY_HEIGHT &&
-            hb.y + hb.height > enemy.y
-          if (overlap) {
-            enemy.lastHitSwingId = attackSwingIdRef.current
-            enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
-            if (enemy.hp <= 0) {
-              worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
-              enemy.rect.destroy()
-              enemy.hpBarBg.destroy()
-              enemy.hpBarFill.destroy()
-              enemyRef.current = null
-            } else {
-              redrawEnemyHpBar(enemy)
-            }
-          }
-        }
-
-        // Dodge игрока (Шаг 2-2): окно неуязвимости от удара врага + кулдаун
-        // самой кнопки, независимо от i-frames шипов (spikeIframeRef) — это
-        // отдельный механизм именно от атаки врага.
+        // Dodge игрока: окно неуязвимости от удара врага + кулдаун кнопки,
+        // независимо от i-frames шипов (spikeIframeRef) — отдельный механизм.
+        // Считается ОДИН раз за кадр (не за врага), поэтому вынесен перед
+        // циклом по врагам ниже.
         dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
         dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
@@ -980,20 +980,63 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           }
         }
 
-        // AI зверя (Шаг 2-2): преследование по горизонтали на своём этаже (без
-        // прыжков/спуска между этажами — не в этом шаге) + windup-атака.
-        // Враг мог погибнуть от удара игрока строчкой выше — берём свежее
-        // значение, а не устаревшую переменную enemy.
-        const livingEnemy = enemyRef.current
-        if (livingEnemy) {
-          const dx = (phys.x + PLAYER_WIDTH / 2) - (livingEnemy.x + ENEMY_WIDTH / 2)
+        // Враги (Шаг 2-3: СПИСОК — кластер из 3, может быть несколько
+        // enemy-событий за забег). Каждый враг обрабатывается НЕЗАВИСИМО:
+        // сперва — попал ли по нему только что взмах игрока ("один удар = один
+        // засчёт" через attackSwingIdRef/lastHitSwingId, Шаг 2-1), затем, если
+        // выжил, — AI (преследование/windup/удар по игроку, Шаг 2-2). Если
+        // игрок стоит между двумя врагами — оба независимо проверяют дистанцию
+        // и оба могут его ударить в один и тот же кадр; HP игрока один общий
+        // (takeDamageRef), отдельно считать не нужно.
+        for (let i = 0; i < enemiesRef.current.length; i++) {
+          const enemy = enemiesRef.current[i]
+
+          // "Один удар = один засчёт" — сверяем attackSwingIdRef с
+          // lastHitSwingId, а не просто "хитбокс активен", иначе все ~9
+          // кадров окна ATTACK_ACTIVE_MS нанесли бы урон отдельно.
+          if (
+            attackActiveRef.current &&
+            attackHitboxRef.current &&
+            enemy.lastHitSwingId !== attackSwingIdRef.current
+          ) {
+            const hb = attackHitboxRef.current
+            const overlap =
+              hb.x < enemy.x + ENEMY_WIDTH &&
+              hb.x + hb.width > enemy.x &&
+              hb.y < enemy.y + ENEMY_HEIGHT &&
+              hb.y + hb.height > enemy.y
+            if (overlap) {
+              enemy.lastHitSwingId = attackSwingIdRef.current
+              enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
+              if (enemy.hp <= 0) {
+                worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
+                enemy.rect.destroy()
+                enemy.hpBarBg.destroy()
+                enemy.hpBarFill.destroy()
+                enemiesRef.current.splice(i, 1)
+                i--
+                // Кластер (enemy-событие) закрывается, когда убиты ВСЕ его
+                // враги — не касанием, см. touch-цикл выше, который явно
+                // пропускает kind==='enemy'.
+                const ownerEvent = eventsRef.current[enemy.eventIndex]
+                if (ownerEvent) {
+                  ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
+                  if (ownerEvent.remainingEnemies <= 0) closeEvent(enemy.eventIndex)
+                }
+                continue // мёртвому AI ниже не нужен
+              }
+              redrawEnemyHpBar(enemy)
+            }
+          }
+
+          const dx = (phys.x + PLAYER_WIDTH / 2) - (enemy.x + ENEMY_WIDTH / 2)
           const dist = Math.abs(dx)
           // Battle.tsx сравнивает только X (там бой на одной 1D-дорожке — по
           // вертикали фигуры всегда совпадают). В Explore игрок может
           // запрыгнуть НАД врагом — если ноги игрока выше головы врага, удар
           // по вертикали физически не должен доставать, иначе "отпрыгнул"
           // (способ уклонения из требования 3а) не работал бы вообще.
-          const verticalReach = phys.y < livingEnemy.y + ENEMY_HEIGHT && phys.y + PLAYER_HEIGHT > livingEnemy.y
+          const verticalReach = phys.y < enemy.y + ENEMY_HEIGHT && phys.y + PLAYER_HEIGHT > enemy.y
           const inMeleeReach = dist < ATTACK_RANGE && verticalReach
 
           // Достиг ли враг стоп-дистанции (~64% ATTACK_RANGE, см. константу
@@ -1003,17 +1046,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // windup-гейту, см. verticalReach).
           const reachedStopDist = dist <= ATTACK_STOP_DIST
 
-          if (!livingEnemy.windingUp) {
+          if (!enemy.windingUp) {
             if (!reachedStopDist) {
               const dir = Math.sign(dx)
-              const nextX = livingEnemy.x + dir * ENEMY_CHASE_SPEED * dt
+              const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
               const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
               const hitWall =
-                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + 1) ||
-                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + ENEMY_HEIGHT / 2) ||
-                isSolid(grid, TILE_SIZE, leadingX, livingEnemy.y + ENEMY_HEIGHT - 1)
+                isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
+                isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
+                isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
               if (!hitWall) {
-                livingEnemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
+                enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
               }
             }
 
@@ -1021,19 +1064,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             // умолчанию, поэтому по достижении стоп-дистанции В ПЕРВЫЙ РАЗ
             // windup стартует НЕМЕДЛЕННО, без паузы "подумать". Кулдаун
             // появляется только ПОСЛЕ удара (см. ветку windingUp ниже).
-            if (livingEnemy.attackTimer > 0) {
-              livingEnemy.attackTimer = Math.max(0, livingEnemy.attackTimer - ticker.deltaMS / 1000)
+            if (enemy.attackTimer > 0) {
+              enemy.attackTimer = Math.max(0, enemy.attackTimer - ticker.deltaMS / 1000)
             }
-            if (reachedStopDist && verticalReach && livingEnemy.attackTimer <= 0) {
-              livingEnemy.windingUp = true
-              livingEnemy.windupTimer = 0
+            if (reachedStopDist && verticalReach && enemy.attackTimer <= 0) {
+              enemy.windingUp = true
+              enemy.windupTimer = 0
             }
           } else {
-            livingEnemy.windupTimer += ticker.deltaMS
-            if (livingEnemy.windupTimer >= WINDUP_MS) {
-              livingEnemy.windingUp = false
-              livingEnemy.windupTimer = 0
-              livingEnemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
+            enemy.windupTimer += ticker.deltaMS
+            if (enemy.windupTimer >= WINDUP_MS) {
+              enemy.windingUp = false
+              enemy.windupTimer = 0
+              enemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
               // Момент удара: дистанция (и вертикальный охват) проверяются
               // ЗАНОВО, здесь и сейчас — не те, что были в начале замаха. Если
               // игрок отбежал/отпрыгнул за время windup, удар промахивается
@@ -1046,18 +1089,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             }
           }
 
-          // ФИКС: rect/hpBar выставлялись только один раз при спавне и больше
-          // никогда не синхронизировались с livingEnemy.x — враг логически
-          // двигался (и корректно бился по дистанции), но визуально стоял на
-          // месте спавна. Синк каждый кадр, независимо от того, какая ветка
-          // выше сработала.
-          livingEnemy.rect.x = livingEnemy.x
-          livingEnemy.hpBarBg.x = livingEnemy.x
-          livingEnemy.hpBarFill.x = livingEnemy.x
+          enemy.rect.x = enemy.x
+          enemy.hpBarBg.x = enemy.x
+          enemy.hpBarFill.x = enemy.x
 
           // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
           // спрайта — краснеет (danger), пока windingUp истинно.
-          livingEnemy.rect.tint = livingEnemy.windingUp ? 0xe0353b : 0xffffff
+          enemy.rect.tint = enemy.windingUp ? 0xe0353b : 0xffffff
         }
 
         player.x = phys.x
