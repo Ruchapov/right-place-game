@@ -5,6 +5,7 @@ import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO } from './mapRendere
 type ExploreProps = {
   onClose?: () => void
   endurance?: number
+  strength?: number
   // Временный каркас "3 события за забег": вызывается ровно один раз, когда
   // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
   // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
@@ -34,6 +35,17 @@ const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за к
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
 
+// Атака игрока — те же ПРАВИЛА И ЧИСЛА, что в Battle.tsx (не переизобретаем):
+// ATTACK_RANGE=70, ATTACK_DAMAGE=15+floor(strength/2), ATTACK_COOLDOWN=0.5с
+// (там cooldownLeft тоже тикает в секундах через ticker.deltaMS/1000).
+// ATTACK_ACTIVE_MS — НОВОЕ, в Battle.tsx нет: там урон применяется мгновенно
+// в момент нажатия (нет врага, по которому проверять позже), а тут хитбоксу
+// нужно продержаться хоть сколько-то кадров, чтобы следующий шаг (враг/сундук)
+// успел его проверить.
+const ATTACK_RANGE = 70
+const ATTACK_COOLDOWN = 0.5
+const ATTACK_ACTIVE_MS = 150
+
 // Физика (калибруется под модель прыжка из SKILL-maps: вверх 1 и вверх 2
 // берутся, вверх 3 — нет; по прямой до 4 тайлов)
 const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
@@ -53,6 +65,10 @@ type PlayerPhysics = {
   vy: number
   onGround: boolean
 }
+
+// Зона удара атаки, в мировых (тайловых) координатах — читается будущим
+// hit-test'ом врага/сундука через attackHitboxRef.
+type AttackHitbox = { x: number; y: number; width: number; height: number }
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
@@ -360,7 +376,7 @@ function sweepFootBlock(
   return pushTo
 }
 
-export default function Explore({ onClose, endurance, onRunComplete }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, onRunComplete }: ExploreProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
@@ -395,6 +411,25 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
   // ticker.deltaMS (реальное время), не по dt-кадрам — 1 секунда буквально.
   const spikeIframeRef = useRef(0)
 
+  // dirRef (см. выше) — только МГНОВЕННЫЙ ввод, сбрасывается в 0 при отпускании
+  // кнопки, а не "куда смотрит игрок" — такого флага в файле раньше не было.
+  // facingRef запоминает последнее ненулевое направление (по умолчанию вправо),
+  // обновляется в ticker'е при движении и используется для стороны удара.
+  const facingRef = useRef<1 | -1>(1)
+
+  // Атака игрока — числа из Battle.tsx (ATTACK_RANGE/ATTACK_COOLDOWN выше).
+  const attackDamage = 15 + Math.floor((strength ?? 0) / 2)
+  // Готовое значение урона — держим наготове для будущего врага/сундука,
+  // сам урон пока никому не применяется (только механизм хитбокса).
+  const attackDamageRef = useRef(attackDamage)
+  const attackPressedRef = useRef(false) // флаг тапа по ⚔, читается и сбрасывается в ticker (как jumpPressedRef)
+  const attackCooldownRef = useRef(0) // остаток кулдауна, секунды — как cooldownLeft в Battle.tsx
+  const attackActiveRef = useRef(false) // true на короткое окно после удара — хитбокс активен
+  const attackActiveTimerRef = useRef(0) // остаток окна активности хитбокса, мс (ATTACK_ACTIVE_MS)
+  // Зона удара в мировых координатах на время активности — читает будущий
+  // hit-test врага/сундука. null, когда удара сейчас нет.
+  const attackHitboxRef = useRef<AttackHitbox | null>(null)
+
   function updateHpBar() {
     const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
     if (hpFillRef.current) {
@@ -423,6 +458,7 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
     takeDamageRef.current = takeDamage
     applySpikeDamageRef.current = () => takeDamage(maxHp * SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
+    attackDamageRef.current = attackDamage
   })
 
   useEffect(() => {
@@ -536,6 +572,12 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
         return { ...ev, marker, closed: false }
       })
 
+      // DEBUG ONLY — тонкая рамка зоны удара, пока она активна. Чисто
+      // визуальный слой, на хитбокс/урон не влияет; убрать когда атака
+      // перестанет быть единственной обратной связью игроку об ударе.
+      const attackHitboxGraphics = new Graphics()
+      worldContainer.addChild(attackHitboxGraphics)
+
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
@@ -566,6 +608,7 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
         // Горизонтальное движение
         phys.vx = dirRef.current * MOVE_SPEED
         phys.x += phys.vx * dt
+        if (dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
 
         if (phys.vx > 0) {
           const px = phys.x + PLAYER_WIDTH - 1
@@ -694,6 +737,44 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
             runCompleteFiredRef.current = true
             onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
           }
+        }
+
+        // Атака игрока — пока только хитбокс, без врагов (следующий шаг).
+        // Кулдаун тикает в секундах, как cooldownLeft в Battle.tsx.
+        if (attackCooldownRef.current > 0) {
+          attackCooldownRef.current = Math.max(0, attackCooldownRef.current - ticker.deltaMS / 1000)
+        }
+
+        if (attackPressedRef.current) {
+          attackPressedRef.current = false
+          if (attackCooldownRef.current <= 0) {
+            attackCooldownRef.current = ATTACK_COOLDOWN
+            attackActiveRef.current = true
+            attackActiveTimerRef.current = ATTACK_ACTIVE_MS
+            // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
+            // направлению взгляда (facingRef), высотой в его рост. Считается
+            // один раз на старте удара (снимок, как мгновенная проверка
+            // дистанции в Battle.tsx), а не каждый кадр активности.
+            attackHitboxRef.current =
+              facingRef.current === 1
+                ? { x: phys.x + PLAYER_WIDTH, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
+                : { x: phys.x - ATTACK_RANGE, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
+          }
+        }
+
+        if (attackActiveRef.current) {
+          attackActiveTimerRef.current -= ticker.deltaMS
+          if (attackActiveTimerRef.current <= 0) {
+            attackActiveRef.current = false
+            attackHitboxRef.current = null
+          }
+        }
+
+        // DEBUG ONLY — визуализация зоны удара, см. attackHitboxGraphics выше.
+        attackHitboxGraphics.clear()
+        if (attackActiveRef.current && attackHitboxRef.current) {
+          const hb = attackHitboxRef.current
+          attackHitboxGraphics.rect(hb.x, hb.y, hb.width, hb.height).stroke({ width: 2, color: 0xffd700 })
         }
 
         player.x = phys.x
@@ -879,6 +960,32 @@ export default function Explore({ onClose, endurance, onRunComplete }: ExplorePr
         }}
       >
         ▲
+      </button>
+
+      <button
+        aria-label="Атака"
+        onPointerDown={() => { attackPressedRef.current = true }}
+        style={{
+          position: 'fixed',
+          right: 112,
+          bottom: 'calc(16px + env(safe-area-inset-bottom))',
+          zIndex: 1001,
+          width: 80,
+          height: 80,
+          borderRadius: 16,
+          background: '#221E2B',
+          border: '1px solid #3A3344',
+          color: '#EDE7F2',
+          fontSize: 32,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          touchAction: 'none',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+        }}
+      >
+        ⚔
       </button>
 
       {onClose && (

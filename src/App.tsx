@@ -908,7 +908,7 @@ export default function App() {
         ))}
       </div>
 
-      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} endurance={player?.endurance} onRunComplete={handleExploreRunComplete} />}
+      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} onRunComplete={handleExploreRunComplete} />}
     </div>
   )
 }
