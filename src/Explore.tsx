@@ -138,9 +138,14 @@ type AttackHitbox = { x: number; y: number; width: number; height: number }
 // истечения замаха (см. ENEMY_*/ATTACK_STOP_DIST/WINDUP_MS константы выше).
 // eventIndex — индекс "родительского" enemy-события в eventsRef.current: при
 // смерти врага декрементируем remainingEnemies именно этого события.
+// vy — вертикальная скорость (Шаг A "умного врага"): та же физика, что у
+// игрока (GRAVITY/MAX_FALL, приземление через sweepFootBlock) — враг падает
+// под гравитацией и стоит на '#'/'=' вместо "полёта", включая падение с края
+// платформы (агрессивная физика, разворот у края не делаем).
 type Enemy = {
   x: number
   y: number
+  vy: number
   hp: number
   maxHp: number
   lastHitSwingId: number
@@ -706,6 +711,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         const enemy: Enemy = {
           x: enemyWorldX,
           y: enemyWorldY,
+          vy: 0,
           hp: ENEMY_MAX_HP,
           maxHp: ENEMY_MAX_HP,
           lastHitSwingId: 0,
@@ -1029,6 +1035,24 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             }
           }
 
+          // Гравитация + приземление (Шаг A "умного врага") — та же физика,
+          // что у игрока: GRAVITY/MAX_FALL переиспользуем как есть, посадку на
+          // '#'/'=' считаем через тот же sweepFootBlock, что и для игрока (та
+          // же защита от туннелирования сквозь тонкую полосу за один кадр).
+          // Врагу не нужна версия с проверкой головы (sweepHeadBlock) — у него
+          // нет прыжка, vy никогда не становится отрицательной. Если под ним
+          // нет пола (сошёл с края, преследуя игрока) — просто падает дальше,
+          // разворот у края намеренно не делаем (агрессивная физика).
+          enemy.vy = Math.min(enemy.vy + GRAVITY * dt, MAX_FALL)
+          const prevEnemyFootY = enemy.y + ENEMY_HEIGHT
+          enemy.y += enemy.vy * dt
+          const enemyFootY = enemy.y + ENEMY_HEIGHT
+          const enemyBlockTop = sweepFootBlock(grid, TILE_SIZE, enemy.x, ENEMY_WIDTH, prevEnemyFootY, enemyFootY)
+          if (enemyBlockTop !== null) {
+            enemy.y = enemyBlockTop - ENEMY_HEIGHT
+            enemy.vy = 0
+          }
+
           const dx = (phys.x + PLAYER_WIDTH / 2) - (enemy.x + ENEMY_WIDTH / 2)
           const dist = Math.abs(dx)
           // Battle.tsx сравнивает только X (там бой на одной 1D-дорожке — по
@@ -1089,9 +1113,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             }
           }
 
+          // Синк визуала с логической позицией — теперь и по Y тоже (раньше
+          // враг не двигался по вертикали вообще, синкали только X; с
+          // гравитацией enemy.y меняется каждый кадр, значит и полоска HP
+          // должна пересчитывать своё место над головой, а не залипать).
           enemy.rect.x = enemy.x
+          enemy.rect.y = enemy.y
           enemy.hpBarBg.x = enemy.x
+          enemy.hpBarBg.y = enemy.y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
           enemy.hpBarFill.x = enemy.x
+          enemy.hpBarFill.y = enemy.hpBarBg.y
 
           // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
           // спрайта — краснеет (danger), пока windingUp истинно.
