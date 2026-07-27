@@ -123,6 +123,14 @@ const JUMP_VELOCITY = 10 // сила толчка вверх
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
 const WORLD_SCALE = 0.55 // 1 = как сейчас, меньше = видно больше карты; зафиксировано после подбора тюнером
 
+// Look-ahead камеры (только по X, см. updateCamera): целимся не в игрока,
+// а в точку на LOOKAHEAD_TILES тайлов ВПЕРЕДИ по факту движения — видно
+// больше пространства в ту сторону, куда бежит игрок.
+const LOOKAHEAD_TILES = 3.5
+// Коэффициент сглаживания камеры (lerp за кадр, масштабирован по dt) — меньше
+// = медленнее/плавнее, камера не прыгает к цели скачком.
+const SMOOTH = 0.1
+
 type Grid = string[][]
 
 type PlayerPhysics = {
@@ -776,19 +784,35 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
 
-      const updateCamera = () => {
+      // dt — deltaTime тика (как везде в файле); при первом вызове (до старта
+      // ticker'а) передаём Infinity, чтобы camera-lerp ниже сразу СНАПНУЛ в
+      // стартовую позицию, а не полз туда от (0,0) первые несколько кадров.
+      const updateCamera = (dt: number) => {
         // player.x/y и player.width/height — координаты МИРА (локальные для
         // worldContainer), а worldContainer.x/y — координаты ЭКРАНА. При
         // scale != 1 их нельзя смешивать без множителя s.
         const s = WORLD_SCALE
-        const targetX = app!.screen.width / 2 - (player.x + player.width / 2) * s
-        worldContainer.x = clamp(targetX, app!.screen.width - worldWidth, 0)
 
+        // LOOK-AHEAD (только X): целимся не в игрока, а в точку на
+        // LOOKAHEAD_TILES тайлов ВПЕРЕДИ по факту движения. facingRef — уже
+        // существующий флаг направления (обновляется при движении, персистит
+        // при остановке — см. его объявление выше), поэтому при остановке
+        // упреждение остаётся прежним, а не прыгает к центру.
+        const lookaheadPx = facingRef.current * LOOKAHEAD_TILES * TILE_SIZE
+        const focusX = player.x + player.width / 2 + lookaheadPx
+        const targetX = clamp(app!.screen.width / 2 - focusX * s, app!.screen.width - worldWidth, 0)
+        // Плавно догоняем target (lerp), а не прыгаем скачком. Коэффициент
+        // масштабирован по dt (не зависит от fps) и зажат в [0,1] — на первом
+        // вызове (dt=Infinity) это даёт factor=1, то есть мгновенный снап.
+        const smoothFactor = Math.min(1, SMOOTH * dt)
+        worldContainer.x += (targetX - worldContainer.x) * smoothFactor
+
+        // Вертикаль — БЕЗ look-ahead и без lerp, как было (не трогаем).
         const targetY = app!.screen.height * CAMERA_V_ANCHOR - (player.y + player.height / 2) * s
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
       }
 
-      updateCamera()
+      updateCamera(Infinity)
 
       // Общие для обоих способов закрытия события (касание — chest/т.п.,
       // убийство кластера — enemy): красит HUD-иконку и проверяет "все 3
@@ -1151,7 +1175,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         player.x = phys.x
         player.y = phys.y
 
-        updateCamera()
+        updateCamera(dt)
       })
     }
 
