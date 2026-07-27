@@ -1306,23 +1306,26 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         </span>
       </div>
 
+      {/* Иконки прогресса событий — главный индикатор забега, по центру
+          вверху. top ниже, чем у HP-бара (calc(16px+...)), чтобы группа
+          читалась отдельно, а не сливалась с ним визуально на узких экранах. */}
       <div
         style={{
           position: 'fixed',
-          top: 'calc(16px + env(safe-area-inset-top))',
+          top: 'calc(56px + env(safe-area-inset-top))',
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 1001,
           display: 'flex',
-          gap: 10,
+          gap: 14,
         }}
       >
         {eventClosed.map((closed, i) => (
           <div
             key={i}
             style={{
-              width: 18,
-              height: 18,
+              width: 24,
+              height: 24,
               borderRadius: '50%',
               background: closed ? '#E8B23A' : '#9C93AD',
               border: '2px solid #221E2B',
