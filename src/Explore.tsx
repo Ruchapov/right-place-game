@@ -121,7 +121,7 @@ const MOVE_SPEED = 4 // px/кадр, подберём на телефоне
 const JUMP_VELOCITY = 10 // сила толчка вверх
 
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
-const WORLD_SCALE = 0.75 // 1 = как сейчас, меньше = видно больше карты
+const WORLD_SCALE = 0.55 // 1 = как сейчас, меньше = видно больше карты; зафиксировано после подбора тюнером
 
 type Grid = string[][]
 
@@ -489,14 +489,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
-  // TEMP ZOOM TUNER — временный подбор WORLD_SCALE вживую, убрать после подбора
-  // числа (вместе с кнопками ниже). state — чтобы отобразить текущее число на
-  // экране; ref — чтобы ticker (mount-once эффект) читал актуальное значение,
-  // не читая state из тела компонента напрямую (тот же паттерн, что уже
-  // используется для attackDamageRef/maxHp и т.п.).
-  const [worldScale, setWorldScale] = useState(WORLD_SCALE)
-  const worldScaleRef = useRef(worldScale)
-
   // "3 события за забег" — временный каркас. eventsRef хранит выбранные события
   // и их Pixi-маркеры (заполняется в setup(), после загрузки слот-файла).
   // eventClosed — состояние ТОЛЬКО для HUD-иконок сверху (закрытий мало, до 3
@@ -598,7 +590,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     applySpikeDamageRef.current = () => takeDamage(maxHp * SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     attackDamageRef.current = attackDamage
-    worldScaleRef.current = worldScale // TEMP ZOOM TUNER
   })
 
   useEffect(() => {
@@ -676,7 +667,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
       // Мир: фон-карта и игрок в одном контейнере, двигаются вместе камерой.
       const worldContainer = new Container()
-      worldContainer.scale.set(worldScaleRef.current) // TEMP ZOOM TUNER: было WORLD_SCALE напрямую
+      worldContainer.scale.set(WORLD_SCALE)
       app.stage.addChild(worldContainer)
 
       const mapTexture = Texture.from(mapCanvas)
@@ -782,18 +773,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       worldContainer.addChild(attackHitboxGraphics)
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
-      // TEMP ZOOM TUNER: worldWidth/worldHeight больше не кешируются снаружи —
-      // масштаб теперь может измениться в рантайме (кнопки +/− ниже), поэтому
-      // пересчитываются на КАЖДЫЙ вызов из актуального worldScaleRef.current.
+      const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
+      const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
+
       const updateCamera = () => {
         // player.x/y и player.width/height — координаты МИРА (локальные для
         // worldContainer), а worldContainer.x/y — координаты ЭКРАНА. При
         // scale != 1 их нельзя смешивать без множителя s.
-        const s = worldScaleRef.current
-        worldContainer.scale.set(s) // TEMP ZOOM TUNER: применяем зум мгновенно, каждый кадр
-        const worldWidth = grid[0].length * TILE_SIZE * s
-        const worldHeight = grid.length * TILE_SIZE * s
-
+        const s = WORLD_SCALE
         const targetX = app!.screen.width / 2 - (player.x + player.width / 2) * s
         worldContainer.x = clamp(targetX, app!.screen.width - worldWidth, 0)
 
@@ -1397,79 +1384,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       >
         🔄
       </button>
-
-      {/* TEMP ZOOM TUNER — временный инструмент подбора WORLD_SCALE, убрать
-          после того, как подберём финальное значение (вместе с worldScale
-          state/ref выше и правками в updateCamera). */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 'calc(64px + env(safe-area-inset-top))',
-          right: 16,
-          zIndex: 1001,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 6,
-        }}
-      >
-        <span
-          style={{
-            color: '#EDE7F2',
-            fontSize: 12,
-            fontFamily: 'monospace',
-            background: 'rgba(0,0,0,0.6)',
-            padding: '2px 6px',
-            borderRadius: 4,
-          }}
-        >
-          zoom: {worldScale.toFixed(2)}
-        </span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button
-            aria-label="Зум −"
-            onClick={() => setWorldScale((s) => Math.max(0.4, Math.round((s - 0.05) * 100) / 100))}
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 8,
-              background: '#221E2B',
-              border: '1px solid #3A3344',
-              color: '#EDE7F2',
-              fontSize: 20,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              touchAction: 'none',
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-            }}
-          >
-            −
-          </button>
-          <button
-            aria-label="Зум +"
-            onClick={() => setWorldScale((s) => Math.min(1.0, Math.round((s + 0.05) * 100) / 100))}
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 8,
-              background: '#221E2B',
-              border: '1px solid #3A3344',
-              color: '#EDE7F2',
-              fontSize: 20,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              touchAction: 'none',
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-            }}
-          >
-            +
-          </button>
-        </div>
-      </div>
 
       {onClose && (
         <button
