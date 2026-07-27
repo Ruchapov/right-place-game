@@ -95,6 +95,15 @@ const WINDUP_MS = 650
 const ENEMY_ATTACK_INTERVAL = 2
 const ENEMY_ATTACK_DAMAGE = 14
 
+// Шаг B "умного врага" — радиус агро. Враг преследует, только пока игрок И в
+// пределах AGGRO_RANGE_TILES по X, И примерно на том же этаже по Y (разница
+// не больше FLOOR_Y_TOLERANCE тайлов — допуск нужен для мелких перепадов в
+// ±1 тайл, но прыжок на платформу выше/яма ниже уже считаются другим этажом).
+// Сравниваем по ногам (y+height), а не по верхней точке — рост игрока и
+// врага разный (128 vs 64), сравнение "потолка" тел давало бы системный сдвиг.
+const AGGRO_RANGE_TILES = 8
+const FLOOR_Y_TOLERANCE = 1.5
+
 // Кнопка dodge (Шаг 2-2) — окно неуязвимости и кулдаун кнопки. НЕ из Battle.tsx:
 // там dodge — не таймер неуязвимости, а мгновенная отмена текущего замаха
 // врага (`enemyWindingUp = false`) БЕЗ какого-либо окна и БЕЗ кулдауна кнопки.
@@ -1070,8 +1079,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // windup-гейту, см. verticalReach).
           const reachedStopDist = dist <= ATTACK_STOP_DIST
 
+          // Шаг B: агро — проверяется КАЖДЫЙ кадр заново (динамически), только
+          // для решения "преследовать по X или стоять на месте". Атаку (ниже)
+          // не трогаем — она и так работает лишь в пределах ATTACK_STOP_DIST/
+          // ATTACK_RANGE, которые намного меньше радиуса агро, так что этот
+          // гейт логически не пересекается с уже существующей проверкой удара.
+          const enemyFeetY = enemy.y + ENEMY_HEIGHT
+          const playerFeetY = phys.y + PLAYER_HEIGHT
+          const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= FLOOR_Y_TOLERANCE * TILE_SIZE
+          const aggroed = dist <= AGGRO_RANGE_TILES * TILE_SIZE && sameFloor
+
           if (!enemy.windingUp) {
-            if (!reachedStopDist) {
+            if (aggroed && !reachedStopDist) {
               const dir = Math.sign(dx)
               const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
               const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
