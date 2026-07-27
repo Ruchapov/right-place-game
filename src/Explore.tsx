@@ -75,6 +75,10 @@ const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и г
 //   же константа используется и для атаки игрока, и для дальности врага; это
 //   по-прежнему радиус ПОПАДАНИЯ удара, отдельно от ATTACK_STOP_DIST ниже.
 const ENEMY_CHASE_SPEED = 1
+// Шаг C "умного врага" — скорость патруля (когда НЕ агрён), медленнее погони
+// (~55% от ENEMY_CHASE_SPEED, в разрешённом задачей диапазоне 0.5-0.6).
+// Держим рядом с ENEMY_CHASE_SPEED, чтобы крутить оба числа вместе.
+const ENEMY_PATROL_SPEED = ENEMY_CHASE_SPEED * 0.55
 
 // Настройка боя (правки после первой версии AI):
 // - ATTACK_STOP_DIST — НЕ из Battle: там 1D-дорожка со своим PLAYER_W-порогом,
@@ -103,6 +107,11 @@ const ENEMY_ATTACK_DAMAGE = 14
 // врага разный (128 vs 64), сравнение "потолка" тел давало бы системный сдвиг.
 const AGGRO_RANGE_TILES = 8
 const FLOOR_Y_TOLERANCE = 1.5
+
+// Шаг C — патруль вокруг стартовой точки спавна (enemy.spawnX), когда враг НЕ
+// агрён. Разворот на границе патруля, у стены '#' и у края платформы (в
+// отличие от погони — в патруле с края НЕ падают, см. ниже в ticker'е).
+const PATROL_RANGE_TILES = 3.5
 
 // Кнопка dodge (Шаг 2-2) — окно неуязвимости и кулдаун кнопки. НЕ из Battle.tsx:
 // там dodge — не таймер неуязвимости, а мгновенная отмена текущего замаха
@@ -157,8 +166,12 @@ type AttackHitbox = { x: number; y: number; width: number; height: number }
 // смерти врага декрементируем remainingEnemies именно этого события.
 // vy — вертикальная скорость (Шаг A "умного врага"): та же физика, что у
 // игрока (GRAVITY/MAX_FALL, приземление через sweepFootBlock) — враг падает
-// под гравитацией и стоит на '#'/'=' вместо "полёта", включая падение с края
-// платформы (агрессивная физика, разворот у края не делаем).
+// под гравитацией и стоит на '#'/'=' вместо "полёта"; В ПОГОНЕ падение с края
+// разрешено (агрессивная физика), В ПАТРУЛЕ — нет (см. Шаг C ниже).
+// spawnX — точка спавна (мировые px), центр патрульной зоны ±PATROL_RANGE_TILES.
+// patrolDir — текущее направление патруля (меняется на разворотах). facing —
+// куда сейчас "смотрит" враг (обновляется и в патруле, и в погоне; читается
+// для флипа rect.scale.x — задел под будущий спрайт).
 type Enemy = {
   x: number
   y: number
@@ -170,6 +183,9 @@ type Enemy = {
   windingUp: boolean
   windupTimer: number
   eventIndex: number
+  spawnX: number
+  patrolDir: 1 | -1
+  facing: 1 | -1
   rect: Graphics
   hpBarBg: Graphics
   hpBarFill: Graphics
@@ -711,7 +727,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           .rect(0, 0, ENEMY_WIDTH, ENEMY_HEIGHT)
           .fill(ENEMY_COLOR)
           .stroke({ width: 2, color: 0xffffff })
-        rect.x = enemyWorldX
+        // Пивот по центру X — чтобы разворот (facing) флипал rect.scale.x
+        // вокруг центра, а не сдвигал его в сторону (см. синк x ниже: rect.x
+        // ставится в enemy.x + ENEMY_WIDTH/2, а не enemy.x напрямую).
+        rect.pivot.set(ENEMY_WIDTH / 2, 0)
+        rect.x = enemyWorldX + ENEMY_WIDTH / 2
         rect.y = enemyWorldY
         worldContainer.addChild(rect)
 
@@ -736,6 +756,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           windingUp: false,
           windupTimer: 0,
           eventIndex,
+          spawnX: enemyWorldX,
+          patrolDir: 1,
+          facing: 1,
           rect,
           hpBarBg,
           hpBarFill,
@@ -1114,17 +1137,50 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           const aggroed = dist <= AGGRO_RANGE_TILES * TILE_SIZE && sameFloor
 
           if (!enemy.windingUp) {
-            if (aggroed && !reachedStopDist) {
-              const dir = Math.sign(dx)
-              const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
+            if (aggroed) {
+              // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля, падение с
+              // края разрешено (см. физику выше — leadingX тут не проверяет
+              // пол под ногами вообще, это делает общий gravity-блок).
+              if (!reachedStopDist) {
+                const dir = Math.sign(dx)
+                const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
+                const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
+                const hitWall =
+                  isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
+                  isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
+                  isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
+                if (!hitWall) {
+                  enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
+                }
+                if (dir !== 0) enemy.facing = dir as 1 | -1
+              }
+            } else {
+              // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
+              // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
+              // ИЛИ у края платформы — в отличие от погони, с края патруля
+              // падать нельзя, доходит до края и разворачивается.
+              const patrolLeftBound = enemy.spawnX - PATROL_RANGE_TILES * TILE_SIZE
+              const patrolRightBound = enemy.spawnX + PATROL_RANGE_TILES * TILE_SIZE
+              const dir = enemy.patrolDir
+              const nextX = enemy.x + dir * ENEMY_PATROL_SPEED * dt
               const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
+
               const hitWall =
                 isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
                 isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
                 isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
-              if (!hitWall) {
+              // Край платформы: под клеткой сразу впереди по ходу нет '#'/'='.
+              const footCx = Math.floor(leadingX / TILE_SIZE)
+              const footCy = Math.floor((enemy.y + ENEMY_HEIGHT) / TILE_SIZE)
+              const noFloorAhead = cellFootBlockTop(grid, TILE_SIZE, footCx, footCy) === null
+              const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
+
+              if (reachedBound || hitWall || noFloorAhead) {
+                enemy.patrolDir = dir > 0 ? -1 : 1
+              } else {
                 enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
               }
+              enemy.facing = enemy.patrolDir
             }
 
             // Кулдаун считаем ВНИЗ до 0 (не вверх до интервала) — 0 по
@@ -1160,8 +1216,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // враг не двигался по вертикали вообще, синкали только X; с
           // гравитацией enemy.y меняется каждый кадр, значит и полоска HP
           // должна пересчитывать своё место над головой, а не залипать).
-          enemy.rect.x = enemy.x
+          // rect.x — с поправкой на пивот по центру (см. spawnEnemy, Шаг C),
+          // hpBarBg/hpBarFill пивот не меняли — остаются на левом крае.
+          enemy.rect.x = enemy.x + ENEMY_WIDTH / 2
           enemy.rect.y = enemy.y
+          enemy.rect.scale.x = enemy.facing // разворот патруля/погони — Шаг C
           enemy.hpBarBg.x = enemy.x
           enemy.hpBarBg.y = enemy.y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
           enemy.hpBarFill.x = enemy.x
