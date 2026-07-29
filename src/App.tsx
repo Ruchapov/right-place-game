@@ -106,8 +106,21 @@ export default function App() {
   useEffect(() => {
     async function init() {
       try {
-        const initDataRaw = retrieveRawInitData()
-        if (!initDataRaw) throw new Error('No initData from Telegram')
+        let initDataRaw: string | undefined
+        try {
+          initDataRaw = retrieveRawInitData()
+        } catch {
+          initDataRaw = undefined
+        }
+        if (!initDataRaw) {
+          // Вне Telegram (обычный браузер) — заглушка для локальной разработки,
+          // на сервер не ходим.
+          setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['heal', 'dash'], potionCharges: 3 })
+          setEnergyBase(MAX_ENERGY)
+          setEnergyBaseAt(Date.now())
+          setLoading(false)
+          return
+        }
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
         setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })

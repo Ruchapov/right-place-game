@@ -636,10 +636,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   useEffect(() => {
     let app: Application | null = null
     let cancelled = false
+    // true ТОЛЬКО после успешного await app.init() — до этого момента у
+    // Application нет renderer/ticker/resize-хуков, и destroy() на нём падает
+    // ("this._cancelResize is not a function"). React 19 StrictMode монтирует
+    // эффект дважды в dev, так что cleanup может сработать, пока setup() ещё
+    // ждёт fetch/init — без этого флага он ловил недоинициализированный app.
+    let initialized = false
 
     async function setup() {
       app = new Application()
-      appRef.current = app
       const base = import.meta.env.BASE_URL
 
       const [mapText, slots] = await Promise.all([
@@ -678,7 +683,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         typeof startRaw[1] !== 'number'
       ) {
         console.error('Explore: слот-файл карты не содержит корректный start:[x,y]', slots)
-        app.destroy(true, { children: true })
+        // app ещё не инициализирован (init() ниже) — destroy() тут упал бы,
+        // нечего разрушать: возвращаемся без него.
         return
       }
       const start = { x: startRaw[0], y: startRaw[1] }
@@ -686,7 +692,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
 
       if (cancelled || !containerRef.current) {
-        app.destroy(true, { children: true })
+        // Всё ещё ДО init() — по той же причине ничего не разрушаем.
         return
       }
 
@@ -697,9 +703,20 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         backgroundAlpha: 1,
         resizeTo: window,
       })
+      initialized = true
+      appRef.current = app
 
       if (cancelled || !containerRef.current) {
-        app.destroy(true, { children: true })
+        // Компонент размонтировался, пока ждали init() — теперь app полностью
+        // инициализирован, destroy() безопасен и обязателен (иначе утечка).
+        try {
+          app.destroy(true, { children: true })
+        } catch {
+          // Гонка с cleanup-эффектом (тоже вызывает destroy) — игнорируем.
+        }
+        app = null
+        appRef.current = null
+        initialized = false
         return
       }
 
@@ -1259,8 +1276,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
     return () => {
       cancelled = true
-      if (app) {
-        app.destroy(true, { children: true })
+      // destroy() только если init() реально завершился — до этого у app нет
+      // внутренностей, на которые destroy() рассчитывает (см. комментарий
+      // у объявления initialized выше).
+      if (app && initialized) {
+        try {
+          app.destroy(true, { children: true })
+        } catch {
+          // Гонка с веткой "cancelled после init" в setup() — игнорируем.
+        }
       }
       appRef.current = null
     }
