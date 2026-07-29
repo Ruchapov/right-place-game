@@ -31,6 +31,19 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
 
+// Арт-фрейм HP-бара (каменная оправа с портретом героя + тёмная ниша под
+// полосу справа). Ширина отрисовки — доля экрана с потолком в px, чтобы не
+// раздувался гигантским на широких экранах; высота — из пропорции картинки.
+const HP_FRAME_SRC = `${import.meta.env.BASE_URL}assets/hp_frame.png`
+const HP_FRAME_ASPECT = 403 / 1160 // height/width исходного PNG
+const HP_FRAME_W = 'clamp(180px, 50vw, 260px)'
+// Окно под полосу HP внутри фрейма — доли (0..1) от размера ВСЕЙ картинки,
+// не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
+const HP_WINDOW_X = 0.39
+const HP_WINDOW_Y = 0.258
+const HP_WINDOW_W = 0.599
+const HP_WINDOW_H = 0.484
+
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
@@ -577,10 +590,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const dodgeCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
 
   function updateHpBar() {
-    const pct = Math.max(0, Math.min(100, (hpRef.current / maxHp) * 100))
+    const fraction = Math.max(0, Math.min(1, hpRef.current / maxHp))
     if (hpFillRef.current) {
-      hpFillRef.current.style.width = `${pct}%`
-      hpFillRef.current.style.background = pct <= 30 ? '#E0353B' : '#4FB477'
+      // Ширина в % от контейнера фрейма (левый край окна тоже в % от него же —
+      // см. JSX), а не от ширины самого окна — так left/width остаются в одной
+      // системе координат и полоса не съезжает при resize.
+      hpFillRef.current.style.width = `${HP_WINDOW_W * fraction * 100}%`
+      hpFillRef.current.style.background = fraction <= 0.3 ? '#E0353B' : '#4FB477'
     }
     if (hpTextRef.current) {
       hpTextRef.current.textContent = `${hpRef.current}/${maxHp}`
@@ -1271,35 +1287,44 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           top: 'calc(16px + env(safe-area-inset-top))',
           left: 16,
           zIndex: 1001,
-          width: 160,
-          height: 20,
-          borderRadius: 6,
-          background: '#221E2B',
-          border: '1px solid #3A3344',
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          width: HP_FRAME_W,
+          aspectRatio: `1 / ${HP_FRAME_ASPECT}`,
+          pointerEvents: 'none',
         }}
       >
+        <img
+          src={HP_FRAME_SRC}
+          alt=""
+          draggable={false}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+        />
+        {/* Полоса HP лежит в тёмной нише окна фрейма — рисуется ПОВЕРХ
+            картинки фрейма (позже в DOM = выше в стэке), т.к. сама ниша в
+            PNG непрозрачная (тёмная), не прозрачная дырка — "под" не был бы виден. */}
         <div
           ref={hpFillRef}
           style={{
             position: 'absolute',
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: '100%',
+            left: `${HP_WINDOW_X * 100}%`,
+            top: `${HP_WINDOW_Y * 100}%`,
+            height: `${HP_WINDOW_H * 100}%`,
+            width: `${HP_WINDOW_W * 100}%`,
             background: '#4FB477',
           }}
         />
         <span
           ref={hpTextRef}
           style={{
-            position: 'relative',
+            position: 'absolute',
+            left: `${(HP_WINDOW_X + HP_WINDOW_W / 2) * 100}%`,
+            top: `${(HP_WINDOW_Y + HP_WINDOW_H / 2) * 100}%`,
+            transform: 'translate(-50%, -50%)',
             color: '#EDE7F2',
-            fontSize: 11,
+            fontSize: 13,
+            fontWeight: 700,
             fontFamily: 'monospace',
+            textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 5px rgba(0,0,0,0.7)',
+            whiteSpace: 'nowrap',
           }}
         >
           {maxHp}/{maxHp}
