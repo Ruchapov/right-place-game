@@ -45,6 +45,12 @@ const HP_FRAME_W = 'clamp(210px, 46vw, 300px)'
 // РЕАЛЬНУЮ пиксельную высоту, поэтому left/top/width/height потомков в %
 // считаются от неё однозначно во всех движках.
 const HP_FRAME_H = `calc(${HP_FRAME_W} * ${HP_FRAME_ASPECT})`
+// TEMP TUNER — remove after tuning: пока ширина плиты рулится слайдером
+// PLAQUE_VW (см. tuner-state ниже, plaqueW/plaqueH в компоненте), эти две
+// константы не читаются нигде — `void` только унимает noUnusedLocals, сами
+// консты остаются как дефолт на случай отката тюнера.
+void HP_FRAME_W
+void HP_FRAME_H
 // Окно под полосу HP внутри фрейма — доли (0..1) от размера ВСЕЙ картинки,
 // не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
 // hp_frame_v2 — доли ниши подобраны под новую плиту (числа заданы задачей).
@@ -254,8 +260,11 @@ const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_setting
 void EVENT_ICON_SRC
 
 // TEMP TUNER — remove after tuning. Описание слайдеров панели ниже: какое
-// поле tuner-state правят, подпись и диапазон. Шаг у всех одинаковый (0.005).
+// поле tuner-state правят, подпись и диапазон. Шаг/точность — по умолчанию
+// TUNER_STEP (0.005) и 3 знака (доли 0..1); PLAQUE_VW — единственное
+// исключение (единицы vw, не доля), задаёт свой step/decimals явно.
 type TunerState = {
+  plaqueVw: number
   hpX: number
   hpY: number
   hpW: number
@@ -269,7 +278,8 @@ type TunerState = {
   sock3X: number
 }
 const TUNER_STEP = 0.005
-const TUNER_FIELDS: { key: keyof TunerState; label: string; min: number; max: number }[] = [
+const TUNER_FIELDS: { key: keyof TunerState; label: string; min: number; max: number; step?: number; decimals?: number }[] = [
+  { key: 'plaqueVw', label: 'PLAQUE_VW', min: 25, max: 60, step: 1, decimals: 0 },
   { key: 'hpX', label: 'HP_X', min: 0.2, max: 0.6 },
   { key: 'hpY', label: 'HP_Y', min: 0.1, max: 0.5 },
   { key: 'hpW', label: 'HP_W', min: 0.2, max: 0.7 },
@@ -610,6 +620,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // hp_frame_v2) для HP-полосы/числа/гнёзд под иконки — правит панель
   // слайдеров внизу экрана, разметка ниже читает их вместо констант.
   const [tuner, setTuner] = useState<TunerState>({
+    plaqueVw: 46,
     hpX: HP_WINDOW_X,
     hpY: HP_WINDOW_Y,
     hpW: HP_WINDOW_W,
@@ -627,12 +638,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   }
   function handleTunerCopy() { // TEMP TUNER
     console.log(
+      `PLAQUE_VW=${tuner.plaqueVw.toFixed(0)} ` +
       `HP_X=${tuner.hpX.toFixed(3)} HP_Y=${tuner.hpY.toFixed(3)} HP_W=${tuner.hpW.toFixed(3)} HP_H=${tuner.hpH.toFixed(3)} ` +
       `HPTXT_X=${tuner.hptxtX.toFixed(3)} HPTXT_Y=${tuner.hptxtY.toFixed(3)} ` +
       `SOCK_Y=${tuner.sockY.toFixed(3)} SOCK_SIZE=${tuner.sockSize.toFixed(3)} ` +
       `SOCK1_X=${tuner.sock1X.toFixed(3)} SOCK2_X=${tuner.sock2X.toFixed(3)} SOCK3_X=${tuner.sock3X.toFixed(3)}`
     )
   }
+  // TEMP TUNER — remove after tuning: ширина/высота плиты, живые из PLAQUE_VW
+  // (заменяет module-level HP_FRAME_W/HP_FRAME_H на время подгонки). Формула
+  // высоты не меняется — тот же calc(width * аспект), не aspect-ratio.
+  const plaqueW = `clamp(160px, ${tuner.plaqueVw}vw, 340px)`
+  const plaqueH = `calc(${plaqueW} * ${HP_FRAME_ASPECT})`
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
@@ -1406,8 +1423,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           top: 'calc(env(safe-area-inset-top) + 6px)',
           left: 8,
           zIndex: 1001,
-          width: HP_FRAME_W,
-          height: HP_FRAME_H,
+          width: plaqueW, // TEMP TUNER: было HP_FRAME_W, теперь из tuner.plaqueVw
+          height: plaqueH, // TEMP TUNER: было HP_FRAME_H
           pointerEvents: 'none',
         }}
       >
@@ -1683,19 +1700,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             COPY
           </button>
         </div>
-        {TUNER_FIELDS.map(({ key, label, min, max }) => (
+        {TUNER_FIELDS.map(({ key, label, min, max, step, decimals }) => (
           <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
             <span style={{ width: 78, flexShrink: 0 }}>{label}</span>
             <input
               type="range"
               min={min}
               max={max}
-              step={TUNER_STEP}
+              step={step ?? TUNER_STEP}
               value={tuner[key]}
               onChange={(e) => handleTunerChange(key, Number(e.target.value))}
               style={{ flex: 1 }}
             />
-            <span style={{ width: 48, flexShrink: 0, textAlign: 'right' }}>{tuner[key].toFixed(3)}</span>
+            <span style={{ width: 48, flexShrink: 0, textAlign: 'right' }}>{tuner[key].toFixed(decimals ?? 3)}</span>
           </div>
         ))}
       </div>
