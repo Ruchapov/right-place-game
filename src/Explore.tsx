@@ -48,9 +48,9 @@ const HP_FRAME_H = `calc(${HP_FRAME_W} * ${HP_FRAME_ASPECT})`
 // Окно под полосу HP внутри фрейма — доли (0..1) от размера ВСЕЙ картинки,
 // не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
 const HP_WINDOW_X = 0.39
-const HP_WINDOW_Y = 0.258
+const HP_WINDOW_Y = 0.34
 const HP_WINDOW_W = 0.599
-const HP_WINDOW_H = 0.484
+const HP_WINDOW_H = 0.34
 
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
