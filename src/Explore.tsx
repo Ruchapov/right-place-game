@@ -237,13 +237,14 @@ const EVENT_MARKER_COLOR: Record<EventKind, number> = {
   boss: 0xf08a24,
 }
 
-// Временная эмодзи-заглушка для HUD-иконок прогресса — заменить на PNG позже.
-const EVENT_ICON_EMOJI: Record<EventKind, string> = {
-  enemy: '⚔',
-  chest: '📦',
-  smuggler: '🧙',
-  puzzle: '🗿',
-  boss: '☠',
+// Иконки HUD-прогресса событий — тот же способ формирования пути (BASE_URL),
+// что у HP_FRAME_SRC, чтобы работало и на GitHub Pages с префиксом.
+const EVENT_ICON_SRC: Record<EventKind, string> = {
+  enemy: `${import.meta.env.BASE_URL}assets/icons/event_enemy.png`,
+  chest: `${import.meta.env.BASE_URL}assets/icons/event_chest.png`,
+  smuggler: `${import.meta.env.BASE_URL}assets/icons/event_smuggler.png`,
+  puzzle: `${import.meta.env.BASE_URL}assets/icons/event_puzzle.png`,
+  boss: `${import.meta.env.BASE_URL}assets/icons/event_boss.png`,
 }
 
 const EVENTS_PER_RUN = 3
@@ -1396,19 +1397,30 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             key={i}
             style={{
               position: 'relative',
-              width: 24,
-              height: 24,
+              width: 32,
+              height: 32,
               borderRadius: '50%',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: 13,
-              background: closed ? '#E8B23A' : '#9C93AD',
-              border: `2px solid ${closed ? '#E8B23A' : '#221E2B'}`,
-              boxShadow: closed ? '0 0 6px #E8B23A' : 'none',
+              boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
+              border: closed ? '2px solid #E8B23A' : 'none',
             }}
           >
-            <span style={{ opacity: closed ? 1 : 0.85 }}>{eventKinds[i] ? EVENT_ICON_EMOJI[eventKinds[i]] : ''}</span>
+            {eventKinds[i] && (
+              <img
+                src={EVENT_ICON_SRC[eventKinds[i]]}
+                alt=""
+                draggable={false}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  opacity: closed ? 1 : 0.8,
+                  filter: closed ? 'none' : 'grayscale(40%)',
+                }}
+              />
+            )}
             {closed && (
               <span
                 style={{
