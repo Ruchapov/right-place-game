@@ -31,12 +31,15 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
 
-// Арт-фрейм HP-бара (каменная оправа с портретом героя + тёмная ниша под
-// полосу справа). Ширина отрисовки — доля экрана с потолком в px, чтобы не
-// раздувался гигантским на широких экранах; высота — из пропорции картинки.
+// Арт-плита HP-бара (каменная оправа с портретом героя + тёмная ниша под
+// полосу + 3 гнезда под иконки событий). Ширина отрисовки — доля экрана с
+// потолком/полом в px, чтобы не раздувался гигантским на широких экранах;
+// высота — из пропорции картинки. Все числа ниже подобраны вживую временным
+// тюнером (снят после подгонки).
 const HP_FRAME_SRC = `${import.meta.env.BASE_URL}assets/hp_frame_v2.png`
 const HP_FRAME_ASPECT = 1 / 2.391 // height/width исходного PNG
-const HP_FRAME_W = 'clamp(210px, 46vw, 300px)'
+const PLAQUE_VW = 40
+const HP_FRAME_W = `clamp(160px, ${PLAQUE_VW}vw, 340px)`
 // Высота — тем же выражением, что и ширина, умноженным на аспект: НЕ через
 // CSS aspect-ratio. aspect-ratio даёт контейнеру "auto"-высоту для целей
 // разрешения %-высоты/позиции АБСОЛЮТНО спозиционированных детей в part
@@ -45,19 +48,20 @@ const HP_FRAME_W = 'clamp(210px, 46vw, 300px)'
 // РЕАЛЬНУЮ пиксельную высоту, поэтому left/top/width/height потомков в %
 // считаются от неё однозначно во всех движках.
 const HP_FRAME_H = `calc(${HP_FRAME_W} * ${HP_FRAME_ASPECT})`
-// TEMP TUNER — remove after tuning: пока ширина плиты рулится слайдером
-// PLAQUE_VW (см. tuner-state ниже, plaqueW/plaqueH в компоненте), эти две
-// константы не читаются нигде — `void` только унимает noUnusedLocals, сами
-// консты остаются как дефолт на случай отката тюнера.
-void HP_FRAME_W
-void HP_FRAME_H
-// Окно под полосу HP внутри фрейма — доли (0..1) от размера ВСЕЙ картинки,
+// Окно под полосу HP внутри плиты — доли (0..1) от размера ВСЕЙ картинки,
 // не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
-// hp_frame_v2 — доли ниши подобраны под новую плиту (числа заданы задачей).
-const HP_WINDOW_X = 0.375
-const HP_WINDOW_Y = 0.255
-const HP_WINDOW_W = 0.47
-const HP_WINDOW_H = 0.18
+const HP_WINDOW_X = 0.395
+const HP_WINDOW_Y = 0.24
+const HP_WINDOW_W = 0.56
+const HP_WINDOW_H = 0.215
+// Число HP — центр ниши, отдельные доли (не строго X+W/2 — подобрано глазом).
+const HPTXT_X = 0.685
+const HPTXT_Y = 0.345
+// 3 гнезда под иконки событий — общий Y и размер (доля ширины плиты), у
+// каждого гнезда свой X.
+const SOCK_Y = 0.75
+const SOCK_SIZE = 0.15
+const SOCK_X: [number, number, number] = [0.484, 0.672, 0.859]
 
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
@@ -254,44 +258,6 @@ const EVENT_ICON_SRC: Record<EventKind, string> = {
 }
 
 const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
-// Иконки событий временно не рендерятся в HUD (гнёзда под них в hp_frame_v2
-// пока пустые — подключим отдельным шагом) — `void` держит noUnusedLocals
-// тихим, не удаляя саму карту путей.
-void EVENT_ICON_SRC
-
-// TEMP TUNER — remove after tuning. Описание слайдеров панели ниже: какое
-// поле tuner-state правят, подпись и диапазон. Шаг/точность — по умолчанию
-// TUNER_STEP (0.005) и 3 знака (доли 0..1); PLAQUE_VW — единственное
-// исключение (единицы vw, не доля), задаёт свой step/decimals явно.
-type TunerState = {
-  plaqueVw: number
-  hpX: number
-  hpY: number
-  hpW: number
-  hpH: number
-  hptxtX: number
-  hptxtY: number
-  sockY: number
-  sockSize: number
-  sock1X: number
-  sock2X: number
-  sock3X: number
-}
-const TUNER_STEP = 0.005
-const TUNER_FIELDS: { key: keyof TunerState; label: string; min: number; max: number; step?: number; decimals?: number }[] = [
-  { key: 'plaqueVw', label: 'PLAQUE_VW', min: 25, max: 60, step: 1, decimals: 0 },
-  { key: 'hpX', label: 'HP_X', min: 0.2, max: 0.6 },
-  { key: 'hpY', label: 'HP_Y', min: 0.1, max: 0.5 },
-  { key: 'hpW', label: 'HP_W', min: 0.2, max: 0.7 },
-  { key: 'hpH', label: 'HP_H', min: 0.05, max: 0.35 },
-  { key: 'hptxtX', label: 'HPTXT_X', min: 0.3, max: 0.8 },
-  { key: 'hptxtY', label: 'HPTXT_Y', min: 0.15, max: 0.55 },
-  { key: 'sockY', label: 'SOCK_Y', min: 0.55, max: 0.95 },
-  { key: 'sockSize', label: 'SOCK_SIZE', min: 0.06, max: 0.2 },
-  { key: 'sock1X', label: 'SOCK1_X', min: 0.3, max: 0.95 },
-  { key: 'sock2X', label: 'SOCK2_X', min: 0.3, max: 0.95 },
-  { key: 'sock3X', label: 'SOCK3_X', min: 0.3, max: 0.95 },
-]
 
 const EVENTS_PER_RUN = 3
 
@@ -603,10 +569,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
   const [eventKinds, setEventKinds] = useState<EventKind[]>([])
-  // Иконки временно убраны из верхнего HUD (см. HP-плиту ниже) — состояние
-  // остаётся живым для следующего шага, `void` только унимает noUnusedLocals.
-  void eventClosed
-  void eventKinds
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * HP_PER_ENDURANCE : FALLBACK_MAX_HP
@@ -616,40 +578,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const hpFillRef = useRef<HTMLDivElement>(null)
   const hpTextRef = useRef<HTMLSpanElement>(null)
 
-  // TEMP TUNER — remove after tuning. Живые доли (0..1 от размера плиты
-  // hp_frame_v2) для HP-полосы/числа/гнёзд под иконки — правит панель
-  // слайдеров внизу экрана, разметка ниже читает их вместо констант.
-  const [tuner, setTuner] = useState<TunerState>({
-    plaqueVw: 46,
-    hpX: HP_WINDOW_X,
-    hpY: HP_WINDOW_Y,
-    hpW: HP_WINDOW_W,
-    hpH: HP_WINDOW_H,
-    hptxtX: 0.61,
-    hptxtY: 0.345,
-    sockY: 0.75,
-    sockSize: 0.118,
-    sock1X: 0.484,
-    sock2X: 0.672,
-    sock3X: 0.859,
-  })
-  function handleTunerChange(key: keyof TunerState, value: number) { // TEMP TUNER
-    setTuner((prev) => ({ ...prev, [key]: value }))
-  }
-  function handleTunerCopy() { // TEMP TUNER
-    console.log(
-      `PLAQUE_VW=${tuner.plaqueVw.toFixed(0)} ` +
-      `HP_X=${tuner.hpX.toFixed(3)} HP_Y=${tuner.hpY.toFixed(3)} HP_W=${tuner.hpW.toFixed(3)} HP_H=${tuner.hpH.toFixed(3)} ` +
-      `HPTXT_X=${tuner.hptxtX.toFixed(3)} HPTXT_Y=${tuner.hptxtY.toFixed(3)} ` +
-      `SOCK_Y=${tuner.sockY.toFixed(3)} SOCK_SIZE=${tuner.sockSize.toFixed(3)} ` +
-      `SOCK1_X=${tuner.sock1X.toFixed(3)} SOCK2_X=${tuner.sock2X.toFixed(3)} SOCK3_X=${tuner.sock3X.toFixed(3)}`
-    )
-  }
-  // TEMP TUNER — remove after tuning: ширина/высота плиты, живые из PLAQUE_VW
-  // (заменяет module-level HP_FRAME_W/HP_FRAME_H на время подгонки). Формула
-  // высоты не меняется — тот же calc(width * аспект), не aspect-ratio.
-  const plaqueW = `clamp(160px, ${tuner.plaqueVw}vw, 340px)`
-  const plaqueH = `calc(${plaqueW} * ${HP_FRAME_ASPECT})`
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
@@ -702,7 +630,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // Ширина в % от контейнера фрейма (левый край окна тоже в % от него же —
       // см. JSX), а не от ширины самого окна — так left/width остаются в одной
       // системе координат и полоса не съезжает при resize.
-      hpFillRef.current.style.width = `${tuner.hpW * fraction * 100}%` // TEMP TUNER: tuner.hpW вместо константы
+      hpFillRef.current.style.width = `${HP_WINDOW_W * fraction * 100}%`
       hpFillRef.current.style.background = fraction <= 0.3 ? '#E0353B' : '#4FB477'
     }
     if (hpTextRef.current) {
@@ -1413,18 +1341,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Заменяет старую
-          непрозрачную код-полосу + hp_frame.png. Гнёзда под иконки событий в
-          самой плите ПОКА пустые — иконки (eventClosed/eventKinds, логика не
-          тронута) подключим отдельным шагом. */}
+      {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
+          число и 3 гнезда с иконками событий (тип из eventKinds, состояние —
+          закрыто/нет из eventClosed, тот же индекс). */}
       <div
         style={{
           position: 'fixed',
           top: 'calc(env(safe-area-inset-top) + 6px)',
           left: 8,
           zIndex: 1001,
-          width: plaqueW, // TEMP TUNER: было HP_FRAME_W, теперь из tuner.plaqueVw
-          height: plaqueH, // TEMP TUNER: было HP_FRAME_H
+          width: HP_FRAME_W,
+          height: HP_FRAME_H,
           pointerEvents: 'none',
         }}
       >
@@ -1436,18 +1363,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         />
         {/* Полоса HP лежит в нише плиты — рисуется ПОВЕРХ картинки (позже в
             DOM = выше в стэке), т.к. сама ниша в PNG непрозрачная (тёмная),
-            не прозрачная дырка — "под" не был бы виден.
-            TEMP TUNER: left/top/height/width читаются из tuner-state вместо
-            HP_WINDOW_* констант, чтобы панель слайдеров ниже двигала их
-            вживую — remove after tuning (вернуть на константы). */}
+            не прозрачная дырка — "под" не был бы виден. */}
         <div
           ref={hpFillRef}
           style={{
             position: 'absolute',
-            left: `${tuner.hpX * 100}%`,
-            top: `${tuner.hpY * 100}%`,
-            height: `${tuner.hpH * 100}%`,
-            width: `${tuner.hpW * Math.max(0, Math.min(1, hpRef.current / maxHp)) * 100}%`,
+            left: `${HP_WINDOW_X * 100}%`,
+            top: `${HP_WINDOW_Y * 100}%`,
+            height: `${HP_WINDOW_H * 100}%`,
+            width: `${HP_WINDOW_W * 100}%`,
             background: '#4FB477',
           }}
         />
@@ -1455,8 +1379,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           ref={hpTextRef}
           style={{
             position: 'absolute',
-            left: `${tuner.hptxtX * 100}%`, // TEMP TUNER
-            top: `${tuner.hptxtY * 100}%`, // TEMP TUNER
+            left: `${HPTXT_X * 100}%`,
+            top: `${HPTXT_Y * 100}%`,
             transform: 'translate(-50%, -50%)',
             color: '#EDE7F2',
             fontSize: 13,
@@ -1469,27 +1393,63 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           {maxHp}/{maxHp}
         </span>
 
-        {/* TEMP TUNER — remove after tuning: цветные кружки-заглушки для
-            подгонки 3 гнёзд под будущие PNG-иконки событий. НЕ настоящие
-            иконки — просто метки попадания. Диаметр = SOCK_SIZE * ширина
-            плиты; aspect-ratio:1 держит круг ровным независимо от того, что
-            высота плиты считается по другой формуле (не от ширины напрямую
-            для этого элемента). */}
-        {[tuner.sock1X, tuner.sock2X, tuner.sock3X].map((sockX, i) => (
-          <div
-            key={i}
-            style={{
-              position: 'absolute',
-              left: `${sockX * 100}%`,
-              top: `${tuner.sockY * 100}%`,
-              width: `${tuner.sockSize * 100}%`,
-              aspectRatio: '1',
-              transform: 'translate(-50%, -50%)',
-              borderRadius: '50%',
-              background: 'rgba(230,178,58,0.6)',
-            }}
-          />
-        ))}
+        {/* 3 гнезда под иконки событий — центр в (SOCK_X[i], SOCK_Y) долях
+            плиты, диаметр SOCK_SIZE*ширина_плиты. aspect-ratio:1 держит круг
+            ровным (высота плиты считается по своей формуле, не 1:1). */}
+        {SOCK_X.map((sockX, i) => {
+          const closed = eventClosed[i]
+          const kind = eventKinds[i]
+          return (
+            <div
+              key={i}
+              style={{
+                position: 'absolute',
+                left: `${sockX * 100}%`,
+                top: `${SOCK_Y * 100}%`,
+                width: `${SOCK_SIZE * 100}%`,
+                aspectRatio: '1',
+                transform: 'translate(-50%, -50%)',
+                borderRadius: '50%',
+                boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
+              }}
+            >
+              {kind && (
+                <img
+                  src={EVENT_ICON_SRC[kind]}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    opacity: closed ? 1 : 0.8,
+                  }}
+                />
+              )}
+              {closed && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    bottom: -4,
+                    right: -4,
+                    fontSize: 9,
+                    lineHeight: 1,
+                    color: '#221E2B',
+                    background: '#E8B23A',
+                    borderRadius: '50%',
+                    width: 11,
+                    height: 11,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  ✓
+                </span>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       {/* Шестерёнка настроек — отдельный fixed-элемент в правом верхнем углу
@@ -1659,63 +1619,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       >
         🔄
       </button>
-
-      {/* TEMP TUNER — remove after tuning. Полупрозрачная панель слайдеров
-          для подгонки HP-полосы/числа/гнёзд под иконки внутри hp_frame_v2.
-          Очень высокий z-index — поверх абсолютно всего, включая боевые
-          кнопки, т.к. это чисто отладочный оверлей. */}
-      <div
-        style={{
-          position: 'fixed',
-          left: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 999999,
-          maxHeight: '45vh',
-          overflowY: 'auto',
-          background: 'rgba(0,0,0,0.85)',
-          borderTop: '1px solid #3A3344',
-          padding: '8px 12px calc(8px + env(safe-area-inset-bottom))',
-          fontFamily: 'monospace',
-          fontSize: 11,
-          color: '#EDE7F2',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-          <span style={{ opacity: 0.7 }}>TEMP TUNER — remove after tuning</span>
-          <button
-            onClick={handleTunerCopy}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 4,
-              border: '1px solid #E8B23A',
-              background: '#221E2B',
-              color: '#E8B23A',
-              fontFamily: 'monospace',
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            COPY
-          </button>
-        </div>
-        {TUNER_FIELDS.map(({ key, label, min, max, step, decimals }) => (
-          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            <span style={{ width: 78, flexShrink: 0 }}>{label}</span>
-            <input
-              type="range"
-              min={min}
-              max={max}
-              step={step ?? TUNER_STEP}
-              value={tuner[key]}
-              onChange={(e) => handleTunerChange(key, Number(e.target.value))}
-              style={{ flex: 1 }}
-            />
-            <span style={{ width: 48, flexShrink: 0, textAlign: 'right' }}>{tuner[key].toFixed(decimals ?? 3)}</span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
