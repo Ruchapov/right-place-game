@@ -37,6 +37,14 @@ const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/н
 const HP_FRAME_SRC = `${import.meta.env.BASE_URL}assets/hp_frame.png`
 const HP_FRAME_ASPECT = 403 / 1160 // height/width исходного PNG
 const HP_FRAME_W = 'clamp(180px, 50vw, 260px)'
+// Высота — тем же выражением, что и ширина, умноженным на аспект: НЕ через
+// CSS aspect-ratio. aspect-ratio даёт контейнеру "auto"-высоту для целей
+// разрешения %-высоты/позиции АБСОЛЮТНО спозиционированных детей в part
+// WebView (Android system WebView в Telegram) — из-за этого fill-полоса
+// внутри окна теряла привязку и вылезала за рамку. calc() даёт контейнеру
+// РЕАЛЬНУЮ пиксельную высоту, поэтому left/top/width/height потомков в %
+// считаются от неё однозначно во всех движках.
+const HP_FRAME_H = `calc(${HP_FRAME_W} * ${HP_FRAME_ASPECT})`
 // Окно под полосу HP внутри фрейма — доли (0..1) от размера ВСЕЙ картинки,
 // не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
 const HP_WINDOW_X = 0.39
@@ -1312,7 +1320,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           left: 16,
           zIndex: 1001,
           width: HP_FRAME_W,
-          aspectRatio: `1 / ${HP_FRAME_ASPECT}`,
+          height: HP_FRAME_H,
           pointerEvents: 'none',
         }}
       >
