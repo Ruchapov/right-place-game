@@ -247,6 +247,8 @@ const EVENT_ICON_SRC: Record<EventKind, string> = {
   boss: `${import.meta.env.BASE_URL}assets/icons/event_boss.png`,
 }
 
+const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
+
 const EVENTS_PER_RUN = 3
 
 function isPointXY(value: unknown): value is [number, number] {
@@ -1328,122 +1330,163 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Верхняя панель HUD — ОДНА горизонтальная линия: HP-фрейм слева,
+          иконки событий по центру, шестерёнка настроек справа. Раньше это
+          были 3 независимых fixed-блока (HP-фрейм со своими top/left,
+          иконки со своим top: calc(56px+...), кнопка "Закрыть" со своим
+          top/right) — из-за этого иконки висели криво относительно HP.
+          Теперь позицию каждого элемента задаёт этот общий flex-контейнер,
+          вертикаль — align-items:center. HP-фрейм высокий (портрет торчит
+          вверх над зелёной полосой), но центр его окна HP
+          (HP_WINDOW_Y+HP_WINDOW_H/2 ≈ 48% высоты фрейма) почти совпадает с
+          геометрическим центром фрейма — align-items:center кладёт линию
+          иконок/шестерёнки практически на уровень самой зелёной полосы, не
+          ниже её. */}
       <div
         style={{
           position: 'fixed',
-          top: 'calc(16px + env(safe-area-inset-top))',
-          left: 16,
-          zIndex: 1001,
-          width: HP_FRAME_W,
-          height: HP_FRAME_H,
-          pointerEvents: 'none',
-        }}
-      >
-        <img
-          src={HP_FRAME_SRC}
-          alt=""
-          draggable={false}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-        />
-        {/* Полоса HP лежит в тёмной нише окна фрейма — рисуется ПОВЕРХ
-            картинки фрейма (позже в DOM = выше в стэке), т.к. сама ниша в
-            PNG непрозрачная (тёмная), не прозрачная дырка — "под" не был бы виден. */}
-        <div
-          ref={hpFillRef}
-          style={{
-            position: 'absolute',
-            left: `${HP_WINDOW_X * 100}%`,
-            top: `${HP_WINDOW_Y * 100}%`,
-            height: `${HP_WINDOW_H * 100}%`,
-            width: `${HP_WINDOW_W * 100}%`,
-            background: '#4FB477',
-          }}
-        />
-        <span
-          ref={hpTextRef}
-          style={{
-            position: 'absolute',
-            left: `${(HP_WINDOW_X + HP_WINDOW_W / 2) * 100}%`,
-            top: `${(HP_WINDOW_Y + HP_WINDOW_H / 2) * 100}%`,
-            transform: 'translate(-50%, -50%)',
-            color: '#EDE7F2',
-            fontSize: 13,
-            fontWeight: 700,
-            fontFamily: 'monospace',
-            textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 5px rgba(0,0,0,0.7)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {maxHp}/{maxHp}
-        </span>
-      </div>
-
-      {/* Иконки прогресса событий — главный индикатор забега, по центру
-          вверху. top ниже, чем у HP-бара (calc(16px+...)), чтобы группа
-          читалась отдельно, а не сливалась с ним визуально на узких экранах. */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 'calc(56px + env(safe-area-inset-top))',
-          left: '50%',
-          transform: 'translateX(-50%)',
+          top: 0,
+          left: 0,
+          width: '100%',
           zIndex: 1001,
           display: 'flex',
-          gap: 14,
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: 'calc(env(safe-area-inset-top) + 16px) 12px 0',
+          boxSizing: 'border-box',
         }}
       >
-        {eventClosed.map((closed, i) => (
+        {/* HP-фрейм — левый блок. Собственный fixed/top/left убраны, позицию
+            теперь задаёт родительский flex-контейнер. */}
+        <div
+          style={{
+            position: 'relative',
+            width: HP_FRAME_W,
+            height: HP_FRAME_H,
+            flexShrink: 0,
+            pointerEvents: 'none',
+          }}
+        >
+          <img
+            src={HP_FRAME_SRC}
+            alt=""
+            draggable={false}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+          />
+          {/* Полоса HP лежит в тёмной нише окна фрейма — рисуется ПОВЕРХ
+              картинки фрейма (позже в DOM = выше в стэке), т.к. сама ниша в
+              PNG непрозрачная (тёмная), не прозрачная дырка — "под" не был бы виден. */}
           <div
-            key={i}
+            ref={hpFillRef}
             style={{
-              position: 'relative',
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
-              border: closed ? '2px solid #E8B23A' : 'none',
+              position: 'absolute',
+              left: `${HP_WINDOW_X * 100}%`,
+              top: `${HP_WINDOW_Y * 100}%`,
+              height: `${HP_WINDOW_H * 100}%`,
+              width: `${HP_WINDOW_W * 100}%`,
+              background: '#4FB477',
+            }}
+          />
+          <span
+            ref={hpTextRef}
+            style={{
+              position: 'absolute',
+              left: `${(HP_WINDOW_X + HP_WINDOW_W / 2) * 100}%`,
+              top: `${(HP_WINDOW_Y + HP_WINDOW_H / 2) * 100}%`,
+              transform: 'translate(-50%, -50%)',
+              color: '#EDE7F2',
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: 'monospace',
+              textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 5px rgba(0,0,0,0.7)',
+              whiteSpace: 'nowrap',
             }}
           >
-            {eventKinds[i] && (
-              <img
-                src={EVENT_ICON_SRC[eventKinds[i]]}
-                alt=""
-                draggable={false}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'contain',
-                  opacity: closed ? 1 : 0.8,
-                  filter: closed ? 'none' : 'grayscale(40%)',
-                }}
-              />
-            )}
-            {closed && (
-              <span
-                style={{
-                  position: 'absolute',
-                  bottom: -4,
-                  right: -4,
-                  fontSize: 10,
-                  lineHeight: 1,
-                  color: '#221E2B',
-                  background: '#E8B23A',
-                  borderRadius: '50%',
-                  width: 12,
-                  height: 12,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                ✓
-              </span>
-            )}
-          </div>
-        ))}
+            {maxHp}/{maxHp}
+          </span>
+        </div>
+
+        {/* Иконки прогресса событий — центр панели. */}
+        <div style={{ display: 'flex', gap: 14 }}>
+          {eventClosed.map((closed, i) => (
+            <div
+              key={i}
+              style={{
+                position: 'relative',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
+                border: closed ? '2px solid #E8B23A' : 'none',
+              }}
+            >
+              {eventKinds[i] && (
+                <img
+                  src={EVENT_ICON_SRC[eventKinds[i]]}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    opacity: closed ? 1 : 0.8,
+                    filter: closed ? 'none' : 'grayscale(40%)',
+                  }}
+                />
+              )}
+              {closed && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    bottom: -4,
+                    right: -4,
+                    fontSize: 10,
+                    lineHeight: 1,
+                    color: '#221E2B',
+                    background: '#E8B23A',
+                    borderRadius: '50%',
+                    width: 12,
+                    height: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  ✓
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Шестерёнка настроек — правый блок. Заменяет старую кнопку
+            "Закрыть" (тот же обработчик onClose — выход из забега). Полноценная
+            панель настроек — отдельная задача, тут только сам клик. */}
+        {onClose && (
+          <button
+            onClick={onClose}
+            aria-label="Настройки"
+            style={{
+              width: 44,
+              height: 44,
+              flexShrink: 0,
+              padding: 0,
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            <img
+              src={SETTINGS_ICON_SRC}
+              alt=""
+              draggable={false}
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            />
+          </button>
+        )}
       </div>
 
       <div
@@ -1583,27 +1626,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       >
         🔄
       </button>
-
-      {onClose && (
-        <button
-          onClick={onClose}
-          style={{
-            position: 'fixed',
-            top: 16,
-            right: 16,
-            zIndex: 1001,
-            padding: '8px 16px',
-            borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.3)',
-            background: 'rgba(0,0,0,0.6)',
-            color: 'white',
-            fontSize: 16,
-            cursor: 'pointer',
-          }}
-        >
-          Закрыть
-        </button>
-      )}
     </div>
   )
 }
