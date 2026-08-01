@@ -63,6 +63,13 @@ const SOCK_Y = 0.79
 const SOCK_SIZE = 0.185
 const SOCK_X: [number, number, number] = [0.484, 0.672, 0.859]
 
+// Кольцо "событие завершено" на иконке — доли размера иконки (не гнезда).
+// Диаметр = SOCK_SIZE(иконки)*RING_SCALE, центр смещён на (RING_DX,RING_DY).
+const RING_SCALE = 0.93
+const RING_W = 4
+const RING_DX = 0
+const RING_DY = -0.09
+
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
@@ -259,28 +266,13 @@ const EVENT_ICON_SRC: Record<EventKind, string> = {
 
 const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
 
-// TEMP TUNER RING — remove after tuning. Живые доли для золотого
-// кольца/галочки "событие завершено" на иконках событий — правит панель
-// слайдеров внизу экрана, разметка гнёзд ниже читает эти значения.
-type RingTunerState = {
-  ringScale: number
-  ringW: number
-  ringDx: number
-  ringDy: number
-  chkScale: number
-  chkX: number
-  chkY: number
-}
-const RING_TUNER_STEP = 0.01
-const RING_TUNER_FIELDS: { key: keyof RingTunerState; label: string; min: number; max: number; step?: number; decimals?: number }[] = [
-  { key: 'ringScale', label: 'RING_SCALE', min: 0.7, max: 1.4 },
-  { key: 'ringW', label: 'RING_W', min: 1, max: 8, step: 1, decimals: 0 },
-  { key: 'ringDx', label: 'RING_DX', min: -0.2, max: 0.2 },
-  { key: 'ringDy', label: 'RING_DY', min: -0.2, max: 0.2 },
-  { key: 'chkScale', label: 'CHK_SCALE', min: 0.2, max: 0.7, step: 0.02 },
-  { key: 'chkX', label: 'CHK_X', min: 0.3, max: 1, step: 0.02 },
-  { key: 'chkY', label: 'CHK_Y', min: 0.3, max: 1, step: 0.02 },
-]
+// Каменная рамка панели настроек — тот же способ пути (BASE_URL), что у
+// HP_FRAME_SRC/EVENT_ICON_SRC. Вертикальная 3:4, реальный аспект картинки
+// width/height = 0.767 (816×1064 px исходник).
+const SETTINGS_FRAME_SRC = `${import.meta.env.BASE_URL}assets/settings_frame.png`
+const SETTINGS_FRAME_ASPECT = 0.767 // width/height
+const SETTINGS_FRAME_H = 'clamp(340px, 70vh, 520px)'
+const SETTINGS_FRAME_W = `calc(${SETTINGS_FRAME_H} * ${SETTINGS_FRAME_ASPECT})`
 
 const EVENTS_PER_RUN = 3
 
@@ -581,6 +573,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
+  // Панель настроек (шестерёнка) — оверлей поверх живой игры, паузы нет
+  // (в проекте паузы вообще нет). exitConfirmOpen рендерится ПОВЕРХ панели
+  // настроек (выше z-index), а не вместо неё.
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false)
+
   // "3 события за забег" — временный каркас. eventsRef хранит выбранные события
   // и их Pixi-маркеры (заполняется в setup(), после загрузки слот-файла).
   // eventClosed — состояние ТОЛЬКО для HUD-иконок сверху (закрытий мало, до 3
@@ -600,27 +598,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const hpRef = useRef(maxHp)
   const hpFillRef = useRef<HTMLDivElement>(null)
   const hpTextRef = useRef<HTMLSpanElement>(null)
-
-  // TEMP TUNER RING — remove after tuning.
-  const [ringTuner, setRingTuner] = useState<RingTunerState>({
-    ringScale: 1,
-    ringW: 3,
-    ringDx: 0,
-    ringDy: 0,
-    chkScale: 0.4,
-    chkX: 0.75,
-    chkY: 0.75,
-  })
-  function handleRingTunerChange(key: keyof RingTunerState, value: number) { // TEMP TUNER RING
-    setRingTuner((prev) => ({ ...prev, [key]: value }))
-  }
-  function handleRingTunerCopy() { // TEMP TUNER RING
-    console.log(
-      `RING_SCALE=${ringTuner.ringScale.toFixed(3)} RING_W=${ringTuner.ringW.toFixed(0)} ` +
-      `RING_DX=${ringTuner.ringDx.toFixed(3)} RING_DY=${ringTuner.ringDy.toFixed(3)} ` +
-      `CHK_SCALE=${ringTuner.chkScale.toFixed(3)} CHK_X=${ringTuner.chkX.toFixed(3)} CHK_Y=${ringTuner.chkY.toFixed(3)}`
-    )
-  }
 
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
@@ -1385,6 +1362,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Keyframes для пульсации кольца "событие завершено" (см. гнёзда
+          иконок ниже) — только opacity тени, layout не трогает. Инлайн-стили
+          React не поддерживают @keyframes, поэтому один глобальный <style>. */}
+      <style>{`
+        @keyframes eventRingPulse {
+          0%, 100% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.6), 0 0 16px 4px rgba(232,178,58,0.3); }
+          50% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.9), 0 0 16px 4px rgba(232,178,58,0.5); }
+        }
+      `}</style>
+
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
           число и 3 гнезда с иконками событий (тип из eventKinds, состояние —
           закрыто/нет из eventClosed, тот же индекс). */}
@@ -1441,10 +1428,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             плиты, диаметр SOCK_SIZE*ширина_плиты. aspect-ratio:1 держит круг
             ровным (высота плиты считается по своей формуле, не 1:1). */}
         {SOCK_X.map((sockX, i) => {
-          // TEMP: форсим completed на первой иконке (i===0), чтобы было что
-          // подгонять тюнером кольца/галочки, даже если по факту событие ещё
-          // не закрыто. Убрать вместе с TEMP TUNER RING.
-          const closed = i === 0 ? true : eventClosed[i]
+          const closed = eventClosed[i]
           const kind = eventKinds[i]
           return (
             <div
@@ -1473,49 +1457,27 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 />
               )}
               {closed && (
-                <>
-                  {/* TEMP TUNER RING — remove after tuning: ровное кольцо,
-                      диаметр = иконка*RING_SCALE, обводка RING_W px, центр
-                      сдвинут на (RING_DX,RING_DY) долей размера иконки —
-                      никакого blur/spread, чистая обводка без "потёка". */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: `calc(50% + ${ringTuner.ringDx * 100}%)`,
-                      top: `calc(50% + ${ringTuner.ringDy * 100}%)`,
-                      width: `${ringTuner.ringScale * 100}%`,
-                      aspectRatio: '1',
-                      transform: 'translate(-50%, -50%)',
-                      borderRadius: '50%',
-                      border: `${ringTuner.ringW}px solid #E8B23A`,
-                      boxSizing: 'border-box',
-                      pointerEvents: 'none',
-                    }}
-                  />
-                  {/* TEMP TUNER RING — remove after tuning: галочка, размер
-                      = иконка*CHK_SCALE, центр в (CHK_X,CHK_Y) долях иконки
-                      (0=лево/верх, 1=право/низ). */}
-                  <span
-                    style={{
-                      position: 'absolute',
-                      left: `${ringTuner.chkX * 100}%`,
-                      top: `${ringTuner.chkY * 100}%`,
-                      width: `${ringTuner.chkScale * 100}%`,
-                      aspectRatio: '1',
-                      transform: 'translate(-50%, -50%)',
-                      fontSize: 9,
-                      lineHeight: 1,
-                      color: '#221E2B',
-                      background: '#E8B23A',
-                      borderRadius: '50%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    ✓
-                  </span>
-                </>
+                // Светящееся кольцо "завершено" — диаметр = иконка*RING_SCALE,
+                // центр сдвинут на (RING_DX,RING_DY) долей размера иконки.
+                // box-shadow (не filter/drop-shadow) на круглом элементе даёт
+                // ровный ореол по всему кругу, без потёка вниз. Пульсация —
+                // только opacity тени через @keyframes (см. EVENT_RING_PULSE_CSS
+                // ниже в файле), layout не трогает.
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: `calc(50% + ${RING_DX * 100}%)`,
+                    top: `calc(50% + ${RING_DY * 100}%)`,
+                    width: `${RING_SCALE * 100}%`,
+                    aspectRatio: '1',
+                    transform: 'translate(-50%, -50%)',
+                    borderRadius: '50%',
+                    border: `${RING_W}px solid #E8B23A`,
+                    boxSizing: 'border-box',
+                    animation: 'eventRingPulse 1.5s ease-in-out infinite',
+                    pointerEvents: 'none',
+                  }}
+                />
               )}
             </div>
           )
@@ -1523,33 +1485,204 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       </div>
 
       {/* Шестерёнка настроек — отдельный fixed-элемент в правом верхнем углу
-          (не часть плиты). Заменяет старую кнопку "Закрыть" (тот же
-          обработчик onClose — выход из забега). Полноценная панель настроек —
-          отдельная задача, тут только сам клик. */}
-      {onClose && (
-        <button
-          onClick={onClose}
-          aria-label="Настройки"
+          (не часть плиты). Открывает панель настроек (settingsOpen), больше
+          НЕ выходит из забега напрямую — выход теперь только через
+          "Выйти" -> подтверждение внутри панели. */}
+      <button
+        onClick={() => setSettingsOpen(true)}
+        aria-label="Настройки"
+        style={{
+          position: 'fixed',
+          top: 'calc(env(safe-area-inset-top) + 6px)',
+          right: 8,
+          zIndex: 1001,
+          width: 40,
+          height: 40,
+          padding: 0,
+          border: 'none',
+          background: 'none',
+          cursor: 'pointer',
+        }}
+      >
+        <img
+          src={SETTINGS_ICON_SRC}
+          alt=""
+          draggable={false}
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        />
+      </button>
+
+      {/* Панель настроек — оверлей поверх живой игры (в проекте нет паузы,
+          поэтому игра продолжает идти под затемнением). Клик по подложке
+          закрывает панель. */}
+      {settingsOpen && (
+        <div
+          onClick={() => setSettingsOpen(false)}
           style={{
             position: 'fixed',
-            top: 'calc(env(safe-area-inset-top) + 6px)',
-            right: 8,
-            zIndex: 1001,
-            width: 40,
-            height: 40,
-            padding: 0,
-            border: 'none',
-            background: 'none',
-            cursor: 'pointer',
+            inset: 0,
+            zIndex: 5000,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          <img
-            src={SETTINGS_ICON_SRC}
-            alt=""
-            draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-          />
-        </button>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              width: SETTINGS_FRAME_W,
+              height: SETTINGS_FRAME_H,
+            }}
+          >
+            <img
+              src={SETTINGS_FRAME_SRC}
+              alt=""
+              draggable={false}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+            />
+            {/* Крестик закрытия — клик по подложке уже закрывает, крестик
+                оставлен как явный, заметный вариант. */}
+            <button
+              onClick={() => setSettingsOpen(false)}
+              aria-label="Закрыть настройки"
+              style={{
+                position: 'absolute',
+                top: '4%',
+                right: '6%',
+                width: '10%',
+                aspectRatio: '1',
+                border: 'none',
+                background: 'none',
+                color: '#EDE7F2',
+                fontSize: 20,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              ×
+            </button>
+            {/* Столбец кнопок — на тёмном центральном поле рамки, с отступом
+                от каменной оправы по бокам (~18% ширины рамки), чтобы не
+                залезать на камень. */}
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                padding: '30% 18%',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                gap: 14,
+              }}
+            >
+              <button
+                onClick={() => setExitConfirmOpen(true)}
+                style={{
+                  padding: '14px 8px',
+                  borderRadius: 10,
+                  border: '1px solid #E8B23A',
+                  background: '#221E2B',
+                  color: '#EDE7F2',
+                  fontSize: 15,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Выйти
+              </button>
+              {['Звук', 'Музыка', 'Настройки'].map((label) => (
+                <button
+                  key={label}
+                  disabled
+                  style={{
+                    padding: '14px 8px',
+                    borderRadius: 10,
+                    border: '1px solid #3A3344',
+                    background: '#221E2B',
+                    color: '#EDE7F2',
+                    fontSize: 15,
+                    fontWeight: 700,
+                    opacity: 0.5,
+                    cursor: 'default',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Подтверждение выхода — поверх панели настроек (выше z-index). */}
+      {exitConfirmOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 6000,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 300,
+              background: '#221E2B',
+              border: '1px solid #3A3344',
+              borderRadius: 14,
+              padding: 20,
+              textAlign: 'center',
+            }}
+          >
+            <div style={{ color: '#EDE7F2', fontSize: 15, marginBottom: 18, lineHeight: 1.4 }}>
+              {/* TODO: взять реальные трофеи забега/игрока — Explore сейчас
+                  не получает trophies пропом, старый выход тоже нигде не
+                  показывал число. Заглушка 0, пока не подключат данные. */}
+              Выйти из забега? Вы потеряете {0} трофеев
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setExitConfirmOpen(false)}
+                style={{
+                  flex: 1,
+                  padding: '12px 8px',
+                  borderRadius: 10,
+                  border: '1px solid #3A3344',
+                  background: '#15131A',
+                  color: '#EDE7F2',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Отмена
+              </button>
+              <button
+                onClick={() => onClose?.()}
+                style={{
+                  flex: 1,
+                  padding: '12px 8px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: '#E0353B',
+                  color: '#EDE7F2',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Выйти
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div
@@ -1689,63 +1822,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       >
         🔄
       </button>
-
-      {/* TEMP TUNER RING — remove after tuning. Полупрозрачная панель
-          слайдеров для подгонки золотого кольца/галочки "завершено" на
-          иконках событий в гнёздах плиты. Очень высокий z-index — поверх
-          абсолютно всего, это чисто отладочный оверлей. */}
-      <div
-        style={{
-          position: 'fixed',
-          left: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 999999,
-          maxHeight: '45vh',
-          overflowY: 'auto',
-          background: 'rgba(0,0,0,0.85)',
-          borderTop: '1px solid #3A3344',
-          padding: '8px 12px calc(8px + env(safe-area-inset-bottom))',
-          fontFamily: 'monospace',
-          fontSize: 11,
-          color: '#EDE7F2',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-          <span style={{ opacity: 0.7 }}>TEMP TUNER RING — remove after tuning</span>
-          <button
-            onClick={handleRingTunerCopy}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 4,
-              border: '1px solid #E8B23A',
-              background: '#221E2B',
-              color: '#E8B23A',
-              fontFamily: 'monospace',
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            COPY
-          </button>
-        </div>
-        {RING_TUNER_FIELDS.map(({ key, label, min, max, step, decimals }) => (
-          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            <span style={{ width: 84, flexShrink: 0 }}>{label}</span>
-            <input
-              type="range"
-              min={min}
-              max={max}
-              step={step ?? RING_TUNER_STEP}
-              value={ringTuner[key]}
-              onChange={(e) => handleRingTunerChange(key, Number(e.target.value))}
-              style={{ flex: 1 }}
-            />
-            <span style={{ width: 48, flexShrink: 0, textAlign: 'right' }}>{ringTuner[key].toFixed(decimals ?? 3)}</span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
