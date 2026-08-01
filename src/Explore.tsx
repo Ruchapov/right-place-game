@@ -1331,12 +1331,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Верхняя панель HUD — СПЛОШНАЯ непрозрачная полоса на всю ширину:
-          HP-фрейм слева (главный, крупнее всех), сразу за ним — иконки
-          событий (мельче), шестерёнка настроек прижата в правый угол через
-          marginLeft:auto. Раньше все три жили как самостоятельные fixed-
-          блоки поверх прозрачного канваса — теперь один непрозрачный
-          контейнер-панель (фон #221E2B), канвас рисуется под ней по
-          z-index (канвас-обёртка — 1000, эта панель — 1001), не наоборот. */}
+          слева единый статус-блок в 2 ряда (HP-фрейм сверху, иконки событий
+          снизу под полосой HP), справа шестерёнка настроек. Раньше HP и
+          иконки шли одной строкой — теперь иконки второстепенны и уходят под
+          HP, статус-блок читается как один узел. Канвас рисуется под панелью
+          по z-index (канвас-обёртка — 1000, эта панель — 1001), не наоборот. */}
       <div
         style={{
           position: 'fixed',
@@ -1367,123 +1366,132 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             pointerEvents: 'none',
           }}
         />
-        {/* HP-фрейм — левый блок, главный (крупнее иконок событий). Собственный
-            fixed/top/left убраны, позицию теперь задаёт панель-контейнер. */}
-        <div
-          style={{
-            position: 'relative',
-            width: HP_FRAME_W,
-            height: HP_FRAME_H,
-            flexShrink: 0,
-            pointerEvents: 'none',
-          }}
-        >
-          <img
-            src={HP_FRAME_SRC}
-            alt=""
-            draggable={false}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-          />
-          {/* Полоса HP лежит в тёмной нише окна фрейма — рисуется ПОВЕРХ
-              картинки фрейма (позже в DOM = выше в стэке), т.к. сама ниша в
-              PNG непрозрачная (тёмная), не прозрачная дырка — "под" не был бы виден. */}
+
+        {/* Статус-блок — HP-фрейм + иконки событий как один вертикальный узел. */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 5 }}>
+          {/* HP-фрейм — верхний ряд. Собственные внутренности (полоса/число)
+              не тронуты. */}
           <div
-            ref={hpFillRef}
             style={{
-              position: 'absolute',
-              left: `${HP_WINDOW_X * 100}%`,
-              top: `${HP_WINDOW_Y * 100}%`,
-              height: `${HP_WINDOW_H * 100}%`,
-              width: `${HP_WINDOW_W * 100}%`,
-              background: '#4FB477',
-            }}
-          />
-          <span
-            ref={hpTextRef}
-            style={{
-              position: 'absolute',
-              left: `${(HP_WINDOW_X + HP_WINDOW_W / 2) * 100}%`,
-              top: `${(HP_WINDOW_Y + HP_WINDOW_H / 2) * 100}%`,
-              transform: 'translate(-50%, -50%)',
-              color: '#EDE7F2',
-              fontSize: 13,
-              fontWeight: 700,
-              fontFamily: 'monospace',
-              textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 5px rgba(0,0,0,0.7)',
-              whiteSpace: 'nowrap',
+              position: 'relative',
+              width: HP_FRAME_W,
+              height: HP_FRAME_H,
+              flexShrink: 0,
+              pointerEvents: 'none',
             }}
           >
-            {maxHp}/{maxHp}
-          </span>
-        </div>
-
-        {/* Иконки прогресса событий — сразу за HP-фреймом, мельче него. */}
-        <div style={{ display: 'flex', gap: 6 }}>
-          {eventClosed.map((closed, i) => (
+            <img
+              src={HP_FRAME_SRC}
+              alt=""
+              draggable={false}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+            />
+            {/* Полоса HP лежит в тёмной нише окна фрейма — рисуется ПОВЕРХ
+                картинки фрейма (позже в DOM = выше в стэке), т.к. сама ниша в
+                PNG непрозрачная (тёмная), не прозрачная дырка — "под" не был бы виден. */}
             <div
-              key={i}
+              ref={hpFillRef}
               style={{
-                position: 'relative',
-                width: 30,
-                height: 30,
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
-                border: closed ? '2px solid #E8B23A' : 'none',
+                position: 'absolute',
+                left: `${HP_WINDOW_X * 100}%`,
+                top: `${HP_WINDOW_Y * 100}%`,
+                height: `${HP_WINDOW_H * 100}%`,
+                width: `${HP_WINDOW_W * 100}%`,
+                background: '#4FB477',
+              }}
+            />
+            <span
+              ref={hpTextRef}
+              style={{
+                position: 'absolute',
+                left: `${(HP_WINDOW_X + HP_WINDOW_W / 2) * 100}%`,
+                top: `${(HP_WINDOW_Y + HP_WINDOW_H / 2) * 100}%`,
+                transform: 'translate(-50%, -50%)',
+                color: '#EDE7F2',
+                fontSize: 13,
+                fontWeight: 700,
+                fontFamily: 'monospace',
+                textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 5px rgba(0,0,0,0.7)',
+                whiteSpace: 'nowrap',
               }}
             >
-              {eventKinds[i] && (
-                <img
-                  src={EVENT_ICON_SRC[eventKinds[i]]}
-                  alt=""
-                  draggable={false}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    opacity: closed ? 1 : 0.8,
-                    filter: closed ? 'none' : 'grayscale(40%)',
-                  }}
-                />
-              )}
-              {closed && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    bottom: -4,
-                    right: -4,
-                    fontSize: 10,
-                    lineHeight: 1,
-                    color: '#221E2B',
-                    background: '#E8B23A',
-                    borderRadius: '50%',
-                    width: 12,
-                    height: 12,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  ✓
-                </span>
-              )}
-            </div>
-          ))}
+              {maxHp}/{maxHp}
+            </span>
+          </div>
+
+          {/* Иконки прогресса событий — нижний ряд, под полосой HP (не под
+              портретом) — marginLeft подобран приблизительно (~48px), НЕ
+              завязан на HP_WINDOW_X, т.к. HP_FRAME_W адаптивный (clamp/vw), а
+              этот отступ — фиксированный px по требованию задачи. */}
+          <div style={{ display: 'flex', gap: 5, marginLeft: 48 }}>
+            {eventClosed.map((closed, i) => (
+              <div
+                key={i}
+                style={{
+                  position: 'relative',
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
+                  border: closed ? '2px solid #E8B23A' : 'none',
+                }}
+              >
+                {eventKinds[i] && (
+                  <img
+                    src={EVENT_ICON_SRC[eventKinds[i]]}
+                    alt=""
+                    draggable={false}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      opacity: closed ? 1 : 0.8,
+                      filter: closed ? 'none' : 'grayscale(40%)',
+                    }}
+                  />
+                )}
+                {closed && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      bottom: -4,
+                      right: -4,
+                      fontSize: 9,
+                      lineHeight: 1,
+                      color: '#221E2B',
+                      background: '#E8B23A',
+                      borderRadius: '50%',
+                      width: 11,
+                      height: 11,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    ✓
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Шестерёнка настроек — marginLeft:auto прижимает её в правый угол,
-            отдельно от иконок событий. Заменяет старую кнопку "Закрыть" (тот
-            же обработчик onClose — выход из забега). Полноценная панель
-            настроек — отдельная задача, тут только сам клик. */}
+        {/* Шестерёнка настроек — правый блок. marginLeft:auto прижимает её к
+            правому краю панели независимо от ширины статус-блока слева.
+            Выровнена по вертикали ПО ЦЕНТРУ всего статус-блока (align-items:
+            center у корневого flex панели) — не по верху HP-фрейма отдельно.
+            Заменяет старую кнопку "Закрыть" (тот же обработчик onClose —
+            выход из забега). Полноценная панель настроек — отдельная задача. */}
         {onClose && (
           <button
             onClick={onClose}
             aria-label="Настройки"
             style={{
-              width: 40,
-              height: 40,
+              width: 38,
+              height: 38,
               flexShrink: 0,
               marginLeft: 'auto',
               padding: 0,
