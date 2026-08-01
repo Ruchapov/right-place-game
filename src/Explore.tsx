@@ -237,6 +237,15 @@ const EVENT_MARKER_COLOR: Record<EventKind, number> = {
   boss: 0xf08a24,
 }
 
+// Временная эмодзи-заглушка для HUD-иконок прогресса — заменить на PNG позже.
+const EVENT_ICON_EMOJI: Record<EventKind, string> = {
+  enemy: '⚔',
+  chest: '📦',
+  smuggler: '🧙',
+  puzzle: '🗿',
+  boss: '☠',
+}
+
 const EVENTS_PER_RUN = 3
 
 function isPointXY(value: unknown): value is [number, number] {
@@ -544,6 +553,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const runCompleteFiredRef = useRef(false)
   const onRunCompleteRef = useRef<(closedEvents: { kind: EventKind }[]) => void>(() => {})
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(EVENTS_PER_RUN).fill(false))
+  // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
+  // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
+  const [eventKinds, setEventKinds] = useState<EventKind[]>([])
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * HP_PER_ENDURANCE : FALLBACK_MAX_HP
@@ -684,6 +696,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // создания worldContainer.
       const chosenEvents = pickRandom(buildEventCandidates(slots), EVENTS_PER_RUN)
       setEventClosed(Array(chosenEvents.length).fill(false))
+      setEventKinds(chosenEvents.map((ev) => ev.kind))
 
       const startRaw = slots?.start
       if (
@@ -1382,13 +1395,42 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           <div
             key={i}
             style={{
+              position: 'relative',
               width: 24,
               height: 24,
               borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 13,
               background: closed ? '#E8B23A' : '#9C93AD',
-              border: '2px solid #221E2B',
+              border: `2px solid ${closed ? '#E8B23A' : '#221E2B'}`,
+              boxShadow: closed ? '0 0 6px #E8B23A' : 'none',
             }}
-          />
+          >
+            <span style={{ opacity: closed ? 1 : 0.85 }}>{eventKinds[i] ? EVENT_ICON_EMOJI[eventKinds[i]] : ''}</span>
+            {closed && (
+              <span
+                style={{
+                  position: 'absolute',
+                  bottom: -4,
+                  right: -4,
+                  fontSize: 10,
+                  lineHeight: 1,
+                  color: '#221E2B',
+                  background: '#E8B23A',
+                  borderRadius: '50%',
+                  width: 12,
+                  height: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                ✓
+              </span>
+            )}
+          </div>
         ))}
       </div>
 
