@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js'
 import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
@@ -27,6 +27,14 @@ const TILE_SIZE = 64
 const PLAYER_COLOR = 0xe0353b
 const PLAYER_WIDTH = TILE_SIZE
 const PLAYER_HEIGHT = TILE_SIZE * 2
+
+// Визуал героя (спрайт поверх хитбокса-прямоугольника — см. HERO_IDLE_SRC
+// ниже). Хитбокс/физика игрока (PLAYER_WIDTH/PLAYER_HEIGHT выше) НЕ меняются
+// заменой визуала — прямоугольник остаётся, просто visible=false.
+const HERO_DRAW_H = 140 // высота отрисовки героя в пикселях мира (подбирается на глаз)
+// Тот же способ формирования пути (BASE_URL), что у HP_FRAME_SRC — работает
+// и на GitHub Pages с префиксом.
+const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -328,6 +336,23 @@ function pickRandom<T>(items: T[], count: number): T[] {
   return picked
 }
 
+// Режет спрайт-лист на кадры: cols колонок в ряд, дальше перенос вниз.
+// Все кадры анимации хранятся в одном base.source (не отдельные Texture.from
+// на кадр) — Pixi может переиспользовать GPU-текстуру между Texture-обрезками.
+async function loadSheetFrames(url: string, frameW: number, frameH: number, count: number, cols = 12): Promise<Texture[]> {
+  const base = await Assets.load(url)
+  const frames: Texture[] = []
+  for (let i = 0; i < count; i++) {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    frames.push(new Texture({
+      source: base.source,
+      frame: new Rectangle(col * frameW, row * frameH, frameW, frameH),
+    }))
+  }
+  return frames
+}
+
 // Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
 // оси), выворачивать диапазон нельзя — ставим 0.
 function clamp(value: number, min: number, max: number): number {
@@ -570,6 +595,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
+  // Визуал героя (AnimatedSprite поверх хитбокса-Graphics, который остаётся
+  // невидимым, но живым — коллизия по-прежнему считается по нему). Ref, не
+  // state — позиция обновляется каждый кадр в ticker'е.
+  const heroSpriteRef = useRef<AnimatedSprite | null>(null)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
@@ -805,6 +834,28 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       player.x = phys.x
       player.y = phys.y
       worldContainer.addChild(player)
+
+      // Визуал героя — AnimatedSprite поверх хитбокса. Только idle в этом
+      // шаге (run/attack/jump/hurt/death — отдельно). Кадры режутся из
+      // idle.png: 12 колонок в ряд (см. loadSheetFrames), клетка 674×512 —
+      // тот же размер, что задокументирован в CLAUDE.md для idle/run/attack/hurt.
+      const idleFrames = await loadSheetFrames(HERO_IDLE_SRC, 674, 512, 12)
+      if (cancelled) {
+        // Компонент размонтировался, пока грузился спрайт-лист — не создаём
+        // спрайт и не трогаем worldContainer (он в любом случае будет уничтожен
+        // вместе с app при cancelled-выходе выше по функции... но сюда мы уже
+        // прошли мимо тех проверок, поэтому просто не продолжаем настройку героя).
+        return
+      }
+      const hero = new AnimatedSprite(idleFrames)
+      hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
+      hero.scale.set(HERO_DRAW_H / 512) // равномерный масштаб по высоте клетки
+      hero.animationSpeed = 0.15
+      hero.play()
+      worldContainer.addChild(hero)
+      heroSpriteRef.current = hero
+      // Прямоугольник остаётся хитбоксом для коллизии — просто прячем визуал.
+      player.visible = false
 
       // Спавнит ОДНОГО врага-прямоугольник (см. Шаг 2-1/2-2) в тайловых
       // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
@@ -1325,6 +1376,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         player.x = phys.x
         player.y = phys.y
 
+        // Ноги героя (anchor 0.5,1.0 — низ-центр) совпадают с низом-центром
+        // прямоугольника-хитбокса. Флип по направлению — следующий шаг,
+        // герой пока всегда смотрит вправо.
+        if (heroSpriteRef.current) {
+          heroSpriteRef.current.x = player.x + PLAYER_WIDTH / 2
+          heroSpriteRef.current.y = player.y + PLAYER_HEIGHT
+        }
+
         updateCamera(dt)
       })
     }
@@ -1344,6 +1403,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
       }
       appRef.current = null
+      heroSpriteRef.current = null
     }
   }, [])
 
