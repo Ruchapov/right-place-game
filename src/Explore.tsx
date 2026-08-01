@@ -1330,34 +1330,45 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Верхняя панель HUD — ОДНА горизонтальная линия: HP-фрейм слева,
-          иконки событий по центру, шестерёнка настроек справа. Раньше это
-          были 3 независимых fixed-блока (HP-фрейм со своими top/left,
-          иконки со своим top: calc(56px+...), кнопка "Закрыть" со своим
-          top/right) — из-за этого иконки висели криво относительно HP.
-          Теперь позицию каждого элемента задаёт этот общий flex-контейнер,
-          вертикаль — align-items:center. HP-фрейм высокий (портрет торчит
-          вверх над зелёной полосой), но центр его окна HP
-          (HP_WINDOW_Y+HP_WINDOW_H/2 ≈ 48% высоты фрейма) почти совпадает с
-          геометрическим центром фрейма — align-items:center кладёт линию
-          иконок/шестерёнки практически на уровень самой зелёной полосы, не
-          ниже её. */}
+      {/* Верхняя панель HUD — СПЛОШНАЯ непрозрачная полоса на всю ширину:
+          HP-фрейм слева (главный, крупнее всех), сразу за ним — иконки
+          событий (мельче), шестерёнка настроек прижата в правый угол через
+          marginLeft:auto. Раньше все три жили как самостоятельные fixed-
+          блоки поверх прозрачного канваса — теперь один непрозрачный
+          контейнер-панель (фон #221E2B), канвас рисуется под ней по
+          z-index (канвас-обёртка — 1000, эта панель — 1001), не наоборот. */}
       <div
         style={{
           position: 'fixed',
           top: 0,
           left: 0,
+          right: 0,
           width: '100%',
           zIndex: 1001,
+          background: '#221E2B',
+          borderBottom: '2px solid #3A3344',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: 'calc(env(safe-area-inset-top) + 16px) 12px 0',
+          gap: 10,
+          padding: 'calc(env(safe-area-inset-top) + 8px) 12px 8px',
           boxSizing: 'border-box',
         }}
       >
-        {/* HP-фрейм — левый блок. Собственный fixed/top/left убраны, позицию
-            теперь задаёт родительский flex-контейнер. */}
+        {/* Тонкий янтарный акцент ПОД тёмной кромкой — отдельный слой, не
+            борьба с border-bottom за один и тот же пиксель. */}
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: -1,
+            height: 1,
+            background: '#E8B23A',
+            pointerEvents: 'none',
+          }}
+        />
+        {/* HP-фрейм — левый блок, главный (крупнее иконок событий). Собственный
+            fixed/top/left убраны, позицию теперь задаёт панель-контейнер. */}
         <div
           style={{
             position: 'relative',
@@ -1406,15 +1417,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           </span>
         </div>
 
-        {/* Иконки прогресса событий — центр панели. */}
-        <div style={{ display: 'flex', gap: 14 }}>
+        {/* Иконки прогресса событий — сразу за HP-фреймом, мельче него. */}
+        <div style={{ display: 'flex', gap: 6 }}>
           {eventClosed.map((closed, i) => (
             <div
               key={i}
               style={{
                 position: 'relative',
-                width: 32,
-                height: 32,
+                width: 30,
+                height: 30,
                 borderRadius: '50%',
                 display: 'flex',
                 alignItems: 'center',
@@ -1462,17 +1473,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           ))}
         </div>
 
-        {/* Шестерёнка настроек — правый блок. Заменяет старую кнопку
-            "Закрыть" (тот же обработчик onClose — выход из забега). Полноценная
-            панель настроек — отдельная задача, тут только сам клик. */}
+        {/* Шестерёнка настроек — marginLeft:auto прижимает её в правый угол,
+            отдельно от иконок событий. Заменяет старую кнопку "Закрыть" (тот
+            же обработчик onClose — выход из забега). Полноценная панель
+            настроек — отдельная задача, тут только сам клик. */}
         {onClose && (
           <button
             onClick={onClose}
             aria-label="Настройки"
             style={{
-              width: 44,
-              height: 44,
+              width: 40,
+              height: 40,
               flexShrink: 0,
+              marginLeft: 'auto',
               padding: 0,
               border: 'none',
               background: 'none',
