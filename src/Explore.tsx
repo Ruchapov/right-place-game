@@ -1542,30 +1542,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               draggable={false}
               style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
             />
-            {/* Крестик закрытия — клик по подложке уже закрывает, крестик
-                оставлен как явный, заметный вариант. */}
-            <button
-              onClick={() => setSettingsOpen(false)}
-              aria-label="Закрыть настройки"
-              style={{
-                position: 'absolute',
-                top: '4%',
-                right: '6%',
-                width: '10%',
-                aspectRatio: '1',
-                border: 'none',
-                background: 'none',
-                color: '#EDE7F2',
-                fontSize: 20,
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              ×
-            </button>
             {/* Столбец кнопок — на тёмном центральном поле рамки, с отступом
                 от каменной оправы по бокам (~18% ширины рамки), чтобы не
-                залезать на камень. */}
+                залезать на камень. Порядок сверху вниз: Продолжить (главный
+                способ закрыть панель, крестик убран — не работал) -> Звук/
+                Музыка (заглушки) -> Выйти (опасное действие, внизу и отдельно
+                по цвету). */}
             <div
               style={{
                 position: 'absolute',
@@ -1578,11 +1560,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               }}
             >
               <button
-                onClick={() => setExitConfirmOpen(true)}
+                onClick={() => setSettingsOpen(false)}
                 style={{
                   padding: '14px 8px',
                   borderRadius: 10,
-                  border: '1px solid #E8B23A',
+                  border: '2px solid #E8B23A',
                   background: '#221E2B',
                   color: '#EDE7F2',
                   fontSize: 15,
@@ -1590,9 +1572,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                   cursor: 'pointer',
                 }}
               >
-                Выйти
+                Продолжить
               </button>
-              {['Звук', 'Музыка', 'Настройки'].map((label) => (
+              {['Звук', 'Музыка'].map((label) => (
                 <button
                   key={label}
                   disabled
@@ -1611,6 +1593,21 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                   {label}
                 </button>
               ))}
+              <button
+                onClick={() => setExitConfirmOpen(true)}
+                style={{
+                  padding: '14px 8px',
+                  borderRadius: 10,
+                  border: '1px solid #E0353B',
+                  background: '#221E2B',
+                  color: '#EDE7F2',
+                  fontSize: 15,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Выйти
+              </button>
             </div>
           </div>
         </div>
