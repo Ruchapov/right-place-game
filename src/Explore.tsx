@@ -59,8 +59,8 @@ const HPTXT_X = 0.685
 const HPTXT_Y = 0.345
 // 3 гнезда под иконки событий — общий Y и размер (доля ширины плиты), у
 // каждого гнезда свой X.
-const SOCK_Y = 0.75
-const SOCK_SIZE = 0.15
+const SOCK_Y = 0.79
+const SOCK_SIZE = 0.185
 const SOCK_X: [number, number, number] = [0.484, 0.672, 0.859]
 
 const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
@@ -258,6 +258,29 @@ const EVENT_ICON_SRC: Record<EventKind, string> = {
 }
 
 const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
+
+// TEMP TUNER RING — remove after tuning. Живые доли для золотого
+// кольца/галочки "событие завершено" на иконках событий — правит панель
+// слайдеров внизу экрана, разметка гнёзд ниже читает эти значения.
+type RingTunerState = {
+  ringScale: number
+  ringW: number
+  ringDx: number
+  ringDy: number
+  chkScale: number
+  chkX: number
+  chkY: number
+}
+const RING_TUNER_STEP = 0.01
+const RING_TUNER_FIELDS: { key: keyof RingTunerState; label: string; min: number; max: number; step?: number; decimals?: number }[] = [
+  { key: 'ringScale', label: 'RING_SCALE', min: 0.7, max: 1.4 },
+  { key: 'ringW', label: 'RING_W', min: 1, max: 8, step: 1, decimals: 0 },
+  { key: 'ringDx', label: 'RING_DX', min: -0.2, max: 0.2 },
+  { key: 'ringDy', label: 'RING_DY', min: -0.2, max: 0.2 },
+  { key: 'chkScale', label: 'CHK_SCALE', min: 0.2, max: 0.7, step: 0.02 },
+  { key: 'chkX', label: 'CHK_X', min: 0.3, max: 1, step: 0.02 },
+  { key: 'chkY', label: 'CHK_Y', min: 0.3, max: 1, step: 0.02 },
+]
 
 const EVENTS_PER_RUN = 3
 
@@ -577,6 +600,27 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   const hpRef = useRef(maxHp)
   const hpFillRef = useRef<HTMLDivElement>(null)
   const hpTextRef = useRef<HTMLSpanElement>(null)
+
+  // TEMP TUNER RING — remove after tuning.
+  const [ringTuner, setRingTuner] = useState<RingTunerState>({
+    ringScale: 1,
+    ringW: 3,
+    ringDx: 0,
+    ringDy: 0,
+    chkScale: 0.4,
+    chkX: 0.75,
+    chkY: 0.75,
+  })
+  function handleRingTunerChange(key: keyof RingTunerState, value: number) { // TEMP TUNER RING
+    setRingTuner((prev) => ({ ...prev, [key]: value }))
+  }
+  function handleRingTunerCopy() { // TEMP TUNER RING
+    console.log(
+      `RING_SCALE=${ringTuner.ringScale.toFixed(3)} RING_W=${ringTuner.ringW.toFixed(0)} ` +
+      `RING_DX=${ringTuner.ringDx.toFixed(3)} RING_DY=${ringTuner.ringDy.toFixed(3)} ` +
+      `CHK_SCALE=${ringTuner.chkScale.toFixed(3)} CHK_X=${ringTuner.chkX.toFixed(3)} CHK_Y=${ringTuner.chkY.toFixed(3)}`
+    )
+  }
 
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
@@ -1397,7 +1441,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             плиты, диаметр SOCK_SIZE*ширина_плиты. aspect-ratio:1 держит круг
             ровным (высота плиты считается по своей формуле, не 1:1). */}
         {SOCK_X.map((sockX, i) => {
-          const closed = eventClosed[i]
+          // TEMP: форсим completed на первой иконке (i===0), чтобы было что
+          // подгонять тюнером кольца/галочки, даже если по факту событие ещё
+          // не закрыто. Убрать вместе с TEMP TUNER RING.
+          const closed = i === 0 ? true : eventClosed[i]
           const kind = eventKinds[i]
           return (
             <div
@@ -1410,7 +1457,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 aspectRatio: '1',
                 transform: 'translate(-50%, -50%)',
                 borderRadius: '50%',
-                boxShadow: closed ? '0 0 6px 2px #E8B23A' : 'none',
               }}
             >
               {kind && (
@@ -1427,25 +1473,49 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 />
               )}
               {closed && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    bottom: -4,
-                    right: -4,
-                    fontSize: 9,
-                    lineHeight: 1,
-                    color: '#221E2B',
-                    background: '#E8B23A',
-                    borderRadius: '50%',
-                    width: 11,
-                    height: 11,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  ✓
-                </span>
+                <>
+                  {/* TEMP TUNER RING — remove after tuning: ровное кольцо,
+                      диаметр = иконка*RING_SCALE, обводка RING_W px, центр
+                      сдвинут на (RING_DX,RING_DY) долей размера иконки —
+                      никакого blur/spread, чистая обводка без "потёка". */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: `calc(50% + ${ringTuner.ringDx * 100}%)`,
+                      top: `calc(50% + ${ringTuner.ringDy * 100}%)`,
+                      width: `${ringTuner.ringScale * 100}%`,
+                      aspectRatio: '1',
+                      transform: 'translate(-50%, -50%)',
+                      borderRadius: '50%',
+                      border: `${ringTuner.ringW}px solid #E8B23A`,
+                      boxSizing: 'border-box',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                  {/* TEMP TUNER RING — remove after tuning: галочка, размер
+                      = иконка*CHK_SCALE, центр в (CHK_X,CHK_Y) долях иконки
+                      (0=лево/верх, 1=право/низ). */}
+                  <span
+                    style={{
+                      position: 'absolute',
+                      left: `${ringTuner.chkX * 100}%`,
+                      top: `${ringTuner.chkY * 100}%`,
+                      width: `${ringTuner.chkScale * 100}%`,
+                      aspectRatio: '1',
+                      transform: 'translate(-50%, -50%)',
+                      fontSize: 9,
+                      lineHeight: 1,
+                      color: '#221E2B',
+                      background: '#E8B23A',
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    ✓
+                  </span>
+                </>
               )}
             </div>
           )
@@ -1619,6 +1689,63 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       >
         🔄
       </button>
+
+      {/* TEMP TUNER RING — remove after tuning. Полупрозрачная панель
+          слайдеров для подгонки золотого кольца/галочки "завершено" на
+          иконках событий в гнёздах плиты. Очень высокий z-index — поверх
+          абсолютно всего, это чисто отладочный оверлей. */}
+      <div
+        style={{
+          position: 'fixed',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 999999,
+          maxHeight: '45vh',
+          overflowY: 'auto',
+          background: 'rgba(0,0,0,0.85)',
+          borderTop: '1px solid #3A3344',
+          padding: '8px 12px calc(8px + env(safe-area-inset-bottom))',
+          fontFamily: 'monospace',
+          fontSize: 11,
+          color: '#EDE7F2',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <span style={{ opacity: 0.7 }}>TEMP TUNER RING — remove after tuning</span>
+          <button
+            onClick={handleRingTunerCopy}
+            style={{
+              padding: '4px 10px',
+              borderRadius: 4,
+              border: '1px solid #E8B23A',
+              background: '#221E2B',
+              color: '#E8B23A',
+              fontFamily: 'monospace',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            COPY
+          </button>
+        </div>
+        {RING_TUNER_FIELDS.map(({ key, label, min, max, step, decimals }) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+            <span style={{ width: 84, flexShrink: 0 }}>{label}</span>
+            <input
+              type="range"
+              min={min}
+              max={max}
+              step={step ?? RING_TUNER_STEP}
+              value={ringTuner[key]}
+              onChange={(e) => handleRingTunerChange(key, Number(e.target.value))}
+              style={{ flex: 1 }}
+            />
+            <span style={{ width: 48, flexShrink: 0, textAlign: 'right' }}>{ringTuner[key].toFixed(decimals ?? 3)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
