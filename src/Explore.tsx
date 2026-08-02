@@ -35,6 +35,7 @@ const HERO_DRAW_H = 140 // высота отрисовки героя в пик�
 // Тот же способ формирования пути (BASE_URL), что у HP_FRAME_SRC — работает
 // и на GitHub Pages с префиксом.
 const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
+const HERO_RUN_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/run.png`
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -850,6 +851,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // прошли мимо тех проверок, поэтому просто не продолжаем настройку героя).
         return
       }
+      const runFrames = await loadSheetFrames(HERO_RUN_SRC, 379, 288, 21)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -860,6 +866,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       heroSpriteRef.current = hero
       // Прямоугольник остаётся хитбоксом для коллизии — просто прячем визуал.
       player.visible = false
+
+      // Переключает анимацию героя, НЕ пересоздавая спрайт. hero.textures ===
+      // frames (тот же массив Texture, что вернул loadSheetFrames) — уже
+      // сравнение "текущая анимация уже эта", отдельный ref не нужен.
+      function playAnim(frames: Texture[], speed: number, loop: boolean) {
+        if (hero.textures === frames) return
+        hero.textures = frames
+        hero.loop = loop
+        hero.animationSpeed = speed
+        hero.gotoAndPlay(0)
+      }
 
       // Спавнит ОДНОГО врага-прямоугольник (см. Шаг 2-1/2-2) в тайловых
       // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
@@ -1381,12 +1398,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         player.y = phys.y
 
         // Ноги героя (anchor 0.5,1.0 — низ-центр) совпадают с низом-центром
-        // прямоугольника-хитбокса. Флип по направлению — следующий шаг,
-        // герой пока всегда смотрит вправо.
+        // прямоугольника-хитбокса.
         if (heroSpriteRef.current) {
           heroSpriteRef.current.x = player.x + PLAYER_WIDTH / 2
           heroSpriteRef.current.y = player.y + PLAYER_HEIGHT
         }
+
+        // idle<->run по фактическому вводу движения (dirRef), флип по
+        // facingRef (последнее ненулевое направление — не сбрасывается в 0,
+        // в отличие от dirRef, так что герой не разворачивается лицом вправо
+        // каждый раз, когда отпускаешь кнопку движения стоя на месте).
+        playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.4 : 0.15, true)
+        hero.scale.x = facingRef.current === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
 
         updateCamera(dt)
       })
