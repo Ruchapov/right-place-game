@@ -36,6 +36,17 @@ const HERO_DRAW_H = 140 // высота отрисовки героя в пик�
 // и на GitHub Pages с префиксом.
 const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
 const HERO_RUN_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/run.png`
+const HERO_JUMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/jump.png`
+
+// Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
+// (взлёт/падение), см. использование в тикере. Индексы 0-based.
+const RISE_FRAME = 9 // кадр 10 = взлёт
+const FALL_FRAME = 14 // кадр 15 = падение
+// У кадров взлёта/падения ноги подняты внутри клетки — якорь ниже, чем у
+// idle/run (GROUND_ANCHOR_Y=1.0), иначе герой "проваливается" визуально.
+const RISE_ANCHOR_Y = 0.729
+const FALL_ANCHOR_Y = 0.816
+const GROUND_ANCHOR_Y = 1
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -856,6 +867,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
+      const jumpFrames = await loadSheetFrames(HERO_JUMP_SRC, 302, 288, 24)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -1404,11 +1420,24 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           heroSpriteRef.current.y = player.y + PLAYER_HEIGHT
         }
 
-        // idle<->run по фактическому вводу движения (dirRef), флип по
-        // facingRef (последнее ненулевое направление — не сбрасывается в 0,
-        // в отличие от dirRef, так что герой не разворачивается лицом вправо
-        // каждый раз, когда отпускаешь кнопку движения стоя на месте).
-        playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.4 : 0.15, true)
+        // Прыжок — ПРИОРИТЕТ перед idle/run: в воздухе статичная поза по
+        // вертикальной скорости (взлёт/падение), без проигрывания. land пока
+        // не ловим отдельно — на земле сразу обычная idle/run логика.
+        if (!phys.onGround) {
+          const rising = phys.vy < 0
+          hero.textures = jumpFrames
+          hero.loop = false
+          hero.gotoAndStop(rising ? RISE_FRAME : FALL_FRAME)
+          hero.anchor.set(0.5, rising ? RISE_ANCHOR_Y : FALL_ANCHOR_Y)
+        } else {
+          // idle<->run по фактическому вводу движения (dirRef).
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+          playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.4 : 0.15, true)
+        }
+        // Флип по facingRef (последнее ненулевое направление — не сбрасывается
+        // в 0, в отличие от dirRef, так что герой не разворачивается лицом
+        // вправо каждый раз, когда отпускаешь кнопку движения стоя на месте) —
+        // работает в обеих ветках (на земле и в воздухе), применяется всегда.
         hero.scale.x = facingRef.current === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
 
         updateCamera(dt)
