@@ -341,6 +341,7 @@ function pickRandom<T>(items: T[], count: number): T[] {
 // на кадр) — Pixi может переиспользовать GPU-текстуру между Texture-обрезками.
 async function loadSheetFrames(url: string, frameW: number, frameH: number, count: number, cols = 12): Promise<Texture[]> {
   const base = await Assets.load(url)
+  base.source.scaleMode = 'linear' // сглаженное масштабирование — герой сильно уменьшается с 512px, 'nearest' даёт дрожащие края
   const frames: Texture[] = []
   for (let i = 0; i < count; i++) {
     const col = i % cols
@@ -788,6 +789,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         background: 0x15131a,
         backgroundAlpha: 1,
         resizeTo: window,
+        resolution: Math.min(window.devicePixelRatio || 1, 2),
+        autoDensity: true,
       })
       initialized = true
       appRef.current = app
@@ -839,7 +842,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // шаге (run/attack/jump/hurt/death — отдельно). Кадры режутся из
       // idle.png: 12 колонок в ряд (см. loadSheetFrames), клетка 674×512 —
       // тот же размер, что задокументирован в CLAUDE.md для idle/run/attack/hurt.
-      const idleFrames = await loadSheetFrames(HERO_IDLE_SRC, 674, 512, 12)
+      const idleFrames = await loadSheetFrames(HERO_IDLE_SRC, 379, 288, 12)
       if (cancelled) {
         // Компонент размонтировался, пока грузился спрайт-лист — не создаём
         // спрайт и не трогаем worldContainer (он в любом случае будет уничтожен
@@ -849,7 +852,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
-      hero.scale.set(HERO_DRAW_H / 512) // равномерный масштаб по высоте клетки
+      hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
+      hero.roundPixels = false // не защёлкивать позицию на целые пиксели — иначе дрожит при движении камеры
       hero.animationSpeed = 0.15
       hero.play()
       worldContainer.addChild(hero)
