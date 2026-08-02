@@ -38,6 +38,7 @@ const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
 const HERO_RUN_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/run.png`
 const HERO_JUMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/jump.png`
 const HERO_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/attack.png`
+const HERO_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/hurt.png`
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -58,6 +59,11 @@ const LAND_MS = 260
 // не к моменту нажатия. Индекс 0-based.
 const ATTACK_STRIKE_FRAME = 6 // 7-й кадр из 14 — момент удара
 const ATTACK_ANIM_SPEED = 0.5
+
+// Hurt — хардкор-вариант: обрывает собственный замах атаки (хитстан) и на
+// это время блокирует начало новой атаки (см. triggerHurt/attackPressedRef).
+const HURT_MS = 350
+const HURT_ANIM_SPEED = 0.45
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -626,6 +632,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
   // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
   const landTimerRef = useRef(0)
+  // >0 — проигрывается hurt (хитстан от урона), в мс. Главнее attack/land/run
+  // по приоритету анимаций (см. ticker) — обрывает замах атаки, см. triggerHurt.
+  const hurtTimerRef = useRef(0)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
@@ -731,12 +740,26 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     }
   }
 
-  // Пока никто не вызывает — понадобится шипам и другим источникам урона.
+  // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку
+  // (см. attackPressedRef-обработчик в setup). Определена на уровне компонента
+  // (не внутри setup/applyAttackHit), т.к. вызывается из takeDamage ниже —
+  // единой точки "игрок получил урон", которая сама объявлена здесь же, ДО
+  // setup() и его замыканий, и трогает только refs (доступны отовсюду в компоненте).
+  function triggerHurt() {
+    hurtTimerRef.current = HURT_MS
+    attackingRef.current = false // обрываем замах (хитстан)
+    attackHitDoneRef.current = false
+    landTimerRef.current = 0 // hurt важнее land
+  }
+
+  // Единая точка "игрок получает урон" — вызывается и шипами
+  // (applySpikeDamageRef), и атакой зверя (takeDamageRef в ticker'е).
   // Смерть (hp <= 0) завершает забег тем же путём, что и кнопка выхода —
   // потеря трофеев на abandon обрабатывается там же, где обрабатывается onClose.
   function takeDamage(amount: number) {
     hpRef.current = Math.max(0, hpRef.current - amount)
     updateHpBar()
+    triggerHurt()
     if (hpRef.current <= 0) {
       onClose?.()
     }
@@ -896,6 +919,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // один раз вырезанная при загрузке, а не при каждом приземлении.
       const landFrames = jumpFrames.slice(17, 24)
       const attackFrames = await loadSheetFrames(HERO_ATTACK_SRC, 379, 288, 14)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
+      const hurtFrames = await loadSheetFrames(HERO_HURT_SRC, 315, 288, 10)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
@@ -1258,7 +1286,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         if (attackPressedRef.current) {
           attackPressedRef.current = false
-          if (attackCooldownRef.current <= 0 && !attackingRef.current) {
+          // Хитстан: во время hurt атаковать нельзя (хардкор-вариант).
+          if (hurtTimerRef.current > 0) {
+            // no-op — нажатие проигнорировано
+          } else if (attackCooldownRef.current <= 0 && !attackingRef.current) {
             attackCooldownRef.current = ATTACK_COOLDOWN
             attackActiveRef.current = true
             attackActiveTimerRef.current = ATTACK_ACTIVE_MS
@@ -1478,14 +1509,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
 
         // Приоритет анимаций героя (сверху вниз):
-        // а) в воздухе — позы прыжка, land И атака сбрасываются (прыжок
-        //    прерывает замах — см. п.4 задачи);
-        // б) атака в процессе — урон ровно один раз на кадре удара
+        // а) в воздухе — позы прыжка, land/атака/hurt сбрасываются (прыжок
+        //    прерывает замах и не тянет hurt на землю);
+        // б) hurt в процессе — ГЛАВНЕЕ атаки/land/run, пока таймер > 0
+        //    (хитстан обрывает замах — см. triggerHurt);
+        // в) атака в процессе — урон ровно один раз на кадре удара
         //    (ATTACK_STRIKE_FRAME), НЕ на нажатии; land ниже по приоритету —
         //    атака его не даёт начать, пока идёт;
-        // в) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
-        //    land (движение прерывает его — переход в ветку г);
-        // г) обычный idle/run по движению.
+        // г) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
+        //    land (движение прерывает его — переход в ветку д);
+        // д) обычный idle/run по движению.
         if (!phys.onGround) {
           const rising = phys.vy < 0
           hero.textures = jumpFrames
@@ -1494,6 +1527,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           hero.anchor.set(0.5, rising ? RISE_ANCHOR_Y : FALL_ANCHOR_Y)
           landTimerRef.current = 0
           attackingRef.current = false // прыжок отменяет замах
+          hurtTimerRef.current = 0 // в воздухе — прыжок, hurt не тянем на землю
+        } else if (hurtTimerRef.current > 0) {
+          hurtTimerRef.current = Math.max(0, hurtTimerRef.current - ticker.deltaMS)
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+          if (hero.textures !== hurtFrames) {
+            hero.textures = hurtFrames
+            hero.loop = false
+            hero.animationSpeed = HURT_ANIM_SPEED
+            hero.gotoAndPlay(0)
+          }
         } else if (attackingRef.current) {
           if (!attackHitDoneRef.current && hero.currentFrame >= ATTACK_STRIKE_FRAME) {
             applyAttackHit()
