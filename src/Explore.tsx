@@ -37,6 +37,7 @@ const HERO_DRAW_H = 140 // высота отрисовки героя в пик�
 const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
 const HERO_RUN_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/run.png`
 const HERO_JUMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/jump.png`
+const HERO_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/attack.png`
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -47,6 +48,16 @@ const FALL_FRAME = 14 // кадр 15 = падение
 const RISE_ANCHOR_Y = 0.729
 const FALL_ANCHOR_Y = 0.816
 const GROUND_ANCHOR_Y = 1
+
+// Land — короткая анимация приземления, играется один раз при касании земли
+// (см. landTimerRef), прерывается движением/прыжком. Подпоследовательность
+// последних кадров jumpFrames (индексы 17..23), не отдельный спрайт-лист.
+const LAND_MS = 260
+
+// Атака — урон теперь привязан к КАДРУ анимации (см. applyAttackHit в setup),
+// не к моменту нажатия. Индекс 0-based.
+const ATTACK_STRIKE_FRAME = 6 // 7-й кадр из 14 — момент удара
+const ATTACK_ANIM_SPEED = 0.5
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -612,6 +623,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // невидимым, но живым — коллизия по-прежнему считается по нему). Ref, не
   // state — позиция обновляется каждый кадр в ticker'е.
   const heroSpriteRef = useRef<AnimatedSprite | null>(null)
+  // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
+  // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
+  const landTimerRef = useRef(0)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
@@ -675,6 +689,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // враг сверяет его со своим lastHitSwingId, чтобы засчитать один взмах
   // ровно один раз, даже если хитбокс активен несколько кадров подряд.
   const attackSwingIdRef = useRef(0)
+  const attackingRef = useRef(false) // true пока проигрывается анимация атаки
+  const attackHitDoneRef = useRef(false) // урон этого замаха уже применён (applyAttackHit вызывается ровно один раз)
+  // Facing на МОМЕНТ старта замаха — во время атаки флип не меняется, даже
+  // если игрок зажал движение в другую сторону (визуально странно иначе,
+  // хитбокс всё равно снят по facing на старте).
+  const attackFacingRef = useRef<1 | -1>(1)
 
   // СПИСОК врагов (Шаг 2-3): по одному enemy-событию — до 3 врагов (весь
   // кластер), может быть несколько enemy-событий за забег — значит и больше
@@ -872,6 +892,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
+      // Land — подпоследовательность кадров прыжка 18..24 (индексы 17..23),
+      // один раз вырезанная при загрузке, а не при каждом приземлении.
+      const landFrames = jumpFrames.slice(17, 24)
+      const attackFrames = await loadSheetFrames(HERO_ATTACK_SRC, 379, 288, 14)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -1035,6 +1063,49 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
       }
 
+      // Урон-чек атаки — раньше проверялся каждый кадр, пока attackActiveRef
+      // было true (окно ATTACK_ACTIVE_MS от момента нажатия); теперь вызывается
+      // ОДИН раз с кадра удара анимации героя (ATTACK_STRIKE_FRAME) — см. вызов
+      // в блоке анимации в тикере. Сама проверка (дальность/направление через
+      // attackHitboxRef, "один удар = один засчёт" через attackSwingIdRef/
+      // lastHitSwingId, урон, добивание) — БЕЗ ИЗМЕНЕНИЙ, только вынесена из
+      // общего цикла врагов в свою функцию с собственным for.
+      function applyAttackHit() {
+        for (let i = 0; i < enemiesRef.current.length; i++) {
+          const enemy = enemiesRef.current[i]
+          if (
+            attackHitboxRef.current &&
+            enemy.lastHitSwingId !== attackSwingIdRef.current
+          ) {
+            const hb = attackHitboxRef.current
+            const overlap =
+              hb.x < enemy.x + ENEMY_WIDTH &&
+              hb.x + hb.width > enemy.x &&
+              hb.y < enemy.y + ENEMY_HEIGHT &&
+              hb.y + hb.height > enemy.y
+            if (overlap) {
+              enemy.lastHitSwingId = attackSwingIdRef.current
+              enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
+              if (enemy.hp <= 0) {
+                worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
+                enemy.rect.destroy()
+                enemy.hpBarBg.destroy()
+                enemy.hpBarFill.destroy()
+                enemiesRef.current.splice(i, 1)
+                i--
+                const ownerEvent = eventsRef.current[enemy.eventIndex]
+                if (ownerEvent) {
+                  ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
+                  if (ownerEvent.remainingEnemies <= 0) closeEvent(enemy.eventIndex)
+                }
+                continue
+              }
+              redrawEnemyHpBar(enemy)
+            }
+          }
+        }
+      }
+
       // Ходьба влево/вправо + прыжок + коллизия со стенами, гравитация и
       // приземление на твердь. Платформы '=' — следующий шаг.
       const worldWidthPx = grid[0].length * TILE_SIZE
@@ -1091,15 +1162,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         // Прыжок: только с тверди, двойного прыжка нет. Одно нажатие —
         // ровно один прыжок, флаг сразу сбрасывается.
+        let jumpedThisFrame = false
         if (jumpPressedRef.current) {
           jumpPressedRef.current = false
           if (phys.onGround) {
             phys.vy = -JUMP_VELOCITY
             phys.onGround = false
+            jumpedThisFrame = true
           }
         }
 
         // Вертикальная физика (гравитация + приземление)
+        const wasOnGround = phys.onGround
         phys.vy = Math.min(phys.vy + GRAVITY * dt, MAX_FALL)
         phys.y += phys.vy * dt
 
@@ -1136,6 +1210,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             phys.y = prevHeadY
             phys.vy = 0
           }
+        }
+
+        // Приземление (край перехода "не на земле" -> "на земле" за этот
+        // кадр) — запускает land, только если игрок не бежит и не прыгает
+        // прямо сейчас (иначе движение/прыжок сразу перекрыли бы его же).
+        const justLanded = !wasOnGround && phys.onGround
+        if (justLanded && dirRef.current === 0 && !jumpedThisFrame) {
+          landTimerRef.current = LAND_MS
         }
 
         // Шипы: неуязвимость тикает каждый кадр независимо от касания;
@@ -1176,11 +1258,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         if (attackPressedRef.current) {
           attackPressedRef.current = false
-          if (attackCooldownRef.current <= 0) {
+          if (attackCooldownRef.current <= 0 && !attackingRef.current) {
             attackCooldownRef.current = ATTACK_COOLDOWN
             attackActiveRef.current = true
             attackActiveTimerRef.current = ATTACK_ACTIVE_MS
             attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
+            attackingRef.current = true
+            attackHitDoneRef.current = false
+            attackFacingRef.current = facingRef.current // facing зафиксирован на старте замаха
             // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
             // направлению взгляда (facingRef), высотой в его рост. Считается
             // один раз на старте удара (снимок, как мгновенная проверка
@@ -1189,6 +1274,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               facingRef.current === 1
                 ? { x: phys.x + PLAYER_WIDTH, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
                 : { x: phys.x - ATTACK_RANGE, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
+            // Урон здесь больше НЕ применяется — applyAttackHit() вызывается
+            // из блока анимации героя в тикере, на кадре удара ATTACK_STRIKE_FRAME.
+            hero.textures = attackFrames
+            hero.loop = false
+            hero.animationSpeed = ATTACK_ANIM_SPEED
+            hero.gotoAndPlay(0)
           }
         }
 
@@ -1196,7 +1287,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           attackActiveTimerRef.current -= ticker.deltaMS
           if (attackActiveTimerRef.current <= 0) {
             attackActiveRef.current = false
-            attackHitboxRef.current = null
+            // attackHitboxRef НЕ обнуляем здесь: ATTACK_ACTIVE_MS (150мс) —
+            // окно debug-визуализации ниже, оно короче, чем реальный момент
+            // удара по анимации (~200мс на ATTACK_STRIKE_FRAME при
+            // ATTACK_ANIM_SPEED=0.5) — applyAttackHit() должен ещё застать
+            // валидный хитбокс. Хитбокс переживается следующим press'ом.
           }
         }
 
@@ -1223,52 +1318,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         // Враги (Шаг 2-3: СПИСОК — кластер из 3, может быть несколько
         // enemy-событий за забег). Каждый враг обрабатывается НЕЗАВИСИМО:
-        // сперва — попал ли по нему только что взмах игрока ("один удар = один
-        // засчёт" через attackSwingIdRef/lastHitSwingId, Шаг 2-1), затем, если
-        // выжил, — AI (преследование/windup/удар по игроку, Шаг 2-2). Если
-        // игрок стоит между двумя врагами — оба независимо проверяют дистанцию
-        // и оба могут его ударить в один и тот же кадр; HP игрока один общий
+        // AI (преследование/windup/удар по игроку, Шаг 2-2). Урон от атаки
+        // игрока сюда больше не входит — см. applyAttackHit(), вызывается
+        // отдельно из блока анимации героя, на кадре удара. Если игрок стоит
+        // между двумя врагами — оба независимо проверяют дистанцию и оба
+        // могут его ударить в один и тот же кадр; HP игрока один общий
         // (takeDamageRef), отдельно считать не нужно.
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
-
-          // "Один удар = один засчёт" — сверяем attackSwingIdRef с
-          // lastHitSwingId, а не просто "хитбокс активен", иначе все ~9
-          // кадров окна ATTACK_ACTIVE_MS нанесли бы урон отдельно.
-          if (
-            attackActiveRef.current &&
-            attackHitboxRef.current &&
-            enemy.lastHitSwingId !== attackSwingIdRef.current
-          ) {
-            const hb = attackHitboxRef.current
-            const overlap =
-              hb.x < enemy.x + ENEMY_WIDTH &&
-              hb.x + hb.width > enemy.x &&
-              hb.y < enemy.y + ENEMY_HEIGHT &&
-              hb.y + hb.height > enemy.y
-            if (overlap) {
-              enemy.lastHitSwingId = attackSwingIdRef.current
-              enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
-              if (enemy.hp <= 0) {
-                worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
-                enemy.rect.destroy()
-                enemy.hpBarBg.destroy()
-                enemy.hpBarFill.destroy()
-                enemiesRef.current.splice(i, 1)
-                i--
-                // Кластер (enemy-событие) закрывается, когда убиты ВСЕ его
-                // враги — не касанием, см. touch-цикл выше, который явно
-                // пропускает kind==='enemy'.
-                const ownerEvent = eventsRef.current[enemy.eventIndex]
-                if (ownerEvent) {
-                  ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
-                  if (ownerEvent.remainingEnemies <= 0) closeEvent(enemy.eventIndex)
-                }
-                continue // мёртвому AI ниже не нужен
-              }
-              redrawEnemyHpBar(enemy)
-            }
-          }
 
           // Гравитация + приземление (Шаг A "умного врага") — та же физика,
           // что у игрока: GRAVITY/MAX_FALL переиспользуем как есть, посадку на
@@ -1420,25 +1477,57 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           heroSpriteRef.current.y = player.y + PLAYER_HEIGHT
         }
 
-        // Прыжок — ПРИОРИТЕТ перед idle/run: в воздухе статичная поза по
-        // вертикальной скорости (взлёт/падение), без проигрывания. land пока
-        // не ловим отдельно — на земле сразу обычная idle/run логика.
+        // Приоритет анимаций героя (сверху вниз):
+        // а) в воздухе — позы прыжка, land И атака сбрасываются (прыжок
+        //    прерывает замах — см. п.4 задачи);
+        // б) атака в процессе — урон ровно один раз на кадре удара
+        //    (ATTACK_STRIKE_FRAME), НЕ на нажатии; land ниже по приоритету —
+        //    атака его не даёт начать, пока идёт;
+        // в) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
+        //    land (движение прерывает его — переход в ветку г);
+        // г) обычный idle/run по движению.
         if (!phys.onGround) {
           const rising = phys.vy < 0
           hero.textures = jumpFrames
           hero.loop = false
           hero.gotoAndStop(rising ? RISE_FRAME : FALL_FRAME)
           hero.anchor.set(0.5, rising ? RISE_ANCHOR_Y : FALL_ANCHOR_Y)
+          landTimerRef.current = 0
+          attackingRef.current = false // прыжок отменяет замах
+        } else if (attackingRef.current) {
+          if (!attackHitDoneRef.current && hero.currentFrame >= ATTACK_STRIKE_FRAME) {
+            applyAttackHit()
+            attackHitDoneRef.current = true
+          }
+          if (hero.currentFrame >= attackFrames.length - 1 || !hero.playing) {
+            attackingRef.current = false // доиграла — idle/run подхватит со следующего тика
+          }
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+        } else if (landTimerRef.current > 0 && dirRef.current === 0) {
+          landTimerRef.current = Math.max(0, landTimerRef.current - ticker.deltaMS)
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+          if (hero.textures !== landFrames) {
+            hero.textures = landFrames
+            hero.loop = false
+            hero.animationSpeed = 0.5
+            hero.gotoAndPlay(0)
+          }
         } else {
-          // idle<->run по фактическому вводу движения (dirRef).
+          // Сюда же попадает прерывание land движением (dirRef.current !== 0
+          // при landTimerRef.current > 0) — таймер обнуляется и играется
+          // обычная idle/run логика с этого же кадра.
+          landTimerRef.current = 0
           hero.anchor.set(0.5, GROUND_ANCHOR_Y)
           playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.4 : 0.15, true)
         }
         // Флип по facingRef (последнее ненулевое направление — не сбрасывается
         // в 0, в отличие от dirRef, так что герой не разворачивается лицом
         // вправо каждый раз, когда отпускаешь кнопку движения стоя на месте) —
-        // работает в обеих ветках (на земле и в воздухе), применяется всегда.
-        hero.scale.x = facingRef.current === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
+        // работает во всех ветках, применяется всегда. Во время атаки — facing
+        // ЗАФИКСИРОВАН на attackFacingRef (снят на старте замаха), не следует
+        // за вводом до конца анимации.
+        const heroFlipDir = attackingRef.current ? attackFacingRef.current : facingRef.current
+        hero.scale.x = heroFlipDir === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
 
         updateCamera(dt)
       })
