@@ -39,6 +39,22 @@ const HERO_RUN_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/run.png`
 const HERO_JUMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/jump.png`
 const HERO_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/attack.png`
 const HERO_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/hurt.png`
+const HERO_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/death.png`
+
+// Спрайты зверя (Шаг "спрайт зверя, без AI/флипа") — тот же способ пути
+// (BASE_URL) и тот же loadSheetFrames (12 колонок в ряд), что у героя выше.
+// Клетка у idle/walk/attack/hurt одна (481×288), death — своё окно (537×288),
+// как у героя (jump/death отдельно от main-группы).
+// ⚠️ Файлы на диске — .webp, не .png (в отличие от героя): смотри реальные
+// имена в public/assets/sprites/beast/.
+const BEAST_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/idle.webp`
+const BEAST_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/walk.webp`
+const BEAST_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/attack.webp`
+const BEAST_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/hurt.webp`
+const BEAST_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/death.webp`
+// Высота отрисовки зверя в пикселях мира (по образцу HERO_DRAW_H выше) —
+// стартовое число, будем тюнить на глаз позже.
+const BEAST_CELL_RENDER_H = 180
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -64,6 +80,11 @@ const ATTACK_ANIM_SPEED = 0.5
 // это время блокирует начало новой атаки (см. triggerHurt/attackPressedRef).
 const HURT_MS = 350
 const HURT_ANIM_SPEED = 0.45
+
+// Смерть — играется один раз, последний кадр держится DEATH_HOLD_MS, потом
+// тот же abandon, что раньше срабатывал сразу при hp<=0 (см. triggerDeath).
+const DEATH_HOLD_MS = 500
+const DEATH_ANIM_SPEED = 0.4
 
 const HP_PER_ENDURANCE = 8 // как в бою: 1 Endurance = 8 HP
 const FALLBACK_MAX_HP = 80 // если endurance ещё не прокинут/недоступен
@@ -264,9 +285,16 @@ type Enemy = {
   patrolDir: 1 | -1
   facing: 1 | -1
   rect: Graphics
+  sprite: AnimatedSprite
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
+
+// Кадры зверя (Шаг "спрайт зверя") — загружаются ОДИН раз в setup(), общие
+// для всех врагов кластера (каждый враг заводит СВОЙ AnimatedSprite поверх
+// одних и тех же Texture-массивов). AI/переключение по состоянию — позже,
+// пока используется только idle.
+type BeastFrames = { idle: Texture[]; walk: Texture[]; attack: Texture[]; hurt: Texture[]; death: Texture[] }
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
@@ -629,12 +657,26 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // невидимым, но живым — коллизия по-прежнему считается по нему). Ref, не
   // state — позиция обновляется каждый кадр в ticker'е.
   const heroSpriteRef = useRef<AnimatedSprite | null>(null)
+  // Кадры зверя (см. BeastFrames выше) — загружены один раз в setup(),
+  // доступны отовсюду (spawnEnemy, ticker) через этот ref, как deathFramesRef
+  // у героя.
+  const beastFramesRef = useRef<BeastFrames | null>(null)
   // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
   // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
   const landTimerRef = useRef(0)
   // >0 — проигрывается hurt (хитстан от урона), в мс. Главнее attack/land/run
   // по приоритету анимаций (см. ticker) — обрывает замах атаки, см. triggerHurt.
   const hurtTimerRef = useRef(0)
+  // true — идёт смерть, блокирует ВСЁ остальное в блоке анимации героя
+  // (высший приоритет, проверяется первым в тикере). Не сбрасывается назад в
+  // false — забег в любом случае завершается через abandon.
+  const deathRef = useRef(false)
+  const deathHoldRef = useRef(0) // мс удержания последнего кадра death, копится ПОСЛЕ того, как анимация доиграла
+  const deathAbandonFiredRef = useRef(false) // защита от повторного вызова abandon за кадры удержания
+  // AnimatedSprite/кадры death недоступны из takeDamage (объявлены внутри
+  // setup(), другая замкнутая область видимости) — зеркалим их в ref'ы, как
+  // heroSpriteRef уже зеркалит hero, чтобы triggerDeath мог их прочитать.
+  const deathFramesRef = useRef<Texture[] | null>(null)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
 
@@ -752,16 +794,39 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     landTimerRef.current = 0 // hurt важнее land
   }
 
+  // Запускает анимацию смерти вместо мгновенного abandon — сам abandon
+  // (onClose) срабатывает позже, из блока анимации в тикере, после того как
+  // death доиграла и подержался последний кадр (DEATH_HOLD_MS), см. setup().
+  // deathRef не сбрасывается назад — забег в любом случае завершится.
+  function triggerDeath() {
+    if (deathRef.current) return // уже идёт — не перезапускаем повторно
+    deathRef.current = true
+    deathHoldRef.current = 0
+    attackingRef.current = false
+    hurtTimerRef.current = 0
+    landTimerRef.current = 0
+    const hero = heroSpriteRef.current
+    const deathFrames = deathFramesRef.current
+    if (hero && deathFrames) {
+      hero.textures = deathFrames
+      hero.loop = false
+      hero.animationSpeed = DEATH_ANIM_SPEED
+      hero.gotoAndPlay(0)
+      hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+    }
+  }
+
   // Единая точка "игрок получает урон" — вызывается и шипами
   // (applySpikeDamageRef), и атакой зверя (takeDamageRef в ticker'е).
-  // Смерть (hp <= 0) завершает забег тем же путём, что и кнопка выхода —
-  // потеря трофеев на abandon обрабатывается там же, где обрабатывается onClose.
+  // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
+  // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
   function takeDamage(amount: number) {
     hpRef.current = Math.max(0, hpRef.current - amount)
     updateHpBar()
-    triggerHurt()
     if (hpRef.current <= 0) {
-      onClose?.()
+      triggerDeath()
+    } else {
+      triggerHurt()
     }
   }
 
@@ -928,6 +993,37 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
+      const deathFrames = await loadSheetFrames(HERO_DEATH_SRC, 313, 288, 18)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
+
+      // Кадры зверя — тот же loadSheetFrames, 12 колонок в ряд, грузятся ОДИН
+      // раз (не на каждого врага кластера). Клетка НЕ 481×288/537×288, как
+      // изначально предполагалось (по аналогии с героем) — реальные .webp на
+      // диске крупнее: main-группа (idle/walk/attack/hurt) 534×320, death
+      // 597×320 (проверено по фактическим px сheets, делится на 12 колонок
+      // без остатка). Похоже, в отличие от героя, зверя не пережимали до
+      // клетки высотой 288 — если позже пережмут, эти числа надо будет обновить.
+      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 534, 320, 12)
+      if (cancelled) return
+      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 534, 320, 12)
+      if (cancelled) return
+      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 534, 320, 24)
+      if (cancelled) return
+      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 534, 320, 10)
+      if (cancelled) return
+      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 597, 320, 18)
+      if (cancelled) return
+      beastFramesRef.current = {
+        idle: beastIdleFrames,
+        walk: beastWalkFrames,
+        attack: beastAttackFrames,
+        hurt: beastHurtFrames,
+        death: beastDeathFrames,
+      }
+
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -936,6 +1032,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       hero.play()
       worldContainer.addChild(hero)
       heroSpriteRef.current = hero
+      // deathFrames зеркалим в ref — triggerDeath() вызывается из takeDamage,
+      // вне setup(), достать локальную deathFrames оттуда напрямую нельзя.
+      deathFramesRef.current = deathFrames
       // Прямоугольник остаётся хитбоксом для коллизии — просто прячем визуал.
       player.visible = false
 
@@ -948,6 +1047,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         hero.loop = loop
         hero.animationSpeed = speed
         hero.gotoAndPlay(0)
+      }
+
+      // Обобщённый вариант playAnim — принимает целевой AnimatedSprite первым
+      // аргументом, чтобы враги (у каждого свой спрайт) могли переключать
+      // анимацию тем же способом, что и герой выше. Герой playAnim() не
+      // трогаем — оба существуют параллельно.
+      function playSpriteAnim(sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) {
+        if (sprite.textures === frames) return
+        sprite.textures = frames
+        sprite.loop = loop
+        sprite.animationSpeed = speed
+        sprite.gotoAndPlay(0)
       }
 
       // Спавнит ОДНОГО врага-прямоугольник (см. Шаг 2-1/2-2) в тайловых
@@ -968,7 +1079,30 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         rect.pivot.set(ENEMY_WIDTH / 2, 0)
         rect.x = enemyWorldX + ENEMY_WIDTH / 2
         rect.y = enemyWorldY
+        // Заменён спрайтом зверя ниже — остаётся невидимым хитбоксом: AI
+        // (windup-tint/facing-flip) по-прежнему пишет в rect.tint/scale.x,
+        // трогать эту логику не просили на этом шаге.
+        rect.visible = false
         worldContainer.addChild(rect)
+
+        // Визуал — AnimatedSprite поверх (невидимого) хитбокса, по образцу
+        // героя: своя копия AnimatedSprite на каждого врага кластера, но все
+        // используют ОДНИ И ТЕ ЖЕ Texture-массивы из beastFramesRef (загружены
+        // один раз в setup()). Пока всегда idle — переключение по AI-состоянию
+        // и флип по направлению будут отдельным шагом.
+        const beastFrames = beastFramesRef.current!
+        const sprite = new AnimatedSprite(beastFrames.idle)
+        sprite.anchor.set(0.506, 0.971) // торс по центру, ноги — низ хитбокса
+        sprite.scale.set(BEAST_CELL_RENDER_H / beastFrames.idle[0].height)
+        sprite.roundPixels = false
+        sprite.animationSpeed = 0.15
+        sprite.loop = true
+        sprite.play()
+        // Та же точка привязки, что раньше была у прямоугольника: центр по X,
+        // НИЗ хитбокса по Y (не верх, как у rect — якорь спрайта другой).
+        sprite.x = enemyWorldX + ENEMY_WIDTH / 2
+        sprite.y = enemyWorldY + ENEMY_HEIGHT
+        worldContainer.addChild(sprite)
 
         const hpBarBg = new Graphics().rect(0, 0, ENEMY_WIDTH, ENEMY_HP_BAR_HEIGHT).fill(0x221e2b)
         hpBarBg.x = enemyWorldX
@@ -995,6 +1129,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           patrolDir: 1,
           facing: 1,
           rect,
+          sprite,
           hpBarBg,
           hpBarFill,
         }
@@ -1115,8 +1250,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               enemy.lastHitSwingId = attackSwingIdRef.current
               enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
               if (enemy.hp <= 0) {
-                worldContainer.removeChild(enemy.rect, enemy.hpBarBg, enemy.hpBarFill)
+                worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
                 enemy.rect.destroy()
+                enemy.sprite.destroy()
                 enemy.hpBarBg.destroy()
                 enemy.hpBarFill.destroy()
                 enemiesRef.current.splice(i, 1)
@@ -1488,6 +1624,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           enemy.rect.x = enemy.x + ENEMY_WIDTH / 2
           enemy.rect.y = enemy.y
           enemy.rect.scale.x = enemy.facing // разворот патруля/погони — Шаг C
+          // Спрайт зверя — та же позиция, что раньше была у rect (центр по X,
+          // низ хитбокса по Y — см. anchor в spawnEnemy). По умолчанию всегда
+          // idle на этом шаге; playSpriteAnim — no-op, если уже играет idle
+          // (сравнение textures внутри), так что вызов каждый кадр не дёргает
+          // анимацию заново. Флип/переключение по AI — следующий шаг.
+          const beastFrames = beastFramesRef.current
+          if (beastFrames) playSpriteAnim(enemy.sprite, beastFrames.idle, 0.15, true)
+          enemy.sprite.x = enemy.x + ENEMY_WIDTH / 2
+          enemy.sprite.y = enemy.y + ENEMY_HEIGHT
           enemy.hpBarBg.x = enemy.x
           enemy.hpBarBg.y = enemy.y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
           enemy.hpBarFill.x = enemy.x
@@ -1509,6 +1654,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         }
 
         // Приоритет анимаций героя (сверху вниз):
+        // 0) смерть — АБСОЛЮТНЫЙ приоритет, пока deathRef.current истинен,
+        //    ничего из веток ниже не выполняется (прыжок/hurt/атака/land/run
+        //    больше не могут перебить падение);
         // а) в воздухе — позы прыжка, land/атака/hurt сбрасываются (прыжок
         //    прерывает замах и не тянет hurt на землю);
         // б) hurt в процессе — ГЛАВНЕЕ атаки/land/run, пока таймер > 0
@@ -1519,7 +1667,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // г) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
         //    land (движение прерывает его — переход в ветку д);
         // д) обычный idle/run по движению.
-        if (!phys.onGround) {
+        if (deathRef.current) {
+          // Доиграла — замираем на последнем кадре и копим удержание;
+          // abandon срабатывает РОВНО один раз (deathAbandonFiredRef).
+          if (hero.currentFrame >= deathFrames.length - 1) {
+            hero.gotoAndStop(deathFrames.length - 1)
+            deathHoldRef.current += ticker.deltaMS
+            if (deathHoldRef.current >= DEATH_HOLD_MS && !deathAbandonFiredRef.current) {
+              deathAbandonFiredRef.current = true
+              onClose?.()
+            }
+          }
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
+        } else if (!phys.onGround) {
           const rising = phys.vy < 0
           hero.textures = jumpFrames
           hero.loop = false
