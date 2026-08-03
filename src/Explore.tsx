@@ -45,13 +45,11 @@ const HERO_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/death.png
 // (BASE_URL) и тот же loadSheetFrames (12 колонок в ряд), что у героя выше.
 // Клетка у idle/walk/attack/hurt одна (481×288), death — своё окно (537×288),
 // как у героя (jump/death отдельно от main-группы).
-// ⚠️ Файлы на диске — .webp, не .png (в отличие от героя): смотри реальные
-// имена в public/assets/sprites/beast/.
-const BEAST_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/idle.webp`
-const BEAST_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/walk.webp`
-const BEAST_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/attack.webp`
-const BEAST_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/hurt.webp`
-const BEAST_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/death.webp`
+const BEAST_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/idle.png`
+const BEAST_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/walk.png`
+const BEAST_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/attack.png`
+const BEAST_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/hurt.png`
+const BEAST_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/death.png`
 // Высота отрисовки зверя в пикселях мира (по образцу HERO_DRAW_H выше) —
 // стартовое число, будем тюнить на глаз позже.
 const BEAST_CELL_RENDER_H = 180
@@ -1000,21 +998,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
 
       // Кадры зверя — тот же loadSheetFrames, 12 колонок в ряд, грузятся ОДИН
-      // раз (не на каждого врага кластера). Клетка НЕ 481×288/537×288, как
-      // изначально предполагалось (по аналогии с героем) — реальные .webp на
-      // диске крупнее: main-группа (idle/walk/attack/hurt) 534×320, death
-      // 597×320 (проверено по фактическим px сheets, делится на 12 колонок
-      // без остатка). Похоже, в отличие от героя, зверя не пережимали до
-      // клетки высотой 288 — если позже пережмут, эти числа надо будет обновить.
-      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 534, 320, 12)
+      // раз (не на каждого врага кластера). Клетка 481×288 у main-группы
+      // (idle/walk/attack/hurt, как у героя), death — своё окно 537×288.
+      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 481, 288, 12)
       if (cancelled) return
-      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 534, 320, 12)
+      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 481, 288, 12)
       if (cancelled) return
-      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 534, 320, 24)
+      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 481, 288, 24)
       if (cancelled) return
-      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 534, 320, 10)
+      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 481, 288, 10)
       if (cancelled) return
-      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 597, 320, 18)
+      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 537, 288, 18)
       if (cancelled) return
       beastFramesRef.current = {
         idle: beastIdleFrames,
