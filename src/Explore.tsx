@@ -70,7 +70,9 @@ const BEAST_IDLE_ANIM_SPEED = 10 / 60
 // заметно чаще — выбор между ними идёт по уже существующему признаку
 // aggroed (тот же, что решает патруль/погоня в самом AI, см. ticker).
 const WALK_ANIM_PATROL = 0.2
-const WALK_ANIM_CHASE = 0.4
+// Поднято вместе с ENEMY_CHASE_SPEED (1.12→1.6, ×1.43), чтобы темп лап не
+// "пробуксовывал" при более быстром перемещении в погоне: 0.4×1.43≈0.57.
+const WALK_ANIM_CHASE = 0.57
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -174,6 +176,14 @@ const ENEMY_COLOR = 0x4a3728
 const ENEMY_MAX_HP = 120
 const ENEMY_HP_BAR_HEIGHT = 8
 const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
+// Спрайт зверя (BEAST_CELL_RENDER_H) заметно выше хитбокса (ENEMY_HEIGHT) —
+// его верх находится примерно на BEAST_CELL_RENDER_H*0.971 (anchor.y в
+// spawnEnemy) px над точкой опоры, а хитбокс — только на ENEMY_HEIGHT.
+// Разница (126*0.971 - 64 ≈ 58) поднимает полоску HP выше верха спрайта, а
+// не в его середину; ENEMY_HP_BAR_MARGIN сверху даёт небольшой зазор поверх
+// этого. Подобрано под текущий BEAST_CELL_RENDER_H — если размер зверя ещё
+// поменяют, поправить и это число.
+const ENEMY_HPBAR_OFFSET_Y = 58
 
 // AI зверя (Шаг 2-2) — числа из Battle.tsx (обычный враг, БЕЗ level-scaling —
 // как и ENEMY_MAX_HP выше, в Explore пока нет level):
@@ -187,7 +197,7 @@ const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и г
 // - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
 //   же константа используется и для атаки игрока, и для дальности врага; это
 //   по-прежнему радиус ПОПАДАНИЯ удара, отдельно от ATTACK_STOP_DIST ниже.
-const ENEMY_CHASE_SPEED = 1.12 // было 1 — погоня чуть быстрее (~+12%), полировка
+const ENEMY_CHASE_SPEED = 1.6 // было 1.12 — погоня заметно быстрее (см. MOVE_SPEED игрока ниже)
 // Шаг C "умного врага" — скорость патруля (когда НЕ агрён), медленнее погони.
 // Зафиксирована ЧИСЛОМ (не как доля от ENEMY_CHASE_SPEED) — при полировке
 // погони её трогать не просили, а множитель от ENEMY_CHASE_SPEED утянул бы
@@ -1118,7 +1128,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         const hpBarBg = new Graphics().rect(0, 0, ENEMY_WIDTH, ENEMY_HP_BAR_HEIGHT).fill(0x221e2b)
         hpBarBg.x = enemyWorldX
-        hpBarBg.y = enemyWorldY - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
+        hpBarBg.y = enemyWorldY - ENEMY_HPBAR_OFFSET_Y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
         worldContainer.addChild(hpBarBg)
 
         const hpBarFill = new Graphics()
@@ -1698,7 +1708,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           enemy.sprite.x = enemy.x + ENEMY_WIDTH / 2
           enemy.sprite.y = (enemySurfaceY ?? enemyFootBottom) + FOOT_TUNE
           enemy.hpBarBg.x = enemy.x
-          enemy.hpBarBg.y = enemy.y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
+          enemy.hpBarBg.y = enemy.y - ENEMY_HPBAR_OFFSET_Y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
           enemy.hpBarFill.x = enemy.x
           enemy.hpBarFill.y = enemy.hpBarBg.y
 
