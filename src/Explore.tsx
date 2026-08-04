@@ -43,16 +43,24 @@ const HERO_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/death.png
 
 // Спрайты зверя (Шаг "спрайт зверя, без AI/флипа") — тот же способ пути
 // (BASE_URL) и тот же loadSheetFrames (12 колонок в ряд), что у героя выше.
-// Клетка у idle/walk/attack/hurt одна (481×288), death — своё окно (537×288),
-// как у героя (jump/death отдельно от main-группы).
+// Высота клетки везде 288 (как у героя), НО ширина клетки разная по анимациям
+// (idle/attack/hurt — 481, walk — 418, death — 537) — не сводить к одной
+// общей ширине, каждая грузится своим cellW (см. loadSheetFrames-вызовы ниже).
 const BEAST_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/idle.png`
 const BEAST_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/walk.png`
 const BEAST_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/attack.png`
 const BEAST_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/hurt.png`
 const BEAST_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/death.png`
 // Высота отрисовки зверя в пикселях мира (по образцу HERO_DRAW_H выше) —
-// стартовое число, будем тюнить на глаз позже.
-const BEAST_CELL_RENDER_H = 180
+// уменьшено на 30% (было 180) по правке размера. Масштаб спрайта = эта
+// константа / 288 (высота клетки, одна и та же для всех анимаций зверя) —
+// см. применение в spawnEnemy, размер нигде не хардкодится мимо неё.
+const BEAST_CELL_RENDER_H = 126
+// idle зверя — 24 кадра, полный цикл дыхания ~2.4с (медленно, спокойно):
+// 24 кадра / 2.4с = 10 кадров/сек, AnimatedSprite.animationSpeed — доля от
+// 60 кадров/сек тикера (тот же способ проигрывания, что у героя — play() +
+// общий Ticker, без ручного продвижения кадров).
+const BEAST_IDLE_ANIM_SPEED = 10 / 60
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -998,11 +1006,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
 
       // Кадры зверя — тот же loadSheetFrames, 12 колонок в ряд, грузятся ОДИН
-      // раз (не на каждого врага кластера). Клетка 481×288 у main-группы
-      // (idle/walk/attack/hurt, как у героя), death — своё окно 537×288.
-      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 481, 288, 12)
+      // раз (не на каждого врага кластера). Высота клетки везде 288, ширина —
+      // своя у каждой анимации (walk и death отличаются от idle/attack/hurt).
+      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 481, 288, 24)
       if (cancelled) return
-      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 481, 288, 12)
+      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 418, 288, 16)
       if (cancelled) return
       const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 481, 288, 24)
       if (cancelled) return
@@ -1089,7 +1097,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         sprite.anchor.set(0.506, 0.971) // торс по центру, ноги — низ хитбокса
         sprite.scale.set(BEAST_CELL_RENDER_H / beastFrames.idle[0].height)
         sprite.roundPixels = false
-        sprite.animationSpeed = 0.15
+        sprite.animationSpeed = BEAST_IDLE_ANIM_SPEED
         sprite.loop = true
         sprite.play()
         // Та же точка привязки, что раньше была у прямоугольника: центр по X,
@@ -1624,7 +1632,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // (сравнение textures внутри), так что вызов каждый кадр не дёргает
           // анимацию заново. Флип/переключение по AI — следующий шаг.
           const beastFrames = beastFramesRef.current
-          if (beastFrames) playSpriteAnim(enemy.sprite, beastFrames.idle, 0.15, true)
+          if (beastFrames) playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
           enemy.sprite.x = enemy.x + ENEMY_WIDTH / 2
           enemy.sprite.y = enemy.y + ENEMY_HEIGHT
           enemy.hpBarBg.x = enemy.x
