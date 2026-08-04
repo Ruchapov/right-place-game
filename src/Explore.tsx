@@ -65,6 +65,12 @@ const BEAST_CELL_RENDER_H = 126
 // 60 кадров/сек тикера (тот же способ проигрывания, что у героя — play() +
 // общий Ticker, без ручного продвижения кадров).
 const BEAST_IDLE_ANIM_SPEED = 10 / 60
+// walk — та же анимация в патруле и в погоне, только СКОРОСТЬ проигрывания
+// разная (лап нет отдельного run-спрайта): в патруле спокойнее, в погоне
+// заметно чаще — выбор между ними идёт по уже существующему признаку
+// aggroed (тот же, что решает патруль/погоня в самом AI, см. ticker).
+const WALK_ANIM_PATROL = 0.2
+const WALK_ANIM_CHASE = 0.4
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -1522,6 +1528,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // (takeDamageRef), отдельно считать не нужно.
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
+          // Снимок X ДО AI-блока ниже — используется только для определения
+          // "враг фактически сдвинулся по X в этом кадре" (анимация idle/walk,
+          // см. синк визуала ниже), саму AI-логику не дублирует и не меняет.
+          const prevEnemyX = enemy.x
 
           // Гравитация + приземление (Шаг A "умного врага") — та же физика,
           // что у игрока: GRAVITY/MAX_FALL переиспользуем как есть, посадку на
@@ -1654,12 +1664,32 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           enemy.rect.y = enemy.y
           enemy.rect.scale.x = enemy.facing // разворот патруля/погони — Шаг C
           // Спрайт зверя — та же позиция, что раньше была у rect (центр по X,
-          // низ хитбокса по Y — см. anchor в spawnEnemy). По умолчанию всегда
-          // idle на этом шаге; playSpriteAnim — no-op, если уже играет idle
-          // (сравнение textures внутри), так что вызов каждый кадр не дёргает
-          // анимацию заново. Флип/переключение по AI — следующий шаг.
+          // низ хитбокса по Y — см. anchor в spawnEnemy). playSpriteAnim —
+          // no-op, если уже играет те же textures (сравнение внутри), так что
+          // вызов каждый кадр не дёргает анимацию заново.
+          //
+          // idle/walk — по факту движения по X в этом кадре (prevEnemyX,
+          // снятый ДО AI-блока выше): двигался — walk, стоял (включая паузу
+          // windingUp перед ударом) — idle. Скорость walk — по aggroed (уже
+          // вычислен AI-блоком выше, отдельно решение не дублируем): в погоне
+          // быстрее, в патруле спокойнее.
+          //
+          // Флип — по enemy.facing (тот же источник, что и для rect.scale.x
+          // выше, и для самого перемещения в AI-блоке). Арт зверя смотрит
+          // ВЛЕВО по умолчанию, поэтому facing===-1 (влево) — БЕЗ зеркала,
+          // facing===1 (вправо) — зеркалим. Стоя на месте facing не трогается
+          // AI-блоком (кроме патруля, где он всегда = patrolDir), поэтому
+          // последнее направление само сохраняется без доп. логики здесь.
           const beastFrames = beastFramesRef.current
-          if (beastFrames) playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+          if (beastFrames) {
+            const enemyMoving = enemy.x !== prevEnemyX
+            if (enemyMoving) {
+              playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? WALK_ANIM_CHASE : WALK_ANIM_PATROL, true)
+            } else {
+              playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+            }
+            enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
+          }
           // Y отрисовки — поверхность тайла под ногами (findGroundSurfaceY),
           // а НЕ низ хитбокса; низ хитбокса — только запасной вариант, когда
           // враг в воздухе (упал с края) и под ним прямо сейчас нет тверди.
