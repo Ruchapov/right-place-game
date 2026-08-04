@@ -32,6 +32,10 @@ const PLAYER_HEIGHT = TILE_SIZE * 2
 // ниже). Хитбокс/физика игрока (PLAYER_WIDTH/PLAYER_HEIGHT выше) НЕ меняются
 // заменой визуала — прямоугольник остаётся, просто visible=false.
 const HERO_DRAW_H = 140 // высота отрисовки героя в пикселях мира (подбирается на глаз)
+// Подстройка Y отрисовки спрайта (герой и враги) поверх найденной
+// поверхности тайла (findGroundSurfaceY) — подобрана вживую отладочным
+// тюнером, чтобы ноги ложились точно на пол.
+const FOOT_TUNE = 11
 // Тот же способ формирования пути (BASE_URL), что у HP_FRAME_SRC — работает
 // и на GitHub Pages с префиксом.
 const HERO_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/idle.png`
@@ -1175,6 +1179,29 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       const attackHitboxGraphics = new Graphics()
       worldContainer.addChild(attackHitboxGraphics)
 
+      // Y отрисовки спрайта должен ложиться на РЕАЛЬНУЮ поверхность тайла, а
+      // не на низ хитбокса (низ хитбокса — грубый прямоугольник, который сам
+      // физикой ставится по правилу sweepFootBlock, но эта функция считает
+      // независимо ТЕМ ЖЕ способом — 3 точки по ширине, как sweepFootBlock/
+      // isSolid выше — и берёт САМУЮ ВЕРХНЮЮ найденную твердь в ТЕКУЩЕЙ строке
+      // клеток под ногами). Возвращает null, если под ногами прямо сейчас нет
+      // тверди (персонаж в воздухе — прыжок/падение) — в этом случае вызывающий
+      // код остаётся на прежнем поведении (низ хитбокса), проверка "стоим ли мы
+      // именно на этой клетке", а НЕ поиск ближайшего пола ниже (годится для
+      // приземлённого состояния, но не для позиционирования спрайта в прыжке).
+      function findGroundSurfaceY(x: number, width: number, footY: number): number | null {
+        const xPoints = [x + 1, x + width / 2, x + width - 1]
+        const cy = Math.floor(footY / TILE_SIZE)
+        let top: number | null = null
+        for (const px of xPoints) {
+          const cx = Math.floor(px / TILE_SIZE)
+          const blockTop = cellFootBlockTop(grid, TILE_SIZE, cx, cy)
+          if (blockTop === null) continue
+          top = top === null ? blockTop : Math.min(top, blockTop)
+        }
+        return top
+      }
+
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * TILE_SIZE * worldContainer.scale.y
@@ -1633,8 +1660,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // анимацию заново. Флип/переключение по AI — следующий шаг.
           const beastFrames = beastFramesRef.current
           if (beastFrames) playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+          // Y отрисовки — поверхность тайла под ногами (findGroundSurfaceY),
+          // а НЕ низ хитбокса; низ хитбокса — только запасной вариант, когда
+          // враг в воздухе (упал с края) и под ним прямо сейчас нет тверди.
+          const enemyFootBottom = enemy.y + ENEMY_HEIGHT
+          const enemySurfaceY = findGroundSurfaceY(enemy.x, ENEMY_WIDTH, enemyFootBottom)
           enemy.sprite.x = enemy.x + ENEMY_WIDTH / 2
-          enemy.sprite.y = enemy.y + ENEMY_HEIGHT
+          enemy.sprite.y = (enemySurfaceY ?? enemyFootBottom) + FOOT_TUNE
           enemy.hpBarBg.x = enemy.x
           enemy.hpBarBg.y = enemy.y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
           enemy.hpBarFill.x = enemy.x
@@ -1648,11 +1680,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         player.x = phys.x
         player.y = phys.y
 
-        // Ноги героя (anchor 0.5,1.0 — низ-центр) совпадают с низом-центром
-        // прямоугольника-хитбокса.
+        // Ноги героя (anchor 0.5,1.0 — низ-центр) — Y берём с поверхности
+        // тайла (findGroundSurfaceY), а не с низа хитбокса напрямую; низ
+        // хитбокса остаётся запасным вариантом на случай, если герой сейчас
+        // в воздухе (под ногами прямо сейчас нет тверди — прыжок/падение).
         if (heroSpriteRef.current) {
+          const heroFootBottom = player.y + PLAYER_HEIGHT
+          const heroSurfaceY = findGroundSurfaceY(player.x, PLAYER_WIDTH, heroFootBottom)
           heroSpriteRef.current.x = player.x + PLAYER_WIDTH / 2
-          heroSpriteRef.current.y = player.y + PLAYER_HEIGHT
+          heroSpriteRef.current.y = (heroSurfaceY ?? heroFootBottom) + FOOT_TUNE
         }
 
         // Приоритет анимаций героя (сверху вниз):
