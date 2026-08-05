@@ -1049,11 +1049,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       if (cancelled) return
       const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 418, 288, 16)
       if (cancelled) return
-      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 481, 288, 24)
+      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 577, 288, 24)
       if (cancelled) return
       const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 481, 288, 10)
       if (cancelled) return
-      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 537, 288, 18)
+      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 565, 288, 18)
       if (cancelled) return
       beastFramesRef.current = {
         idle: beastIdleFrames,
