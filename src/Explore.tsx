@@ -232,6 +232,14 @@ const BEAST_ATTACK_ANIM_SPEED = BEAST_ATTACK_STRIKE_FRAME / (60 * (WINDUP_MS / 1
 const ENEMY_ATTACK_INTERVAL = 2
 const ENEMY_ATTACK_DAMAGE = 14
 
+// Hurt-анимация зверя (12 кадров, 600×288, loop=НЕТ) — короткий читаемый
+// хитстан. Скорость выбрана напрямую (~0.3-0.4с ощущается коротко и чётко),
+// а сама длительность хитстана (ENEMY_HURT_MS) ЖЁСТКО выведена из неё же
+// (12 кадров при этой скорости), а не задана вторым независимым числом —
+// иначе таймер и анимация могли бы разъехаться, если один поправят без другого.
+const BEAST_HURT_ANIM_SPEED = 0.57
+const ENEMY_HURT_MS = (1000 * 12) / (60 * BEAST_HURT_ANIM_SPEED) // ≈351мс
+
 // Шаг B "умного врага" — радиус агро. Враг преследует, только пока игрок И в
 // пределах AGGRO_RANGE_TILES по X, И примерно на том же этаже по Y (разница
 // не больше FLOOR_Y_TOLERANCE тайлов — допуск нужен для мелких перепадов в
@@ -329,6 +337,11 @@ type Enemy = {
   // не бить каждый тик, пока currentFrame удерживается на/после strike-кадра.
   attackAnimPlaying: boolean
   attackHitApplied: boolean
+  // >0 — идёт hurt (хитстан от урона игрока), в мс, тикает вниз в ticker'е.
+  // Главнее attack (перебивает/отменяет замах, см. applyAttackHit) и
+  // блокирует новый windup/движение, пока не истечёт — см. приоритет в
+  // ticker'е (hurt > attack > idle/walk), тот же принцип, что у героя.
+  hurtTimer: number
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -1052,7 +1065,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       if (cancelled) return
       const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 600, 288, 24)
       if (cancelled) return
-      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 600, 288, 10)
+      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 600, 288, 12)
       if (cancelled) return
       const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 600, 288, 18)
       if (cancelled) return
@@ -1172,6 +1185,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           sprite,
           attackAnimPlaying: false,
           attackHitApplied: false,
+          hurtTimer: 0,
           hpBarBg,
           hpBarFill,
         }
@@ -1330,6 +1344,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 continue
               }
               redrawEnemyHpBar(enemy)
+              // Хитстан — та же точка, где уменьшается hp (см. описание
+              // задачи). Не трогаем на смертельном ударе (continue выше уже
+              // ушёл из итерации) — death подключим отдельным шагом, hurt не
+              // должен запускаться поверх него. Обрываем текущий замах:
+              // windingUp/windupTimer сбрасываем, attackAnimPlaying гасим —
+              // урон по игроку в этот замах больше не будет нанесён (strike-
+              // кадр проверяется только пока attackAnimPlaying истинен).
+              enemy.hurtTimer = ENEMY_HURT_MS
+              enemy.windingUp = false
+              enemy.windupTimer = 0
+              enemy.attackAnimPlaying = false
             }
           }
         }
@@ -1608,74 +1633,80 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= FLOOR_Y_TOLERANCE * TILE_SIZE
           const aggroed = dist <= AGGRO_RANGE_TILES * TILE_SIZE && sameFloor
 
-          if (!enemy.windingUp) {
-            if (aggroed) {
-              // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля, падение с
-              // края разрешено (см. физику выше — leadingX тут не проверяет
-              // пол под ногами вообще, это делает общий gravity-блок).
-              if (!reachedStopDist) {
-                const dir = Math.sign(dx)
-                const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
+          // Хитстан (hurt) полностью замораживает эту AI-ветку — не двигается,
+          // не начинает новый windup/атаку, пока не истечёт enemy.hurtTimer
+          // (тикает в блоке визуала ниже). Гравитация/приземление выше этим
+          // не затрагиваются — застывает только решение "двигаться/бить".
+          if (enemy.hurtTimer <= 0) {
+            if (!enemy.windingUp) {
+              if (aggroed) {
+                // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля, падение с
+                // края разрешено (см. физику выше — leadingX тут не проверяет
+                // пол под ногами вообще, это делает общий gravity-блок).
+                if (!reachedStopDist) {
+                  const dir = Math.sign(dx)
+                  const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
+                  const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
+                  const hitWall =
+                    isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
+                    isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
+                    isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
+                  if (!hitWall) {
+                    enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
+                  }
+                  if (dir !== 0) enemy.facing = dir as 1 | -1
+                }
+              } else {
+                // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
+                // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
+                // ИЛИ у края платформы — в отличие от погони, с края патруля
+                // падать нельзя, доходит до края и разворачивается.
+                const patrolLeftBound = enemy.spawnX - PATROL_RANGE_TILES * TILE_SIZE
+                const patrolRightBound = enemy.spawnX + PATROL_RANGE_TILES * TILE_SIZE
+                const dir = enemy.patrolDir
+                const nextX = enemy.x + dir * ENEMY_PATROL_SPEED * dt
                 const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
+
                 const hitWall =
                   isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
                   isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
                   isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
-                if (!hitWall) {
+                // Край платформы: под клеткой сразу впереди по ходу нет '#'/'='.
+                const footCx = Math.floor(leadingX / TILE_SIZE)
+                const footCy = Math.floor((enemy.y + ENEMY_HEIGHT) / TILE_SIZE)
+                const noFloorAhead = cellFootBlockTop(grid, TILE_SIZE, footCx, footCy) === null
+                const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
+
+                if (reachedBound || hitWall || noFloorAhead) {
+                  enemy.patrolDir = dir > 0 ? -1 : 1
+                } else {
                   enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
                 }
-                if (dir !== 0) enemy.facing = dir as 1 | -1
+                enemy.facing = enemy.patrolDir
+              }
+
+              // Кулдаун считаем ВНИЗ до 0 (не вверх до интервала) — 0 по
+              // умолчанию, поэтому по достижении стоп-дистанции В ПЕРВЫЙ РАЗ
+              // windup стартует НЕМЕДЛЕННО, без паузы "подумать". Кулдаун
+              // появляется только ПОСЛЕ удара (см. ветку windingUp ниже).
+              if (enemy.attackTimer > 0) {
+                enemy.attackTimer = Math.max(0, enemy.attackTimer - ticker.deltaMS / 1000)
+              }
+              if (reachedStopDist && verticalReach && enemy.attackTimer <= 0) {
+                enemy.windingUp = true
+                enemy.windupTimer = 0
               }
             } else {
-              // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
-              // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
-              // ИЛИ у края платформы — в отличие от погони, с края патруля
-              // падать нельзя, доходит до края и разворачивается.
-              const patrolLeftBound = enemy.spawnX - PATROL_RANGE_TILES * TILE_SIZE
-              const patrolRightBound = enemy.spawnX + PATROL_RANGE_TILES * TILE_SIZE
-              const dir = enemy.patrolDir
-              const nextX = enemy.x + dir * ENEMY_PATROL_SPEED * dt
-              const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
-
-              const hitWall =
-                isSolid(grid, TILE_SIZE, leadingX, enemy.y + 1) ||
-                isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT / 2) ||
-                isSolid(grid, TILE_SIZE, leadingX, enemy.y + ENEMY_HEIGHT - 1)
-              // Край платформы: под клеткой сразу впереди по ходу нет '#'/'='.
-              const footCx = Math.floor(leadingX / TILE_SIZE)
-              const footCy = Math.floor((enemy.y + ENEMY_HEIGHT) / TILE_SIZE)
-              const noFloorAhead = cellFootBlockTop(grid, TILE_SIZE, footCx, footCy) === null
-              const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
-
-              if (reachedBound || hitWall || noFloorAhead) {
-                enemy.patrolDir = dir > 0 ? -1 : 1
-              } else {
-                enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
+              enemy.windupTimer += ticker.deltaMS
+              if (enemy.windupTimer >= WINDUP_MS) {
+                enemy.windingUp = false
+                enemy.windupTimer = 0
+                enemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
+                // Момент удара БОЛЬШЕ НЕ здесь — перенесён на strike-кадр
+                // attack-анимации (см. синк визуала ниже, BEAST_ATTACK_STRIKE_FRAME).
+                // inMeleeReach/dodgeIframeRef проверяются там же, заново, на
+                // момент strike-кадра — здесь ничего не наносим.
               }
-              enemy.facing = enemy.patrolDir
-            }
-
-            // Кулдаун считаем ВНИЗ до 0 (не вверх до интервала) — 0 по
-            // умолчанию, поэтому по достижении стоп-дистанции В ПЕРВЫЙ РАЗ
-            // windup стартует НЕМЕДЛЕННО, без паузы "подумать". Кулдаун
-            // появляется только ПОСЛЕ удара (см. ветку windingUp ниже).
-            if (enemy.attackTimer > 0) {
-              enemy.attackTimer = Math.max(0, enemy.attackTimer - ticker.deltaMS / 1000)
-            }
-            if (reachedStopDist && verticalReach && enemy.attackTimer <= 0) {
-              enemy.windingUp = true
-              enemy.windupTimer = 0
-            }
-          } else {
-            enemy.windupTimer += ticker.deltaMS
-            if (enemy.windupTimer >= WINDUP_MS) {
-              enemy.windingUp = false
-              enemy.windupTimer = 0
-              enemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
-              // Момент удара БОЛЬШЕ НЕ здесь — перенесён на strike-кадр
-              // attack-анимации (см. синк визуала ниже, BEAST_ATTACK_STRIKE_FRAME).
-              // inMeleeReach/dodgeIframeRef проверяются там же, заново, на
-              // момент strike-кадра — здесь ничего не наносим.
             }
           }
 
@@ -1693,12 +1724,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // no-op, если уже играет те же textures (сравнение внутри), так что
           // вызов каждый кадр не дёргает анимацию заново.
           //
-          // attack — ГЛАВНЕЕ idle/walk (проверяется первой): запускается ровно
-          // на входе в windingUp (enemy.windingUp true, attackAnimPlaying ещё
-          // false — единоразовый переход), играется НЕ loop до собственного
-          // конца, который НЕ обязан совпадать с концом windingUp (см.
-          // BEAST_ATTACK_* выше — анимация длиннее WINDUP_MS на follow-through).
-          // Пока attackAnimPlaying — idle/walk-ветка ниже вообще не выполняется.
+          // Приоритет анимаций (сверху вниз, как у героя): hurt > attack >
+          // idle/walk. hurt — САМАЯ высокая (перебивает/блокирует attack, см.
+          // enemy.hurtTimer сброс windingUp/attackAnimPlaying в applyAttackHit
+          // выше), тикает вниз здесь же; пока идёт — attack/idle/walk-ветки
+          // ниже не выполняются вообще. death подключим отдельно — важно,
+          // чтобы hurt тогда не перезапускался поверх него (не трогаем здесь).
+          //
+          // attack — играется ОДИН раз с входа в windingUp (enemy.windingUp
+          // true, attackAnimPlaying ещё false — единоразовый переход), конец
+          // НЕ обязан совпадать с концом windingUp (см. BEAST_ATTACK_* выше —
+          // анимация длиннее WINDUP_MS на follow-through). Пока
+          // attackAnimPlaying — idle/walk-ветка не выполняется.
           //
           // idle/walk — по факту движения по X в этом кадре (prevEnemyX,
           // снятый ДО AI-блока выше): двигался — walk, стоял (включая паузу
@@ -1708,39 +1745,45 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           //
           // Флип — по enemy.facing (тот же источник, что и для rect.scale.x
           // выше, и для самого перемещения в AI-блоке), применяется ВСЕГДА,
-          // независимо от того, какая ветка (attack/idle/walk) сработала выше.
+          // независимо от того, какая ветка сработала выше (включая hurt) —
+          // текущее facing не меняется, просто применяется повторно.
           // Арт зверя смотрит ВЛЕВО по умолчанию, поэтому facing===-1 (влево)
           // — БЕЗ зеркала, facing===1 (вправо) — зеркалим. Стоя на месте facing
           // не трогается AI-блоком (кроме патруля, где он всегда = patrolDir),
           // поэтому последнее направление само сохраняется без доп. логики.
           const beastFrames = beastFramesRef.current
           if (beastFrames) {
-            if (enemy.windingUp && !enemy.attackAnimPlaying) {
-              enemy.attackAnimPlaying = true
-              enemy.attackHitApplied = false
-              playSpriteAnim(enemy.sprite, beastFrames.attack, BEAST_ATTACK_ANIM_SPEED, false)
-            }
-
-            if (enemy.attackAnimPlaying) {
-              // Момент удара — ровно на strike-кадре анимации (перенесено из
-              // конца WINDUP_MS выше). inMeleeReach/dodgeIframeRef — ТЕ ЖЕ
-              // проверки и числа, что и раньше, просто читаются здесь и
-              // сейчас (свежие значения этого тика), а не в конце windup.
-              if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= BEAST_ATTACK_STRIKE_FRAME) {
-                enemy.attackHitApplied = true
-                if (inMeleeReach && dodgeIframeRef.current <= 0) {
-                  takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
-                }
-              }
-              if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {
-                enemy.attackAnimPlaying = false // доиграла — со следующего тика idle/walk
-              }
+            if (enemy.hurtTimer > 0) {
+              enemy.hurtTimer = Math.max(0, enemy.hurtTimer - ticker.deltaMS)
+              playSpriteAnim(enemy.sprite, beastFrames.hurt, BEAST_HURT_ANIM_SPEED, false)
             } else {
-              const enemyMoving = enemy.x !== prevEnemyX
-              if (enemyMoving) {
-                playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? WALK_ANIM_CHASE : WALK_ANIM_PATROL, true)
+              if (enemy.windingUp && !enemy.attackAnimPlaying) {
+                enemy.attackAnimPlaying = true
+                enemy.attackHitApplied = false
+                playSpriteAnim(enemy.sprite, beastFrames.attack, BEAST_ATTACK_ANIM_SPEED, false)
+              }
+
+              if (enemy.attackAnimPlaying) {
+                // Момент удара — ровно на strike-кадре анимации (перенесено из
+                // конца WINDUP_MS выше). inMeleeReach/dodgeIframeRef — ТЕ ЖЕ
+                // проверки и числа, что и раньше, просто читаются здесь и
+                // сейчас (свежие значения этого тика), а не в конце windup.
+                if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= BEAST_ATTACK_STRIKE_FRAME) {
+                  enemy.attackHitApplied = true
+                  if (inMeleeReach && dodgeIframeRef.current <= 0) {
+                    takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
+                  }
+                }
+                if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {
+                  enemy.attackAnimPlaying = false // доиграла — со следующего тика idle/walk
+                }
               } else {
-                playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+                const enemyMoving = enemy.x !== prevEnemyX
+                if (enemyMoving) {
+                  playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? WALK_ANIM_CHASE : WALK_ANIM_PATROL, true)
+                } else {
+                  playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+                }
               }
             }
             enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
