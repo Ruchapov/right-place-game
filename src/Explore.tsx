@@ -1043,17 +1043,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
 
       // Кадры зверя — тот же loadSheetFrames, 12 колонок в ряд, грузятся ОДИН
-      // раз (не на каждого врага кластера). Высота клетки везде 288, ширина —
-      // своя у каждой анимации (walk и death отличаются от idle/attack/hurt).
-      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 481, 288, 24)
+      // раз (не на каждого врага кластера). Все 5 листов пересобраны в единую
+      // клетку 600×288 с одинаковой посадкой — cellW/cellH теперь одни и те
+      // же для всех анимаций (раньше у attack/walk/death была своя ширина).
+      const beastIdleFrames = await loadSheetFrames(BEAST_IDLE_SRC, 600, 288, 24)
       if (cancelled) return
-      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 418, 288, 16)
+      const beastWalkFrames = await loadSheetFrames(BEAST_WALK_SRC, 600, 288, 16)
       if (cancelled) return
-      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 577, 288, 24)
+      const beastAttackFrames = await loadSheetFrames(BEAST_ATTACK_SRC, 600, 288, 24)
       if (cancelled) return
-      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 481, 288, 10)
+      const beastHurtFrames = await loadSheetFrames(BEAST_HURT_SRC, 600, 288, 10)
       if (cancelled) return
-      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 565, 288, 18)
+      const beastDeathFrames = await loadSheetFrames(BEAST_DEATH_SRC, 600, 288, 18)
       if (cancelled) return
       beastFramesRef.current = {
         idle: beastIdleFrames,
@@ -1131,7 +1132,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // и флип по направлению будут отдельным шагом.
         const beastFrames = beastFramesRef.current!
         const sprite = new AnimatedSprite(beastFrames.idle)
-        sprite.anchor.set(0.506, 0.971) // торс по центру, ноги — низ хитбокса
+        sprite.anchor.set(0.494, 0.972) // торс по центру, ноги — низ хитбокса
         sprite.scale.set(BEAST_CELL_RENDER_H / beastFrames.idle[0].height)
         sprite.roundPixels = false
         sprite.animationSpeed = BEAST_IDLE_ANIM_SPEED
