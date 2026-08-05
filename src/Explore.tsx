@@ -70,9 +70,9 @@ const BEAST_IDLE_ANIM_SPEED = 10 / 60
 // заметно чаще — выбор между ними идёт по уже существующему признаку
 // aggroed (тот же, что решает патруль/погоня в самом AI, см. ticker).
 const WALK_ANIM_PATROL = 0.2
-// Поднято вместе с ENEMY_CHASE_SPEED (1.12→1.6, ×1.43), чтобы темп лап не
-// "пробуксовывал" при более быстром перемещении в погоне: 0.4×1.43≈0.57.
-const WALK_ANIM_CHASE = 0.57
+// Поднято вместе с ENEMY_CHASE_SPEED (сейчас 1.6→1.9, ×1.19), чтобы темп лап
+// не "пробуксовывал" при более быстром перемещении в погоне: 0.57×1.19≈0.68.
+const WALK_ANIM_CHASE = 0.68
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -177,13 +177,10 @@ const ENEMY_MAX_HP = 120
 const ENEMY_HP_BAR_HEIGHT = 8
 const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
 // Спрайт зверя (BEAST_CELL_RENDER_H) заметно выше хитбокса (ENEMY_HEIGHT) —
-// его верх находится примерно на BEAST_CELL_RENDER_H*0.971 (anchor.y в
-// spawnEnemy) px над точкой опоры, а хитбокс — только на ENEMY_HEIGHT.
-// Разница (126*0.971 - 64 ≈ 58) поднимает полоску HP выше верха спрайта, а
-// не в его середину; ENEMY_HP_BAR_MARGIN сверху даёт небольшой зазор поверх
-// этого. Подобрано под текущий BEAST_CELL_RENDER_H — если размер зверя ещё
-// поменяют, поправить и это число.
-const ENEMY_HPBAR_OFFSET_Y = 58
+// этот сдвиг поднимает полоску HP выше верха спрайта (спины/головы), а не в
+// его середину; ENEMY_HP_BAR_MARGIN сверху даёт небольшой зазор поверх этого.
+// Было 58 — висело слишком высоко над зверем, уменьшено вживую на глаз.
+const ENEMY_HPBAR_OFFSET_Y = 30
 
 // AI зверя (Шаг 2-2) — числа из Battle.tsx (обычный враг, БЕЗ level-scaling —
 // как и ENEMY_MAX_HP выше, в Explore пока нет level):
@@ -197,7 +194,7 @@ const ENEMY_HPBAR_OFFSET_Y = 58
 // - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
 //   же константа используется и для атаки игрока, и для дальности врага; это
 //   по-прежнему радиус ПОПАДАНИЯ удара, отдельно от ATTACK_STOP_DIST ниже.
-const ENEMY_CHASE_SPEED = 1.6 // было 1.12 — погоня заметно быстрее (см. MOVE_SPEED игрока ниже)
+const ENEMY_CHASE_SPEED = 1.9 // было 1.6 — погоня ещё быстрее (см. MOVE_SPEED игрока ниже)
 // Шаг C "умного врага" — скорость патруля (когда НЕ агрён), медленнее погони.
 // Зафиксирована ЧИСЛОМ (не как доля от ENEMY_CHASE_SPEED) — при полировке
 // погони её трогать не просили, а множитель от ENEMY_CHASE_SPEED утянул бы
@@ -219,6 +216,18 @@ const ENEMY_PATROL_SPEED = 0.55
 //   windup как пауза "подумать" — эта пауза убрана отдельно, см. ниже.
 const ATTACK_STOP_DIST = 45
 const WINDUP_MS = 650
+
+// Attack-анимация зверя (24 кадра, 481×288, loop=НЕТ) — урон теперь наносится
+// на strike-кадре анимации, а НЕ по истечении WINDUP_MS напрямую (см. ticker,
+// как applyAttackHit у героя привязан к ATTACK_STRIKE_FRAME). Само число
+// WINDUP_MS/урон/дистанция не меняются — подстраивается только скорость
+// проигрывания, чтобы ВРЕМЯ до strike-кадра совпадало с прежним моментом
+// удара (конец WINDUP_MS): BEAST_ATTACK_STRIKE_FRAME кадров при 60 кадров/сек
+// тикере должны занять WINDUP_MS миллисекунд — отсюда animationSpeed ниже.
+// Остаток анимации (24 - strike кадров) после этого — чисто визуальный довод
+// лапы (follow-through), которого раньше не было (урон бил мгновенно).
+const BEAST_ATTACK_STRIKE_FRAME = 13
+const BEAST_ATTACK_ANIM_SPEED = BEAST_ATTACK_STRIKE_FRAME / (60 * (WINDUP_MS / 1000))
 
 const ENEMY_ATTACK_INTERVAL = 2
 const ENEMY_ATTACK_DAMAGE = 14
@@ -312,6 +321,14 @@ type Enemy = {
   facing: 1 | -1
   rect: Graphics
   sprite: AnimatedSprite
+  // attackAnimPlaying — идёт attack-анимация спрайта (запущена на входе в
+  // windingUp, но НЕ обязана закончиться вместе с ним — см. BEAST_ATTACK_*
+  // выше: анимация длиннее WINDUP_MS на follow-through). Пока true — визуал
+  // не переключается на idle/walk, независимо от enemy.windingUp/движения.
+  // attackHitApplied — урон этого замаха уже применён на strike-кадре, чтобы
+  // не бить каждый тик, пока currentFrame удерживается на/после strike-кадра.
+  attackAnimPlaying: boolean
+  attackHitApplied: boolean
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -1152,6 +1169,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           facing: 1,
           rect,
           sprite,
+          attackAnimPlaying: false,
+          attackHitApplied: false,
           hpBarBg,
           hpBarFill,
         }
@@ -1652,15 +1671,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               enemy.windingUp = false
               enemy.windupTimer = 0
               enemy.attackTimer = ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
-              // Момент удара: дистанция (и вертикальный охват) проверяются
-              // ЗАНОВО, здесь и сейчас — не те, что были в начале замаха. Если
-              // игрок отбежал/отпрыгнул за время windup, удар промахивается
-              // (способ уклонения "отход", требование 3а). Радиус попадания —
-              // по-прежнему ATTACK_RANGE (inMeleeReach), НЕ ATTACK_STOP_DIST —
-              // это разный, более широкий радиус, его не трогали.
-              if (inMeleeReach && dodgeIframeRef.current <= 0) {
-                takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
-              }
+              // Момент удара БОЛЬШЕ НЕ здесь — перенесён на strike-кадр
+              // attack-анимации (см. синк визуала ниже, BEAST_ATTACK_STRIKE_FRAME).
+              // inMeleeReach/dodgeIframeRef проверяются там же, заново, на
+              // момент strike-кадра — здесь ничего не наносим.
             }
           }
 
@@ -1678,6 +1692,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // no-op, если уже играет те же textures (сравнение внутри), так что
           // вызов каждый кадр не дёргает анимацию заново.
           //
+          // attack — ГЛАВНЕЕ idle/walk (проверяется первой): запускается ровно
+          // на входе в windingUp (enemy.windingUp true, attackAnimPlaying ещё
+          // false — единоразовый переход), играется НЕ loop до собственного
+          // конца, который НЕ обязан совпадать с концом windingUp (см.
+          // BEAST_ATTACK_* выше — анимация длиннее WINDUP_MS на follow-through).
+          // Пока attackAnimPlaying — idle/walk-ветка ниже вообще не выполняется.
+          //
           // idle/walk — по факту движения по X в этом кадре (prevEnemyX,
           // снятый ДО AI-блока выше): двигался — walk, стоял (включая паузу
           // windingUp перед ударом) — idle. Скорость walk — по aggroed (уже
@@ -1685,18 +1706,41 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // быстрее, в патруле спокойнее.
           //
           // Флип — по enemy.facing (тот же источник, что и для rect.scale.x
-          // выше, и для самого перемещения в AI-блоке). Арт зверя смотрит
-          // ВЛЕВО по умолчанию, поэтому facing===-1 (влево) — БЕЗ зеркала,
-          // facing===1 (вправо) — зеркалим. Стоя на месте facing не трогается
-          // AI-блоком (кроме патруля, где он всегда = patrolDir), поэтому
-          // последнее направление само сохраняется без доп. логики здесь.
+          // выше, и для самого перемещения в AI-блоке), применяется ВСЕГДА,
+          // независимо от того, какая ветка (attack/idle/walk) сработала выше.
+          // Арт зверя смотрит ВЛЕВО по умолчанию, поэтому facing===-1 (влево)
+          // — БЕЗ зеркала, facing===1 (вправо) — зеркалим. Стоя на месте facing
+          // не трогается AI-блоком (кроме патруля, где он всегда = patrolDir),
+          // поэтому последнее направление само сохраняется без доп. логики.
           const beastFrames = beastFramesRef.current
           if (beastFrames) {
-            const enemyMoving = enemy.x !== prevEnemyX
-            if (enemyMoving) {
-              playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? WALK_ANIM_CHASE : WALK_ANIM_PATROL, true)
+            if (enemy.windingUp && !enemy.attackAnimPlaying) {
+              enemy.attackAnimPlaying = true
+              enemy.attackHitApplied = false
+              playSpriteAnim(enemy.sprite, beastFrames.attack, BEAST_ATTACK_ANIM_SPEED, false)
+            }
+
+            if (enemy.attackAnimPlaying) {
+              // Момент удара — ровно на strike-кадре анимации (перенесено из
+              // конца WINDUP_MS выше). inMeleeReach/dodgeIframeRef — ТЕ ЖЕ
+              // проверки и числа, что и раньше, просто читаются здесь и
+              // сейчас (свежие значения этого тика), а не в конце windup.
+              if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= BEAST_ATTACK_STRIKE_FRAME) {
+                enemy.attackHitApplied = true
+                if (inMeleeReach && dodgeIframeRef.current <= 0) {
+                  takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
+                }
+              }
+              if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {
+                enemy.attackAnimPlaying = false // доиграла — со следующего тика idle/walk
+              }
             } else {
-              playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+              const enemyMoving = enemy.x !== prevEnemyX
+              if (enemyMoving) {
+                playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? WALK_ANIM_CHASE : WALK_ANIM_PATROL, true)
+              } else {
+                playSpriteAnim(enemy.sprite, beastFrames.idle, BEAST_IDLE_ANIM_SPEED, true)
+              }
             }
             enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
           }
