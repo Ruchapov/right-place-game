@@ -240,6 +240,22 @@ const ENEMY_ATTACK_DAMAGE = 14
 const BEAST_HURT_ANIM_SPEED = 0.57
 const ENEMY_HURT_MS = (1000 * 12) / (60 * BEAST_HURT_ANIM_SPEED) // ≈351мс
 
+// "Точка невозврата" замаха — защита от stun-lock (см. применение в
+// applyAttackHit): доля прогресса windup (0 = начало замаха, 1 = момент
+// удара, см. enemy.windupTimer/WINDUP_MS), после которой урон по врагу
+// больше НЕ прерывает его замах — тот доводит удар до конца как обычно.
+// До этой точки — прерывает, как раньше. Крутить по ощущению.
+const POISE_POINT = 0.25
+
+// Накопительный стан-резист — гарантия, что зверь прорвётся в атаку, даже
+// если игрок ритмично сбивает КАЖДЫЙ замах в ранней фазе (POISE_POINT сам по
+// себе этого не решает — см. описание задачи). После STUN_LIMIT сбитых замахов
+// подряд враг получает POISE_IMMUNE_MS иммунитета к прерыванию (см. применение
+// в applyAttackHit/ticker) — на это время он ведёт себя как в поздней фазе
+// (COMMIT), независимо от POISE_POINT.
+const STUN_LIMIT = 2
+const POISE_IMMUNE_MS = 1200
+
 // Шаг B "умного врага" — радиус агро. Враг преследует, только пока игрок И в
 // пределах AGGRO_RANGE_TILES по X, И примерно на том же этаже по Y (разница
 // не больше FLOOR_Y_TOLERANCE тайлов — допуск нужен для мелких перепадов в
@@ -342,6 +358,12 @@ type Enemy = {
   // блокирует новый windup/движение, пока не истечёт — см. приоритет в
   // ticker'е (hurt > attack > idle/walk), тот же принцип, что у героя.
   hurtTimer: number
+  // Накопительный стан-резист (см. STUN_LIMIT/POISE_IMMUNE_MS выше):
+  // stunCount — сколько замахов подряд сбито (CANCEL) без единого успешного
+  // удара; poiseImmuneTimer — >0, пока действует иммунитет к прерыванию
+  // (тикает вниз в ticker'е, перекрывает проверку POISE_POINT в applyAttackHit).
+  stunCount: number
+  poiseImmuneTimer: number
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -1186,6 +1208,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           attackAnimPlaying: false,
           attackHitApplied: false,
           hurtTimer: 0,
+          stunCount: 0,
+          poiseImmuneTimer: 0,
           hpBarBg,
           hpBarFill,
         }
@@ -1344,17 +1368,42 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 continue
               }
               redrawEnemyHpBar(enemy)
-              // Хитстан — та же точка, где уменьшается hp (см. описание
-              // задачи). Не трогаем на смертельном ударе (continue выше уже
-              // ушёл из итерации) — death подключим отдельным шагом, hurt не
-              // должен запускаться поверх него. Обрываем текущий замах:
-              // windingUp/windupTimer сбрасываем, attackAnimPlaying гасим —
-              // урон по игроку в этот замах больше не будет нанесён (strike-
-              // кадр проверяется только пока attackAnimPlaying истинен).
-              enemy.hurtTimer = ENEMY_HURT_MS
-              enemy.windingUp = false
-              enemy.windupTimer = 0
-              enemy.attackAnimPlaying = false
+              // Хитстан — та же точка, где уменьшается hp. Не трогаем на
+              // смертельном ударе (continue выше уже ушёл из итерации) —
+              // death подключим отдельным шагом, hurt не должен запускаться
+              // поверх него.
+              //
+              // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
+              // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
+              // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
+              // прерывает — windingUp/windupTimer/attackAnimPlaying НЕ трогаем
+              // вообще, удар доигрывает до strike-кадра и наносит урон как
+              // обычно (см. приоритет анимаций в ticker'е — раз hurtTimer не
+              // выставлен, attack-ветка продолжает идти без изменений). Иначе
+              // (не в замахе, ИЛИ рано в замахе) — прерываем как раньше.
+              //
+              // Накопительный стан-резист (STUN_LIMIT/POISE_IMMUNE_MS) —
+              // гарантия прорыва, даже если игрок ритмично сбивает КАЖДЫЙ
+              // замах в ранней фазе (poiseImmuneTimer>0 перекрывает проверку
+              // POISE_POINT точно так же, как поздняя фаза — ветка COMMIT).
+              const wasWindingUp = enemy.windingUp
+              const windupProgress = wasWindingUp ? enemy.windupTimer / WINDUP_MS : 0
+              const poiseImmune = enemy.poiseImmuneTimer > 0
+              if (!wasWindingUp || (windupProgress < POISE_POINT && !poiseImmune)) {
+                if (wasWindingUp) {
+                  enemy.stunCount += 1
+                  if (enemy.stunCount >= STUN_LIMIT) {
+                    enemy.poiseImmuneTimer = POISE_IMMUNE_MS
+                    enemy.stunCount = 0
+                  }
+                }
+                enemy.hurtTimer = ENEMY_HURT_MS
+                enemy.windingUp = false
+                enemy.windupTimer = 0
+                enemy.attackAnimPlaying = false
+              }
+              // else: поздняя фаза ИЛИ иммунитет — замах не прерываем, зверь
+              // просто дожимает удар до strike-кадра как обычно, без подсветки.
             }
           }
         }
@@ -1770,6 +1819,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 // сейчас (свежие значения этого тика), а не в конце windup.
                 if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= BEAST_ATTACK_STRIKE_FRAME) {
                   enemy.attackHitApplied = true
+                  enemy.stunCount = 0 // замах дошёл до удара — сброс счётчика стан-резиста
                   if (inMeleeReach && dodgeIframeRef.current <= 0) {
                     takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
                   }
@@ -1787,6 +1837,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               }
             }
             enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
+            // Накопительный стан-резист (см. STUN_LIMIT/POISE_IMMUNE_MS) —
+            // иммунитет тикает вниз каждый кадр независимо от анимации.
+            enemy.poiseImmuneTimer = Math.max(0, enemy.poiseImmuneTimer - ticker.deltaMS)
           }
           // Y отрисовки — поверхность тайла под ногами (findGroundSurfaceY),
           // а НЕ низ хитбокса; низ хитбокса — только запасной вариант, когда
