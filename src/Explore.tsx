@@ -240,6 +240,11 @@ const ENEMY_ATTACK_DAMAGE = 14
 const BEAST_HURT_ANIM_SPEED = 0.57
 const ENEMY_HURT_MS = (1000 * 12) / (60 * BEAST_HURT_ANIM_SPEED) // ≈351мс
 
+// Death-анимация зверя (18 кадров, 600×288, 2 ряда, loop=НЕТ) — тяжёлое,
+// небыстрое падение (~0.7-0.9с), НЕ мгновенное. DEATH_HOLD_MS (удержание
+// последнего кадра перед удалением) — тот же общий с героем таймер выше.
+const BEAST_DEATH_ANIM_SPEED = 0.375 // 18 кадров / (60×0.375) = 0.8с
+
 // "Точка невозврата" замаха — защита от stun-lock (см. применение в
 // applyAttackHit): доля прогресса windup (0 = начало замаха, 1 = момент
 // удара, см. enemy.windupTimer/WINDUP_MS), после которой урон по врагу
@@ -364,6 +369,13 @@ type Enemy = {
   // (тикает вниз в ticker'е, перекрывает проверку POISE_POINT в applyAttackHit).
   stunCount: number
   poiseImmuneTimer: number
+  // dead — высший приоритет (перебивает hurt/attack/windup немедленно, см.
+  // applyAttackHit), больше НЕ сбрасывается назад. deathHoldTimer — копится
+  // ПОСЛЕ того, как death-анимация доиграла (мс, см. DEATH_HOLD_MS выше) —
+  // пока не истечёт, враг остаётся в enemiesRef.current (только визуал),
+  // затем удаляется/декрементирует remainingEnemies события, как раньше.
+  dead: boolean
+  deathHoldTimer: number
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -1210,6 +1222,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           hurtTimer: 0,
           stunCount: 0,
           poiseImmuneTimer: 0,
+          dead: false,
+          deathHoldTimer: 0,
           hpBarBg,
           hpBarFill,
         }
@@ -1339,6 +1353,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       function applyAttackHit() {
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
+          // Мёртвый враг (death уже играет/держит кадр) — хиты по нему больше
+          // ничего не делают: не hurt, не поднимают stunCount, не бьют повторно.
+          if (enemy.dead) continue
           if (
             attackHitboxRef.current &&
             enemy.lastHitSwingId !== attackSwingIdRef.current
@@ -1353,25 +1370,23 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               enemy.lastHitSwingId = attackSwingIdRef.current
               enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
               if (enemy.hp <= 0) {
-                worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
-                enemy.rect.destroy()
-                enemy.sprite.destroy()
-                enemy.hpBarBg.destroy()
-                enemy.hpBarFill.destroy()
-                enemiesRef.current.splice(i, 1)
-                i--
-                const ownerEvent = eventsRef.current[enemy.eventIndex]
-                if (ownerEvent) {
-                  ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
-                  if (ownerEvent.remainingEnemies <= 0) closeEvent(enemy.eventIndex)
+                // Смерть — высший приоритет, перебивает hurt/attack/windup
+                // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
+                // основной цикл врагов (см. ticker ниже) — ждём, пока death
+                // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
+                enemy.dead = true
+                redrawEnemyHpBar(enemy) // пустая полоса
+                const beastFrames = beastFramesRef.current
+                if (beastFrames) {
+                  playSpriteAnim(enemy.sprite, beastFrames.death, BEAST_DEATH_ANIM_SPEED, false)
                 }
+                enemy.deathHoldTimer = 0
                 continue
               }
               redrawEnemyHpBar(enemy)
               // Хитстан — та же точка, где уменьшается hp. Не трогаем на
-              // смертельном ударе (continue выше уже ушёл из итерации) —
-              // death подключим отдельным шагом, hurt не должен запускаться
-              // поверх него.
+              // смертельном ударе (continue выше уже ушёл из итерации, см.
+              // enemy.dead-ветку) — hurt никогда не запускается поверх death.
               //
               // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
               // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
@@ -1632,6 +1647,40 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // (takeDamageRef), отдельно считать не нужно.
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
+
+          // Death — высший приоритет (death > hurt > attack > walk/idle):
+          // мёртвый враг ПОЛНОСТЬЮ пропускает физику/AI/hurt/attack/idle-walk
+          // ниже (не двигается, не бьёт, не сталкивается с игроком — только
+          // визуал). Позиция спрайта не трогается — падение уже "зашито" в
+          // кадры, персонаж остаётся там, где умер (см. spawnEnemy/anchor).
+          // Сама death-анимация запущена в applyAttackHit (playSpriteAnim),
+          // здесь только ждём её конца + DEATH_HOLD_MS удержания, потом —
+          // та же очистка/декремент remainingEnemies/closeEvent, что раньше
+          // срабатывала СРАЗУ на смертельном ударе.
+          if (enemy.dead) {
+            const beastFrames = beastFramesRef.current
+            const deathDone =
+              beastFrames && (enemy.sprite.currentFrame >= beastFrames.death.length - 1 || !enemy.sprite.playing)
+            if (deathDone) {
+              enemy.deathHoldTimer += ticker.deltaMS
+              if (enemy.deathHoldTimer >= DEATH_HOLD_MS) {
+                worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
+                enemy.rect.destroy()
+                enemy.sprite.destroy()
+                enemy.hpBarBg.destroy()
+                enemy.hpBarFill.destroy()
+                enemiesRef.current.splice(i, 1)
+                i--
+                const ownerEvent = eventsRef.current[enemy.eventIndex]
+                if (ownerEvent) {
+                  ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
+                  if (ownerEvent.remainingEnemies <= 0) closeEvent(enemy.eventIndex)
+                }
+              }
+            }
+            continue
+          }
+
           // Снимок X ДО AI-блока ниже — используется только для определения
           // "враг фактически сдвинулся по X в этом кадре" (анимация idle/walk,
           // см. синк визуала ниже), саму AI-логику не дублирует и не меняет.
@@ -1773,12 +1822,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // no-op, если уже играет те же textures (сравнение внутри), так что
           // вызов каждый кадр не дёргает анимацию заново.
           //
-          // Приоритет анимаций (сверху вниз, как у героя): hurt > attack >
-          // idle/walk. hurt — САМАЯ высокая (перебивает/блокирует attack, см.
-          // enemy.hurtTimer сброс windingUp/attackAnimPlaying в applyAttackHit
-          // выше), тикает вниз здесь же; пока идёт — attack/idle/walk-ветки
-          // ниже не выполняются вообще. death подключим отдельно — важно,
-          // чтобы hurt тогда не перезапускался поверх него (не трогаем здесь).
+          // Приоритет анимаций (сверху вниз, как у героя): death > hurt >
+          // attack > idle/walk. death обрабатывается ВЫШЕ, отдельной веткой
+          // enemy.dead с ранним continue (см. начало цикла) — сюда мёртвый
+          // враг вообще не доходит, поэтому hurt никогда не запускается
+          // поверх death. hurt — следующая по приоритету (перебивает/
+          // блокирует attack, см. enemy.hurtTimer сброс windingUp/
+          // attackAnimPlaying в applyAttackHit выше), тикает вниз здесь же;
+          // пока идёт — attack/idle/walk-ветки ниже не выполняются вообще.
           //
           // attack — играется ОДИН раз с входа в windingUp (enemy.windingUp
           // true, attackAnimPlaying ещё false — единоразовый переход), конец
