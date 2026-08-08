@@ -2586,16 +2586,28 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         {/* Движение — левый блок */}
         <button
           aria-label="Влево"
-          onPointerDown={() => { dirRef.current = -1 }}
-          onPointerUp={() => { dirRef.current = 0 }}
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            dirRef.current = -1
+          }}
+          onPointerUp={(e) => {
+            dirRef.current = 0
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
           onPointerLeave={() => { dirRef.current = 0 }}
-          onPointerCancel={() => { dirRef.current = 0 }}
+          onPointerCancel={(e) => {
+            dirRef.current = 0
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
+          onLostPointerCapture={() => { dirRef.current = 0 }}
           style={{
             position: 'absolute', left: 23, bottom: 12, width: 52, height: 52,
             borderRadius: '50%', border: '1px solid #3A3344',
             background: '#221E2B', color: '#EDE7F2', fontSize: 20,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none',
             pointerEvents: 'all',
           }}
         >
@@ -2603,16 +2615,28 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         </button>
         <button
           aria-label="Вправо"
-          onPointerDown={() => { dirRef.current = 1 }}
-          onPointerUp={() => { dirRef.current = 0 }}
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            dirRef.current = 1
+          }}
+          onPointerUp={(e) => {
+            dirRef.current = 0
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
           onPointerLeave={() => { dirRef.current = 0 }}
-          onPointerCancel={() => { dirRef.current = 0 }}
+          onPointerCancel={(e) => {
+            dirRef.current = 0
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
+          onLostPointerCapture={() => { dirRef.current = 0 }}
           style={{
             position: 'absolute', left: 90, bottom: 12, width: 52, height: 52,
             borderRadius: '50%', border: '1px solid #3A3344',
             background: '#221E2B', color: '#EDE7F2', fontSize: 20,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none',
             pointerEvents: 'all',
           }}
         >
@@ -2657,7 +2681,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 border-radius:50%; border:1px solid #3A3344;
                 background:#221E2B; color:#EDE7F2; font-size:16px;
                 display:flex; align-items:center; justify-content:center;
-                touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+                touch-action:none; user-select:none; -webkit-user-select:none;
+                -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
               `
               if (!existing) container.appendChild(el)
             })
@@ -2673,7 +2698,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               border-radius:50%; border:1px solid #3A3344;
               background:#221E2B; color:#EDE7F2; font-size:20px;
               display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+              touch-action:none; user-select:none; -webkit-user-select:none;
+              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
             `
             if (!atkEl) container.appendChild(atk)
 
@@ -2694,7 +2720,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               border-radius:50%; border:1px solid #3A3344;
               background:#221E2B; color:#EDE7F2; font-size:20px;
               display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+              touch-action:none; user-select:none; -webkit-user-select:none;
+              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
             `
             if (!jumpEl) container.appendChild(jump)
 
@@ -2716,23 +2743,45 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               border-radius:50%; border:1px solid #3A3344;
               background:#221E2B; color:#EDE7F2; font-size:13px;
               display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+              touch-action:none; user-select:none; -webkit-user-select:none;
+              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
             `
             if (!potEl) container.appendChild(pot)
 
-            atk.onclick = () => { attackPressedRef.current = true }
-            jump.onclick = () => { jumpPressedRef.current = true }
+            // Разовые кнопки (не удержание): действие срабатывает на
+            // pointerdown (не click/mouseup) — с захватом пойнтера, чтобы
+            // второй одновременный палец на другой кнопке (движение) не
+            // терялся при мультитаче (браузер эмулирует mouse/click только
+            // для первого пальца). pointerdown физически не повторяется при
+            // удержании пальца (в отличие от keydown), так что действие
+            // естественно срабатывает один раз за нажатие — повтор только
+            // после нового pointerdown, т.е. после отпускания.
+            const bindTap = (el: HTMLElement, action: () => void) => {
+              el.onpointerdown = (e) => {
+                e.preventDefault()
+                el.setPointerCapture(e.pointerId)
+                action()
+              }
+              const release = (e: PointerEvent) => {
+                if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+              }
+              el.onpointerup = release
+              el.onpointercancel = release
+            }
+
+            bindTap(atk, () => { attackPressedRef.current = true })
+            bindTap(jump, () => { jumpPressedRef.current = true })
 
             const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
-            if (dodgeEl) dodgeEl.onclick = () => { dodgePressedRef.current = true }
+            if (dodgeEl) bindTap(dodgeEl, () => { dodgePressedRef.current = true })
 
             const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
-            if (skill1El) skill1El.onclick = () => {}
+            if (skill1El) bindTap(skill1El, () => {})
 
             const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
-            if (skill2El) skill2El.onclick = () => {}
+            if (skill2El) bindTap(skill2El, () => {})
 
-            pot.onclick = () => {}
+            bindTap(pot, () => {})
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}
         />
