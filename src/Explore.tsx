@@ -25,8 +25,16 @@ function slotsFileForMap(mapFile: string): string {
 
 const TILE_SIZE = 64
 const PLAYER_COLOR = 0xe0353b
-const PLAYER_WIDTH = TILE_SIZE
-const PLAYER_HEIGHT = TILE_SIZE * 2
+// Финальные размеры хитбоксов — подобраны вживую отладочными слайдерами
+// (убраны, см. историю), захардкожены сюда как обычные const.
+const PLAYER_WIDTH = 54
+const PLAYER_HEIGHT = 128
+// Прыжковый боевой хитбокс (уязвимая зона игрока в воздухе, см.
+// getPlayerCombatBox) — меньше обычного (ноги поджаты в позе прыжка), числа
+// подобраны вживую отладочным тюнером (убран, см. историю).
+const JUMP_HIT_WIDTH = 54
+const JUMP_HIT_HEIGHT = 100
+const JUMP_HIT_OFFSET_Y = 40
 
 // Визуал героя (спрайт поверх хитбокса-прямоугольника — см. HERO_IDLE_SRC
 // ниже). Хитбокс/физика игрока (PLAYER_WIDTH/PLAYER_HEIGHT выше) НЕ меняются
@@ -150,14 +158,18 @@ const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за к
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
 
-// Атака игрока — те же ПРАВИЛА И ЧИСЛА, что в Battle.tsx (не переизобретаем):
-// ATTACK_RANGE=70, ATTACK_DAMAGE=15+floor(strength/2), ATTACK_COOLDOWN=0.5с
-// (там cooldownLeft тоже тикает в секундах через ticker.deltaMS/1000).
+// Атака игрока — изначально те же ПРАВИЛА И ЧИСЛА, что в Battle.tsx (общая
+// ATTACK_RANGE=70 на игрока и врага), позже РАЗДЕЛЕНА на два независимых
+// значения (подобраны вживую отладочными слайдерами, см. историю) —
+// PLAYER_ATTACK_RANGE для хитбокса атаки игрока, ENEMY_ATTACK_RANGE для
+// inMeleeReach (дальность удара врага). ATTACK_DAMAGE=15+floor(strength/2),
+// ATTACK_COOLDOWN=0.5с (там cooldownLeft тоже тикает в секундах через
+// ticker.deltaMS/1000).
+const PLAYER_ATTACK_RANGE = 56
 // ATTACK_ACTIVE_MS — НОВОЕ, в Battle.tsx нет: там урон применяется мгновенно
 // в момент нажатия (нет врага, по которому проверять позже), а тут хитбоксу
 // нужно продержаться хоть сколько-то кадров, чтобы следующий шаг (враг/сундук)
 // успел его проверить.
-const ATTACK_RANGE = 70
 const ATTACK_COOLDOWN = 0.5
 const ATTACK_ACTIVE_MS = 150
 
@@ -166,10 +178,21 @@ const ATTACK_ACTIVE_MS = 150
 // PixiJS-спрайта на весь экран боя, с тайлами Explore не сравнить напрямую),
 // а по описанию "шире игрока, приземистый" (см. CLAUDE.md, Враг №1 "Зверь" —
 // тяжёлый сгорбленный четвероногий монстр): шире игрока (1 тайл), ниже его
-// (2 тайла).
-const ENEMY_WIDTH = TILE_SIZE * 1.5
-const ENEMY_HEIGHT = TILE_SIZE
+// (2 тайла). Финальные числа — подобраны вживую отладочными слайдерами.
+const ENEMY_WIDTH = 116
+const ENEMY_HEIGHT = 80
 const ENEMY_COLOR = 0x4a3728
+// ENEMY_ATTACK_RANGE — дальность удара врага (inMeleeReach), см. комментарий
+// про разделение ATTACK_RANGE выше.
+const ENEMY_ATTACK_RANGE = 92
+const PUSH_TOP_MARGIN = 0.35
+// доля высоты врага сверху, которую НЕ считаем телом для бокового упора:
+// если ноги игрока выше этой линии — считаем перепрыгивание, упор не применяем
+const TOUCH_EPS = 4
+// пикселей допуска для bodiesTouchingX — выталкивание ставит игрока РОВНО
+// в edge-to-edge позицию (phys.x + PLAYER_WIDTH === enemy.x), строгое >
+// в этой точке даёт false, замах не стартует (см. диагностику: touch=false
+// при dist=80)
 // BASE_ENEMY_HP обычного (не boss) врага из Battle.tsx — берём как есть, БЕЗ
 // level-scaling (там `Math.round(BASE_ENEMY_HP * (1 + 0.18*(level-1)))` — в
 // Explore пока нет level, это база "как в бою"; см. CLAUDE.md "normal 120HP".
@@ -621,7 +644,12 @@ function isTouchingSpikes(
 // Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
 // если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
 // (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
-function cellHeadBlockBottom(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
+function cellHeadBlockBottom(
+  grid: Grid,
+  tileSize: number,
+  cx: number,
+  cy: number,
+): number | null {
   const width = grid[0]?.length ?? 0
   const height = grid.length
   const cellTop = cy * tileSize
@@ -634,9 +662,14 @@ function cellHeadBlockBottom(grid: Grid, tileSize: number, cx: number, cy: numbe
 }
 
 // Верхняя граница поверхности в клетке (cx,cy) для приземления СВЕРХУ, или
-// null, если клетка не твердь. '#' и '=' — обе твердь, верх полосы совпадает
-// с верхом клетки, поэтому поверхность на одной высоте для обоих символов.
-function cellFootBlockTop(grid: Grid, tileSize: number, cx: number, cy: number): number | null {
+// null, если клетка не твердь. '#' — верх клетки. '=' — тоже верх клетки
+// (полоса начинается от верха, см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
+function cellFootBlockTop(
+  grid: Grid,
+  tileSize: number,
+  cx: number,
+  cy: number,
+): number | null {
   const width = grid[0]?.length ?? 0
   const height = grid.length
   const cellTop = cy * tileSize
@@ -929,6 +962,78 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     attackDamageRef.current = attackDamage
   })
 
+  // Клавиатура — второй способ ввода поверх экранных кнопок (Шаг: keyboard
+  // controls). Дёргает РОВНО те же refs, что и onPointerDown/Up у кнопок выше
+  // (dirRef/jumpPressedRef/attackPressedRef/dodgePressedRef) — никакой отдельной
+  // логики. Скилл1/скилл2/зелье НЕ забинжены: в Explore.tsx для них пока нет
+  // ни кнопок, ни обработчиков (см. "Skills"/"Equipment" в Next Steps).
+  useEffect(() => {
+    // Сравнение по e.code (физическая клавиша), НЕ по e.key (символ, зависящий
+    // от раскладки) — на русской раскладке e.key для буквенных клавиш отдаёт
+    // русскую букву, и case по 'j'/'k' никогда не матчился.
+    function handleKeyDown(e: KeyboardEvent) {
+      switch (e.code) {
+        case 'ArrowLeft':
+        case 'KeyA':
+          dirRef.current = -1
+          if (e.code === 'ArrowLeft') e.preventDefault()
+          break
+        case 'ArrowRight':
+        case 'KeyD':
+          dirRef.current = 1
+          if (e.code === 'ArrowRight') e.preventDefault()
+          break
+        case 'ArrowUp':
+        case 'Space':
+          e.preventDefault()
+          if (e.repeat) return
+          jumpPressedRef.current = true
+          break
+        case 'KeyJ':
+          if (e.repeat) return
+          attackPressedRef.current = true
+          break
+        case 'KeyK':
+          if (e.repeat) return
+          dodgePressedRef.current = true
+          break
+        case 'KeyH':
+          if (e.repeat) return
+          // зелье — заглушка, как и экранная кнопка 🧪 (onclick = () => {}),
+          // логики зелья в Explore пока нет
+          break
+        case 'Digit1':
+          if (e.repeat) return
+          // скилл1 — заглушка, как и экранная кнопка ⚡ (onclick = () => {})
+          break
+        case 'Digit2':
+          if (e.repeat) return
+          // скилл2 — заглушка, как и экранная кнопка 🔥 (onclick = () => {})
+          break
+      }
+    }
+
+    function handleKeyUp(e: KeyboardEvent) {
+      switch (e.code) {
+        case 'ArrowLeft':
+        case 'KeyA':
+          if (dirRef.current === -1) dirRef.current = 0
+          break
+        case 'ArrowRight':
+        case 'KeyD':
+          if (dirRef.current === 1) dirRef.current = 0
+          break
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [])
+
   useEffect(() => {
     let app: Application | null = null
     let cancelled = false
@@ -1048,6 +1153,25 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       player.y = phys.y
       worldContainer.addChild(player)
 
+      // Боевая уязвимая зона игрока с учётом прыжка — на земле совпадает с
+      // обычным хитбоксом (PLAYER_WIDTH×PLAYER_HEIGHT), в воздухе
+      // (!phys.onGround) — уменьшенный бокс по корпусу (ноги поджаты в позе
+      // прыжка), центрированный по X и смещённый по Y (числа подобраны вживую
+      // отладочным тюнером, см. историю). Вызывать ЗАНОВО в каждом боевом
+      // месте (не кэшировать один раз на кадр/итерацию врага) — phys.x может
+      // измениться в течение кадра из-за бокового упора игрок↔враг, который
+      // сам читает этот же бокс.
+      function getPlayerCombatBox() {
+        if (phys.onGround) {
+          return { x: phys.x, y: phys.y, w: PLAYER_WIDTH, h: PLAYER_HEIGHT }
+        }
+        const w = JUMP_HIT_WIDTH
+        const h = JUMP_HIT_HEIGHT
+        const x = phys.x + (PLAYER_WIDTH - w) / 2
+        const y = phys.y + JUMP_HIT_OFFSET_Y
+        return { x, y, w, h }
+      }
+
       // Визуал героя — AnimatedSprite поверх хитбокса. Только idle в этом
       // шаге (run/attack/jump/hurt/death — отдельно). Кадры режутся из
       // idle.png: 12 колонок в ряд (см. loadSheetFrames), клетка 674×512 —
@@ -1141,7 +1265,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // анимацию тем же способом, что и герой выше. Герой playAnim() не
       // трогаем — оба существуют параллельно.
       function playSpriteAnim(sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) {
-        if (sprite.textures === frames) return
+        if (sprite.textures === frames) {
+          // Тот же набор кадров (напр. walk и в патруле, и в погоне) — не
+          // рестартить анимацию, но скорость обязана следовать за aggroed
+          // на лету, иначе застревает на значении последней СМЕНЫ кадров
+          // (idle→walk/hurt→walk), а не текущего состояния (см. баг).
+          if (sprite.animationSpeed !== speed) sprite.animationSpeed = speed
+          return
+        }
         sprite.textures = frames
         sprite.loop = loop
         sprite.animationSpeed = speed
@@ -1260,12 +1391,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         return { ...ev, marker, closed: false }
       })
       enemiesRef.current = spawnedEnemies
-
-      // DEBUG ONLY — тонкая рамка зоны удара, пока она активна. Чисто
-      // визуальный слой, на хитбокс/урон не влияет; убрать когда атака
-      // перестанет быть единственной обратной связью игроку об ударе.
-      const attackHitboxGraphics = new Graphics()
-      worldContainer.addChild(attackHitboxGraphics)
 
       // Y отрисовки спрайта должен ложиться на РЕАЛЬНУЮ поверхность тайла, а
       // не на низ хитбокса (низ хитбокса — грубый прямоугольник, который сам
@@ -1512,20 +1637,36 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // Удар головой снизу вверх: та же защита от туннелирования —
           // проверяем весь путь [headY, prevHeadY] за кадр. '#' — вся
           // клетка, '=' — только полоса.
-          const prevHeadY = startY // y ДО y += vy*dt (startY захвачен в начале тика)
-          const headY = phys.y
+          // В ПРЫЖКЕ (phys.onGround уже false в этой ветке — vy<0 бывает
+          // только во время взлёта) верх проверки опущен на headOffset=
+          // JUMP_HIT_OFFSET_Y, к макушке прыжковой позы — иначе полный бокс
+          // (128 высотой) торчит головой выше спрайта и упирается в пустоту.
+          // На земле headOffset=0, поведение не меняется (эта ветка на земле
+          // и не выполняется, т.к. vy<0 там не бывает).
+          const headOffset = phys.onGround ? 0 : JUMP_HIT_OFFSET_Y
+          const prevHeadY = startY + headOffset // y ДО y += vy*dt (startY захвачен в начале тика)
+          const headY = phys.y + headOffset
           const pushTo = sweepHeadBlock(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, headY)
           if (pushTo !== null) {
-            phys.y = pushTo
+            phys.y = pushTo - headOffset
             phys.vy = 0
           } else if (
-            isOverlappingAtFrameStart(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, prevHeadY + PLAYER_HEIGHT)
+            // НИЖНЯЯ граница диапазона намеренно НЕ сдвинута (startY +
+            // PLAYER_HEIGHT, как было) — только верхняя поднята на
+            // headOffset. Если ужать и верх, и низ на headOffset, нижняя
+            // граница проверки уезжает в клетку под ногами игрока и rollback
+            // срабатывает каждый кадр прыжка (замораживал игрока на месте,
+            // уже наступали на эти грабли раньше).
+            isOverlappingAtFrameStart(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, prevHeadY, startY + PLAYER_HEIGHT)
           ) {
             // Зашли сбоку под ступень: пересечения границы за кадр не было
             // (голова уже была внутри полосы на старте кадра), sweep выше
             // ничего не нашёл. Откатываем движение вверх за этот кадр —
             // без перепозиционирования по blockBottom, никакого телепорта.
-            phys.y = prevHeadY
+            // Снап возвращает phys.y ровно туда, где он был ДО этого кадра
+            // (startY) — headOffset тут ни при чём, phys.y всегда верх
+            // ПОЛНОГО бокса, а не сдвинутой головы.
+            phys.y = startY
             phys.vy = 0
           }
         }
@@ -1593,8 +1734,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             // дистанции в Battle.tsx), а не каждый кадр активности.
             attackHitboxRef.current =
               facingRef.current === 1
-                ? { x: phys.x + PLAYER_WIDTH, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
-                : { x: phys.x - ATTACK_RANGE, y: phys.y, width: ATTACK_RANGE, height: PLAYER_HEIGHT }
+                ? { x: phys.x + PLAYER_WIDTH, y: phys.y, width: PLAYER_ATTACK_RANGE, height: PLAYER_HEIGHT }
+                : { x: phys.x - PLAYER_ATTACK_RANGE, y: phys.y, width: PLAYER_ATTACK_RANGE, height: PLAYER_HEIGHT }
             // Урон здесь больше НЕ применяется — applyAttackHit() вызывается
             // из блока анимации героя в тикере, на кадре удара ATTACK_STRIKE_FRAME.
             hero.textures = attackFrames
@@ -1609,18 +1750,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           if (attackActiveTimerRef.current <= 0) {
             attackActiveRef.current = false
             // attackHitboxRef НЕ обнуляем здесь: ATTACK_ACTIVE_MS (150мс) —
-            // окно debug-визуализации ниже, оно короче, чем реальный момент
-            // удара по анимации (~200мс на ATTACK_STRIKE_FRAME при
-            // ATTACK_ANIM_SPEED=0.5) — applyAttackHit() должен ещё застать
-            // валидный хитбокс. Хитбокс переживается следующим press'ом.
+            // окно короче, чем реальный момент удара по анимации (~200мс на
+            // ATTACK_STRIKE_FRAME при ATTACK_ANIM_SPEED=0.5) — applyAttackHit()
+            // должен ещё застать валидный хитбокс. Хитбокс переживается
+            // следующим press'ом.
           }
-        }
-
-        // DEBUG ONLY — визуализация зоны удара, см. attackHitboxGraphics выше.
-        attackHitboxGraphics.clear()
-        if (attackActiveRef.current && attackHitboxRef.current) {
-          const hb = attackHitboxRef.current
-          attackHitboxGraphics.rect(hb.x, hb.y, hb.width, hb.height).stroke({ width: 2, color: 0xffd700 })
         }
 
         // Dodge игрока: окно неуязвимости от удара врага + кулдаун кнопки,
@@ -1704,15 +1838,23 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             enemy.vy = 0
           }
 
-          const dx = (phys.x + PLAYER_WIDTH / 2) - (enemy.x + ENEMY_WIDTH / 2)
+          // Боевая уязвимая зона игрока (см. getPlayerCombatBox) — на земле
+          // обычный хитбокс, в прыжке уменьшенный бокс по корпусу.
+          // Вычисляется здесь ОДИН раз и переиспользуется ниже (dx/dist,
+          // verticalReach, bodiesTouchingX, push-out) — phys.x до push-out
+          // блока ещё не меняется в этой итерации, так что бокс валиден для
+          // всех них. Для playerInFront на strike-кадре (после push-out)
+          // считается ЗАНОВО отдельно, см. там же.
+          const playerCombatBox = getPlayerCombatBox()
+          const dx = (playerCombatBox.x + playerCombatBox.w / 2) - (enemy.x + ENEMY_WIDTH / 2)
           const dist = Math.abs(dx)
           // Battle.tsx сравнивает только X (там бой на одной 1D-дорожке — по
           // вертикали фигуры всегда совпадают). В Explore игрок может
           // запрыгнуть НАД врагом — если ноги игрока выше головы врага, удар
           // по вертикали физически не должен доставать, иначе "отпрыгнул"
           // (способ уклонения из требования 3а) не работал бы вообще.
-          const verticalReach = phys.y < enemy.y + ENEMY_HEIGHT && phys.y + PLAYER_HEIGHT > enemy.y
-          const inMeleeReach = dist < ATTACK_RANGE && verticalReach
+          const verticalReach = playerCombatBox.y < enemy.y + ENEMY_HEIGHT && playerCombatBox.y + playerCombatBox.h > enemy.y
+          const inMeleeReach = dist < ENEMY_ATTACK_RANGE && verticalReach
 
           // Достиг ли враг стоп-дистанции (~64% ATTACK_RANGE, см. константу
           // выше) — используется И для остановки сближения, И как порог для
@@ -1720,6 +1862,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // у преследования — вертикаль добавляется отдельно, только к
           // windup-гейту, см. verticalReach).
           const reachedStopDist = dist <= ATTACK_STOP_DIST
+          // Альтернатива reachedStopDist: тела в контакте по X (то же
+          // перекрытие, что в блоке выталкивания игрок↔враг). Нужна, т.к.
+          // боковой упор не пускает центры ближе (PLAYER_WIDTH+ENEMY_WIDTH)/2
+          // = 80, а ATTACK_STOP_DIST = 45 — без этой альтернативы windup
+          // никогда не стартовал бы вплотную (см. диагностику: враг просто
+          // пихается, замах не докручивается).
+          const bodiesTouchingX =
+            (playerCombatBox.x + playerCombatBox.w) >= enemy.x - TOUCH_EPS &&
+            playerCombatBox.x <= (enemy.x + ENEMY_WIDTH) + TOUCH_EPS
 
           // Шаг B: агро — проверяется КАЖДЫЙ кадр заново (динамически), только
           // для решения "преследовать по X или стоять на месте". Атаку (ниже)
@@ -1741,7 +1892,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля, падение с
                 // края разрешено (см. физику выше — leadingX тут не проверяет
                 // пол под ногами вообще, это делает общий gravity-блок).
-                if (!reachedStopDist) {
+                // !bodiesTouchingX — не долезать в игрока в паузах между
+                // ударами (attackTimer>0, windup ещё не начался): без этого
+                // враг продолжал лезть вплотную, а боковой упор постоянно
+                // выталкивал игрока обратно ("толкание").
+                if (!reachedStopDist && !bodiesTouchingX) {
                   const dir = Math.sign(dx)
                   const nextX = enemy.x + dir * ENEMY_CHASE_SPEED * dt
                   const leadingX = dir > 0 ? nextX + ENEMY_WIDTH : nextX
@@ -1752,6 +1907,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                   if (!hitWall) {
                     enemy.x = clamp(nextX, 0, worldWidthPx - ENEMY_WIDTH)
                   }
+                  if (dir !== 0) enemy.facing = dir as 1 | -1
+                } else if (bodiesTouchingX) {
+                  // стоит вплотную, не лезет вперёд, но поворачивается лицом к
+                  // игроку, чтобы следующий замах шёл в правильную сторону
+                  // (в т.ч. если игрок забежал за спину) — enemy.x не трогаем.
+                  const dir = Math.sign(dx)
                   if (dir !== 0) enemy.facing = dir as 1 | -1
                 }
               } else {
@@ -1790,7 +1951,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               if (enemy.attackTimer > 0) {
                 enemy.attackTimer = Math.max(0, enemy.attackTimer - ticker.deltaMS / 1000)
               }
-              if (reachedStopDist && verticalReach && enemy.attackTimer <= 0) {
+              if ((reachedStopDist || bodiesTouchingX) && verticalReach && enemy.attackTimer <= 0) {
                 enemy.windingUp = true
                 enemy.windupTimer = 0
               }
@@ -1804,6 +1965,45 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 // attack-анимации (см. синк визуала ниже, BEAST_ATTACK_STRIKE_FRAME).
                 // inMeleeReach/dodgeIframeRef проверяются там же, заново, на
                 // момент strike-кадра — здесь ничего не наносим.
+              }
+            }
+          }
+
+          // Шаг 1 "живой враг = мягкая стена" — боковой упор игрок↔враг,
+          // ТОЛЬКО по X (соскальзывание с макушки — отдельный будущий шаг, не
+          // делаем здесь). Вставлено ПОСЛЕ того, как враг применил движение по
+          // X выше (patrol/chase-ветка) — enemy.x на этот кадр уже финален,
+          // как и phys.x игрока (см. :1558) — упор безопасно накладывать тут.
+          // Мёртвые враги сюда физически не доходят — enemy.dead делает
+          // continue в самом начале итерации цикла, выше по коду.
+          if (verticalReach) {
+            // enemyBodyTop — верх "тела" врага с учётом PUSH_TOP_MARGIN: если
+            // ноги игрока выше этой линии, считаем это перепрыгиванием и упор
+            // не применяем, даже если verticalReach формально true. Гейт и
+            // проверка перекрытия — по playerCombatBox (см. выше), т.к. в
+            // прыжке уязвимая зона меньше обычного хитбокса.
+            const enemyBodyTop = enemy.y + ENEMY_HEIGHT * PUSH_TOP_MARGIN
+            if (playerCombatBox.y + playerCombatBox.h > enemyBodyTop) {
+              const pLeft = playerCombatBox.x
+              const pRight = playerCombatBox.x + playerCombatBox.w
+              const eLeft = enemy.x
+              const eRight = enemy.x + ENEMY_WIDTH
+              const overlapX = pRight > eLeft && pLeft < eRight
+              if (overlapX) {
+                const pCenter = playerCombatBox.x + playerCombatBox.w / 2
+                const eCenter = enemy.x + ENEMY_WIDTH / 2
+                // Выталкиваем РЕАЛЬНУЮ phys.x, но так, чтобы вплотную к врагу
+                // встал КРАЙ БОКСА (playerCombatBox), а не phys.x напрямую —
+                // на земле offsetX=0 (бокс совпадает с phys), в прыжке бокс
+                // центрирован/смещён относительно phys.x (см. getPlayerCombatBox).
+                const offsetX = playerCombatBox.x - phys.x
+                if (pCenter < eCenter) {
+                  phys.x = (enemy.x - playerCombatBox.w) - offsetX
+                } else {
+                  phys.x = (enemy.x + ENEMY_WIDTH) - offsetX
+                }
+                phys.x = clamp(phys.x, 0, worldWidthPx - PLAYER_WIDTH)
+                phys.vx = 0
               }
             }
           }
@@ -1871,7 +2071,25 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
                 if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= BEAST_ATTACK_STRIKE_FRAME) {
                   enemy.attackHitApplied = true
                   enemy.stunCount = 0 // замах дошёл до удара — сброс счётчика стан-резиста
-                  if (inMeleeReach && dodgeIframeRef.current <= 0) {
+                  // inMeleeReach (dist<ATTACK_RANGE) ложно вплотную (dist=80 >
+                  // ATTACK_RANGE=70) — та же рассинхронизация порога, что чинили
+                  // для старта windup через bodiesTouchingX (см. выше). verticalReach
+                  // обязателен отдельно — сохраняет уклонение перепрыгиванием.
+                  // playerInFront — игрок должен быть с той стороны, куда враг
+                  // СМОТРИТ (facing зафиксирован на старте windup, не доворачивается
+                  // в замахе — читаем как есть): обежал за спину — промах.
+                  // Бокс здесь — ЗАНОВО (не playerCombatBox выше по AI-блоку):
+                  // push-out мог сдвинуть phys.x после того, как playerCombatBox
+                  // был посчитан, так что переиспользовать его тут нельзя.
+                  const strikePlayerBox = getPlayerCombatBox()
+                  const playerCenterX = strikePlayerBox.x + strikePlayerBox.w / 2
+                  const enemyCenterX = enemy.x + ENEMY_WIDTH / 2
+                  const playerOnRight = playerCenterX > enemyCenterX
+                  const playerInFront =
+                    (enemy.facing === 1 && playerOnRight) ||
+                    (enemy.facing === -1 && !playerOnRight)
+                  const canHit = (inMeleeReach || bodiesTouchingX) && verticalReach && playerInFront
+                  if (canHit && dodgeIframeRef.current <= 0) {
                     takeDamageRef.current(ENEMY_ATTACK_DAMAGE)
                   }
                 }
@@ -2360,16 +2578,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         </div>
       )}
 
-      <div
-        style={{
-          position: 'fixed',
-          left: 16,
-          bottom: 'calc(16px + env(safe-area-inset-bottom))',
-          zIndex: 1001,
-          display: 'flex',
-          gap: 12,
-        }}
-      >
+      {/* Экранные кнопки управления — компактная раскладка в стиле Battle.tsx
+          (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
+          refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
+          dodgePressedRef) — меняется только вид, не способ ввода. */}
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 178, zIndex: 1001, pointerEvents: 'none' }}>
+        {/* Движение — левый блок */}
         <button
           aria-label="Влево"
           onPointerDown={() => { dirRef.current = -1 }}
@@ -2377,19 +2591,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           onPointerLeave={() => { dirRef.current = 0 }}
           onPointerCancel={() => { dirRef.current = 0 }}
           style={{
-            width: 72,
-            height: 72,
-            borderRadius: 12,
-            background: '#221E2B',
-            border: '1px solid #3A3344',
-            color: '#EDE7F2',
-            fontSize: 28,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
-            WebkitUserSelect: 'none',
+            position: 'absolute', left: 23, bottom: 12, width: 52, height: 52,
+            borderRadius: '50%', border: '1px solid #3A3344',
+            background: '#221E2B', color: '#EDE7F2', fontSize: 20,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+            pointerEvents: 'all',
           }}
         >
           ◀
@@ -2401,102 +2608,135 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           onPointerLeave={() => { dirRef.current = 0 }}
           onPointerCancel={() => { dirRef.current = 0 }}
           style={{
-            width: 72,
-            height: 72,
-            borderRadius: 12,
-            background: '#221E2B',
-            border: '1px solid #3A3344',
-            color: '#EDE7F2',
-            fontSize: 28,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            touchAction: 'none',
-            userSelect: 'none',
-            WebkitUserSelect: 'none',
+            position: 'absolute', left: 90, bottom: 12, width: 52, height: 52,
+            borderRadius: '50%', border: '1px solid #3A3344',
+            background: '#221E2B', color: '#EDE7F2', fontSize: 20,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+            pointerEvents: 'all',
           }}
         >
           ▶
         </button>
+
+        {/* Правый блок — атака/dodge/скиллы/прыжок/зелье через JS в
+            ref-колбэке, та же техника и геометрия, что в Battle.tsx.
+            skill1/skill2/зелье — визуальные заглушки без логики (в Explore
+            скиллов и зелий пока нет). */}
+        <div
+          ref={(container) => {
+            if (!container) return
+            const W = window.innerWidth
+            const H = 178
+            const ATK_R = 28
+            const BTN_R = 22
+            const ATK = { x: W - ATK_R - 10, y: H - ATK_R - 10 }
+            const D = ATK_R + BTN_R + 6
+            const cosT = 1 - 2 * Math.pow(BTN_R / D, 2)
+            const theta = Math.acos(cosT)
+            const midAngle = 225 * Math.PI / 180
+            const angles = [midAngle - theta, midAngle, midAngle + theta]
+
+            const fanButtons = [
+              { id: 'dodge', emoji: '🔄', angle: angles[0] },
+              { id: 'skill1', emoji: '⚡', angle: angles[1] },
+              { id: 'skill2', emoji: '🔥', angle: angles[2] },
+            ]
+
+            fanButtons.forEach(b => {
+              const x = ATK.x + D * Math.cos(b.angle)
+              const y = ATK.y + D * Math.sin(b.angle)
+              const existing = container.querySelector(`[data-btn="${b.id}"]`) as HTMLElement
+              const el = existing || document.createElement('button')
+              el.dataset.btn = b.id
+              el.textContent = b.emoji
+              el.style.cssText = `
+                position:absolute;
+                left:${x - BTN_R}px; top:${y - BTN_R}px;
+                width:${BTN_R * 2}px; height:${BTN_R * 2}px;
+                border-radius:50%; border:1px solid #3A3344;
+                background:#221E2B; color:#EDE7F2; font-size:16px;
+                display:flex; align-items:center; justify-content:center;
+                touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+              `
+              if (!existing) container.appendChild(el)
+            })
+
+            const atkEl = container.querySelector('[data-btn="atk"]') as HTMLElement
+            const atk = atkEl || document.createElement('button')
+            atk.dataset.btn = 'atk'
+            atk.textContent = '⚔'
+            atk.style.cssText = `
+              position:absolute;
+              left:${ATK.x - ATK_R}px; top:${ATK.y - ATK_R}px;
+              width:${ATK_R * 2}px; height:${ATK_R * 2}px;
+              border-radius:50%; border:1px solid #3A3344;
+              background:#221E2B; color:#EDE7F2; font-size:20px;
+              display:flex; align-items:center; justify-content:center;
+              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+            `
+            if (!atkEl) container.appendChild(atk)
+
+            // Прыжок — вплотную слева от всего веера (не от центра атаки),
+            // на высоте центра атаки, размер как у атаки.
+            const JMP_R = ATK_R
+            const jumpX = ATK.x - D - JMP_R - 30
+            const jumpY = ATK.y
+
+            const jumpEl = container.querySelector('[data-btn="jump"]') as HTMLElement
+            const jump = jumpEl || document.createElement('button')
+            jump.dataset.btn = 'jump'
+            jump.textContent = '▲'
+            jump.style.cssText = `
+              position:absolute;
+              left:${jumpX - JMP_R}px; top:${jumpY - JMP_R}px;
+              width:${JMP_R * 2}px; height:${JMP_R * 2}px;
+              border-radius:50%; border:1px solid #3A3344;
+              background:#221E2B; color:#EDE7F2; font-size:20px;
+              display:flex; align-items:center; justify-content:center;
+              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+            `
+            if (!jumpEl) container.appendChild(jump)
+
+            // Зелье — над самым правым скиллом веера (angles[2]).
+            const lastSkillX = ATK.x + D * Math.cos(angles[2])
+            const lastSkillY = ATK.y + D * Math.sin(angles[2])
+            const POT_R = 20
+            const potX = lastSkillX
+            const potY = lastSkillY - BTN_R - POT_R - 4
+
+            const potEl = container.querySelector('[data-btn="potion"]') as HTMLElement
+            const pot = potEl || document.createElement('button')
+            pot.dataset.btn = 'potion'
+            pot.textContent = '🧪'
+            pot.style.cssText = `
+              position:absolute;
+              left:${potX - POT_R}px; top:${potY - POT_R}px;
+              width:${POT_R * 2}px; height:${POT_R * 2}px;
+              border-radius:50%; border:1px solid #3A3344;
+              background:#221E2B; color:#EDE7F2; font-size:13px;
+              display:flex; align-items:center; justify-content:center;
+              touch-action:none; user-select:none; pointer-events:all; cursor:pointer;
+            `
+            if (!potEl) container.appendChild(pot)
+
+            atk.onclick = () => { attackPressedRef.current = true }
+            jump.onclick = () => { jumpPressedRef.current = true }
+
+            const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
+            if (dodgeEl) dodgeEl.onclick = () => { dodgePressedRef.current = true }
+
+            const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
+            if (skill1El) skill1El.onclick = () => {}
+
+            const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
+            if (skill2El) skill2El.onclick = () => {}
+
+            pot.onclick = () => {}
+          }}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}
+        />
       </div>
-
-      <button
-        aria-label="Прыжок"
-        onPointerDown={() => { jumpPressedRef.current = true }}
-        style={{
-          position: 'fixed',
-          right: 16,
-          bottom: 'calc(16px + env(safe-area-inset-bottom))',
-          zIndex: 1001,
-          width: 80,
-          height: 80,
-          borderRadius: 16,
-          background: '#221E2B',
-          border: '1px solid #3A3344',
-          color: '#EDE7F2',
-          fontSize: 32,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          touchAction: 'none',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-        }}
-      >
-        ▲
-      </button>
-
-      <button
-        aria-label="Атака"
-        onPointerDown={() => { attackPressedRef.current = true }}
-        style={{
-          position: 'fixed',
-          right: 112,
-          bottom: 'calc(16px + env(safe-area-inset-bottom))',
-          zIndex: 1001,
-          width: 80,
-          height: 80,
-          borderRadius: 16,
-          background: '#221E2B',
-          border: '1px solid #3A3344',
-          color: '#EDE7F2',
-          fontSize: 32,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          touchAction: 'none',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-        }}
-      >
-        ⚔
-      </button>
-
-      <button
-        aria-label="Уклонение"
-        onPointerDown={() => { dodgePressedRef.current = true }}
-        style={{
-          position: 'fixed',
-          right: 112,
-          bottom: 'calc(16px + 80px + 12px + env(safe-area-inset-bottom))',
-          zIndex: 1001,
-          width: 70,
-          height: 70,
-          borderRadius: 16,
-          background: '#221E2B',
-          border: '1px solid #3A3344',
-          color: '#EDE7F2',
-          fontSize: 28,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          touchAction: 'none',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-        }}
-      >
-        🔄
-      </button>
     </div>
   )
 }
