@@ -88,6 +88,25 @@ const WALK_ANIM_PATROL = 0.2
 // не "пробуксовывал" при более быстром перемещении в погоне: 0.57×1.19≈0.68.
 const WALK_ANIM_CHASE = 0.68
 
+// Сундук (reward-событие) — ТОЛЬКО визуал на этом шаге: статичный кадр 0
+// (закрыт) поверх прежнего маркера-хитбокса касания, без анимации открытия
+// и без награды (см. задачу). Путь — тот же способ (BASE_URL), что у героя/
+// зверя выше.
+const CHEST_OPEN_SRC = `${import.meta.env.BASE_URL}assets/objects/Chest_Open.png`
+// Высота отрисовки сундука в пикселях мира (по образцу HERO_DRAW_H/
+// BEAST_CELL_RENDER_H выше). Ширина считается пропорционально от исходных
+// 140×178. Числа подобраны вживую отладочным тюнером (убран, см. историю).
+const CHEST_DRAW_H = 90
+// Доп. вертикальный сдвиг спрайта сверх floorY (findGroundSurfaceY) — тот же
+// смысл, что FOOT_TUNE у героя/врагов, но своё число: сундук ниже к земле.
+const CHEST_OFFSET_Y = 27
+// Ширина хитбокса-стены сундука (мягкая стена по X, см. pushPlayerOutX).
+// Числа подобраны вживую отладочным тюнером (убран, см. историю).
+const CHEST_WALL_W = 40
+// Скорость анимации Chest_Open (открытие ударом, см. applyAttackHit) — было
+// 0.25 "на глаз", слишком быстро.
+const CHEST_ANIM_SPEED = 0.15
+
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
 const RISE_FRAME = 9 // кадр 10 = взлёт
@@ -421,6 +440,19 @@ type Enemy = {
 // одних и тех же Texture-массивов). AI/переключение по состоянию — позже,
 // пока используется только idle.
 type BeastFrames = { idle: Texture[]; walk: Texture[]; attack: Texture[]; hurt: Texture[]; death: Texture[] }
+
+// Сундук (reward-событие) — открывается ударом игрока (см. applyAttackHit),
+// НЕ касанием. opening — идёт анимация Chest_Open (загорожена от повторного
+// запуска, пока true); opened — анимация доиграла, сундук зафиксирован на
+// последнем кадре, событие закрыто. eventIndex — тот же индекс в
+// eventsRef.current, что и у enemy.eventIndex, для closeEvent().
+type Chest = {
+  sprite: AnimatedSprite
+  hitbox: { x: number; y: number; width: number; height: number }
+  opening: boolean
+  opened: boolean
+  eventIndex: number
+}
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
@@ -905,6 +937,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // преследование, windup, удар по игроку, приём урона, смерть).
   const enemiesRef = useRef<Enemy[]>([])
 
+  // Сундуки (reward-события) — по объекту Chest на событие. hitbox считается
+  // ОДИН раз при создании (см. setup), читается каждый кадр в ticker'е для
+  // мягкой стены по X (та же pushPlayerOutX, что и для живых врагов) —
+  // хитбокс остаётся ВСЕГДА, и закрытый, и открытый сундук.
+  const chestsRef = useRef<Chest[]>([])
+
   // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
@@ -1285,6 +1323,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         death: beastDeathFrames,
       }
 
+      // Сундук — тот же loadSheetFrames, что и герой/зверь. Лист ОДНОРЯДНЫЙ
+      // (1820×178px = 13 колонок × 1 ряд, проверено по IHDR) — cols=13
+      // ОБЯЗАТЕЛЕН, дефолтный cols=12 резал 13-й кадр (индекс 12, открытый
+      // сундук) как "второй ряд", т.е. область за пределами картинки —
+      // отсюда пустая текстура и "исчезающий" сундук после открытия.
+      const chestFrames = await loadSheetFrames(CHEST_OPEN_SRC, 140, 178, 13, 13)
+      if (cancelled) return
+
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -1418,6 +1464,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // который теперь явно пропускает kind==='enemy'). Остальные типы
       // (сундук и т.д.) — по-прежнему временная метка-заглушка + касание.
       const spawnedEnemies: Enemy[] = []
+      chestsRef.current = [] // сброс на случай повторного запуска setup()
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
@@ -1438,6 +1485,46 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         marker.x = ev.x * TILE_SIZE + TILE_SIZE / 2
         marker.y = ev.y * TILE_SIZE + TILE_SIZE / 2
         worldContainer.addChild(marker)
+
+        // Реальный спрайт сундука ПОВЕРХ маркера (маркер остаётся зоной
+        // толчка/хитбоксом визуально скрытым — сам touch-цикл ниже событие
+        // 'chest' больше НЕ закрывает, см. там же). AnimatedSprite на
+        // chestFrames, но НЕ играет — открытие запускается ударом игрока,
+        // см. applyAttackHit ниже.
+        if (ev.kind === 'chest') {
+          marker.visible = false // визуал теперь несёт спрайт, не кружок
+          const chestDrawW = CHEST_DRAW_H * (140 / 178)
+          const chestCenterX = ev.x * TILE_SIZE + TILE_SIZE / 2
+          const chestLeft = chestCenterX - chestDrawW / 2
+          const chestFootGuess = (ev.y + 1) * TILE_SIZE
+          const floorY = findGroundSurfaceY(chestLeft, chestDrawW, chestFootGuess) ?? chestFootGuess
+          const chestSprite = new AnimatedSprite(chestFrames)
+          chestSprite.anchor.set(0.5, 1.0) // низ по центру — как у зверя/героя
+          chestSprite.width = chestDrawW
+          chestSprite.height = CHEST_DRAW_H
+          chestSprite.x = chestCenterX
+          chestSprite.y = floorY + CHEST_OFFSET_Y
+          chestSprite.loop = false
+          chestSprite.gotoAndStop(0) // закрыт, не играет — до удара
+          worldContainer.addChild(chestSprite)
+
+          // Твёрдое тело — низ на той же линии, что и спрайт (chestSprite.y),
+          // центр по X тот же, ширина — CHEST_WALL_W. Остаётся ВСЕГДА, и
+          // закрытый, и открытый сундук — не убирается при открытии.
+          chestsRef.current.push({
+            sprite: chestSprite,
+            hitbox: {
+              x: chestCenterX - CHEST_WALL_W / 2,
+              y: chestSprite.y - CHEST_DRAW_H,
+              width: CHEST_WALL_W,
+              height: CHEST_DRAW_H,
+            },
+            opening: false,
+            opened: false,
+            eventIndex,
+          })
+        }
+
         return { ...ev, marker, closed: false }
       })
       enemiesRef.current = spawnedEnemies
@@ -1463,6 +1550,42 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           top = top === null ? blockTop : Math.min(top, blockTop)
         }
         return top
+      }
+
+      // Мягкая стена по X — ОБЩИЙ помощник для живого врага (enemy.rect) И
+      // сундука (chestsRef, hitbox всегда твёрд — и закрытый, и открытый):
+      // игрок не проходит сквозь тело сбоку, выталкивается к ближайшему
+      // краю. ТОЛЬКО по X — вертикаль не
+      // трогает (сверху можно запрыгнуть/перепрыгнуть, PUSH_TOP_MARGIN решает,
+      // где проходит граница "тело" vs "перелёт"). Перенесено из инлайн-блока
+      // push-out в enemy-цикле — та же логика, геометрия тела параметризована.
+      function pushPlayerOutX(
+        body: { x: number; y: number; width: number; height: number },
+        playerCombatBox: { x: number; y: number; w: number; h: number },
+      ) {
+        const verticalReach = playerCombatBox.y < body.y + body.height && playerCombatBox.y + playerCombatBox.h > body.y
+        if (!verticalReach) return
+        const bodyTop = body.y + body.height * PUSH_TOP_MARGIN
+        if (playerCombatBox.y + playerCombatBox.h <= bodyTop) return // перепрыгнул
+        const pLeft = playerCombatBox.x
+        const pRight = playerCombatBox.x + playerCombatBox.w
+        const bLeft = body.x
+        const bRight = body.x + body.width
+        if (!(pRight > bLeft && pLeft < bRight)) return
+        const pCenter = playerCombatBox.x + playerCombatBox.w / 2
+        const bCenter = body.x + body.width / 2
+        // Выталкиваем РЕАЛЬНУЮ phys.x, но так, чтобы вплотную к телу встал
+        // КРАЙ БОКСА (playerCombatBox), а не phys.x напрямую — на земле
+        // offsetX=0 (бокс совпадает с phys), в прыжке бокс центрирован/
+        // смещён относительно phys.x (см. getPlayerCombatBox).
+        const offsetX = playerCombatBox.x - phys.x
+        if (pCenter < bCenter) {
+          phys.x = (body.x - playerCombatBox.w) - offsetX
+        } else {
+          phys.x = (body.x + body.width) - offsetX
+        }
+        phys.x = clamp(phys.x, 0, worldWidthPx - PLAYER_WIDTH)
+        phys.vx = 0
       }
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
@@ -1595,6 +1718,29 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               // else: поздняя фаза ИЛИ иммунитет — замах не прерываем, зверь
               // просто дожимает удар до strike-кадра как обычно, без подсветки.
             }
+          }
+        }
+
+        // Сундук — открывается ударом (без "один удар = один засчёт" по
+        // attackSwingIdRef, как у врагов: opening=true уже само по себе
+        // блокирует повторный запуск на следующих свингах, дедуп не нужен).
+        // Сундук не бьёт и не имеет HP — только открытие анимации.
+        if (attackHitboxRef.current) {
+          const hb = attackHitboxRef.current
+          for (const chest of chestsRef.current) {
+            if (chest.opening || chest.opened) continue
+            const box = chest.hitbox
+            const overlap =
+              hb.x < box.x + box.width &&
+              hb.x + hb.width > box.x &&
+              hb.y < box.y + box.height &&
+              hb.y + hb.height > box.y
+            if (!overlap) continue
+            chest.opening = true
+            chest.sprite.textures = chestFrames
+            chest.sprite.loop = false
+            chest.sprite.animationSpeed = CHEST_ANIM_SPEED
+            chest.sprite.gotoAndPlay(0)
           }
         }
       }
@@ -1746,11 +1892,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         // "3 события за забег" — временное закрытие простым касанием хитбокса.
         // enemy-события сюда НЕ попадают — они закрываются убийством кластера
-        // (см. enemy-цикл ниже), не касанием. Остальные типы (сундук и т.п.,
-        // пока заглушки) — как раньше.
+        // (см. enemy-цикл ниже), не касанием. chest — тоже НЕ попадают
+        // (закрывается только по завершении анимации открытия, см. чуть
+        // ниже в тикере). Остальные типы (пока заглушки) — как раньше.
         for (let i = 0; i < eventsRef.current.length; i++) {
           const ev = eventsRef.current[i]
-          if (ev.closed || ev.kind === 'enemy') continue
+          if (ev.closed || ev.kind === 'enemy' || ev.kind === 'chest') continue
           const evLeft = ev.x * TILE_SIZE
           const evTop = ev.y * TILE_SIZE
           const touching =
@@ -2052,38 +2199,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // X выше (patrol/chase-ветка) — enemy.x на этот кадр уже финален,
           // как и phys.x игрока (см. :1558) — упор безопасно накладывать тут.
           // Мёртвые враги сюда физически не доходят — enemy.dead делает
-          // continue в самом начале итерации цикла, выше по коду.
-          if (verticalReach) {
-            // enemyBodyTop — верх "тела" врага с учётом PUSH_TOP_MARGIN: если
-            // ноги игрока выше этой линии, считаем это перепрыгиванием и упор
-            // не применяем, даже если verticalReach формально true. Гейт и
-            // проверка перекрытия — по playerCombatBox (см. выше), т.к. в
-            // прыжке уязвимая зона меньше обычного хитбокса.
-            const enemyBodyTop = enemy.y + ENEMY_HEIGHT * PUSH_TOP_MARGIN
-            if (playerCombatBox.y + playerCombatBox.h > enemyBodyTop) {
-              const pLeft = playerCombatBox.x
-              const pRight = playerCombatBox.x + playerCombatBox.w
-              const eLeft = enemy.x
-              const eRight = enemy.x + ENEMY_WIDTH
-              const overlapX = pRight > eLeft && pLeft < eRight
-              if (overlapX) {
-                const pCenter = playerCombatBox.x + playerCombatBox.w / 2
-                const eCenter = enemy.x + ENEMY_WIDTH / 2
-                // Выталкиваем РЕАЛЬНУЮ phys.x, но так, чтобы вплотную к врагу
-                // встал КРАЙ БОКСА (playerCombatBox), а не phys.x напрямую —
-                // на земле offsetX=0 (бокс совпадает с phys), в прыжке бокс
-                // центрирован/смещён относительно phys.x (см. getPlayerCombatBox).
-                const offsetX = playerCombatBox.x - phys.x
-                if (pCenter < eCenter) {
-                  phys.x = (enemy.x - playerCombatBox.w) - offsetX
-                } else {
-                  phys.x = (enemy.x + ENEMY_WIDTH) - offsetX
-                }
-                phys.x = clamp(phys.x, 0, worldWidthPx - PLAYER_WIDTH)
-                phys.vx = 0
-              }
-            }
-          }
+          // continue в самом начале итерации цикла, выше по коду. Сама
+          // геометрия/гейты (verticalReach, PUSH_TOP_MARGIN) вынесены в
+          // pushPlayerOutX — общий помощник, им же толкается сундук ниже.
+          pushPlayerOutX({ x: enemy.x, y: enemy.y, width: ENEMY_WIDTH, height: ENEMY_HEIGHT }, playerCombatBox)
 
           // Синк визуала с логической позицией — теперь и по Y тоже (раньше
           // враг не двигался по вертикали вообще, синкали только X; с
@@ -2202,6 +2321,28 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
           // спрайта — краснеет (danger), пока windingUp истинно.
           enemy.rect.tint = enemy.windingUp ? 0xe0353b : 0xffffff
+        }
+
+        // Сундуки: завершение анимации открытия (тем же способом, каким
+        // определяется конец attack/hurt у героя — конец текстур ИЛИ спрайт
+        // сам остановился) + мягкая стена по X (та же pushPlayerOutX, что и
+        // у живого врага выше). Хитбокс остаётся ВСЕГДА, и закрытый, и
+        // открытый — не убирается при opened. Свежий playerCombatBox
+        // считаем здесь же — push-out врагов выше уже мог сдвинуть phys.x.
+        for (const chest of chestsRef.current) {
+          if (chest.opening && (chest.sprite.currentFrame >= chestFrames.length - 1 || !chest.sprite.playing)) {
+            chest.opening = false
+            chest.opened = true
+            // Явно держим последний кадр — AnimatedSprite без loop сам
+            // должен так делать, но фиксируем на всякий случай (см. задачу):
+            // stop() + gotoAndStop(последний) + visible=true, чтобы сундук
+            // не пропадал после проигрывания.
+            chest.sprite.stop()
+            chest.sprite.gotoAndStop(chestFrames.length - 1) // держим открытый кадр
+            chest.sprite.visible = true
+            closeEvent(chest.eventIndex)
+          }
+          pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }
 
         player.x = phys.x
