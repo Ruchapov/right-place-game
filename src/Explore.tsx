@@ -164,6 +164,13 @@ const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за к
 const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
 
+// Зелье (Explore офлайн — заряды/кулдаун ТОЛЬКО локальные, currentRun/сервер
+// не трогаем). Хил применяется один раз за питьё — на кадре глотка анимации
+// (POTION_GULP_FRAME из 14 кадров drink.png), не на нажатии кнопки.
+const POTION_HEAL_FRAC = 0.25 // лечит 25% maxHp
+const POTION_COOLDOWN = 2.0 // секунды, тикает как ATTACK_COOLDOWN
+const POTION_GULP_FRAME = 6 // кадр глотка (0-based) в drink.png
+
 // Атака игрока — изначально те же ПРАВИЛА И ЧИСЛА, что в Battle.tsx (общая
 // ATTACK_RANGE=70 на игрока и врага), позже РАЗДЕЛЕНА на два независимых
 // значения (подобраны вживую отладочными слайдерами, см. историю) —
@@ -883,6 +890,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // dodge игнорируются), ветка приоритета между hurt и attack.
   const drinkPressedRef = useRef(false)
   const drinkingRef = useRef(false)
+  // Игровая логика зелья (Explore офлайн — локальные заряды, НЕ currentRun).
+  const potionChargesRef = useRef(3) // локальные заряды, старт 3
+  const potionCdRef = useRef(0) // остаток кулдауна, секунды — тикает как attackCooldownRef
+  const potionHealedThisDrinkRef = useRef(false) // хил текущего питья уже применён?
+  // DOM-узел кнопки 🧪 (создаётся императивно в fan-блоке ниже, не JSX) — нужен
+  // здесь, чтобы обновлять подпись "🧪 ×N"/opacity из ticker'а тем же способом,
+  // каким HP-бар обновляется через hpFillRef/hpTextRef (updateHpBar).
+  const potionBtnRef = useRef<HTMLButtonElement | null>(null)
 
   // СПИСОК врагов (Шаг 2-3): по одному enemy-событию — до 3 врагов (весь
   // кластер), может быть несколько enemy-событий за забег — значит и больше
@@ -907,6 +922,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     if (hpTextRef.current) {
       hpTextRef.current.textContent = `${hpRef.current}/${maxHp}`
     }
+  }
+
+  // Подпись кнопки 🧪 — тот же приём, что updateHpBar (DOM-ref, обновляется
+  // ТОЛЬКО при реальном изменении значения — на старте и когда заряд
+  // списывается на кадре глотка, не каждый кадр из ticker'а).
+  function updatePotionButton() {
+    const btn = potionBtnRef.current
+    if (!btn) return
+    btn.textContent = `🧪 ×${potionChargesRef.current}`
+    btn.style.opacity = potionChargesRef.current > 0 ? '1' : '0.5'
   }
 
   // HP-бар врага — в мире (Pixi Graphics над его головой), а не DOM-оверлей,
@@ -1583,6 +1608,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         const startX = phys.x
         const startY = phys.y
 
+        // Кулдаун зелья — секунды, как attackCooldownRef (ticker.deltaMS/1000).
+        potionCdRef.current = Math.max(0, potionCdRef.current - ticker.deltaMS / 1000)
+
         // Горизонтальное движение — во время питья зелья (drinkingRef) герой
         // закоренён: ввод движения игнорируется целиком, ноги на месте.
         phys.vx = drinkingRef.current ? 0 : dirRef.current * MOVE_SPEED
@@ -1783,13 +1811,22 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           }
         }
 
-        // Питьё зелья (ТОЛЬКО визуал — см. drinkingRef выше). По образцу
-        // старта атаки: снимок текстур/скорости/loop на pressed-флаге,
-        // проигрывание берёт на себя ветка приоритета анимаций ниже.
+        // Питьё зелья. По образцу старта атаки: снимок текстур/скорости/loop
+        // на pressed-флаге, проигрывание берёт на себя ветка приоритета
+        // анимаций ниже. Заряды/кулдаун гейтят СТАРТ, но не списываются
+        // здесь — хил+списание+кулдаун происходят на кадре глотка
+        // (POTION_GULP_FRAME) в drinkingRef-ветке, см. ниже.
         if (drinkPressedRef.current) {
           drinkPressedRef.current = false
-          if (!deathRef.current && phys.onGround && !drinkingRef.current) {
+          if (
+            !deathRef.current &&
+            phys.onGround &&
+            !drinkingRef.current &&
+            potionChargesRef.current > 0 &&
+            potionCdRef.current <= 0
+          ) {
             drinkingRef.current = true
+            potionHealedThisDrinkRef.current = false
             hero.textures = drinkFrames
             hero.loop = false
             hero.animationSpeed = 0.2
@@ -2231,10 +2268,22 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             hero.gotoAndPlay(0)
           }
         } else if (drinkingRef.current) {
+          // Хил — РОВНО один раз за питьё, на кадре глотка (не на нажатии
+          // кнопки). Если hurt/death оборвали питьё РАНЬШЕ этого кадра
+          // (drinkingRef уже сброшен triggerHurt/triggerDeath — эта ветка
+          // просто не выполнится), potionHealedThisDrinkRef останется false,
+          // и заряд/хил/кулдаун не применятся — как и требовалось.
+          if (!potionHealedThisDrinkRef.current && hero.currentFrame >= POTION_GULP_FRAME) {
+            potionHealedThisDrinkRef.current = true
+            hpRef.current = Math.min(maxHp, hpRef.current + maxHp * POTION_HEAL_FRAC)
+            updateHpBar()
+            potionChargesRef.current -= 1
+            potionCdRef.current = POTION_COOLDOWN
+            updatePotionButton()
+          }
           // Доиграла (тот же способ определения конца, что у атаки: конец
           // текстур ИЛИ спрайт сам остановился) — сбрасываем и со следующего
-          // тика подхватывает idle/run. ТОЛЬКО визуал — HP/заряды/кулдаун не
-          // трогаем (см. drinkingRef выше).
+          // тика подхватывает idle/run.
           if (hero.currentFrame >= drinkFrames.length - 1 || !hero.playing) {
             drinkingRef.current = false
           }
@@ -2788,20 +2837,25 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             const potY = lastSkillY - BTN_R - POT_R - 4
 
             const potEl = container.querySelector('[data-btn="potion"]') as HTMLElement
-            const pot = potEl || document.createElement('button')
+            const pot = (potEl || document.createElement('button')) as HTMLButtonElement
             pot.dataset.btn = 'potion'
-            pot.textContent = '🧪'
             pot.style.cssText = `
               position:absolute;
               left:${potX - POT_R}px; top:${potY - POT_R}px;
               width:${POT_R * 2}px; height:${POT_R * 2}px;
               border-radius:50%; border:1px solid #3A3344;
-              background:#221E2B; color:#EDE7F2; font-size:13px;
+              background:#221E2B; color:#EDE7F2; font-size:11px;
               display:flex; align-items:center; justify-content:center;
               touch-action:none; user-select:none; -webkit-user-select:none;
               -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
             `
             if (!potEl) container.appendChild(pot)
+            // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
+            // "🧪 ×N"/opacity без React-состояния (см. updatePotionButton).
+            // cssText выше стирает opacity при каждом ре-рендере компонента —
+            // updatePotionButton() сразу после переустанавливает актуальную.
+            potionBtnRef.current = pot
+            updatePotionButton()
 
             // Разовые кнопки (не удержание): действие срабатывает на
             // pointerdown (не click/mouseup) — с захватом пойнтера, чтобы
