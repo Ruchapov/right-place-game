@@ -52,6 +52,12 @@ const HERO_JUMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/jump.png`
 const HERO_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/attack.png`
 const HERO_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/hurt.png`
 const HERO_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/death.png`
+const HERO_DRINK_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/drink.png`
+// Все 7 листов героя пересобраны в ЕДИНУЮ клетку — одна пара констант вместо
+// разных ширин на каждую анимацию (было 338/379/315/302/313). Только герой —
+// зверь (BEAST_*) остаётся на своей клетке 600×288, не путать.
+const HERO_CELL_W = 394
+const HERO_CELL_H = 296
 
 // Спрайты зверя (Шаг "спрайт зверя, без AI/флипа") — тот же способ пути
 // (BASE_URL) и тот же loadSheetFrames (12 колонок в ряд), что у героя выше.
@@ -870,6 +876,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // хитбокс всё равно снят по facing на старте).
   const attackFacingRef = useRef<1 | -1>(1)
 
+  // Питьё зелья (ТОЛЬКО визуал — см. задачу: без хила/зарядов/кулдауна, это
+  // отдельный будущий шаг). drinkPressedRef — флаг тапа по 🧪/KeyH, читается
+  // и сбрасывается в ticker (как attackPressedRef). drinkingRef — true, пока
+  // проигрывается анимация питья: герой закоренён (движение/прыжок/атака/
+  // dodge игнорируются), ветка приоритета между hurt и attack.
+  const drinkPressedRef = useRef(false)
+  const drinkingRef = useRef(false)
+
   // СПИСОК врагов (Шаг 2-3): по одному enemy-событию — до 3 врагов (весь
   // кластер), может быть несколько enemy-событий за забег — значит и больше
   // 3 суммарно. Каждый обрабатывается независимо в тикере (движение,
@@ -914,6 +928,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     hurtTimerRef.current = HURT_MS
     attackingRef.current = false // обрываем замах (хитстан)
     attackHitDoneRef.current = false
+    drinkingRef.current = false // обрываем питьё (хитстан главнее)
     landTimerRef.current = 0 // hurt важнее land
   }
 
@@ -926,6 +941,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
     deathRef.current = true
     deathHoldRef.current = 0
     attackingRef.current = false
+    drinkingRef.current = false // обрываем питьё (смерть главнее)
     hurtTimerRef.current = 0
     landTimerRef.current = 0
     const hero = heroSpriteRef.current
@@ -964,9 +980,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
   // Клавиатура — второй способ ввода поверх экранных кнопок (Шаг: keyboard
   // controls). Дёргает РОВНО те же refs, что и onPointerDown/Up у кнопок выше
-  // (dirRef/jumpPressedRef/attackPressedRef/dodgePressedRef) — никакой отдельной
-  // логики. Скилл1/скилл2/зелье НЕ забинжены: в Explore.tsx для них пока нет
-  // ни кнопок, ни обработчиков (см. "Skills"/"Equipment" в Next Steps).
+  // (dirRef/jumpPressedRef/attackPressedRef/dodgePressedRef/drinkPressedRef) —
+  // никакой отдельной логики. Скилл1/скилл2 НЕ забинжены: в Explore.tsx для
+  // них пока нет ни кнопок, ни обработчиков (см. "Skills" в Next Steps).
   useEffect(() => {
     // Сравнение по e.code (физическая клавиша), НЕ по e.key (символ, зависящий
     // от раскладки) — на русской раскладке e.key для буквенных клавиш отдаёт
@@ -999,8 +1015,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           break
         case 'KeyH':
           if (e.repeat) return
-          // зелье — заглушка, как и экранная кнопка 🧪 (onclick = () => {}),
-          // логики зелья в Explore пока нет
+          // Зелье — ПОКА ТОЛЬКО визуал (анимация питья), как и экранная
+          // кнопка 🧪 — хила/зарядов/кулдауна нет, это отдельный будущий шаг.
+          drinkPressedRef.current = true
           break
         case 'Digit1':
           if (e.repeat) return
@@ -1176,7 +1193,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // шаге (run/attack/jump/hurt/death — отдельно). Кадры режутся из
       // idle.png: 12 колонок в ряд (см. loadSheetFrames), клетка 674×512 —
       // тот же размер, что задокументирован в CLAUDE.md для idle/run/attack/hurt.
-      const idleFrames = await loadSheetFrames(HERO_IDLE_SRC, 379, 288, 12)
+      const idleFrames = await loadSheetFrames(HERO_IDLE_SRC, HERO_CELL_W, HERO_CELL_H, 24)
       if (cancelled) {
         // Компонент размонтировался, пока грузился спрайт-лист — не создаём
         // спрайт и не трогаем worldContainer (он в любом случае будет уничтожен
@@ -1184,12 +1201,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // прошли мимо тех проверок, поэтому просто не продолжаем настройку героя).
         return
       }
-      const runFrames = await loadSheetFrames(HERO_RUN_SRC, 379, 288, 21)
+      const runFrames = await loadSheetFrames(HERO_RUN_SRC, HERO_CELL_W, HERO_CELL_H, 21)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
-      const jumpFrames = await loadSheetFrames(HERO_JUMP_SRC, 302, 288, 24)
+      const jumpFrames = await loadSheetFrames(HERO_JUMP_SRC, HERO_CELL_W, HERO_CELL_H, 24)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
@@ -1197,17 +1214,25 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       // Land — подпоследовательность кадров прыжка 18..24 (индексы 17..23),
       // один раз вырезанная при загрузке, а не при каждом приземлении.
       const landFrames = jumpFrames.slice(17, 24)
-      const attackFrames = await loadSheetFrames(HERO_ATTACK_SRC, 379, 288, 14)
+      const attackFrames = await loadSheetFrames(HERO_ATTACK_SRC, HERO_CELL_W, HERO_CELL_H, 14)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
-      const hurtFrames = await loadSheetFrames(HERO_HURT_SRC, 315, 288, 10)
+      // Питьё зелья — та же клетка/раскладка, что у idle/run/attack (379×288,
+      // 12 кадров в один ряд). ТОЛЬКО визуал (см. drinkingRef выше) — хила,
+      // зарядов и кулдауна здесь нет, это отдельный будущий шаг.
+      const drinkFrames = await loadSheetFrames(HERO_DRINK_SRC, HERO_CELL_W, HERO_CELL_H, 14)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
       }
-      const deathFrames = await loadSheetFrames(HERO_DEATH_SRC, 313, 288, 18)
+      const hurtFrames = await loadSheetFrames(HERO_HURT_SRC, HERO_CELL_W, HERO_CELL_H, 10)
+      if (cancelled) {
+        // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+        return
+      }
+      const deathFrames = await loadSheetFrames(HERO_DEATH_SRC, HERO_CELL_W, HERO_CELL_H, 18)
       if (cancelled) {
         // Тот же случай, что и выше — ещё один await, ещё одна проверка.
         return
@@ -1558,10 +1583,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         const startX = phys.x
         const startY = phys.y
 
-        // Горизонтальное движение
-        phys.vx = dirRef.current * MOVE_SPEED
+        // Горизонтальное движение — во время питья зелья (drinkingRef) герой
+        // закоренён: ввод движения игнорируется целиком, ноги на месте.
+        phys.vx = drinkingRef.current ? 0 : dirRef.current * MOVE_SPEED
         phys.x += phys.vx * dt
-        if (dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
+        if (!drinkingRef.current && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
 
         if (phys.vx > 0) {
           const px = phys.x + PLAYER_WIDTH - 1
@@ -1608,7 +1634,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         let jumpedThisFrame = false
         if (jumpPressedRef.current) {
           jumpPressedRef.current = false
-          if (phys.onGround) {
+          if (phys.onGround && !drinkingRef.current) {
             phys.vy = -JUMP_VELOCITY
             phys.onGround = false
             jumpedThisFrame = true
@@ -1717,8 +1743,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         if (attackPressedRef.current) {
           attackPressedRef.current = false
-          // Хитстан: во время hurt атаковать нельзя (хардкор-вариант).
-          if (hurtTimerRef.current > 0) {
+          // Хитстан ИЛИ питьё зелья: во время них атаковать нельзя.
+          if (hurtTimerRef.current > 0 || drinkingRef.current) {
             // no-op — нажатие проигнорировано
           } else if (attackCooldownRef.current <= 0 && !attackingRef.current) {
             attackCooldownRef.current = ATTACK_COOLDOWN
@@ -1757,6 +1783,20 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           }
         }
 
+        // Питьё зелья (ТОЛЬКО визуал — см. drinkingRef выше). По образцу
+        // старта атаки: снимок текстур/скорости/loop на pressed-флаге,
+        // проигрывание берёт на себя ветка приоритета анимаций ниже.
+        if (drinkPressedRef.current) {
+          drinkPressedRef.current = false
+          if (!deathRef.current && phys.onGround && !drinkingRef.current) {
+            drinkingRef.current = true
+            hero.textures = drinkFrames
+            hero.loop = false
+            hero.animationSpeed = 0.2
+            hero.gotoAndPlay(0)
+          }
+        }
+
         // Dodge игрока: окно неуязвимости от удара врага + кулдаун кнопки,
         // независимо от i-frames шипов (spikeIframeRef) — отдельный механизм.
         // Считается ОДИН раз за кадр (не за врага), поэтому вынесен перед
@@ -1765,7 +1805,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
           dodgePressedRef.current = false
-          if (dodgeCooldownRef.current <= 0) {
+          if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
             dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
             dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
           }
@@ -2143,18 +2183,23 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         // Приоритет анимаций героя (сверху вниз):
         // 0) смерть — АБСОЛЮТНЫЙ приоритет, пока deathRef.current истинен,
-        //    ничего из веток ниже не выполняется (прыжок/hurt/атака/land/run
-        //    больше не могут перебить падение);
+        //    ничего из веток ниже не выполняется (прыжок/hurt/питьё/атака/
+        //    land/run больше не могут перебить падение);
         // а) в воздухе — позы прыжка, land/атака/hurt сбрасываются (прыжок
-        //    прерывает замах и не тянет hurt на землю);
-        // б) hurt в процессе — ГЛАВНЕЕ атаки/land/run, пока таймер > 0
-        //    (хитстан обрывает замах — см. triggerHurt);
-        // в) атака в процессе — урон ровно один раз на кадре удара
+        //    прерывает замах и не тянет hurt на землю); питьё можно начать
+        //    только на земле (см. drinkPressedRef-обработчик), поэтому сюда
+        //    не заходит — jump-ветка его не трогает;
+        // б) hurt в процессе — ГЛАВНЕЕ питья/атаки/land/run, пока таймер > 0
+        //    (хитстан обрывает и замах, и питьё — см. triggerHurt);
+        // в) питьё зелья в процессе — ТОЛЬКО визуал (см. drinkingRef), герой
+        //    закоренён (ввод движения/прыжка/атаки/dodge игнорируется выше
+        //    по тикеру); прервать может только hurt/death (приоритет выше);
+        // г) атака в процессе — урон ровно один раз на кадре удара
         //    (ATTACK_STRIKE_FRAME), НЕ на нажатии; land ниже по приоритету —
         //    атака его не даёт начать, пока идёт;
-        // г) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
-        //    land (движение прерывает его — переход в ветку д);
-        // д) обычный idle/run по движению.
+        // д) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
+        //    land (движение прерывает его — переход в ветку е);
+        // е) обычный idle/run по движению.
         if (deathRef.current) {
           // Доиграла — замираем на последнем кадре и копим удержание;
           // abandon срабатывает РОВНО один раз (deathAbandonFiredRef).
@@ -2185,6 +2230,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             hero.animationSpeed = HURT_ANIM_SPEED
             hero.gotoAndPlay(0)
           }
+        } else if (drinkingRef.current) {
+          // Доиграла (тот же способ определения конца, что у атаки: конец
+          // текстур ИЛИ спрайт сам остановился) — сбрасываем и со следующего
+          // тика подхватывает idle/run. ТОЛЬКО визуал — HP/заряды/кулдаун не
+          // трогаем (см. drinkingRef выше).
+          if (hero.currentFrame >= drinkFrames.length - 1 || !hero.playing) {
+            drinkingRef.current = false
+          }
+          hero.anchor.set(0.5, GROUND_ANCHOR_Y)
         } else if (attackingRef.current) {
           if (!attackHitDoneRef.current && hero.currentFrame >= ATTACK_STRIKE_FRAME) {
             applyAttackHit()
@@ -2209,7 +2263,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           // обычная idle/run логика с этого же кадра.
           landTimerRef.current = 0
           hero.anchor.set(0.5, GROUND_ANCHOR_Y)
-          playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.4 : 0.15, true)
+          playAnim(dirRef.current !== 0 ? runFrames : idleFrames, dirRef.current !== 0 ? 0.37 : 0.15, true)
         }
         // Флип по facingRef (последнее ненулевое направление — не сбрасывается
         // в 0, в отличие от dirRef, так что герой не разворачивается лицом
@@ -2645,8 +2699,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
 
         {/* Правый блок — атака/dodge/скиллы/прыжок/зелье через JS в
             ref-колбэке, та же техника и геометрия, что в Battle.tsx.
-            skill1/skill2/зелье — визуальные заглушки без логики (в Explore
-            скиллов и зелий пока нет). */}
+            skill1/skill2 — визуальные заглушки без логики (в Explore
+            скиллов пока нет). Зелье (🧪) — ТОЛЬКО визуал (анимация питья
+            через drinkPressedRef), без хила/зарядов/кулдауна. */}
         <div
           ref={(container) => {
             if (!container) return
@@ -2781,7 +2836,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
             if (skill2El) bindTap(skill2El, () => {})
 
-            bindTap(pot, () => {})
+            bindTap(pot, () => { drinkPressedRef.current = true })
           }}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}
         />
