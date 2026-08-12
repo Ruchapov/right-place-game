@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO } from './mapRenderer'
 
 type ExploreProps = {
@@ -106,6 +106,41 @@ const CHEST_WALL_W = 40
 // Скорость анимации Chest_Open (открытие ударом, см. applyAttackHit) — было
 // 0.25 "на глаз", слишком быстро.
 const CHEST_ANIM_SPEED = 0.15
+
+// Мимик — бросок решается ОДИН раз на первом ударе по сундуку (см.
+// applyAttackHit): CHEST_MIMIC_CHANCE шанс, что сундук окажется ловушкой
+// (Chest_Trap_Explode, урон, без награды) вместо доброго (Chest_Open).
+const CHEST_TRAP_SRC = `${import.meta.env.BASE_URL}assets/objects/Chest_Trap_Explode.png`
+const CHEST_MIMIC_CHANCE = 0.2
+const CHEST_TRAP_DAMAGE_FRAC = 0.2 // урон мимика — 20% maxHp, без уклонения
+const CHEST_TRAP_STRIKE_FRAME = 5 // кадр взрыва (0-based) в Chest_Trap_Explode
+const CHEST_TRAP_ANIM_SPEED = 0.15 // как у CHEST_ANIM_SPEED
+// Посадка ловушки — своя высота/оффсет (не CHEST_DRAW_H/CHEST_OFFSET_Y):
+// Chest_Trap_Explode (190×137) имеет другую пропорцию кадра, чем Chest_Open
+// (140×178), числа подобраны вживую временным тюнером (убран, см. историю).
+const CHEST_TRAP_DRAW_H = 76
+const CHEST_TRAP_OFFSET_Y = 10
+
+// Плавающий попап награды над объектом (Explore офлайн — НИКАКОГО начисления
+// player.gold/trophies/crystals, только визуал поверх мира, см. spawnRewardFloat
+// в setup). Иконки — тот же способ пути (BASE_URL), что у героя/зверя/сундука.
+type RewardKind = 'gold' | 'trophy' | 'rp'
+const REWARD_ICON_SRC: Record<RewardKind, string> = {
+  gold: `${import.meta.env.BASE_URL}assets/icons/icon_gold.png`,
+  trophy: `${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`,
+  rp: `${import.meta.env.BASE_URL}assets/icons/icon_rp.png`,
+}
+// Цвета текста — дизайн-система (right-place-design): gold/trophy/rp разными
+// оттенками, чтобы попап читался по типу награды без подписи.
+const REWARD_TEXT_COLOR: Record<RewardKind, number> = {
+  gold: 0xe8b23a,
+  trophy: 0xc0653a,
+  rp: 0xf08a24,
+}
+const REWARD_FLOAT_MS = 2000
+const REWARD_FLOAT_RISE = 45 // px всплытия за REWARD_FLOAT_MS
+const REWARD_ICON_H = 24 // высота отрисовки иконки, px мира
+const REWARD_ROW_GAP = 28 // вертикальный интервал между наградами в столбике
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -442,16 +477,38 @@ type Enemy = {
 type BeastFrames = { idle: Texture[]; walk: Texture[]; attack: Texture[]; hurt: Texture[]; death: Texture[] }
 
 // Сундук (reward-событие) — открывается ударом игрока (см. applyAttackHit),
-// НЕ касанием. opening — идёт анимация Chest_Open (загорожена от повторного
-// запуска, пока true); opened — анимация доиграла, сундук зафиксирован на
-// последнем кадре, событие закрыто. eventIndex — тот же индекс в
-// eventsRef.current, что и у enemy.eventIndex, для closeEvent().
+// НЕ касанием. opening — идёт анимация Chest_Open ИЛИ Chest_Trap_Explode
+// (загорожена от повторного запуска, пока true); opened — анимация доиграла,
+// сундук зафиксирован на последнем кадре, событие закрыто. eventIndex — тот
+// же индекс в eventsRef.current, что и у enemy.eventIndex, для closeEvent().
+// isMimic — бросок решается ОДИН раз на первом ударе (см. applyAttackHit):
+// true = мимик (Chest_Trap_Explode, урон, без награды), false = добрый
+// (Chest_Open, награда, без изменений). undefined — бросок ещё не сделан.
+// trapDamaged — урон мимика уже применён на strike-кадре (не бить повторно
+// на следующих кадрах, пока держится последний кадр анимации).
+// floorY — поверхность пола под сундуком, найдена ОДИН раз при спавне
+// (findGroundSurfaceY) и больше не пересчитывается от bbox текущего кадра —
+// applyChestLayout (см. setup) всегда ставит низ спрайта на floorY+
+// CHEST_OFFSET_Y, какой бы набор кадров/размер сейчас ни был активен.
 type Chest = {
   sprite: AnimatedSprite
   hitbox: { x: number; y: number; width: number; height: number }
   opening: boolean
   opened: boolean
   eventIndex: number
+  isMimic?: boolean
+  trapDamaged: boolean
+  floorY: number
+}
+
+// Плавающий попап награды (см. REWARD_* константы выше и spawnRewardFloat в
+// setup) — node живёт в worldContainer (двигается с камерой вместе со
+// сценой), elapsed копится в мс по ticker.deltaMS, startY — Y на момент
+// спавна (анимация всплытия считается от него, не от текущего node.y).
+type RewardFloat = {
+  node: Container
+  elapsed: number
+  startY: number
 }
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
@@ -549,6 +606,12 @@ function pickRandom<T>(items: T[], count: number): T[] {
     pool.splice(i, 1)
   }
   return picked
+}
+
+// Целое число в [min, max] включительно — локальная заглушка награды сундука
+// (см. spawnRewardFloat), реального рандома наград на сервере это не заменяет.
+function randInt(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min + 1))
 }
 
 // Режет спрайт-лист на кадры: cols колонок в ряд, дальше перенос вниз.
@@ -943,6 +1006,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
   // хитбокс остаётся ВСЕГДА, и закрытый, и открытый сундук.
   const chestsRef = useRef<Chest[]>([])
 
+  // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat) — Explore
+  // офлайн, ТОЛЬКО визуал, никакого начисления player.gold/trophies здесь.
+  const rewardFloatsRef = useRef<RewardFloat[]>([])
+
   // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
@@ -1331,6 +1398,67 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       const chestFrames = await loadSheetFrames(CHEST_OPEN_SRC, 140, 178, 13, 13)
       if (cancelled) return
 
+      // Мимик — тот же loadSheetFrames, 14 колонок в ряд (см. задачу).
+      const chestTrapFrames = await loadSheetFrames(CHEST_TRAP_SRC, 190, 137, 14, 14)
+      if (cancelled) return
+
+      // Иконки наград (см. spawnRewardFloat ниже) — обычные PNG, не спрайт-
+      // лист, поэтому просто Assets.load без loadSheetFrames.
+      const goldIconTexture = await Assets.load(REWARD_ICON_SRC.gold)
+      if (cancelled) return
+      const trophyIconTexture = await Assets.load(REWARD_ICON_SRC.trophy)
+      if (cancelled) return
+      const rpIconTexture = await Assets.load(REWARD_ICON_SRC.rp)
+      if (cancelled) return
+      const rewardIconTextures: Record<RewardKind, Texture> = {
+        gold: goldIconTexture,
+        trophy: trophyIconTexture,
+        rp: rpIconTexture,
+      }
+
+      // Плавающий попап награды над объектом в МИРОВОМ контейнере (двигается
+      // с камерой вместе с картой/спрайтами объектов) — Explore офлайн, эта
+      // функция НИКОГДА не начисляет player.gold/trophies/crystals, только
+      // визуал. Несколько наград — столбик вверх от (worldX, worldY), каждая
+      // следующая на REWARD_ROW_GAP выше. Обновление/удаление — см. блок
+      // "Плавающие попапы наград" в ticker'е ниже.
+      function spawnRewardFloat(worldX: number, worldY: number, rewards: { kind: RewardKind; amount: number }[]) {
+        rewards.forEach((reward, i) => {
+          const label = new Text({
+            text: `+${reward.amount}`,
+            style: {
+              fontSize: 20,
+              fontWeight: 'bold',
+              fill: REWARD_TEXT_COLOR[reward.kind],
+              stroke: { color: 0x000000, width: 4 },
+            },
+          })
+          label.anchor.set(0, 0.5)
+          label.x = 0
+
+          const icon = new Sprite(rewardIconTextures[reward.kind])
+          icon.anchor.set(0, 0.5)
+          icon.scale.set(REWARD_ICON_H / icon.texture.height)
+          icon.x = label.width + 4
+
+          // Центрируем весь ряд (текст+иконка) относительно worldX — текст
+          // и иконка строились от x=0 слева, теперь сдвигаем оба на -половину
+          // итоговой ширины ряда.
+          const rowWidth = icon.x + icon.width
+          label.x -= rowWidth / 2
+          icon.x -= rowWidth / 2
+
+          const node = new Container()
+          node.x = worldX
+          node.y = worldY - i * REWARD_ROW_GAP
+          node.alpha = 0
+          node.addChild(label, icon)
+          worldContainer.addChild(node)
+
+          rewardFloatsRef.current.push({ node, elapsed: 0, startY: node.y })
+        })
+      }
+
       const hero = new AnimatedSprite(idleFrames)
       hero.anchor.set(0.5, 1.0) // якорь — низ по центру (ноги)
       hero.scale.set(HERO_DRAW_H / idleFrames[0].height) // равномерный масштаб по реальной высоте кадра
@@ -1499,35 +1627,64 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
           const chestFootGuess = (ev.y + 1) * TILE_SIZE
           const floorY = findGroundSurfaceY(chestLeft, chestDrawW, chestFootGuess) ?? chestFootGuess
           const chestSprite = new AnimatedSprite(chestFrames)
-          chestSprite.anchor.set(0.5, 1.0) // низ по центру — как у зверя/героя
-          chestSprite.width = chestDrawW
-          chestSprite.height = CHEST_DRAW_H
           chestSprite.x = chestCenterX
-          chestSprite.y = floorY + CHEST_OFFSET_Y
           chestSprite.loop = false
-          chestSprite.gotoAndStop(0) // закрыт, не играет — до удара
           worldContainer.addChild(chestSprite)
 
-          // Твёрдое тело — низ на той же линии, что и спрайт (chestSprite.y),
-          // центр по X тот же, ширина — CHEST_WALL_W. Остаётся ВСЕГДА, и
-          // закрытый, и открытый сундук — не убирается при открытии.
-          chestsRef.current.push({
+          const chest: Chest = {
             sprite: chestSprite,
+            // Твёрдое тело — низ на той же линии, что и спрайт, центр по X
+            // тот же, ширина — CHEST_WALL_W (НЕ зависит от ширины спрайта,
+            // которая меняется между добрым/мимик набором). Остаётся ВСЕГДА,
+            // и закрытый, и открытый сундук — не убирается при открытии.
             hitbox: {
               x: chestCenterX - CHEST_WALL_W / 2,
-              y: chestSprite.y - CHEST_DRAW_H,
+              y: floorY + CHEST_OFFSET_Y - CHEST_DRAW_H,
               width: CHEST_WALL_W,
               height: CHEST_DRAW_H,
             },
             opening: false,
             opened: false,
+            trapDamaged: false,
             eventIndex,
+            floorY,
+          }
+          applyChestLayout(chest)
+          chestSprite.gotoAndStop(0) // закрыт, не играет — до удара
+          console.log('[chest-debug] spawn', {
+            y: chestSprite.y,
+            height: chestSprite.height,
+            width: chestSprite.width,
+            anchorY: chestSprite.anchor.y,
+            isMimic: chest.isMimic,
+            frameSet: 'chestFrames(closed)',
           })
+          chestsRef.current.push(chest)
         }
 
         return { ...ev, marker, closed: false }
       })
       enemiesRef.current = spawnedEnemies
+
+      // Пересчитывает anchor/height/width/y сундука ОТ chest.floorY (найден
+      // один раз при спавне, см. Chest.floorY) — а НЕ от bbox текущего
+      // кадра/scale. Вызывается КАЖДЫЙ кадр для каждого сундука (см. ticker).
+      // Chest_Open (140×178) и Chest_Trap_Explode (190×137) — разная
+      // пропорция кадра, поэтому у ловушки СВОИ CHEST_TRAP_DRAW_H/
+      // CHEST_TRAP_OFFSET_Y (подобраны вживую временным тюнером, убран — см.
+      // историю), у доброго сундука — CHEST_DRAW_H/CHEST_OFFSET_Y, не трогаем.
+      function applyChestLayout(chest: Chest) {
+        chest.sprite.anchor.set(0.5, 1.0) // низ по центру — как у зверя/героя
+        if (chest.isMimic) {
+          chest.sprite.height = CHEST_TRAP_DRAW_H
+          chest.sprite.width = CHEST_TRAP_DRAW_H * (190 / 137)
+          chest.sprite.y = chest.floorY + CHEST_TRAP_OFFSET_Y
+        } else {
+          chest.sprite.height = CHEST_DRAW_H
+          chest.sprite.width = CHEST_DRAW_H * (140 / 178)
+          chest.sprite.y = chest.floorY + CHEST_OFFSET_Y
+        }
+      }
 
       // Y отрисовки спрайта должен ложиться на РЕАЛЬНУЮ поверхность тайла, а
       // не на низ хитбокса (низ хитбокса — грубый прямоугольник, который сам
@@ -1737,10 +1894,31 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
               hb.y + hb.height > box.y
             if (!overlap) continue
             chest.opening = true
-            chest.sprite.textures = chestFrames
-            chest.sprite.loop = false
-            chest.sprite.animationSpeed = CHEST_ANIM_SPEED
-            chest.sprite.gotoAndPlay(0)
+            // Бросок решается ОДИН раз, на первом ударе — не перебрасывается
+            // на повторных кадрах, пока opening держит цикл закрытым выше.
+            chest.isMimic = Math.random() < CHEST_MIMIC_CHANCE
+            chest.trapDamaged = false
+            if (chest.isMimic) {
+              chest.sprite.textures = chestTrapFrames
+              applyChestLayout(chest)
+              chest.sprite.loop = false
+              chest.sprite.animationSpeed = CHEST_TRAP_ANIM_SPEED
+              chest.sprite.gotoAndPlay(0)
+            } else {
+              chest.sprite.textures = chestFrames
+              applyChestLayout(chest)
+              chest.sprite.loop = false
+              chest.sprite.animationSpeed = CHEST_ANIM_SPEED
+              chest.sprite.gotoAndPlay(0)
+            }
+            console.log('[chest-debug] hit-start', {
+              y: chest.sprite.y,
+              height: chest.sprite.height,
+              width: chest.sprite.width,
+              anchorY: chest.sprite.anchor.y,
+              isMimic: chest.isMimic,
+              frameSet: chest.isMimic ? 'chestTrapFrames' : 'chestFrames',
+            })
           }
         }
       }
@@ -2330,7 +2508,32 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         // открытый — не убирается при opened. Свежий playerCombatBox
         // считаем здесь же — push-out врагов выше уже мог сдвинуть phys.x.
         for (const chest of chestsRef.current) {
-          if (chest.opening && (chest.sprite.currentFrame >= chestFrames.length - 1 || !chest.sprite.playing)) {
+          // Пересчитывается КАЖДЫЙ кадр (не только на смене состояния) — та
+          // же защита от "сундук съезжает вниз" (см. историю), что и на
+          // spawn/hit-start/complete ниже.
+          applyChestLayout(chest)
+
+          // Набор кадров зависит от исхода броска (см. isMimic на первом
+          // ударе выше) — чтение currentFrame/length ниже должно сверяться
+          // с ПРАВИЛЬНЫМ набором, иначе мимик (14 кадров) либо обрывается
+          // раньше времени, либо никогда не считается "доигравшим" по длине
+          // доброго набора (13 кадров).
+          const activeFrames = chest.isMimic ? chestTrapFrames : chestFrames
+
+          // Урон мимика — на strike-кадре взрыва, неизбежен (без уклонения,
+          // без i-frames шипов — отдельный источник урона). Бьёт РОВНО один
+          // раз за срабатывание (trapDamaged-гейт).
+          if (
+            chest.opening &&
+            chest.isMimic &&
+            !chest.trapDamaged &&
+            chest.sprite.currentFrame >= CHEST_TRAP_STRIKE_FRAME
+          ) {
+            chest.trapDamaged = true
+            takeDamageRef.current(maxHp * CHEST_TRAP_DAMAGE_FRAC)
+          }
+
+          if (chest.opening && (chest.sprite.currentFrame >= activeFrames.length - 1 || !chest.sprite.playing)) {
             chest.opening = false
             chest.opened = true
             // Явно держим последний кадр — AnimatedSprite без loop сам
@@ -2338,9 +2541,26 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
             // stop() + gotoAndStop(последний) + visible=true, чтобы сундук
             // не пропадал после проигрывания.
             chest.sprite.stop()
-            chest.sprite.gotoAndStop(chestFrames.length - 1) // держим открытый кадр
+            chest.sprite.gotoAndStop(activeFrames.length - 1) // держим последний кадр (открыт/гарь)
+            applyChestLayout(chest)
             chest.sprite.visible = true
+            console.log('[chest-debug] complete', {
+              y: chest.sprite.y,
+              height: chest.sprite.height,
+              width: chest.sprite.width,
+              anchorY: chest.sprite.anchor.y,
+              isMimic: chest.isMimic,
+              frameSet: chest.isMimic ? 'chestTrapFrames' : 'chestFrames',
+            })
             closeEvent(chest.eventIndex)
+            // Награда — ТОЛЬКО добрый исход. rand(10,50) — локальная
+            // заглушка (см. задачу): реальное начисление player.gold живёт
+            // на сервере, здесь только попап.
+            if (!chest.isMimic) {
+              spawnRewardFloat(chest.sprite.x, chest.sprite.y - chest.sprite.height, [
+                { kind: 'gold', amount: randInt(10, 50) },
+              ])
+            }
           }
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }
@@ -2464,6 +2684,33 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         const heroFlipDir = attackingRef.current ? attackFacingRef.current : facingRef.current
         hero.scale.x = heroFlipDir === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
 
+        // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
+        // независимая от игровой логики анимация, реальное время
+        // (ticker.deltaMS), не масштабированное по dt-кадрам как движение.
+        if (rewardFloatsRef.current.length > 0) {
+          const stillActive: RewardFloat[] = []
+          for (const rf of rewardFloatsRef.current) {
+            rf.elapsed += ticker.deltaMS
+            const progress = Math.min(1, rf.elapsed / REWARD_FLOAT_MS)
+            const eased = 1 - (1 - progress) * (1 - progress) // ease-out
+            rf.node.y = rf.startY - REWARD_FLOAT_RISE * eased
+            if (progress < 0.15) {
+              rf.node.alpha = progress / 0.15
+            } else if (progress > 0.65) {
+              rf.node.alpha = Math.max(0, (1 - progress) / 0.35)
+            } else {
+              rf.node.alpha = 1
+            }
+            if (rf.elapsed >= REWARD_FLOAT_MS) {
+              worldContainer.removeChild(rf.node)
+              rf.node.destroy({ children: true })
+            } else {
+              stillActive.push(rf)
+            }
+          }
+          rewardFloatsRef.current = stillActive
+        }
+
         updateCamera(dt)
       })
     }
@@ -2484,6 +2731,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       }
       appRef.current = null
       heroSpriteRef.current = null
+      // Узлы сами уничтожаются деревом app.destroy(true, {children:true})
+      // выше — здесь только сбрасываем список, чтобы не держать ссылки на
+      // уже уничтоженные Container при повторном mount (StrictMode).
+      rewardFloatsRef.current = []
     }
   }, [])
 
