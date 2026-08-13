@@ -10,15 +10,26 @@ type ExploreProps = {
   // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
   // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
   onRunComplete?: (closedEvents: { kind: EventKind }[]) => void
+  // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Не задан — DEFAULT_MAP_FILE
+  // (см. ниже), 1:1 прежнее поведение. App.tsx пока этот проп не передаёт.
+  mapFile?: string
 }
 
-const MAP_FILE = 'map_A_serpentine.txt' // TODO: сделать выбираемым, когда появится выбор карты в UI
+const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
 // Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt
 // и map_C_boss_descent.txt (два слова после id) оба -> map_<id>_slots.json.
 // Берём именно первый токен после "map_", а не отбрасываем последний "_xxx.txt" —
 // иначе на многословных именах (boss_descent) получим не тот файл.
+//
+// Карта D — ИСКЛЮЧЕНИЕ из этого правила: у неё слоты по СОСТОЯНИЮ (OPEN/SEALED
+// заваливаемого тайника, см. CLAUDE.md), не по первому токену — файлы называются
+// map_D_OPEN_slots.json / map_D_SEALED_slots.json, а не map_D_slots.json. Для
+// map_D_* берём ВСЁ имя без ".txt" и добавляем "_slots.json".
 function slotsFileForMap(mapFile: string): string {
+  if (mapFile.startsWith('map_D_')) {
+    return `${mapFile.replace(/\.txt$/, '')}_slots.json`
+  }
   const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
   return `map_${mapId}_slots.json`
 }
@@ -880,7 +891,12 @@ function sweepFootBlock(
   return pushTo
 }
 
-export default function Explore({ onClose, endurance, strength, onRunComplete }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
+  // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
+  // поведение. Обычный const в теле компонента (не ref/state) — читается
+  // через замыкание в setup() ниже (mount-once эффект, деп. массив []), тем
+  // же способом, что maxHp/attackDamage уже читают endurance/strength.
+  const mapFile = mapFileProp ?? DEFAULT_MAP_FILE
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
@@ -1196,8 +1212,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
       const base = import.meta.env.BASE_URL
 
       const [mapText, slots] = await Promise.all([
-        fetch(`${base}assets/maps/${MAP_FILE}`).then((res) => res.text()),
-        fetch(`${base}assets/maps/${slotsFileForMap(MAP_FILE)}`).then((res) => res.json()),
+        fetch(`${base}assets/maps/${mapFile}`).then((res) => res.text()),
+        fetch(`${base}assets/maps/${slotsFileForMap(mapFile)}`).then((res) => res.json()),
       ])
 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
@@ -1931,6 +1947,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         const dt = ticker.deltaTime
         const startX = phys.x
         const startY = phys.y
+        // Верх бокового хитбокса в прыжке — та же поправка, что у
+        // sweepHeadBlock ниже (headOffset = phys.onGround ? 0 :
+        // JUMP_HIT_OFFSET_Y): без неё полный PLAYER_HEIGHT цепляет нависающую
+        // твердь над проёмами в воздухе, и диагональный прыжок стопорится.
+        // Не переиспользуем headOffset из вертикального блока ниже — тот
+        // объявлен в другой блочной области видимости и считается ПОСЛЕ
+        // того, как phys.onGround уже сброшен в false на этот кадр (см. там
+        // же); здесь нужен snapshot СРАЗУ на начало кадра, до этого сброса.
+        const headOffset = phys.onGround ? 0 : JUMP_HIT_OFFSET_Y
 
         // Кулдаун зелья — секунды, как attackCooldownRef (ticker.deltaMS/1000).
         potionCdRef.current = Math.max(0, potionCdRef.current - ticker.deltaMS / 1000)
@@ -1944,14 +1969,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         if (phys.vx > 0) {
           const px = phys.x + PLAYER_WIDTH - 1
           let hit =
-            isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + headOffset + 1) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
           if (!hit) {
             // Сначала: уже внутри полосы (по текущему положению, не по цели)?
-            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y + headOffset, phys.y + PLAYER_HEIGHT)
             if (!stuckInBand) {
-              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y + headOffset, phys.y + PLAYER_HEIGHT)
               if (band) hit = true
             }
           }
@@ -1962,14 +1987,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete }:
         } else if (phys.vx < 0) {
           const px = phys.x
           let hit =
-            isSolid(grid, TILE_SIZE, px, phys.y + 1) ||
+            isSolid(grid, TILE_SIZE, px, phys.y + headOffset + 1) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT / 2) ||
             isSolid(grid, TILE_SIZE, px, phys.y + PLAYER_HEIGHT - 1)
           if (!hit) {
             // Сначала: уже внутри полосы (по текущему положению, не по цели)?
-            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+            const stuckInBand = isOverlappingPlatformBand(grid, TILE_SIZE, startX, PLAYER_WIDTH, phys.y + headOffset, phys.y + PLAYER_HEIGHT)
             if (!stuckInBand) {
-              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y, phys.y + PLAYER_HEIGHT)
+              const band = isPlatformBandBlocking(grid, TILE_SIZE, px, phys.y + headOffset, phys.y + PLAYER_HEIGHT)
               if (band) hit = true
             }
           }

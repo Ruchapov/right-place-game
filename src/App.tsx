@@ -36,6 +36,15 @@ const HERO_SLOTS: { slot: string; label: string }[] = [
   { slot: 'amulet', label: 'Амулет' },
 ]
 
+// ВРЕМЕННО: тестовая панель выбора карты Explore (см. кнопки ниже в JSX).
+const EXPLORE_MAPS: { label: string; file: string }[] = [
+  { label: 'A Серпантин', file: 'map_A_serpentine.txt' },
+  { label: 'B Разлом', file: 'map_B_razlom.txt' },
+  { label: 'C Спуск к боссу', file: 'map_C_boss_descent.txt' },
+  { label: 'E Башни', file: 'map_E_towers.txt' },
+  { label: 'F Святилище', file: 'map_F_sanctuary.txt' },
+]
+
 const SLOT_SVG_PATHS: Record<string, string> = {
   weapon: 'M20.7 3.3a1 1 0 0 0-1.4 0L14 8.6l-1.3-1.3-1.4 1.4 1.3 1.3-7 7A2 2 0 1 0 8.4 19.8l7-7 1.3 1.3 1.4-1.4-1.3-1.3 5.3-5.3a1 1 0 0 0 0-1.8z',
   helmet: 'M12 2C8.1 2 5 5.1 5 9v2h2v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h2V9c0-3.9-3.1-7-7-7zm3 10H9v-1h6v1z',
@@ -82,6 +91,10 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
   const [equipping, setEquipping] = useState(false)
   const [showExploreTest, setShowExploreTest] = useState(false)
+  const [exploreMapFile, setExploreMapFile] = useState<string>('map_A_serpentine.txt')
+  // ВРЕМЕННО: отладочная подпись выпавшего состояния D (50/50 OPEN/SEALED,
+  // см. кнопку ниже) — убрать вместе с самой тестовой панелью.
+  const [dRolledState, setDRolledState] = useState<string | null>(null)
 
   // Run state
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -886,14 +899,46 @@ export default function App() {
 
       {runError && <p style={{ color: 'red', marginTop: 8 }}>{runError}</p>}
       </div>}
-      <button onClick={() => setShowExploreTest(true)}
-        style={{
-          position:'fixed', bottom:60, left:'50%', transform:'translateX(-50%)',
-          zIndex:999, padding:'10px 16px', borderRadius:8, border:'1px solid #ffd700',
-          background:'#221E2B', color:'#ffd700', fontSize:13, fontWeight:'bold', cursor:'pointer'
-        }}>
-        TEST: Explore Map A
-      </button>
+      <div style={{
+        position:'fixed', bottom:60, left:0, right:0, zIndex:999,
+        display:'flex', flexDirection:'column', alignItems:'center', gap:6, padding:'0 8px'
+      }}>
+        <div style={{ color:'#EDE7F2', fontSize:11, opacity:0.7 }}>TEST: карты Explore</div>
+        <div style={{ display:'flex', flexWrap:'wrap', justifyContent:'center', gap:6 }}>
+          {EXPLORE_MAPS.map(m => (
+            <button key={m.file}
+              onClick={() => { setExploreMapFile(m.file); setShowExploreTest(true) }}
+              style={{
+                padding:'8px 12px', borderRadius:8, border:'1px solid #3A3344',
+                background:'#221E2B', color:'#EDE7F2', fontSize:12, fontWeight:'bold', cursor:'pointer'
+              }}>
+              {m.label}
+            </button>
+          ))}
+          <button key="D-5050"
+            onClick={() => {
+              const open = Math.random() < 0.5
+              const file = open ? 'map_D_OPEN.txt' : 'map_D_SEALED.txt'
+              setDRolledState(open ? 'OPEN' : 'SEALED')
+              setExploreMapFile(file)
+              setShowExploreTest(true)
+            }}
+            style={{
+              padding:'8px 12px', borderRadius:8, border:'1px solid #3A3344',
+              background:'#221E2B', color:'#EDE7F2', fontSize:12, fontWeight:'bold', cursor:'pointer'
+            }}>
+            D Тайник (50/50)
+          </button>
+        </div>
+        {dRolledState && (
+          <div style={{
+            fontSize:11,
+            color: dRolledState === 'OPEN' ? '#4FB477' : '#E0353B'
+          }}>
+            D выпало: {dRolledState}
+          </div>
+        )}
+      </div>
 
       <div style={{
         position:'fixed', bottom:0, left:0, right:0,
@@ -921,7 +966,7 @@ export default function App() {
         ))}
       </div>
 
-      {showExploreTest && <Explore onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} onRunComplete={handleExploreRunComplete} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} onRunComplete={handleExploreRunComplete} />}
     </div>
   )
 }
