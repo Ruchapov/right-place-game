@@ -2868,12 +2868,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             const clampedScreenX = clamp(
               topLeftScreen.x,
               SMUGGLER_PANEL_MARGIN,
-              app.screen.width - SMUGGLER_PANEL_W * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
+              app!.screen.width - SMUGGLER_PANEL_W * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
             )
             const clampedScreenY = clamp(
               topLeftScreen.y,
               SMUGGLER_PANEL_MARGIN,
-              app.screen.height - SMUGGLER_PANEL_H * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
+              app!.screen.height - SMUGGLER_PANEL_H * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
             )
             const clampedWorld = worldContainer.toLocal({ x: clampedScreenX, y: clampedScreenY })
             smugglerPanel.x = clampedWorld.x
