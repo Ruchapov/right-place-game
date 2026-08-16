@@ -132,6 +132,39 @@ const CHEST_TRAP_ANIM_SPEED = 0.15 // как у CHEST_ANIM_SPEED
 const CHEST_TRAP_DRAW_H = 76
 const CHEST_TRAP_OFFSET_Y = 10
 
+// Смуглер (NPC-событие) — на этом шаге ТОЛЬКО визуал: стоит и дышит (idle),
+// без взаимодействия (см. задачу) — обмен/диалог будет отдельным шагом.
+// Путь — тот же способ (BASE_URL), что у сундука/героя/зверя выше.
+const SMUGGLER_SRC = `${import.meta.env.BASE_URL}assets/sprites/smuggler/smuggler_idle.png`
+// Высота отрисовки, ширина — из клетки 230×296 (по образцу CHEST_DRAW_H).
+// Числа подобраны вживую отладочным тюнером (убран, см. историю).
+const SMUGGLER_DRAW_H = 148
+const SMUGGLER_OFFSET_Y = 12
+const SMUGGLER_ANIM_SPEED = 0.15
+// Поворот к игроку (см. ticker) — смотрит в сторону игрока, только пока тот
+// в пределах TURN_RANGE; дальше — держит последнее направление (не дёргается).
+const SMUGGLER_TURN_RANGE = TILE_SIZE * 4
+// Дальность взаимодействия (dodge рядом со смуглером открывает панель) —
+// подберём при желании позже.
+const SMUGGLER_INTERACT_RANGE = TILE_SIZE * 2
+// Размеры окна обмена (мировые единицы, до зума worldContainer) и его кнопок.
+// Ширина 300 — под самый длинный текст заголовка ("Контрабандист предлагает
+// обмен") с полями ~16px по краям, было 220 — обрезалось.
+const SMUGGLER_PANEL_W = 300
+const SMUGGLER_PANEL_H = 120
+const SMUGGLER_BTN_W = 90
+const SMUGGLER_BTN_H = 34
+const SMUGGLER_BTN_GAP = 16
+// Поле от края экрана при зажатии окна в границах вьюпорта (см. ticker).
+const SMUGGLER_PANEL_MARGIN = 8
+// Логика обмена (см. кнопку "Обменять") — Explore офлайн, трофеи нигде не
+// начисляются/списываются по-настоящему, только визуальный float. Реальный
+// счёт трофеев — Phase 2.5.
+const SMUGGLER_TEST_TROPHIES = 10 // заглушка "было"
+const SMUGGLER_MULT = 1.5 // множитель при успехе
+const SMUGGLER_STEAL_CHANCE = 0.2 // шанс кражи
+const SMUGGLER_STEAL_FRAC = 0.5 // доля кражи (половина)
+
 // Плавающий попап награды над объектом (Explore офлайн — НИКАКОГО начисления
 // player.gold/trophies/crystals, только визуал поверх мира, см. spawnRewardFloat
 // в setup). Иконки — тот же способ пути (BASE_URL), что у героя/зверя/сундука.
@@ -510,6 +543,21 @@ type Chest = {
   isMimic?: boolean
   trapDamaged: boolean
   floorY: number
+}
+
+// Смуглер (NPC-событие) — ТОЛЬКО визуал на этом шаге (idle, без
+// взаимодействия — см. задачу). floorY найден ОДИН раз при спавне
+// (findGroundSurfaceY, как у Chest.floorY) и сразу использован для
+// sprite.y — в отличие от сундука, нет applyChestLayout-подобной функции
+// на каждый кадр, т.к. пока нет смены состояния/размера кадра.
+// facing — поворот к игроку (см. ticker): 1=вправо (дефолт, спрайт смотрит
+// вправо без флипа), -1=влево. Держится, пока игрок вне SMUGGLER_TURN_RANGE
+// (не дёргается туда-сюда на границе дальности).
+type Smuggler = {
+  sprite: AnimatedSprite
+  floorY: number
+  eventIndex: number
+  facing: 1 | -1
 }
 
 // Плавающий попап награды (см. REWARD_* константы выше и spawnRewardFloat в
@@ -1022,6 +1070,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // хитбокс остаётся ВСЕГДА, и закрытый, и открытый сундук.
   const chestsRef = useRef<Chest[]>([])
 
+  // Смуглеры (NPC-события) — по объекту Smuggler на событие. НЕ стена (в
+  // отличие от сундука/врага) — никакого push-out по X, сквозь него можно
+  // пройти (см. задачу). Пока чисто визуальный список: idle-анимация, без
+  // взаимодействия/хитбокса.
+  const smugglersRef = useRef<Smuggler[]>([])
+
   // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat) — Explore
   // офлайн, ТОЛЬКО визуал, никакого начисления player.gold/trophies здесь.
   const rewardFloatsRef = useRef<RewardFloat[]>([])
@@ -1030,6 +1084,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
   const dodgeCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
+
+  // Панель Смуглера (под-шаг): dodge рядом с живым смуглером открывает панель
+  // вместо обычного dodge — пока флаг + console.log, самого окна ещё нет.
+  const smugglerPanelOpenRef = useRef(false)
+  // Какой именно смуглер открыл панель — нужен для позиционирования окна над
+  // его головой и для проверки "игрок отошёл" в ticker'е (см. setup).
+  const smugglerActiveRef = useRef<Smuggler | null>(null)
+  // Ссылки на кнопки панели — пока не интерактивны (только вид, см. задачу),
+  // заведены заранее для подключения кликов следующим шагом.
+  const smugglerExchangeBtnRef = useRef<Container | null>(null)
+  const smugglerLeaveBtnRef = useRef<Container | null>(null)
 
   function updateHpBar() {
     const fraction = Math.max(0, Math.min(1, hpRef.current / maxHp))
@@ -1418,6 +1483,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       const chestTrapFrames = await loadSheetFrames(CHEST_TRAP_SRC, 190, 137, 14, 14)
       if (cancelled) return
 
+      // Смуглер (idle) — лист 230×296, 14 кадров, 14 колонок в ряд. cols=14
+      // ОБЯЗАТЕЛЕН (дефолт loadSheetFrames — 12) — та же грабля, что у
+      // сундука: без явного cols последние кадры режутся как несуществующий
+      // второй ряд, пустая текстура, "исчезающий" персонаж.
+      const smugglerFrames = await loadSheetFrames(SMUGGLER_SRC, 230, 296, 14, 14)
+      if (cancelled) return
+
       // Иконки наград (см. spawnRewardFloat ниже) — обычные PNG, не спрайт-
       // лист, поэтому просто Assets.load без loadSheetFrames.
       const goldIconTexture = await Assets.load(REWARD_ICON_SRC.gold)
@@ -1438,14 +1510,18 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // визуал. Несколько наград — столбик вверх от (worldX, worldY), каждая
       // следующая на REWARD_ROW_GAP выше. Обновление/удаление — см. блок
       // "Плавающие попапы наград" в ticker'е ниже.
-      function spawnRewardFloat(worldX: number, worldY: number, rewards: { kind: RewardKind; amount: number }[]) {
+      function spawnRewardFloat(
+        worldX: number,
+        worldY: number,
+        rewards: { kind: RewardKind; amount: number; negative?: boolean }[]
+      ) {
         rewards.forEach((reward, i) => {
           const label = new Text({
-            text: `+${reward.amount}`,
+            text: `${reward.negative ? '−' : '+'}${reward.amount}`,
             style: {
               fontSize: 20,
               fontWeight: 'bold',
-              fill: REWARD_TEXT_COLOR[reward.kind],
+              fill: reward.negative ? 0xe0353b : REWARD_TEXT_COLOR[reward.kind],
               stroke: { color: 0x000000, width: 4 },
             },
           })
@@ -1609,6 +1685,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // (сундук и т.д.) — по-прежнему временная метка-заглушка + касание.
       const spawnedEnemies: Enemy[] = []
       chestsRef.current = [] // сброс на случай повторного запуска setup()
+      smugglersRef.current = [] // сброс на случай повторного запуска setup()
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
@@ -1678,9 +1755,140 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           chestsRef.current.push(chest)
         }
 
+        // Смуглер — ТОЛЬКО визуал (idle, дышит), без взаимодействия, без
+        // хитбокса-стены (в отличие от сундука сквозь него можно пройти —
+        // см. задачу: никакого pushPlayerOutX для смуглера). Посадка —
+        // по образцу сундука: floorY найден один раз здесь же и сразу
+        // применён к sprite.y, дальше не пересчитывается.
+        if (ev.kind === 'smuggler') {
+          marker.visible = false // визуал теперь несёт спрайт, не кружок
+          const smugglerDrawW = SMUGGLER_DRAW_H * (230 / 296)
+          const smugglerCenterX = ev.x * TILE_SIZE + TILE_SIZE / 2
+          const smugglerLeft = smugglerCenterX - smugglerDrawW / 2
+          const smugglerFootGuess = (ev.y + 1) * TILE_SIZE
+          const floorY = findGroundSurfaceY(smugglerLeft, smugglerDrawW, smugglerFootGuess) ?? smugglerFootGuess
+          const smugglerSprite = new AnimatedSprite(smugglerFrames)
+          smugglerSprite.anchor.set(0.5, 1.0)
+          smugglerSprite.height = SMUGGLER_DRAW_H
+          smugglerSprite.width = smugglerDrawW
+          smugglerSprite.x = smugglerCenterX
+          smugglerSprite.y = floorY + SMUGGLER_OFFSET_Y
+          smugglerSprite.loop = true
+          smugglerSprite.animationSpeed = SMUGGLER_ANIM_SPEED
+          smugglerSprite.play()
+          worldContainer.addChild(smugglerSprite)
+
+          smugglersRef.current.push({ sprite: smugglerSprite, floorY, eventIndex, facing: 1 })
+        }
+
         return { ...ev, marker, closed: false }
       })
       enemiesRef.current = spawnedEnemies
+
+      // Панель Смуглера (окно обмена) — ОДИН Container на весь забег (не по
+      // смуглеру: в один момент активен максимум один, см. smugglerActiveRef
+      // выше). Добавлен в worldContainer ПОСЛЕ всех спрайтов событий выше —
+      // рисуется НАД картой/смуглером/врагами. Кнопки пока НЕ интерактивны
+      // (никакого eventMode/pointertap) — только вид, клики следующим шагом.
+      const smugglerPanel = new Container()
+      smugglerPanel.visible = false
+
+      const smugglerPanelBg = new Graphics()
+        .roundRect(0, 0, SMUGGLER_PANEL_W, SMUGGLER_PANEL_H, 10)
+        .fill({ color: 0x221e2b, alpha: 0.95 })
+        .stroke({ color: 0x3a3344, width: 2 })
+      smugglerPanel.addChild(smugglerPanelBg)
+
+      const smugglerPanelText = new Text({
+        text: 'Контрабандист предлагает обмен\nтрофеи ×1.5',
+        style: {
+          fontSize: 16,
+          fontWeight: 'bold',
+          fill: 0xede7f2,
+          align: 'center',
+          stroke: { color: 0x000000, width: 4 },
+        },
+      })
+      smugglerPanelText.anchor.set(0.5, 0)
+      smugglerPanelText.x = SMUGGLER_PANEL_W / 2
+      smugglerPanelText.y = 12
+      smugglerPanel.addChild(smugglerPanelText)
+
+      // Кнопка панели — фон roundRect + центрированный текст, оба цвета
+      // (рамка/текст) совпадают с акцентом кнопки. Возвращает Container с
+      // сохранённой шириной/высотой для позиционирования снаружи.
+      function buildSmugglerButton(label: string, accent: number): Container {
+        const btn = new Container()
+        const bg = new Graphics()
+          .roundRect(0, 0, SMUGGLER_BTN_W, SMUGGLER_BTN_H, 6)
+          .fill({ color: 0x221e2b })
+          .stroke({ color: accent, width: 2 })
+        btn.addChild(bg)
+        const label_ = new Text({
+          text: label,
+          style: { fontSize: 15, fontWeight: 'bold', fill: accent, stroke: { color: 0x000000, width: 4 } },
+        })
+        label_.anchor.set(0.5)
+        label_.x = SMUGGLER_BTN_W / 2
+        label_.y = SMUGGLER_BTN_H / 2
+        btn.addChild(label_)
+
+        // Первая Pixi-интерактивность в проекте (см. задачу) — hitArea
+        // задана явно прямоугольником кнопки, чтобы тап засчитывался по всей
+        // площади, а не только по непрозрачным пикселям Graphics/Text.
+        btn.eventMode = 'static'
+        btn.cursor = 'pointer'
+        btn.hitArea = new Rectangle(0, 0, SMUGGLER_BTN_W, SMUGGLER_BTN_H)
+        return btn
+      }
+
+      // Обе кнопки симметрично вокруг центра панели, зазор SMUGGLER_BTN_GAP
+      // между ними (не привязаны к краям — держат центр при любой ширине).
+      const smugglerBtnPairW = SMUGGLER_BTN_W * 2 + SMUGGLER_BTN_GAP
+      const smugglerBtnStartX = (SMUGGLER_PANEL_W - smugglerBtnPairW) / 2
+
+      const smugglerExchangeBtn = buildSmugglerButton('Обменять', 0xe8b23a)
+      smugglerExchangeBtn.x = smugglerBtnStartX
+      smugglerExchangeBtn.y = SMUGGLER_PANEL_H - SMUGGLER_BTN_H - 14
+      smugglerPanel.addChild(smugglerExchangeBtn)
+      smugglerExchangeBtnRef.current = smugglerExchangeBtn
+      // Обмен — Explore офлайн (см. SMUGGLER_* константы выше): трофеи нигде
+      // реально не начисляются/списываются, только визуальный float. Оба
+      // исхода (успех/кража) закрывают событие — панель повторно не откроется
+      // (см. проверку !ev.closed в перехвате dodge).
+      smugglerExchangeBtn.on('pointertap', () => {
+        const activeSmuggler = smugglerActiveRef.current
+        smugglerPanelOpenRef.current = false
+        smugglerPanel.visible = false
+        if (!activeSmuggler) return
+
+        const floatX = activeSmuggler.sprite.x
+        const floatY = activeSmuggler.sprite.y - SMUGGLER_DRAW_H
+        const before = SMUGGLER_TEST_TROPHIES
+        if (Math.random() < SMUGGLER_STEAL_CHANCE) {
+          const after = Math.round(before * SMUGGLER_STEAL_FRAC)
+          spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: before - after, negative: true }])
+        } else {
+          const after = Math.round(before * SMUGGLER_MULT)
+          spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: after - before }])
+        }
+        closeEvent(activeSmuggler.eventIndex)
+      })
+
+      const smugglerLeaveBtn = buildSmugglerButton('Уйти', 0xe0353b)
+      smugglerLeaveBtn.x = smugglerBtnStartX + SMUGGLER_BTN_W + SMUGGLER_BTN_GAP
+      smugglerLeaveBtn.y = SMUGGLER_PANEL_H - SMUGGLER_BTN_H - 14
+      smugglerPanel.addChild(smugglerLeaveBtn)
+      smugglerLeaveBtnRef.current = smugglerLeaveBtn
+      // Вариант A: уйти = упустить — событие закрывается насовсем, без обмена.
+      smugglerLeaveBtn.on('pointertap', () => {
+        const activeSmuggler = smugglerActiveRef.current
+        smugglerPanelOpenRef.current = false
+        smugglerPanel.visible = false
+        if (activeSmuggler) closeEvent(activeSmuggler.eventIndex)
+      })
+
+      worldContainer.addChild(smugglerPanel)
 
       // Пересчитывает anchor/height/width/y сундука ОТ chest.floorY (найден
       // один раз при спавне, см. Chest.floorY) — а НЕ от bbox текущего
@@ -2097,10 +2305,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         // enemy-события сюда НЕ попадают — они закрываются убийством кластера
         // (см. enemy-цикл ниже), не касанием. chest — тоже НЕ попадают
         // (закрывается только по завершении анимации открытия, см. чуть
-        // ниже в тикере). Остальные типы (пока заглушки) — как раньше.
+        // ниже в тикере). smuggler — тоже НЕ попадают: пока чистый визуал без
+        // взаимодействия (обмен/диалог — отдельный будущий шаг), закрывать
+        // касанием НЕ должен. Остальные типы (пока заглушки) — как раньше.
         for (let i = 0; i < eventsRef.current.length; i++) {
           const ev = eventsRef.current[i]
-          if (ev.closed || ev.kind === 'enemy' || ev.kind === 'chest') continue
+          if (ev.closed || ev.kind === 'enemy' || ev.kind === 'chest' || ev.kind === 'smuggler') continue
           const evLeft = ev.x * TILE_SIZE
           const evTop = ev.y * TILE_SIZE
           const touching =
@@ -2191,8 +2401,24 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
         dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
+          // Смуглер рядом — перехватывает dodge и открывает панель (пока
+          // только флаг + console.log, см. задачу) вместо обычного dodge.
+          const playerCenterXForSmuggler = phys.x + PLAYER_WIDTH / 2
+          const playerFeetYForSmuggler = phys.y + PLAYER_HEIGHT
+          const nearbySmuggler = smugglersRef.current.find((s) => {
+            const ev = eventsRef.current[s.eventIndex]
+            if (!ev || ev.closed) return false
+            const dx = Math.abs(playerCenterXForSmuggler - s.sprite.x)
+            const dy = Math.abs(playerFeetYForSmuggler - s.floorY)
+            return dx <= SMUGGLER_INTERACT_RANGE && dy <= FLOOR_Y_TOLERANCE * TILE_SIZE
+          })
+
           dodgePressedRef.current = false
-          if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
+          if (nearbySmuggler) {
+            smugglerActiveRef.current = nearbySmuggler
+            smugglerPanelOpenRef.current = true
+            console.log('SMUGGLER PANEL OPEN')
+          } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
             dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
             dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
           }
@@ -2588,6 +2814,74 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             }
           }
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
+        }
+
+        // Смуглеры: посадка из констант (SMUGGLER_DRAW_H/SMUGGLER_OFFSET_Y,
+        // подобраны вживую отладочным тюнером, убран — см. историю) + поворот
+        // к игроку. НЕ стена — pushPlayerOutX для смуглера НЕ вызывается (см.
+        // задачу), сквозь него можно пройти.
+        for (const smuggler of smugglersRef.current) {
+          smuggler.sprite.height = SMUGGLER_DRAW_H
+          smuggler.sprite.width = SMUGGLER_DRAW_H * (230 / 296)
+          smuggler.sprite.y = smuggler.floorY + SMUGGLER_OFFSET_Y
+
+          // Спрайт смотрит ВПРАВО по умолчанию (facing=1 → scale.x
+          // положительный, БЕЗ зеркала). Поворот — только пока игрок в
+          // пределах SMUGGLER_TURN_RANGE; дальше facing держит последнее
+          // значение (не дёргается на границе дальности).
+          const playerCenterX = phys.x + PLAYER_WIDTH / 2
+          const dx = playerCenterX - smuggler.sprite.x
+          if (Math.abs(dx) <= SMUGGLER_TURN_RANGE) {
+            smuggler.facing = dx < 0 ? -1 : 1
+          }
+          smuggler.sprite.scale.x =
+            smuggler.facing === 1 ? Math.abs(smuggler.sprite.scale.x) : -Math.abs(smuggler.sprite.scale.x)
+        }
+
+        // Панель Смуглера: позиция над головой активного смуглера (см.
+        // smugglerActiveRef, выставляется в блоке dodge выше), автозакрытие
+        // (флаг + visible=false, событие НЕ закрывается), если игрок отошёл
+        // дальше SMUGGLER_INTERACT_RANGE/этаж или событие уже закрыто иначе.
+        const activeSmuggler = smugglerActiveRef.current
+        if (smugglerPanelOpenRef.current && activeSmuggler) {
+          const ownerEvent = eventsRef.current[activeSmuggler.eventIndex]
+          const playerCenterXForPanel = phys.x + PLAYER_WIDTH / 2
+          const playerFeetYForPanel = phys.y + PLAYER_HEIGHT
+          const stillNear =
+            Math.abs(playerCenterXForPanel - activeSmuggler.sprite.x) <= SMUGGLER_INTERACT_RANGE &&
+            Math.abs(playerFeetYForPanel - activeSmuggler.floorY) <= FLOOR_Y_TOLERANCE * TILE_SIZE
+          if (!ownerEvent || ownerEvent.closed || !stillNear) {
+            smugglerPanelOpenRef.current = false
+            smugglerPanel.visible = false
+          } else {
+            const desiredWorldX = activeSmuggler.sprite.x - SMUGGLER_PANEL_W / 2
+            const desiredWorldY = activeSmuggler.sprite.y - SMUGGLER_DRAW_H - SMUGGLER_PANEL_H - 10
+
+            // Панель — ребёнок worldContainer (мировые координаты, двигается
+            // и зумится камерой) — рядом с краем карты желаемая позиция может
+            // уехать за пределы экрана. Переводим в экранные координаты
+            // (toGlobal), зажимаем в границах app.screen с полем MARGIN,
+            // переводим обратно в мировые (toLocal) — так окно у края карты
+            // сдвигается внутрь вьюпорта, а в остальных случаях (запас есть)
+            // ведёт себя как раньше, без видимой разницы.
+            const topLeftScreen = worldContainer.toGlobal({ x: desiredWorldX, y: desiredWorldY })
+            const clampedScreenX = clamp(
+              topLeftScreen.x,
+              SMUGGLER_PANEL_MARGIN,
+              app.screen.width - SMUGGLER_PANEL_W * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
+            )
+            const clampedScreenY = clamp(
+              topLeftScreen.y,
+              SMUGGLER_PANEL_MARGIN,
+              app.screen.height - SMUGGLER_PANEL_H * WORLD_SCALE - SMUGGLER_PANEL_MARGIN
+            )
+            const clampedWorld = worldContainer.toLocal({ x: clampedScreenX, y: clampedScreenY })
+            smugglerPanel.x = clampedWorld.x
+            smugglerPanel.y = clampedWorld.y
+            smugglerPanel.visible = true
+          }
+        } else {
+          smugglerPanel.visible = false
         }
 
         player.x = phys.x
