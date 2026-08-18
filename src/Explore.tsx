@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
-import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO } from './mapRenderer'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
+import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO, backdropPaths, type BackdropPreset } from './mapRenderer'
 
 type ExploreProps = {
   onClose?: () => void
@@ -16,6 +16,21 @@ type ExploreProps = {
 }
 
 const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
+
+// Фон по карте — фиксированный выбор пресета под тему каждой карты.
+const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
+  A: 'graveyard',      // Серпантин — открытый подъём, землистые тона
+  B: 'flooded_crypt',  // Разлом — тесный тёмный низ
+  C: 'throne_room',    // Спуск к боссу — драматичная арена
+  D: 'flooded_crypt',  // Тайник — подвал Смуглера
+  E: 'throne_room',    // Башни — замковая архитектура
+  F: 'graveyard',      // Святилище — алтарь и обелиски рифмуются со стелами
+}
+
+function backdropForMap(mapFile: string): BackdropPreset {
+  const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
+  return BACKDROP_BY_MAP[mapId] ?? 'graveyard'
+}
 
 // Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt
 // и map_C_boss_descent.txt (два слова после id) оба -> map_<id>_slots.json.
@@ -147,6 +162,27 @@ const SMUGGLER_TURN_RANGE = TILE_SIZE * 4
 // Дальность взаимодействия (dodge рядом со смуглером открывает панель) —
 // подберём при желании позже.
 const SMUGGLER_INTERACT_RANGE = TILE_SIZE * 2
+
+// Обелиски (карта F)
+const OBELISK_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Idle.png`
+const OBELISK_BURNING_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Burning.png`
+const OBELISK_FRAME_W = 190
+const OBELISK_FRAME_H = 512
+const OBELISK_IDLE_COUNT = 10
+const OBELISK_BURNING_COUNT = 10
+const OBELISK_DRAW_H = 195
+const OBELISK_OFFSET_Y = 18
+const OBELISK_HITBOX_W = 40
+const OBELISK_ANIM_SPEED = 0.12
+const OBELISK_TOTAL = 4 // всего обелисков за событие (1 стартовый + 3)
+const OBELISK_TIME_MS = 30000 // стартовый таймер после первого удара
+const OBELISK_TIME_BONUS_MS = 15000 // добавка к таймеру за каждый следующий удар
+const OBELISK_REWARD_GOLD_MIN = 60
+const OBELISK_REWARD_GOLD_MAX = 120
+// Дисплейный шрифт HUD-таймера обелисков (Cinzel, подключён через <link> в
+// index.html) — Georgia в fallback ОБЯЗАТЕЛЬНА: без неё до загрузки шрифта
+// цифры сначала рисуются системным sans и "прыгают" в размере при подмене.
+const FONT_DISPLAY = "'Cinzel', Georgia, serif"
 // Размеры окна обмена (мировые единицы, до зума worldContainer) и его кнопок.
 // Ширина 300 — под самый длинный текст заголовка ("Контрабандист предлагает
 // обмен") с полями ~16px по краям, было 220 — обрезалось.
@@ -560,6 +596,26 @@ type Smuggler = {
   facing: 1 | -1
 }
 
+// Обелиск карты F (ВРЕМЕННО вне рулетки 3 событий, см. задачу) — спавнится
+// как отдельный объект, по образцу Chest: hitbox — мягкая стена по X (см.
+// pushPlayerOutX в ticker'е), floorY найден один раз при спавне
+// (findGroundSurfaceY). tileX/tileY — координаты в тайлах (для будущей
+// логики burning/struck, см. задачу — на этом шаге не используются).
+type Obelisk = {
+  sprite: AnimatedSprite
+  hitbox: { x: number; y: number; width: number; height: number }
+  floorY: number
+  tileX: number
+  tileY: number
+  burning: boolean
+  struck: boolean
+}
+
+// HUD события обелисков (таймер + счётчик над экраном, см. задачу) — ЭТО
+// state (не ref), т.к. рисует UI; в тикере пишется только при реальном
+// изменении целых секунд/счётчика, не каждый кадр (см. установка ниже).
+type ObeliskHud = { active: boolean; secondsLeft: number; struck: number }
+
 // Плавающий попап награды (см. REWARD_* константы выше и spawnRewardFloat в
 // setup) — node живёт в worldContainer (двигается с камерой вместе со
 // сценой), elapsed копится в мс по ticker.deltaMS, startY — Y на момент
@@ -573,7 +629,7 @@ type RewardFloat = {
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
 // результат забега можно было отдать старому results-экрану без маппинга.
-export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss'
+export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
 // clusterPoints — ТОЛЬКО для kind='enemy': все 3 точки кластера (не только
 // points[0]) — нужны, чтобы заспавнить весь кластер, а не одного врага.
@@ -591,6 +647,7 @@ const EVENT_MARKER_COLOR: Record<EventKind, number> = {
   smuggler: 0x8fd9f0,
   puzzle: 0x46c4e8,
   boss: 0xf08a24,
+  obelisk: 0xf08a24,
 }
 
 // Иконки HUD-прогресса событий — тот же способ формирования пути (BASE_URL),
@@ -601,9 +658,17 @@ const EVENT_ICON_SRC: Record<EventKind, string> = {
   smuggler: `${import.meta.env.BASE_URL}assets/icons/event_smuggler.png`,
   puzzle: `${import.meta.env.BASE_URL}assets/icons/event_puzzle.png`,
   boss: `${import.meta.env.BASE_URL}assets/icons/event_boss.png`,
+  // Отдельной иконки для обелисков нет — переиспользуем event_puzzle.png
+  // (та же роль "загадка", обелиски заменяют Puzzle на карте F).
+  obelisk: `${import.meta.env.BASE_URL}assets/icons/event_puzzle.png`,
 }
 
 const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
+// Размер/отступ кнопки-шестерёнки (см. её JSX ниже, width/right) — вынесены
+// сюда, чтобы HUD обелисков (см. ниже) мог посчитать просвет между HP-плитой
+// и шестерёнкой по РЕАЛЬНЫМ числам кнопки, а не задваивать их вручную.
+const SETTINGS_BTN_SIZE = 40
+const SETTINGS_BTN_RIGHT = 8
 
 // Каменная рамка панели настроек — тот же способ пути (BASE_URL), что у
 // HP_FRAME_SRC/EVENT_ICON_SRC. Вертикальная 3:4, реальный аспект картинки
@@ -631,6 +696,7 @@ function buildEventCandidates(slots: unknown): EventCandidate[] {
     reward?: unknown[]
     npc?: { smuggler?: unknown; puzzle?: unknown }
     boss?: unknown
+    obelisk?: { points?: unknown }
   } | null
   const candidates: EventCandidate[] = []
 
@@ -649,6 +715,15 @@ function buildEventCandidates(slots: unknown): EventCandidate[] {
     if (isPointXY(point)) candidates.push({ kind: 'puzzle', x: point[0], y: point[1] })
   }
   if (isPointXY(s?.boss)) candidates.push({ kind: 'boss', x: s.boss[0], y: s.boss[1] })
+
+  // Обелиски (карта F) — ОДИН кандидат на всё событие (не по одному на
+  // точку, иначе за забег могло бы выпасть несколько обелиск-событий сразу).
+  // Точка старта обелиска выбирается pickRandom'ом из пула здесь же; полный
+  // пул для доспавна оставшихся трёх (после первого удара) хранится отдельно
+  // в obeliskCandidatesRef (см. setup()), не в этом кандидате.
+  const obeliskPoints = Array.isArray(s?.obelisk?.points) ? (s.obelisk.points as unknown[]).filter(isPointXY) : []
+  const obeliskStart = pickRandom(obeliskPoints, 1)[0]
+  if (obeliskStart) candidates.push({ kind: 'obelisk', x: obeliskStart[0], y: obeliskStart[1] })
 
   return candidates
 }
@@ -1080,6 +1155,35 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // офлайн, ТОЛЬКО визуал, никакого начисления player.gold/trophies здесь.
   const rewardFloatsRef = useRef<RewardFloat[]>([])
 
+  // Обелиски (карта F, см. type Obelisk выше) — событие рулетки "3 события",
+  // как сундук/смуглер (см. eventsRef.current.map в setup()). Burning-кадры
+  // загружены заранее, переключаются на них по удару (см. applyAttackHit).
+  const obelisksRef = useRef<Obelisk[]>([])
+  const obeliskBurningFramesRef = useRef<Texture[]>([])
+  // Состояние события "сбить все обелиски" (см. задачу) — рефы, не state,
+  // читаются/пишутся КАЖДЫЙ кадр в ticker'е. Кандидаты и точка стартового
+  // обелиска нужны для доспавна: остальные точки берутся из кандидатов
+  // минус уже занятая стартовая. eventIndex — индекс в eventsRef.current,
+  // нужен, чтобы closeEvent() при успехе зажёг нужное гнездо HUD.
+  const obeliskEventActiveRef = useRef(false)
+  const obeliskTimerRef = useRef(0)
+  const obeliskStruckCountRef = useRef(0)
+  const obeliskCandidatesRef = useRef<[number, number][]>([])
+  const obeliskStartPointRef = useRef<[number, number] | null>(null)
+  const obeliskEventIndexRef = useRef<number | null>(null)
+  // Последний сбитый обелиск — над ним показывается награда при успехе (см.
+  // applyAttackHit / ticker ниже).
+  const obeliskLastStruckRef = useRef<Obelisk | null>(null)
+  // HUD (см. type ObeliskHud выше) — рисует таймер/счётчик поверх канваса,
+  // обновляется из ticker'а только на изменении целого числа (см. setObeliskHud
+  // ниже), не каждый кадр — иначе ре-рендер 60 раз/сек просадит fps на телефоне.
+  // Прев-значения — в refs (не сравниваем со state напрямую: замыкание ticker'а
+  // держит state таким, каким он был на момент создания эффекта — протухшее
+  // замыкание, тот же приём, что у остальных боевых refs в файле).
+  const [obeliskHud, setObeliskHud] = useState<ObeliskHud | null>(null)
+  const obeliskHudSecondsRef = useRef(-1)
+  const obeliskHudStruckRef = useRef(-1)
+
   // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
@@ -1271,6 +1375,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     // эффект дважды в dev, так что cleanup может сработать, пока setup() ещё
     // ждёт fetch/init — без этого флага он ловил недоинициализированный app.
     let initialized = false
+    let onBgResize: (() => void) | null = null
 
     async function setup() {
       app = new Application()
@@ -1354,6 +1459,37 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
       containerRef.current.appendChild(app.canvas)
       app.canvas.style.touchAction = 'none'
+
+      // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
+      // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
+      // глубины. Пресет фиксирован по карте (см. BACKDROP_BY_MAP выше).
+      const preset = backdropForMap(mapFile)
+      const { far: farUrl, mid: midUrl } = backdropPaths(preset)
+      const [farTexture, midTexture] = await Promise.all([
+        Assets.load(farUrl) as Promise<Texture>,
+        Assets.load(midUrl) as Promise<Texture>,
+      ])
+      const bgFar = new TilingSprite({ texture: farTexture, width: app.screen.width, height: app.screen.height })
+      const bgMid = new TilingSprite({ texture: midTexture, width: app.screen.width, height: app.screen.height })
+      const farScale = app.screen.height / farTexture.height
+      const midScale = app.screen.height / midTexture.height
+      bgFar.tileScale.set(farScale)
+      bgMid.tileScale.set(midScale)
+      app.stage.addChild(bgFar)
+      app.stage.addChild(bgMid)
+      const bgDim = new Graphics()
+      bgDim.rect(0, 0, app.screen.width, app.screen.height).fill({ color: 0x0e0c13, alpha: 0.42 })
+      app.stage.addChild(bgDim)
+
+      onBgResize = () => {
+        const w = app!.screen.width, h = app!.screen.height
+        bgFar.width = w; bgFar.height = h
+        bgMid.width = w; bgMid.height = h
+        bgFar.tileScale.set(h / farTexture.height)
+        bgMid.tileScale.set(h / midTexture.height)
+        bgDim.clear().rect(0, 0, w, h).fill({ color: 0x0e0c13, alpha: 0.42 })
+      }
+      app.renderer.on('resize', onBgResize)
 
       // Мир: фон-карта и игрок в одном контейнере, двигаются вместе камерой.
       const worldContainer = new Container()
@@ -1488,6 +1624,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // сундука: без явного cols последние кадры режутся как несуществующий
       // второй ряд, пустая текстура, "исчезающий" персонаж.
       const smugglerFrames = await loadSheetFrames(SMUGGLER_SRC, 230, 296, 14, 14)
+      if (cancelled) return
+
+      // Обелиск (карта F) — лист 190×512, 10 кадров, 10 колонок в ряд. cols=10
+      // ОБЯЗАТЕЛЕН (дефолт loadSheetFrames — 12) — та же грабля, что у
+      // сундука/смуглера: без явного cols последние кадры режутся как
+      // несуществующий второй ряд. Burning загружен и сохранён в ref — в
+      // этом шаге не используется (следующий шаг).
+      const obeliskIdleFrames = await loadSheetFrames(OBELISK_IDLE_SRC, OBELISK_FRAME_W, OBELISK_FRAME_H, OBELISK_IDLE_COUNT, 10)
+      if (cancelled) return
+      obeliskBurningFramesRef.current = await loadSheetFrames(OBELISK_BURNING_SRC, OBELISK_FRAME_W, OBELISK_FRAME_H, OBELISK_BURNING_COUNT, 10)
       if (cancelled) return
 
       // Иконки наград (см. spawnRewardFloat ниже) — обычные PNG, не спрайт-
@@ -1686,6 +1832,67 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       const spawnedEnemies: Enemy[] = []
       chestsRef.current = [] // сброс на случай повторного запуска setup()
       smugglersRef.current = [] // сброс на случай повторного запуска setup()
+
+      // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
+      // обелиск создаётся НИЖЕ, внутри map-цикла событий, только если kind
+      // 'obelisk' попал в chosenEvents (см. buildEventCandidates — один
+      // кандидат на всё событие). obeliskCandidatesRef хранит ВЕСЬ пул точек
+      // карты (не только выбранную стартовую) — нужен для доспавна остальных
+      // трёх после первого удара (см. applyAttackHit).
+      obelisksRef.current = []
+      obeliskEventActiveRef.current = false
+      obeliskTimerRef.current = 0
+      obeliskStruckCountRef.current = 0
+      obeliskLastStruckRef.current = null
+      obeliskStartPointRef.current = null
+      obeliskEventIndexRef.current = null
+      obeliskHudSecondsRef.current = -1
+      obeliskHudStruckRef.current = -1
+      setObeliskHud(null)
+      const obeliskSlotForCandidates = (slots as { obelisk?: { points?: unknown } } | null)?.obelisk
+      obeliskCandidatesRef.current = Array.isArray(obeliskSlotForCandidates?.points)
+        ? (obeliskSlotForCandidates.points as unknown[]).filter(isPointXY)
+        : []
+
+      // Спавнит один обелиск (Idle) в тайловых координатах — общая функция
+      // для стартового обелиска (ниже, в map-цикле) и доспавна остальных трёх
+      // (см. applyAttackHit), чтобы посадка (floorY/hitbox/anchor) не могла
+      // разъехаться между вызовами.
+      function spawnObelisk(tileX: number, tileY: number): Obelisk {
+        const drawW = OBELISK_DRAW_H * (OBELISK_FRAME_W / OBELISK_FRAME_H)
+        const centerX = tileX * TILE_SIZE + TILE_SIZE / 2
+        const left = centerX - drawW / 2
+        const footGuess = (tileY + 1) * TILE_SIZE
+        const floorY = findGroundSurfaceY(left, drawW, footGuess) ?? footGuess
+        const sprite = new AnimatedSprite(obeliskIdleFrames)
+        sprite.anchor.set(0.5, 1.0)
+        sprite.height = OBELISK_DRAW_H
+        sprite.width = drawW
+        sprite.x = centerX
+        sprite.y = floorY + OBELISK_OFFSET_Y
+        sprite.loop = true
+        sprite.animationSpeed = OBELISK_ANIM_SPEED
+        sprite.play()
+        worldContainer.addChild(sprite)
+
+        const obelisk: Obelisk = {
+          sprite,
+          hitbox: {
+            x: centerX - OBELISK_HITBOX_W / 2,
+            y: floorY - OBELISK_DRAW_H,
+            width: OBELISK_HITBOX_W,
+            height: OBELISK_DRAW_H,
+          },
+          floorY,
+          tileX,
+          tileY,
+          burning: false,
+          struck: false,
+        }
+        obelisksRef.current.push(obelisk)
+        return obelisk
+      }
+
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
@@ -1779,6 +1986,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           worldContainer.addChild(smugglerSprite)
 
           smugglersRef.current.push({ sprite: smugglerSprite, floorY, eventIndex, facing: 1 })
+        }
+
+        // Обелиск — стартовая точка уже выбрана в buildEventCandidates (ev.x/
+        // ev.y), здесь только спавн через общую spawnObelisk (та же посадка,
+        // что и у доспавненных после первого удара, см. applyAttackHit).
+        // eventIndex запоминаем — им закрывается HUD-гнездо при успехе.
+        if (ev.kind === 'obelisk') {
+          marker.visible = false // визуал несёт спрайт обелиска, не кружок
+          obeliskStartPointRef.current = [ev.x, ev.y]
+          obeliskEventIndexRef.current = eventIndex
+          spawnObelisk(ev.x, ev.y)
         }
 
         return { ...ev, marker, closed: false }
@@ -1999,6 +2217,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         // Вертикаль — БЕЗ look-ahead и без lerp, как было (не трогаем).
         const targetY = app!.screen.height * CAMERA_V_ANCHOR - (player.y + player.height / 2) * s
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
+
+        // Параллакс: far/mid ползут МЕДЛЕННЕЕ карты — доля от движения камеры,
+        // не от движения игрока напрямую (иначе не совпадало бы с lerp/clamp
+        // выше). far двигается меньше всего (дальше), mid — заметнее (ближе).
+        const FAR_FACTOR = 0.15
+        const MID_FACTOR = 0.4
+        bgFar.tilePosition.x = worldContainer.x * FAR_FACTOR
+        bgFar.tilePosition.y = worldContainer.y * FAR_FACTOR
+        bgMid.tilePosition.x = worldContainer.x * MID_FACTOR
+        bgMid.tilePosition.y = worldContainer.y * MID_FACTOR
       }
 
       updateCamera(Infinity)
@@ -2145,6 +2373,49 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             })
           }
         }
+
+        // Обелиск — переключается на burning ударом. Первый удар (по любому
+        // обелиску) запускает событие (таймер + доспавн остальных), удары по
+        // уже активному событию добавляют время и счётчик (см. ниже). Успех/
+        // провал (награда/смерть, обелиски гаснут обратно в idle) — в
+        // ticker'е, см. блок таймера события выше. anchor/x/y/height/width НЕ
+        // трогаем при смене textures — оба листа нарезаны одним окном в
+        // одном масштабе, посадка общая.
+        if (attackHitboxRef.current) {
+          const hb = attackHitboxRef.current
+          for (const obelisk of obelisksRef.current) {
+            if (obelisk.struck) continue
+            const box = obelisk.hitbox
+            const overlap =
+              hb.x < box.x + box.width &&
+              hb.x + hb.width > box.x &&
+              hb.y < box.y + box.height &&
+              hb.y + hb.height > box.y
+            if (!overlap) continue
+            obelisk.struck = true
+            obelisk.burning = true
+            obeliskLastStruckRef.current = obelisk
+            playSpriteAnim(obelisk.sprite, obeliskBurningFramesRef.current, OBELISK_ANIM_SPEED, true)
+
+            if (!obeliskEventActiveRef.current) {
+              // Первый удар по любому обелиску запускает событие: таймер,
+              // счётчик и доспавн оставшихся OBELISK_TOTAL-1 в Idle (см. задачу).
+              obeliskEventActiveRef.current = true
+              obeliskTimerRef.current = OBELISK_TIME_MS
+              obeliskStruckCountRef.current = 1
+
+              const startPoint = obeliskStartPointRef.current
+              const remainingCandidates = obeliskCandidatesRef.current.filter(
+                (p) => !startPoint || p[0] !== startPoint[0] || p[1] !== startPoint[1]
+              )
+              const spawnPoints = pickRandom(remainingCandidates, OBELISK_TOTAL - 1)
+              for (const [tx, ty] of spawnPoints) spawnObelisk(tx, ty)
+            } else {
+              obeliskStruckCountRef.current += 1
+              obeliskTimerRef.current += OBELISK_TIME_BONUS_MS
+            }
+          }
+        }
       }
 
       // Ходьба влево/вправо + прыжок + коллизия со стенами, гравитация и
@@ -2167,6 +2438,46 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
         // Кулдаун зелья — секунды, как attackCooldownRef (ticker.deltaMS/1000).
         potionCdRef.current = Math.max(0, potionCdRef.current - ticker.deltaMS / 1000)
+
+        // Таймер события обелисков — реальное время (ticker.deltaMS), тот же
+        // приём, что у остальных ms-таймеров выше.
+        if (obeliskEventActiveRef.current) {
+          obeliskTimerRef.current -= ticker.deltaMS
+          if (obeliskStruckCountRef.current >= OBELISK_TOTAL) {
+            obeliskEventActiveRef.current = false
+            setObeliskHud(null)
+            // Все обелиски (включая стартовый) гаснут обратно в idle — они
+            // остаются на карте декорацией и стеной по X, struck НЕ сбрасываем
+            // (повторно бить нельзя). Тот же способ смены textures, что и при
+            // поджоге — anchor/x/y/height/width не трогаем.
+            for (const obelisk of obelisksRef.current) {
+              obelisk.burning = false
+              playSpriteAnim(obelisk.sprite, obeliskIdleFrames, OBELISK_ANIM_SPEED, true)
+            }
+            const last = obeliskLastStruckRef.current
+            if (last) {
+              spawnRewardFloat(last.sprite.x, last.sprite.y - last.sprite.height, [
+                { kind: 'gold', amount: randInt(OBELISK_REWARD_GOLD_MIN, OBELISK_REWARD_GOLD_MAX) },
+              ])
+            }
+            if (obeliskEventIndexRef.current !== null) closeEvent(obeliskEventIndexRef.current)
+          } else if (obeliskTimerRef.current <= 0) {
+            obeliskEventActiveRef.current = false
+            setObeliskHud(null)
+            // Провал = смерть героя — переиспользуем ЕДИНУЮ точку смерти
+            // (takeDamage -> triggerDeath), не дублируем анимацию/hold/abandon.
+            takeDamageRef.current(hpRef.current)
+          } else {
+            const secondsLeft = Math.ceil(obeliskTimerRef.current / 1000)
+            // Стартовый обелиск в счёт не идёт — HUD считает только 3 доспавненных.
+            const struckForHud = Math.max(0, obeliskStruckCountRef.current - 1)
+            if (secondsLeft !== obeliskHudSecondsRef.current || struckForHud !== obeliskHudStruckRef.current) {
+              obeliskHudSecondsRef.current = secondsLeft
+              obeliskHudStruckRef.current = struckForHud
+              setObeliskHud({ active: true, secondsLeft, struck: struckForHud })
+            }
+          }
+        }
 
         // Горизонтальное движение — во время питья зелья (drinkingRef) герой
         // закоренён: ввод движения игнорируется целиком, ноги на месте.
@@ -2307,10 +2618,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         // (закрывается только по завершении анимации открытия, см. чуть
         // ниже в тикере). smuggler — тоже НЕ попадают: пока чистый визуал без
         // взаимодействия (обмен/диалог — отдельный будущий шаг), закрывать
-        // касанием НЕ должен. Остальные типы (пока заглушки) — как раньше.
+        // касанием НЕ должен. obelisk — тоже НЕ попадает: закрывается только
+        // по успеху таймера события (см. блок таймера обелисков в тикере),
+        // иначе простое прохождение мимо стартовой точки закрыло бы событие
+        // раньше времени. Остальные типы (пока заглушки) — как раньше.
         for (let i = 0; i < eventsRef.current.length; i++) {
           const ev = eventsRef.current[i]
-          if (ev.closed || ev.kind === 'enemy' || ev.kind === 'chest' || ev.kind === 'smuggler') continue
+          if (
+            ev.closed ||
+            ev.kind === 'enemy' ||
+            ev.kind === 'chest' ||
+            ev.kind === 'smuggler' ||
+            ev.kind === 'obelisk'
+          ) continue
           const evLeft = ev.x * TILE_SIZE
           const evTop = ev.y * TILE_SIZE
           const touching =
@@ -2816,6 +3136,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }
 
+        // Обелиски: стена по X (та же pushPlayerOutX, что у сундука) — и
+        // после удара по обелиску тоже (см. задачу). Спрайт/хитбокс не
+        // пересчитываются здесь — заданы один раз при спавне из констант.
+        for (const obelisk of obelisksRef.current) {
+          pushPlayerOutX(obelisk.hitbox, getPlayerCombatBox())
+        }
+
         // Смуглеры: посадка из констант (SMUGGLER_DRAW_H/SMUGGLER_OFFSET_Y,
         // подобраны вживую отладочным тюнером, убран — см. историю) + поворот
         // к игроку. НЕ стена — pushPlayerOutX для смуглера НЕ вызывается (см.
@@ -3043,6 +3370,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // у объявления initialized выше).
       if (app && initialized) {
         try {
+          if (onBgResize) app.renderer.off('resize', onBgResize)
           app.destroy(true, { children: true })
         } catch {
           // Гонка с веткой "cancelled после init" в setup() — игнорируем.
@@ -3080,7 +3408,64 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           0%, 100% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.6), 0 0 16px 4px rgba(232,178,58,0.3); }
           50% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.9), 0 0 16px 4px rgba(232,178,58,0.5); }
         }
+        @keyframes obeliskTimerPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.55; }
+        }
       `}</style>
+
+      {/* HUD события обелисков (карта F, см. задачу) — таймер + счётчик
+          сбитых, fixed сверху по центру, safe-area aware, только пока
+          событие активно. pointerEvents: none — не перехватывает тапы. */}
+      {obeliskHud?.active && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 'calc(env(safe-area-inset-top) + 6px)',
+            // Центр по ПРОСВЕТУ между HP-плитой (left:8 + HP_FRAME_W) и
+            // шестерёнкой (SETTINGS_BTN_RIGHT + SETTINGS_BTN_SIZE от правого
+            // края) — left+right без width, браузер сам считает ширину блока
+            // как промежуток между границами (не left:50%+transform).
+            left: `calc(8px + ${HP_FRAME_W} + 8px)`,
+            right: SETTINGS_BTN_RIGHT + SETTINGS_BTN_SIZE + 8,
+            zIndex: 1001,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FONT_DISPLAY,
+              fontSize: 'clamp(20px, 6vw, 34px)',
+              fontWeight: 900,
+              letterSpacing: '0.02em',
+              lineHeight: 1,
+              whiteSpace: 'nowrap',
+              color: obeliskHud.secondsLeft < 10 ? '#E0353B' : '#EDE7F2',
+              textShadow: '0 2px 4px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)',
+              animation: obeliskHud.secondsLeft < 10 ? 'obeliskTimerPulse 0.8s ease-in-out infinite' : 'none',
+            }}
+          >
+            {Math.floor(obeliskHud.secondsLeft / 60)}:{String(obeliskHud.secondsLeft % 60).padStart(2, '0')}
+          </div>
+          <div
+            style={{
+              fontFamily: FONT_DISPLAY,
+              fontSize: 'clamp(10px, 3vw, 17px)',
+              fontWeight: 700,
+              lineHeight: 1,
+              marginTop: 4,
+              whiteSpace: 'nowrap',
+              color: obeliskHud.struck >= OBELISK_TOTAL - 1 ? '#E8B23A' : '#9C93AD',
+              textShadow: '0 1px 3px rgba(0,0,0,0.85)',
+            }}
+          >
+            {obeliskHud.struck}/{OBELISK_TOTAL - 1}
+          </div>
+        </div>
+      )}
 
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
           число и 3 гнезда с иконками событий (тип из eventKinds, состояние —
@@ -3204,10 +3589,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         style={{
           position: 'fixed',
           top: 'calc(env(safe-area-inset-top) + 6px)',
-          right: 8,
+          right: SETTINGS_BTN_RIGHT,
           zIndex: 1001,
-          width: 40,
-          height: 40,
+          width: SETTINGS_BTN_SIZE,
+          height: SETTINGS_BTN_SIZE,
           padding: 0,
           border: 'none',
           background: 'none',
