@@ -160,25 +160,6 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
     if (alpha != null) ctx.restore();
   }
 
-  function drawBackdrop() {
-    // Раньше картинка фона рисовалась ЗДЕСЬ, "запечённая" в статичный canvas
-    // карты (один слой, без глубины). Теперь фон — два живых PixiJS-слоя
-    // (far/mid) с параллаксом в Explore.tsx, движутся вместе с камерой
-    // отдельно от карты. Здесь остаётся только базовый тёмный градиент —
-    // подложка на случай, если сквозь щели карты будет видно что-то ещё, и
-    // силуэты арок для лёгкой глубины поверх параллакс-фона.
-    ctx.fillStyle = '#15131A'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    g.addColorStop(0, '#1B1822'); g.addColorStop(1, '#242030');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'rgba(14,12,19,0.5)';
-    const n = Math.max(3, Math.floor(W / 9));
-    for (let i = 0; i < n; i++) {
-      const cx = ((i * 137) % W) * TS + TS, ah = TS * 3.2, aw = TS * 2.4, top = canvas.height - ah;
-      ctx.beginPath(); ctx.ellipse(cx, top + ah, aw / 2, ah, 0, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-
   function drawSolid(x: number, y: number) {
     const px = x * TS, py = y * TS;
     const air = (nx: number, ny: number) => !isBody(nx, ny);
@@ -217,7 +198,10 @@ export async function renderMapToCanvas(options: RenderMapOptions): Promise<HTML
     else { ctx.fillStyle = '#E0353B'; ctx.fillRect(px, top, TS, h); }
   }
 
-  drawBackdrop();
+  // Фон карты НЕ рисуется здесь — canvas карты несёт только тайлы/декор и
+  // остаётся прозрачным (ctx по умолчанию прозрачный, никакой заливки на
+  // весь холст нет), чтобы сквозь него был виден параллакс (bgFar/bgMid),
+  // который Explore.tsx рисует и двигает отдельным слоем ПОД картой.
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const ch = grid[y][x];

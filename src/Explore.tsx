@@ -17,6 +17,19 @@ type ExploreProps = {
 
 const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
+// TEMP: map switcher — список карт для отладочного переключателя A-F в
+// панели настроек (см. JSX ниже). Имена файлов взяты фактические из
+// public/assets/maps/ (не по шаблону mapId — суффиксы у карт разные).
+// Убрать вместе с самим переключателем после проверки фонов параллакса.
+const TEMP_MAP_SWITCHER: { letter: string; file: string }[] = [
+  { letter: 'A', file: 'map_A_serpentine.txt' },
+  { letter: 'B', file: 'map_B_razlom.txt' },
+  { letter: 'C', file: 'map_C_boss_descent.txt' },
+  { letter: 'D', file: 'map_D_OPEN.txt' },
+  { letter: 'E', file: 'map_E_towers.txt' },
+  { letter: 'F', file: 'map_F_sanctuary.txt' },
+]
+
 // Фон по карте — фиксированный выбор пресета под тему каждой карты.
 const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
   A: 'graveyard',      // Серпантин — открытый подъём, землистые тона
@@ -1016,10 +1029,11 @@ function sweepFootBlock(
 
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
-  // поведение. Обычный const в теле компонента (не ref/state) — читается
-  // через замыкание в setup() ниже (mount-once эффект, деп. массив []), тем
-  // же способом, что maxHp/attackDamage уже читают endurance/strength.
-  const mapFile = mapFileProp ?? DEFAULT_MAP_FILE
+  // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
+  // чтобы перезапустить эффект инициализации PixiJS на другой карте (mapFile
+  // в его массиве зависимостей). setup() читает актуальное значение через
+  // обычное замыкание, как и раньше читал endurance/strength для maxHp.
+  const [mapFile, setMapFile] = useState(mapFileProp ?? DEFAULT_MAP_FILE)
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
@@ -3383,7 +3397,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // уже уничтоженные Container при повторном mount (StrictMode).
       rewardFloatsRef.current = []
     }
-  }, [])
+    // TEMP: map switcher — mapFile в зависимостях, чтобы смена карты через
+    // временный переключатель (см. панель настроек ниже) перезапускала этот
+    // эффект целиком; существующий cleanup выше уже корректно уничтожает
+    // app, отдельный механизм не нужен.
+  }, [mapFile])
 
   return (
     <div
@@ -3654,6 +3672,29 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
                 gap: 14,
               }}
             >
+              {/* TEMP: map switcher — временный ряд A-F для проверки фонов
+                  параллакса на всех картах, убрать после проверки. */}
+              <div style={{ display: 'flex', gap: 4 }}>
+                {TEMP_MAP_SWITCHER.map(({ letter, file }) => (
+                  <button
+                    key={letter}
+                    onClick={() => setMapFile(file)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 0',
+                      borderRadius: 6,
+                      border: mapFile === file ? '2px solid #E8B23A' : '1px solid #3A3344',
+                      background: '#221E2B',
+                      color: '#EDE7F2',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {letter}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={() => setSettingsOpen(false)}
                 style={{
