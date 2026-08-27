@@ -113,6 +113,12 @@ const BEAST_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/beast/death.p
 // константа / 288 (высота клетки, одна и та же для всех анимаций зверя) —
 // см. применение в spawnEnemy, размер нигде не хардкодится мимо неё.
 const BEAST_CELL_RENDER_H = 126
+// Босс (карта C, ФАЗА 1) — высота отрисовки в мировых px и доп. сдвиг сверх
+// найденной поверхности пола (findGroundSurfaceY), см. applyBossLayout ниже.
+// Подобраны вживую отладочным тюнером (убран, см. историю), теперь обычные
+// const — тот же смысл, что у BEAST_CELL_RENDER_H/FOOT_TUNE выше.
+const BOSS_DRAW_H = 240
+const BOSS_OFFSET_Y = -2
 // idle зверя — 24 кадра, полный цикл дыхания ~2.4с (медленно, спокойно):
 // 24 кадра / 2.4с = 10 кадров/сек, AnimatedSprite.animationSpeed — доля от
 // 60 кадров/сек тикера (тот же способ проигрывания, что у героя — play() +
@@ -126,6 +132,270 @@ const WALK_ANIM_PATROL = 0.2
 // Поднято вместе с ENEMY_CHASE_SPEED (сейчас 1.6→1.9, ×1.19), чтобы темп лап
 // не "пробуксовывал" при более быстром перемещении в погоне: 0.57×1.19≈0.68.
 const WALK_ANIM_CHASE = 0.68
+
+// Босс (карта C) — все 8 листов ПЕРЕСОБРАНЫ на ОБЩИЙ пиксельный масштаб
+// персонажа (см. задачу) — больше нет одной общей BOSS_CELL_W/BOSS_CELL_H:
+// у каждого листа своя клетка ШxВ, своё число колонок И свой якорь (и
+// anchor.x, И anchor.y — см. BOSS_ANCHOR_X/BOSS_ANCHOR_Y ниже). Путать с
+// зверем (BEAST_*, клетка 600×288, общая на все анимации) нельзя.
+const BOSS_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Idle.png`
+const BOSS_IDLE_CELL_W = 187
+const BOSS_IDLE_CELL_H = 287
+const BOSS_IDLE_COUNT = 24
+const BOSS_IDLE_COLS = 12
+// Idle — ПИНГ-ПОНГ: встык (кадр 23 -> кадр 0) цикл дыхания не сходится, шов
+// виден на глаз — вместо loop=true на сыром листе кадры 0..23 достраиваются
+// кадрами 22..1 в обратном порядке (см. сборку bossIdleFrames в setup()).
+const BOSS_IDLE_ANIM_SPEED = 0.15
+
+const BOSS_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Walk.png`
+const BOSS_WALK_CELL_W = 231
+const BOSS_WALK_CELL_H = 283
+const BOSS_WALK_COUNT = 24
+const BOSS_WALK_COLS = 12
+
+const BOSS_MELEE_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Melee.png`
+const BOSS_MELEE_CELL_W = 345
+const BOSS_MELEE_CELL_H = 345
+const BOSS_MELEE_COUNT = 24
+const BOSS_MELEE_COLS = 11 // НЕ 12 — пересборка сменила и cols
+
+const BOSS_MELEE2_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Melee2.png`
+const BOSS_MELEE2_CELL_W = 679
+const BOSS_MELEE2_CELL_H = 469
+const BOSS_MELEE2_COUNT = 37
+const BOSS_MELEE2_COLS = 5 // НЕ 12 — единственный лист с 5 колонками в ряд
+
+// Ranged — лист, в отличие от Idle/Walk/Melee/Melee2/Hurt/Death, НЕ приведён
+// к общему пиксельному масштабу персонажа — исходные размеры как есть,
+// компенсируется константами BOSS_SCALE_FIX_RANGED/BOSS_ANCHOR_X_RANGED/
+// BOSS_ANCHOR_Y_RANGED (подобраны живым тюнером, см. applyBossLayout ниже —
+// тюнер убран), пока лист не перегенерят/не пересоберут в масштаб остальных.
+const BOSS_RANGED_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Ranged.png`
+const BOSS_RANGED_CELL_W = 297
+const BOSS_RANGED_CELL_H = 328
+const BOSS_RANGED_COUNT = 24
+const BOSS_RANGED_COLS = 12
+// Stomp (ФАЗА 4, шаг 1, см. задачу) — подключена анимация топота, БЕЗ волны/
+// урона (только console.log на кадре удара — см. ticker). Клетка 298×378
+// измерена по самому файлу (лист 3576×756, 12 колонок, 2 ряда) — В CLAUDE.md
+// указано неверное 221×288, это ошибка документации, не бери оттуда.
+const BOSS_STOMP_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Stomp.png`
+const BOSS_STOMP_CELL_W = 298
+const BOSS_STOMP_CELL_H = 378
+const BOSS_STOMP_COUNT = 24
+const BOSS_STOMP_COLS = 12
+const BOSS_STOMP_STRIKE_FRAME = 7 // удар лапами о землю
+const BOSS_STOMP_COOLDOWN_MS = 5000
+const BOSS_STOMP_MIN_TILES = 3 // дальше этого — может топнуть (волне нужно время докатиться)
+
+// AoE-волны топота (см. задачу) — ДВЕ независимые головки (влево/вправо),
+// спавнятся на BOSS_STOMP_STRIKE_FRAME. Уклонение ТОЛЬКО прыжком (см. ticker
+// — dodgeIframeRef здесь НЕ учитывается, в отличие от шипа).
+const BOSS_WAVE_SRC = `${import.meta.env.BASE_URL}assets/vfx/Boss_Wave.png`
+const BOSS_WAVE_CELL_W = 280
+const BOSS_WAVE_CELL_H = 153
+const BOSS_WAVE_COUNT = 8
+const BOSS_WAVE_COLS = 8
+const BOSS_WAVE_DAMAGE = 16
+const BOSS_WAVE_SPEED = 300 // px/сек
+const BOSS_WAVE_DRAW_H = 100 // высота отрисовки в мире
+const BOSS_WAVE_DRAW_W = BOSS_WAVE_DRAW_H * (BOSS_WAVE_CELL_W / BOSS_WAVE_CELL_H) // пропорция листа
+const BOSS_WAVE_LIFETIME_MS = 4000
+const BOSS_WAVE_ANIM_SPEED = 0.2
+// Обе дуги нарисованы в ОДНОЙ клетке (лист даёт пару "влево+вправо" сразу) —
+// клетка режется пополам по пустому промежутку между ними, каждой волне
+// достаётся своя половина (см. загрузку/spawnBossWave ниже), иначе 2 спавна
+// дают 4 видимые дуги.
+const BOSS_WAVE_SPLIT_X = 107 // граница между дугами в клетке
+const BOSS_WAVE_ANCHOR_Y = 0.895 // низ дуги нарисован на y=137 из 153, не у края кадра
+
+const BOSS_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Hurt.png`
+const BOSS_HURT_CELL_W = 220
+const BOSS_HURT_CELL_H = 286
+const BOSS_HURT_COUNT = 31
+const BOSS_HURT_COLS = 12 // было 16 у старого листа — пересборка сменила и cols
+
+const BOSS_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/boss/Boss_Death.png`
+const BOSS_DEATH_CELL_W = 355
+const BOSS_DEATH_CELL_H = 298
+const BOSS_DEATH_COUNT = 46
+const BOSS_DEATH_COLS = 11 // НЕ 12 — пересборка сменила и cols
+
+// Тело босса стоит в клетке НЕ по центру и по-разному в каждом листе (см.
+// задачу) — anchor.x И anchor.y меняются ТОЛЬКО при смене листа (playBossAnim),
+// внутри одной анимации запрещено трогать оба.
+type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'death' | 'ranged' | 'stomp'
+const BOSS_ANCHOR_X: Record<BossAnimKind, number> = {
+  idle: 0.4064,
+  walk: 0.4719,
+  melee: 0.5391,
+  melee2: 0.6127,
+  hurt: 0.4818,
+  death: 0.5183,
+  // ranged — статический дефолт для Record-полноты/самого первого кадра до
+  // первого тика applyBossLayout; реально применяется BOSS_ANCHOR_X_RANGED
+  // (см. константы выше и applyBossLayout ниже), не это значение.
+  ranged: 0.5926,
+  // stomp (ФАЗА 4, шаг 1, см. задачу) — ПРИБЛИЗИТЕЛЬНОЕ, не измерено/не
+  // подгонялось тюнером (задачи на это не было) — визуально проверить и
+  // зафиксировать точным числом при подключении волны (следующий шаг).
+  stomp: 0.5,
+}
+const BOSS_ANCHOR_Y: Record<BossAnimKind, number> = {
+  idle: 0.9826,
+  walk: 0.9788,
+  melee: 0.9855,
+  melee2: 0.8380,
+  hurt: 0.9825,
+  death: 0.9329,
+  // ranged — см. комментарий у BOSS_ANCHOR_X.ranged выше, тот же смысл.
+  ranged: 0.9848,
+  // stomp — см. комментарий у BOSS_ANCHOR_X.stomp выше, тот же смысл.
+  stomp: 0.98,
+}
+
+// Speed/loop на анимацию (см. playBossAnim) — idle пинг-понг и walk цикл
+// вперёд крутятся, melee/melee2/hurt/death/ranged/stomp разовые. Скорости —
+// ПРЕДВАРИТЕЛЬНЫЕ (нет привязки к strike-кадрам/таймингам AI, это будущая
+// фаза) — только чтобы переключатель на этом шаге отличал анимации на глаз.
+const BOSS_ANIM_SPEED: Record<BossAnimKind, number> = {
+  idle: BOSS_IDLE_ANIM_SPEED,
+  walk: 0.2,
+  melee: 0.4,
+  melee2: 0.35,
+  // hurt — ускорено (см. задачу, "починка стан-лока" + баланс): кадры (31)
+  // НЕ обрезаны, ускорено только проигрывание. 2.07 даёт BOSS_HURT_MS
+  // ≈250мс (см. формулу ниже).
+  hurt: 2.07,
+  death: 0.3,
+  // ranged — ПРЕДВАРИТЕЛЬНО, как melee/melee2 (см. задачу, п.2 — броска/AI
+  // ещё нет, важно только чтобы анимацию было видно на глаз).
+  ranged: 0.35,
+  // stomp — ПРЕДВАРИТЕЛЬНО, тем же приёмом, что и у ranged на его первом шаге.
+  stomp: 0.35,
+}
+const BOSS_ANIM_LOOP: Record<BossAnimKind, boolean> = {
+  idle: true,
+  walk: true,
+  melee: false,
+  melee2: false,
+  hurt: false,
+  ranged: false,
+  stomp: false,
+  death: false,
+}
+
+// Босс (карта C, ФАЗА 2, шаг 3, см. задачу) — урон/HP/hurt, ещё БЕЗ AI/атак.
+const BOSS_MAX_HP = 300 // было 200, баланс — порог стадии 2 (50%) теперь 150
+// Хитстан ЖЁСТКО выведен из длины/скорости hurt-листа босса (31 кадр,
+// BOSS_ANIM_SPEED.hurt) — та же причина, что у ENEMY_HURT_MS выше: иначе
+// таймер и анимация могли бы разъехаться (таймер истёк бы раньше конца
+// анимации, т.к. лист/скорость у босса другие, чем у зверя). Poise/анти-
+// стан-лок у босса — СВОИ константы BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS
+// (см. ниже), не POISE_POINT/STUN_LIMIT/POISE_IMMUNE_MS зверя — те не
+// подходят по смыслу (у босса нет фазы замаха, которую можно "не успеть
+// пройти", см. применение в applyAttackHit).
+const BOSS_HURT_MS = (1000 * BOSS_HURT_COUNT) / (60 * BOSS_ANIM_SPEED.hurt)
+// Стадии босса — переход считается ОДИН раз при первом пересечении порога
+// вниз (см. boss.stage-гейт в applyAttackHit), не каждый кадр. Новых атак на
+// этом шаге стадия 2 не даёт — только console.log, см. задачу.
+const BOSS_STAGE2_HP_RATIO = 0.5
+// HP-бар босса — та же высота/зазор, что у зверя (ENEMY_HP_BAR_HEIGHT/
+// ENEMY_HP_BAR_MARGIN, отдельных боссовых констант для них нет), но заметно
+// ШИРЕ (ENEMY_WIDTH=116) и СВОЙ вертикальный отступ — босс визуально намного
+// крупнее (BOSS_DRAW_H=240 против 126 у зверя).
+const BOSS_HP_BAR_WIDTH = 220
+const BOSS_HPBAR_OFFSET_Y = 30
+
+// Босс (карта C, ФАЗА 2, шаг 4, см. задачу) — передвижение, ещё БЕЗ атак.
+// Агро — больше, чем у зверя (AGGRO_RANGE_TILES=7): босс крупнее, площадка
+// C просторнее, боссу нужно замечать героя издалека. Патруль НЕ делаем — вне
+// агро босс просто стоит (см. задачу).
+const BOSS_AGGRO_RANGE_TILES = 20
+// STOP_DISTANCE/MOVE_SPEED — зафиксированы после подбора живым тюнером
+// (тюнер убран, см. историю — та же судьба, что у BOSS_DRAW_H/BOSS_OFFSET_Y и
+// BOSS_WIDTH/BOSS_HEIGHT).
+const BOSS_STOP_DISTANCE = 149
+const BOSS_MOVE_SPEED = 2.0
+// Гистерезис остановки (см. задачу, п.5) — мёртвая зона вокруг STOP_DISTANCE:
+// уже идущий босс тормозит РОВНО на STOP_DISTANCE, но снова трогается с
+// места только когда игрок отошёл на STOP_DISTANCE + это число — без зазора
+// на самой границе анимация walk/idle дёргалась бы каждый кадр.
+const BOSS_STOP_HYSTERESIS = 20
+
+// Босс (карта C, ФАЗА 2, шаг 5, см. задачу) — ближний бой, 2 атаки. БЕЗ
+// windup-фазы (в отличие от зверя выше) — атака стартует сразу по решению
+// AI, как только босс СТОИТ (boss.moving===false, дошёл до BOSS_STOP_
+// DISTANCE) и кулдаун истёк; сама анимация — единственный телеграф, урон —
+// на конкретном кадре (strike-кадр), не по началу анимации и не по нажатию.
+const BOSS_MELEE_DAMAGE = 18
+const BOSS_MELEE_STRIKE_FRAME = 9
+const BOSS_MELEE2_DAMAGE = 26
+const BOSS_MELEE2_STRIKE_FRAME = 19
+// RANGE/COOLDOWN — зафиксированы после подбора живым тюнером (тюнер убран,
+// см. историю — та же судьба, что у BOSS_STOP_DISTANCE/BOSS_MOVE_SPEED).
+const BOSS_MELEE_RANGE = 160
+const BOSS_MELEE2_RANGE = 200
+const BOSS_ATTACK_COOLDOWN_MS = 600
+
+// Босс (карта C, ФАЗА 2, шаг 5 — починка стан-лока, см. задачу) — ДВА слоя
+// защиты от бесконечного затыкания хитстаном:
+// СЛОЙ 1 (главный) — пока boss.attackAnimPlaying, Hurt не проигрывается
+// ВООБЩЕ, ни на каком кадре, независимо от poise (см. applyAttackHit) —
+// атака всегда доигрывает до конца и до кадра урона. Урон при этом
+// проходит нормально (hp/HP-бар), обратная связь — короткая красная
+// вспышка спрайта (BOSS_HIT_FLASH_MS, tint) вместо хитстана.
+const BOSS_HIT_FLASH_MS = 120
+// СЛОЙ 2 — тот же механизм накопительного стан-резиста, что у зверя
+// (см. STUN_LIMIT/POISE_IMMUNE_MS выше и применение в applyAttackHit), но
+// СВОИМИ константами и ТОЛЬКО пока босс НЕ атакует (см. слой 1 — во время
+// атаки этот слой не участвует вообще, там просто нет хитстана). У босса
+// порог выше и иммунитет дольше — крупный враг, HP-бар большой.
+const BOSS_STUN_LIMIT = 3 // у зверя 2
+const BOSS_POISE_IMMUNE_MS = 1500 // у зверя 1200
+
+// Ranged — числа подобраны живым тюнером (убран, см. историю выше), та же
+// судьба, что у прежних боевых тюнеров до их фиксации. Лист Boss_Ranged не
+// приведён к общему масштабу — BOSS_SCALE_FIX_RANGED умножает базовый scale
+// в applyBossLayout ТОЛЬКО пока активна анимация ranged, BOSS_ANCHOR_X_RANGED/
+// BOSS_ANCHOR_Y_RANGED там же подменяют якорь.
+const BOSS_SCALE_FIX_RANGED = 1.0
+const BOSS_ANCHOR_X_RANGED = 0.593
+const BOSS_ANCHOR_Y_RANGED = 0.985
+
+// Ranged — условия броска и сам бросок (ФАЗА 3, см. задачу): доступен С
+// ПЕРВОЙ стадии (в отличие от Melee2), СТОЛЬКО ЖЕ высокий приоритет, что у
+// Melee/Melee2 — ВЫШЕ hurt, доигрывает до конца, не прерывается (тот же
+// слой 1, см. applyAttackHit). Ближе BOSS_RANGED_MIN_TILES босс броском не
+// пользуется — идёт в ближний бой (см. AI-гейт в ticker'е). Снаряд создаётся
+// на кадре выпуска (см. spawnBossSpike в ticker'е, ФАЗА 3 шаг 2).
+const BOSS_RANGED_MIN_TILES = 6
+const BOSS_RANGED_COOLDOWN_MS = 1500
+const BOSS_RANGED_RELEASE_FRAME = 20
+const BOSS_RANGED_DOUBLE_CHANCE = 0.5 // шанс второго шипа
+
+// Шип дальней атаки — снаряд + импакт (ФАЗА 3, шаг 2, см. задачу). Траектория
+// ПРЯМАЯ горизонтальная, снаряд НЕ вращается. Импакт при попадании
+// обязателен — вблизи иначе непонятно, откуда урон (см. задачу).
+const BOSS_RANGED_DAMAGE = 14
+const BOSS_SPIKE_SPEED_X = 700 // горизонтальная скорость, px/сек
+const BOSS_SPIKE_GRAVITY = 1400 // ускорение вниз, px/сек^2
+const BOSS_SPIKE_SRC = `${import.meta.env.BASE_URL}assets/objects/Boss_Spike.png`
+const BOSS_SPIKE_DRAW_W = 90 // ширина отрисовки в мире
+const BOSS_SPIKE_DRAW_H = 30 // 90 * 67/200, сохраняет пропорции
+// Точка вылета — кисть на кадре 20 листа Boss_Ranged.png, доля ширины/высоты
+// клетки (не хитбокса — см. spawnBossSpike, считается от трансформа спрайта).
+const BOSS_SPIKE_HAND_X = 0.061 // центр кисти, доля ширины клетки
+const BOSS_SPIKE_HAND_Y = 0.376 // центр кисти, доля высоты клетки
+const BOSS_SPIKE_LIFETIME_MS = 2500
+const BOSS_SPIKE_IMPACT_SRC = `${import.meta.env.BASE_URL}assets/vfx/Boss_Spike_Impact.png`
+const BOSS_SPIKE_IMPACT_CELL_W = 347
+const BOSS_SPIKE_IMPACT_CELL_H = 369
+const BOSS_SPIKE_IMPACT_COUNT = 20
+const BOSS_SPIKE_IMPACT_COLS = 10 // НЕ 12 — у этого листа своя раскладка
+const BOSS_SPIKE_IMPACT_DRAW_H = 130
+const BOSS_SPIKE_IMPACT_ANIM_SPEED = 0.3 // разовая, тайминг-константы нет — на глаз
 
 // Сундук (reward-событие) — ТОЛЬКО визуал на этом шаге: статичный кадр 0
 // (закрыт) поверх прежнего маркера-хитбокса касания, без анимации открытия
@@ -190,8 +460,6 @@ const OBELISK_ANIM_SPEED = 0.12
 const OBELISK_TOTAL = 4 // всего обелисков за событие (1 стартовый + 3)
 const OBELISK_TIME_MS = 30000 // стартовый таймер после первого удара
 const OBELISK_TIME_BONUS_MS = 15000 // добавка к таймеру за каждый следующий удар
-const OBELISK_REWARD_GOLD_MIN = 60
-const OBELISK_REWARD_GOLD_MAX = 120
 // Дисплейный шрифт HUD-таймера обелисков (Cinzel, подключён через <link> в
 // index.html) — Georgia в fallback ОБЯЗАТЕЛЬНА: без неё до загрузки шрифта
 // цифры сначала рисуются системным sans и "прыгают" в размере при подмене.
@@ -234,6 +502,26 @@ const REWARD_FLOAT_MS = 2000
 const REWARD_FLOAT_RISE = 45 // px всплытия за REWARD_FLOAT_MS
 const REWARD_ICON_H = 24 // высота отрисовки иконки, px мира
 const REWARD_ROW_GAP = 28 // вертикальный интервал между наградами в столбике
+
+// Трофеи за события (см. задачу) — общая формула, множитель применяется
+// снаружи (TROPHY_MULT_ENEMY и будущие TROPHY_MULT_* для других событий).
+const TROPHY_BASE = 12.5
+const TROPHY_LEVEL_POWER = 0.446
+const TROPHY_SPREAD = 0.4 // разброс +-20%
+const PLAYER_LEVEL_FALLBACK = 1 // ВРЕМЕННО: уровень в Explore пока
+                                 // не пробрасывается, считаем по 1
+
+// Базовые трофеи за событие. Множитель применяется снаружи.
+function rollTrophies(multiplier: number): number {
+  const level = PLAYER_LEVEL_FALLBACK
+  const spread = (1 - TROPHY_SPREAD / 2) + Math.random() * TROPHY_SPREAD
+  return Math.round(TROPHY_BASE * Math.pow(level, TROPHY_LEVEL_POWER) * spread * multiplier)
+}
+
+const TROPHY_MULT_ENEMY = 1
+const TROPHY_MULT_CHEST = 3
+const TROPHY_MULT_OBELISK = 2
+const TROPHY_MULT_BOSS = 4
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -342,6 +630,12 @@ const ATTACK_ACTIVE_MS = 150
 const ENEMY_WIDTH = 116
 const ENEMY_HEIGHT = 80
 const ENEMY_COLOR = 0x4a3728
+// Хитбокс босса (ФАЗА 2, шаг 2, см. задачу) — подобран вживую отладочным
+// тюнером (убран, см. историю), теперь обычные const, как ENEMY_WIDTH/
+// ENEMY_HEIGHT выше. Узкий и высокий (в отличие от приземистого зверя) —
+// под позу двуногого босса.
+const BOSS_WIDTH = 60
+const BOSS_HEIGHT = 214
 // ENEMY_ATTACK_RANGE — дальность удара врага (inMeleeReach), см. комментарий
 // про разделение ATTACK_RANGE выше.
 const ENEMY_ATTACK_RANGE = 92
@@ -453,6 +747,14 @@ const POISE_IMMUNE_MS = 1200
 const AGGRO_RANGE_TILES = 7 // было 8 — полировка, замечает игрока чуть позже
 const FLOOR_Y_TOLERANCE = 1.5
 
+// Допуск sameFloor ДЛЯ АГРО (зверь И босс, см. задачу) — отдельная, более
+// широкая константа, чем FLOOR_Y_TOLERANCE выше (которая держит смуглера/
+// пороги обмена). FLOOR_Y_TOLERANCE=1.5 слишком узкая для агро: обычный
+// прыжок героя поднимает его формально "на этаж выше", и враг терял цель
+// (замирал) прямо во время погони. 2.5 тайла перекрывает высоту прыжка, не
+// затирая сам смысл "другого этажа" (переход на платформу заметно выше).
+const SAME_FLOOR_TOLERANCE_TILES = 2.5
+
 // Шаг C — патруль вокруг стартовой точки спавна (enemy.spawnX), когда враг НЕ
 // агрён. Разворот на границе патруля, у стены '#' и у края платформы (в
 // отличие от погони — в патруле с края НЕ падают, см. ниже в ticker'е).
@@ -472,7 +774,7 @@ const PLAYER_DODGE_COOLDOWN_MS = 1000
 const GRAVITY = 0.31 // было 0.8 — пересчитано под модель
 const MAX_FALL = 20
 const MOVE_SPEED = 4 // px/кадр, подберём на телефоне
-const JUMP_VELOCITY = 10 // сила толчка вверх
+const JUMP_VELOCITY = 11.5 // сила толчка вверх (было 10, подобрано тюнером — тюнер убран)
 
 const CAMERA_V_ANCHOR = 0.65 // 0.5 = центр экрана, больше = игрок ниже
 const WORLD_SCALE = 0.55 // 1 = как сейчас, меньше = видно больше карты; зафиксировано после подбора тюнером
@@ -559,6 +861,10 @@ type Enemy = {
   // затем удаляется/декрементирует remainingEnemies события, как раньше.
   dead: boolean
   deathHoldTimer: number
+  // Доля трофеев этого врага из суммы кластера (см. задачу) — разыграна
+  // ОДИН раз при спавне всего кластера (rollTrophies), не при смерти
+  // каждого врага отдельно, иначе сумма по группе не сходилась бы с total.
+  trophyReward: number
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -624,6 +930,86 @@ type Obelisk = {
   struck: boolean
 }
 
+// Босс карты C — ФАЗА 2, шаг 3 (см. задачу): урон/HP/hurt, ещё БЕЗ AI/атак/
+// движения. x/y/vy/facing — по образцу Enemy (гравитация + посадка на пол
+// тем же sweepFootBlock, что у врага); x/y — координаты ХИТБОКСА (BOSS_WIDTH/
+// BOSS_HEIGHT), не спрайта — спрайт синкается от него в applyBossLayout, как
+// enemy.sprite от enemy.rect. Хитбокс НЕ отрисовывается (отладочная рамка
+// использовалась только для подбора BOSS_WIDTH/BOSS_HEIGHT и убрана вместе с
+// тюнером — см. историю).
+// hp/maxHp/lastHitSwingId/hurtTimer/stunCount/poiseImmuneTimer/dead — ТЕ ЖЕ
+// поля и смысл, что у Enemy (см. applyAttackHit/ticker ниже — тот же
+// хит-тест/poise/анти-стан-лок механизм, не второй). deathHoldTimer заведён
+// по той же схеме, но НЕ используется (см. задачу, п.2) — труп босса, в
+// отличие от зверя, не despawn'ится, держать таймер до удаления незачем.
+// stage — 1|2, переход на 2 при первом пересечении BOSS_STAGE2_HP_RATIO
+// ВНИЗ (не каждый кадр, см. гейт `stage === 1` в applyAttackHit).
+// moving — ФАЗА 2, шаг 4 (см. задачу): персистентное состояние "идёт/стоит"
+// между тиками, нужно ИМЕННО для гистерезиса (п.5 задачи) — без него нельзя
+// было бы отличить "уже иду, торможу на STOP_DISTANCE" от "уже стою, трогаюсь
+// только на STOP_DISTANCE+запас" одним и тем же числом dist.
+// attackKind/attackAnimPlaying/attackHitApplied/attackCooldownTimer — ФАЗА 2,
+// шаг 5 (см. задачу): у босса НЕТ windingUp, как у зверя — атака стартует
+// сразу (сама анимация — телеграф), attackKind фиксирует, КАКАЯ атака сейчас
+// играет (для strike-кадра/урона/зоны — числа разные у melee/melee2).
+// attackHitApplied — урон этого замаха уже применён (как enemy.attackHitApplied
+// у зверя) — не бить каждый тик, пока currentFrame держится на/после strike-
+// кадра. attackCooldownTimer — тикает ВНИЗ до 0, выставляется ПОСЛЕ конца
+// анимации атаки — ЛЮБОГО конца (естественного; прерванного у босса теперь
+// не бывает — см. слой 1 ниже), не после урона.
+// stunCount/poiseImmuneTimer — СЛОЙ 2 починки стан-лока (см. задачу): ТОТ ЖЕ
+// механизм, что у Enemy.stunCount/poiseImmuneTimer выше, своими константами
+// (BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS), участвует ТОЛЬКО пока босс НЕ
+// атакует (см. applyAttackHit) — во время атаки хитстана нет вообще (слой 1).
+// hitFlashTimer — СЛОЙ 1/2 (см. задачу): >0 мс, тикает вниз, пока активен —
+// спрайт подкрашен в danger-tint (BOSS_HIT_FLASH_MS) вместо хитстана —
+// визуальная замена Hurt, когда сам Hurt не проигрывается (в атаке ВСЕГДА,
+// вне атаки — только под иммунитетом poiseImmuneTimer).
+// rangedAnimPlaying/rangedThrowApplied/rangedCooldownTimer — ФАЗА 3, шаг 1
+// (см. задачу) — состояние броска, ПО ОБРАЗЦУ attackAnimPlaying/
+// attackHitApplied/attackCooldownTimer выше: rangedAnimPlaying — идёт
+// анимация Ranged (высший приоритет, ВЫШЕ hurt, тот же слой 1, что у melee —
+// см. applyAttackHit); rangedThrowApplied — кадр выпуска (BOSS_RANGED_
+// RELEASE_FRAME) уже отмечен для этого броска (снаряда/урона на этом шаге
+// нет, только console.log); rangedCooldownTimer — тикает ВНИЗ до 0,
+// выставляется ПОСЛЕ конца анимации броска, не при попадании урона.
+type Boss = {
+  x: number
+  y: number
+  vy: number
+  facing: 1 | -1
+  moving: boolean
+  hp: number
+  maxHp: number
+  lastHitSwingId: number
+  hurtTimer: number
+  stunCount: number
+  poiseImmuneTimer: number
+  hitFlashTimer: number
+  dead: boolean
+  deathHoldTimer: number
+  stage: 1 | 2
+  attackKind: 'melee' | 'melee2' | null
+  attackAnimPlaying: boolean
+  attackHitApplied: boolean
+  attackCooldownTimer: number
+  rangedAnimPlaying: boolean
+  rangedThrowApplied: boolean
+  rangedCooldownTimer: number
+  rangedShotsLeft: number
+  stompAnimPlaying: boolean
+  stompStrikeApplied: boolean
+  stompCooldownTimer: number
+  // rewardGiven — награда/closeEvent выдаются РОВНО ОДИН раз, когда
+  // death-анимация доигрывает (см. ФАЗА 5, задача); без флага туша,
+  // висящая на последнем кадре после конца анимации, слала бы награду
+  // каждый тик.
+  rewardGiven: boolean
+  hpBarBg: Graphics
+  hpBarFill: Graphics
+  sprite: AnimatedSprite
+}
+
 // HUD события обелисков (таймер + счётчик над экраном, см. задачу) — ЭТО
 // state (не ref), т.к. рисует UI; в тикере пишется только при реальном
 // изменении целых секунд/счётчика, не каждый кадр (см. установка ниже).
@@ -637,6 +1023,33 @@ type RewardFloat = {
   node: Container
   elapsed: number
   startY: number
+}
+
+// Летящий шип дальней атаки босса (ФАЗА 3, шаг 3, см. задачу) — по образцу
+// RewardFloat: список активных снарядов, обновляется в ticker'е, спрайт живёт
+// в worldContainer (двигается с камерой вместе со сценой). dir — направление
+// полёта (1/-1), зафиксировано при спавне (boss.facing на тот момент), дальше
+// не меняется. vy — вертикальная скорость баллистической дуги (px/сек),
+// посчитана при спавне на попадание в героя, дальше растёт под BOSS_SPIKE_
+// GRAVITY каждый кадр. hitApplied — урон уже применён этим шипом, помечен на
+// удаление в этом же кадре (не бить дважды, не пролетать сквозь после удара).
+type BossSpike = {
+  sprite: Sprite
+  dir: 1 | -1
+  vy: number
+  lifeMs: number
+  hitApplied: boolean
+}
+
+// AoE-волна топота (см. задачу) — независимая головка, катится по земле
+// (Y не меняется, гравитации нет, в отличие от шипа). dir — направление
+// (влево/вправо от босса), зафиксировано при спавне, не меняется.
+// hitApplied — бьёт максимум один раз, дальше помечена на удаление.
+type BossWave = {
+  sprite: AnimatedSprite
+  dir: 1 | -1
+  lifeMs: number
+  hitApplied: boolean
 }
 
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
@@ -692,6 +1105,10 @@ const SETTINGS_FRAME_H = 'clamp(340px, 70vh, 520px)'
 const SETTINGS_FRAME_W = `calc(${SETTINGS_FRAME_H} * ${SETTINGS_FRAME_ASPECT})`
 
 const EVENTS_PER_RUN = 3
+// Шанс, что босс появится на карте C (см. задачу) — разыгрывается ОДИН раз
+// при выборе chosenEvents, наравне с гарантией Контрабандиста на карте D
+// OPEN; не выпало — босс не спавнится вообще (см. spawnBoss/bossRef ниже).
+const BOSS_SPAWN_CHANCE = 0.3
 
 function isPointXY(value: unknown): value is [number, number] {
   return Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'number'
@@ -753,12 +1170,6 @@ function pickRandom<T>(items: T[], count: number): T[] {
     pool.splice(i, 1)
   }
   return picked
-}
-
-// Целое число в [min, max] включительно — локальная заглушка награды сундука
-// (см. spawnRewardFloat), реального рандома наград на сервере это не заменяет.
-function randInt(min: number, max: number): number {
-  return Math.floor(min + Math.random() * (max - min + 1))
 }
 
 // Режет спрайт-лист на кадры: cols колонок в ряд, дальше перенос вниз.
@@ -1185,6 +1596,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   const obeliskCandidatesRef = useRef<[number, number][]>([])
   const obeliskStartPointRef = useRef<[number, number] | null>(null)
   const obeliskEventIndexRef = useRef<number | null>(null)
+  // eventIndex босса в chosenEvents/eventsRef.current (ФАЗА 5, см. задачу) —
+  // по тому же образцу, что obeliskEventIndexRef: закрывает HUD-гнездо при
+  // успехе (см. ticker — момент завершения death-анимации).
+  const bossEventIndexRef = useRef<number | null>(null)
   // Последний сбитый обелиск — над ним показывается награда при успехе (см.
   // applyAttackHit / ticker ниже).
   const obeliskLastStruckRef = useRef<Obelisk | null>(null)
@@ -1198,6 +1613,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   const obeliskHudSecondsRef = useRef(-1)
   const obeliskHudStruckRef = useRef(-1)
 
+  // Босс карты C (ФАЗА 1, см. type Boss выше и задачу) — максимум ОДИН за
+  // забег (не список, как enemiesRef), null пока не заспавнен/не карта C.
+  const bossRef = useRef<Boss | null>(null)
+  // Летящие шипы дальней атаки босса (ФАЗА 3, шаг 2, см. type BossSpike выше)
+  // — независимый от bossRef список: шип, брошенный до смерти/despawn босса,
+  // должен долетать и попадать сам по себе.
+  const bossSpikesRef = useRef<BossSpike[]>([])
+  // AoE-волны топота босса (см. type BossWave выше) — независимый от bossRef
+  // список, по тому же образцу, что bossSpikesRef.
+  const bossWavesRef = useRef<BossWave[]>([])
   // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
@@ -1245,6 +1670,16 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     enemy.hpBarFill.clear()
     if (pct > 0) {
       enemy.hpBarFill.rect(0, 0, ENEMY_WIDTH * pct, ENEMY_HP_BAR_HEIGHT).fill(0xe0353b)
+    }
+  }
+
+  // HP-бар босса — тот же приём, что у зверя выше (redrawEnemyHpBar), но
+  // своя ширина (BOSS_HP_BAR_WIDTH, заметно шире вражеской).
+  function redrawBossHpBar(boss: Boss) {
+    const pct = Math.max(0, Math.min(1, boss.hp / boss.maxHp))
+    boss.hpBarFill.clear()
+    if (pct > 0) {
+      boss.hpBarFill.rect(0, 0, BOSS_HP_BAR_WIDTH * pct, ENEMY_HP_BAR_HEIGHT).fill(0xe0353b)
     }
   }
 
@@ -1421,7 +1856,44 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // На карте A есть только enemyClusters и reward. enemy-событие несёт
       // clusterPoints (все 3 точки кластера) — враги спавнятся ниже, после
       // создания worldContainer.
-      const chosenEvents = pickRandom(buildEventCandidates(slots), EVENTS_PER_RUN)
+      //
+      // Карта D в состоянии OPEN — ИСКЛЮЧЕНИЕ: Контрабандист там ГАРАНТИРОВАН
+      // (см. CLAUDE.md), а не рядовой равновероятный кандидат среди ~11 —
+      // иначе он часто не попадал в тройку. Вынимаем smuggler-кандидата из
+      // пула и ставим ПЕРВЫМ, остальные EVENTS_PER_RUN-1 добираем pickRandom
+      // из пула БЕЗ него (не задваивается). SEALED сюда не попадает — там
+      // npc.smuggler=null, buildEventCandidates и так его не кладёт в пул.
+      // Карта C — босс ВЕРОЯТНОСТНЫЙ (см. задачу): бросок BOSS_SPAWN_CHANCE
+      // решается ОДИН раз здесь же, той же схемой пиннинга, что у
+      // Контрабандиста на карте D OPEN выше — если выпало, единственный
+      // kind:'boss' кандидат вынимается из пула и ставится ПЕРВЫМ (иначе
+      // среди общего пула часто не попадал бы в тройку сам по себе). Не
+      // выпало — кандидат просто исключается из пула (см. poolWithoutBoss
+      // ниже), чтобы pickRandom не мог случайно вытащить его САМ; bossRef/
+      // bossEventIndexRef остаются null (см. spawnBoss/сброс выше) — 3
+      // события добираются обычным путём без него.
+      const eventPool = buildEventCandidates(slots)
+      let chosenEvents: EventCandidate[]
+      const smugglerIndex = mapFile.startsWith('map_D_OPEN')
+        ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
+        : -1
+      const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
+      // bossWillSpawn читается позже (spawnBoss ниже) — держит спавн самого
+      // босса и его присутствие в chosenEvents синхронными: один и тот же
+      // бросок решает и то, и другое.
+      const bossWillSpawn = bossIndex !== -1 && Math.random() < BOSS_SPAWN_CHANCE
+      if (smugglerIndex !== -1) {
+        const smugglerCandidate = eventPool[smugglerIndex]
+        const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
+        chosenEvents = [smugglerCandidate, ...pickRandom(restPool, EVENTS_PER_RUN - 1)]
+      } else if (bossWillSpawn) {
+        const bossCandidate = eventPool[bossIndex]
+        const restPool = eventPool.filter((_, i) => i !== bossIndex)
+        chosenEvents = [bossCandidate, ...pickRandom(restPool, EVENTS_PER_RUN - 1)]
+      } else {
+        const poolWithoutBoss = bossIndex !== -1 ? eventPool.filter((_, i) => i !== bossIndex) : eventPool
+        chosenEvents = pickRandom(poolWithoutBoss, EVENTS_PER_RUN)
+      }
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
@@ -1438,7 +1910,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       }
       const start = { x: startRaw[0], y: startRaw[1] }
 
-      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE })
+      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: TILE_SIZE, theme: backdropForMap(mapFile) })
 
       if (cancelled || !containerRef.current) {
         // Всё ещё ДО init() — по той же причине ничего не разрушаем.
@@ -1650,6 +2122,122 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       obeliskBurningFramesRef.current = await loadSheetFrames(OBELISK_BURNING_SRC, OBELISK_FRAME_W, OBELISK_FRAME_H, OBELISK_BURNING_COUNT, 10)
       if (cancelled) return
 
+      // Босс (карта C) — Idle, лист 188×287, 24 кадра, 12 колонок в ряд.
+      const bossIdleRaw = await loadSheetFrames(BOSS_IDLE_SRC, BOSS_IDLE_CELL_W, BOSS_IDLE_CELL_H, BOSS_IDLE_COUNT, BOSS_IDLE_COLS)
+      if (cancelled) return
+      // Пинг-понг: встык (кадр 23 -> кадр 0) цикл дыхания не сходится, шов
+      // виден — 0..23 достраивается кадрами 22..1 в обратном порядке.
+      const bossIdleFrames = [...bossIdleRaw, ...bossIdleRaw.slice(1, -1).reverse()]
+
+      // Босс (карта C, ФАЗА 2 шаг 1, см. задачу) — остальные листы, ТОЛЬКО
+      // загрузка (см. playBossAnim ниже — переключатель, без AI/боя/урона).
+      // Stomp не грузится (нужен только для AoE — фаза 4, см. закомментированные
+      // константы выше). Высота клетки СВОЯ у каждого листа (общей BOSS_CELL_H
+      // больше нет) — cols указан ЯВНО у всех, у Melee2 — 6, не дефолтные 12.
+      const bossWalkFrames = await loadSheetFrames(BOSS_WALK_SRC, BOSS_WALK_CELL_W, BOSS_WALK_CELL_H, BOSS_WALK_COUNT, BOSS_WALK_COLS)
+      if (cancelled) return
+      const bossMeleeFrames = await loadSheetFrames(BOSS_MELEE_SRC, BOSS_MELEE_CELL_W, BOSS_MELEE_CELL_H, BOSS_MELEE_COUNT, BOSS_MELEE_COLS)
+      if (cancelled) return
+      const bossMelee2Frames = await loadSheetFrames(BOSS_MELEE2_SRC, BOSS_MELEE2_CELL_W, BOSS_MELEE2_CELL_H, BOSS_MELEE2_COUNT, BOSS_MELEE2_COLS)
+      if (cancelled) return
+      const bossHurtFrames = await loadSheetFrames(BOSS_HURT_SRC, BOSS_HURT_CELL_W, BOSS_HURT_CELL_H, BOSS_HURT_COUNT, BOSS_HURT_COLS)
+      if (cancelled) return
+      const bossDeathFrames = await loadSheetFrames(BOSS_DEATH_SRC, BOSS_DEATH_CELL_W, BOSS_DEATH_CELL_H, BOSS_DEATH_COUNT, BOSS_DEATH_COLS)
+      if (cancelled) return
+      // Ranged (ФАЗА 3, шаг 1, см. задачу) — cols=12 указан ЯВНО (лист НЕ
+      // приведён к общему масштабу, см. константы выше — это отдельно
+      // компенсируется в applyBossLayout, cols тут ни при чём).
+      const bossRangedFrames = await loadSheetFrames(BOSS_RANGED_SRC, BOSS_RANGED_CELL_W, BOSS_RANGED_CELL_H, BOSS_RANGED_COUNT, BOSS_RANGED_COLS)
+      if (cancelled) return
+      // Stomp (ФАЗА 4, шаг 1, см. задачу) — cols=12 указан ЯВНО (лист 12×2,
+      // НЕ дефолтные 12×N вподряд по одной строке).
+      const bossStompFrames = await loadSheetFrames(BOSS_STOMP_SRC, BOSS_STOMP_CELL_W, BOSS_STOMP_CELL_H, BOSS_STOMP_COUNT, BOSS_STOMP_COLS)
+      if (cancelled) return
+
+      // Шип дальней атаки + импакт (ФАЗА 3, шаг 2, см. задачу) — в try/catch:
+      // при ошибке загрузки не рушим setup(), снаряд/импакт просто не
+      // создаются (см. spawnBossSpike/spawnBossSpikeImpact ниже), остальная
+      // игра работает.
+      let bossSpikeTexture: Texture | null = null
+      try {
+        bossSpikeTexture = await Assets.load(BOSS_SPIKE_SRC)
+      } catch (err) {
+        console.error('Explore: не удалось загрузить Boss_Spike.png', err)
+      }
+      if (cancelled) return
+      let bossSpikeImpactFrames: Texture[] = []
+      try {
+        bossSpikeImpactFrames = await loadSheetFrames(BOSS_SPIKE_IMPACT_SRC, BOSS_SPIKE_IMPACT_CELL_W, BOSS_SPIKE_IMPACT_CELL_H, BOSS_SPIKE_IMPACT_COUNT, BOSS_SPIKE_IMPACT_COLS)
+      } catch (err) {
+        console.error('Explore: не удалось загрузить Boss_Spike_Impact.png', err)
+      }
+      if (cancelled) return
+
+      // AoE-волна топота (см. задачу) — в try/catch, тем же приёмом, что шип/
+      // импакт выше: при ошибке загрузки топот просто не создаёт волн, урона
+      // не будет, остальная игра не ломается. НЕ через loadSheetFrames — в
+      // клетке нарисованы ОБЕ дуги сразу (левая+правая), режем каждую клетку
+      // вручную пополам по BOSS_WAVE_SPLIT_X (см. константы выше), тем же
+      // приёмом (Texture + frame Rectangle внутри общего source), что и
+      // loadSheetFrames — получаем ДВА набора по BOSS_WAVE_COUNT кадров.
+      const bossWaveLeftFrames: Texture[] = []
+      const bossWaveRightFrames: Texture[] = []
+      try {
+        const bossWaveBase = await Assets.load(BOSS_WAVE_SRC)
+        bossWaveBase.source.scaleMode = 'linear'
+        for (let i = 0; i < BOSS_WAVE_COUNT; i++) {
+          const col = i % BOSS_WAVE_COLS
+          const row = Math.floor(i / BOSS_WAVE_COLS)
+          const cellX = col * BOSS_WAVE_CELL_W
+          const cellY = row * BOSS_WAVE_CELL_H
+          bossWaveLeftFrames.push(new Texture({
+            source: bossWaveBase.source,
+            frame: new Rectangle(cellX, cellY, BOSS_WAVE_SPLIT_X, BOSS_WAVE_CELL_H),
+          }))
+          bossWaveRightFrames.push(new Texture({
+            source: bossWaveBase.source,
+            frame: new Rectangle(cellX + BOSS_WAVE_SPLIT_X, cellY, BOSS_WAVE_CELL_W - BOSS_WAVE_SPLIT_X, BOSS_WAVE_CELL_H),
+          }))
+        }
+      } catch (err) {
+        console.error('Explore: не удалось загрузить Boss_Wave.png', err)
+      }
+      if (cancelled) return
+
+      // Карта листов по BossAnimKind — используется ТОЛЬКО playBossAnim ниже.
+      const bossFramesByKind: Record<BossAnimKind, Texture[]> = {
+        idle: bossIdleFrames,
+        walk: bossWalkFrames,
+        melee: bossMeleeFrames,
+        melee2: bossMelee2Frames,
+        hurt: bossHurtFrames,
+        death: bossDeathFrames,
+        ranged: bossRangedFrames,
+        stomp: bossStompFrames,
+      }
+
+      // Переключатель анимаций босса (см. задачу) — по образцу playSpriteAnim
+      // выше, но ДОПОЛНИТЕЛЬНО ставит anchor.x И anchor.y из BOSS_ANCHOR_X/
+      // BOSS_ANCHOR_Y (тело стоит в клетке по-разному на каждом листе, см.
+      // константы выше). Оба якоря меняются ТОЛЬКО здесь, при смене листа —
+      // внутри одной анимации не трогаются. x/y/scale НЕ трогаются (см.
+      // applyBossLayout — отдельно). Действует на ЕДИНСТВЕННОГО текущего
+      // босса (bossRef.current) — на этом шаге за забег может быть максимум
+      // один (карта C).
+      function playBossAnim(kind: BossAnimKind) {
+        const boss = bossRef.current
+        if (!boss) return
+        // Уже эта анимация — не рестартить (см. задачу шаг 3: hurt/idle
+        // читаются из ticker'а КАЖДЫЙ тик, без гейта это отматывало бы
+        // анимацию на кадр 0 каждый тик, как playSpriteAnim у зверя выше).
+        if (boss.sprite.textures === bossFramesByKind[kind]) return
+        boss.sprite.textures = bossFramesByKind[kind]
+        boss.sprite.anchor.set(BOSS_ANCHOR_X[kind], BOSS_ANCHOR_Y[kind])
+        boss.sprite.loop = BOSS_ANIM_LOOP[kind]
+        boss.sprite.animationSpeed = BOSS_ANIM_SPEED[kind]
+        boss.sprite.gotoAndPlay(0)
+      }
+
       // Иконки наград (см. spawnRewardFloat ниже) — обычные PNG, не спрайт-
       // лист, поэтому просто Assets.load без loadSheetFrames.
       const goldIconTexture = await Assets.load(REWARD_ICON_SRC.gold)
@@ -1759,7 +2347,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
       // (для декремента remainingEnemies при смерти). Ставит ногами на пол
       // клетки, как игрока.
-      function spawnEnemy(tileX: number, tileY: number, eventIndex: number): Enemy {
+      function spawnEnemy(tileX: number, tileY: number, eventIndex: number, trophyReward: number): Enemy {
         const enemyWorldX = tileX * TILE_SIZE + TILE_SIZE / 2 - ENEMY_WIDTH / 2
         const enemyWorldY = (tileY + 1) * TILE_SIZE - ENEMY_HEIGHT
 
@@ -1831,6 +2419,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           poiseImmuneTimer: 0,
           dead: false,
           deathHoldTimer: 0,
+          trophyReward,
           hpBarBg,
           hpBarFill,
         }
@@ -1860,6 +2449,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       obeliskLastStruckRef.current = null
       obeliskStartPointRef.current = null
       obeliskEventIndexRef.current = null
+      bossEventIndexRef.current = null
       obeliskHudSecondsRef.current = -1
       obeliskHudStruckRef.current = -1
       setObeliskHud(null)
@@ -1907,6 +2497,209 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         return obelisk
       }
 
+      // Босс карты C (см. type Boss/задачу выше) — применяет BOSS_DRAW_H
+      // (визуальный масштаб) поверх хитбокса (BOSS_WIDTH/BOSS_HEIGHT) КАЖДЫЙ
+      // тик — вызывается сразу после спавна И из ticker'а, как
+      // applyChestLayout у сундука. Заодно синкает HP-бар (та же причина,
+      // что у enemy.hpBarBg/hpBarFill в основном цикле врагов — позиция
+      // должна следовать за boss.y, который меняется гравитацией).
+      function applyBossLayout(boss: Boss) {
+        // Ranged — лист НЕ приведён к общему масштабу, в отличие от
+        // остальных. Определяем "сейчас активен ranged" сравнением textures
+        // (тот же приём, что playBossAnim использует для гейта "уже эта
+        // анимация"), а не отдельным полем — и ТОЛЬКО в этом случае
+        // домножаем scale на BOSS_SCALE_FIX_RANGED и подменяем якорь на
+        // BOSS_ANCHOR_X_RANGED/BOSS_ANCHOR_Y_RANGED (числа подобраны живым
+        // тюнером, тюнер убран — см. историю выше). Остальные анимации этот
+        // блок не трогает.
+        const isRanged = boss.sprite.textures === bossFramesByKind.ranged
+        const scale = (BOSS_DRAW_H / bossIdleFrames[0].height) * (isRanged ? BOSS_SCALE_FIX_RANGED : 1)
+        // Арт смотрит ВЛЕВО по умолчанию (facing===-1, без зеркала) — как
+        // зверь. Флип по facing===1 — не в этой фазе (AI ещё нет, см. задачу).
+        boss.sprite.scale.set(scale)
+        if (isRanged) {
+          boss.sprite.anchor.set(BOSS_ANCHOR_X_RANGED, BOSS_ANCHOR_Y_RANGED)
+        }
+
+        // Спрайт синкается от хитбокса (boss.x/y), НЕ наоборот — центр по X,
+        // Y — реальная поверхность пола под ногами (findGroundSurfaceY), а не
+        // низ хитбокса (тот же приём, что у enemy.sprite, см. Explore.tsx
+        // enemy-цикл выше: "Y отрисовки — поверхность тайла под ногами").
+        const bossFootBottom = boss.y + BOSS_HEIGHT
+        const bossSurfaceY = findGroundSurfaceY(boss.x, BOSS_WIDTH, bossFootBottom)
+        boss.sprite.x = boss.x + BOSS_WIDTH / 2
+        boss.sprite.y = (bossSurfaceY ?? bossFootBottom) + FOOT_TUNE + BOSS_OFFSET_Y
+
+        boss.hpBarBg.x = boss.x + (BOSS_WIDTH - BOSS_HP_BAR_WIDTH) / 2
+        boss.hpBarBg.y = boss.y - BOSS_HPBAR_OFFSET_Y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
+        boss.hpBarFill.x = boss.hpBarBg.x
+        boss.hpBarFill.y = boss.hpBarBg.y
+      }
+
+      function spawnBoss(tileX: number, tileY: number): Boss {
+        const centerX = tileX * TILE_SIZE + TILE_SIZE / 2
+        const bossWorldX = centerX - BOSS_WIDTH / 2
+        // Тем же путём, что у врага (spawnEnemy) — БЕЗ предварительного поиска
+        // пола: гравитация/sweepFootBlock в ticker'е сами доведут босса до
+        // ближайшей тверди за первые кадры (см. задачу, п.3).
+        const bossWorldY = (tileY + 1) * TILE_SIZE - BOSS_HEIGHT
+
+        const sprite = new AnimatedSprite(bossIdleFrames)
+        // Начальная поза — idle, те же таблицы (BOSS_ANCHOR_X/BOSS_ANCHOR_Y/
+        // BOSS_ANIM_LOOP/BOSS_ANIM_SPEED), что и playBossAnim ниже —
+        // bossRef.current ещё не присвоен на этом шаге (boss создаётся ниже),
+        // playBossAnim('idle') здесь был бы no-op, поэтому та же логика
+        // продублирована вручную.
+        sprite.anchor.set(BOSS_ANCHOR_X.idle, BOSS_ANCHOR_Y.idle)
+        sprite.loop = BOSS_ANIM_LOOP.idle
+        sprite.animationSpeed = BOSS_ANIM_SPEED.idle
+        sprite.play()
+        worldContainer.addChild(sprite)
+
+        // HP-бар — по образцу spawnEnemy, но центрирован над хитбоксом (бар
+        // заметно ШИРЕ хитбокса — BOSS_HP_BAR_WIDTH против узкого BOSS_WIDTH).
+        const hpBarBg = new Graphics().rect(0, 0, BOSS_HP_BAR_WIDTH, ENEMY_HP_BAR_HEIGHT).fill(0x221e2b)
+        hpBarBg.x = bossWorldX + (BOSS_WIDTH - BOSS_HP_BAR_WIDTH) / 2
+        hpBarBg.y = bossWorldY - BOSS_HPBAR_OFFSET_Y - ENEMY_HP_BAR_MARGIN - ENEMY_HP_BAR_HEIGHT
+        worldContainer.addChild(hpBarBg)
+
+        const hpBarFill = new Graphics()
+        hpBarFill.x = hpBarBg.x
+        hpBarFill.y = hpBarBg.y
+        worldContainer.addChild(hpBarFill)
+
+        const boss: Boss = {
+          x: bossWorldX,
+          y: bossWorldY,
+          vy: 0,
+          facing: -1,
+          moving: false,
+          hp: BOSS_MAX_HP,
+          maxHp: BOSS_MAX_HP,
+          lastHitSwingId: 0,
+          hurtTimer: 0,
+          stunCount: 0,
+          poiseImmuneTimer: 0,
+          dead: false,
+          deathHoldTimer: 0,
+          stage: 1,
+          attackKind: null,
+          attackAnimPlaying: false,
+          attackHitApplied: false,
+          attackCooldownTimer: 0,
+          rangedAnimPlaying: false,
+          rangedThrowApplied: false,
+          rangedCooldownTimer: 0,
+          rangedShotsLeft: 0,
+          stompAnimPlaying: false,
+          stompStrikeApplied: false,
+          stompCooldownTimer: 0,
+          hitFlashTimer: 0,
+          rewardGiven: false,
+          hpBarBg,
+          hpBarFill,
+          sprite,
+        }
+        applyBossLayout(boss)
+        redrawBossHpBar(boss)
+        return boss
+      }
+
+      // Шип дальней атаки (ФАЗА 3, шаг 2, см. задачу) — создаётся на кадре
+      // выпуска ranged-анимации (см. ticker). Если текстура не загрузилась
+      // (bossSpikeTexture===null, см. try/catch выше) — просто не создаёт
+      // спрайт, снаряда/урона не будет, остальная игра не ломается.
+      function spawnBossSpike(boss: Boss) {
+        if (!bossSpikeTexture) return
+        const dir = boss.facing
+        const sprite = new Sprite(bossSpikeTexture)
+        sprite.width = BOSS_SPIKE_DRAW_W
+        sprite.height = BOSS_SPIKE_DRAW_H
+        sprite.anchor.set(0.5, 0.5)
+        // Точка вылета — кисть, посчитана от трансформа СПРАЙТА (не боссовского
+        // физического хитбокса boss.x/boss.y/BOSS_HEIGHT — рука нарисована в
+        // клетке спрайта, системы координат разные). Едет за рукой сама, если
+        // якорь листа/scale изменится при нормализации.
+        const s = boss.sprite
+        const spawnX = s.x + (BOSS_SPIKE_HAND_X - s.anchor.x) * BOSS_RANGED_CELL_W * s.scale.x
+        const spawnY = s.y + (BOSS_SPIKE_HAND_Y - s.anchor.y) * BOSS_RANGED_CELL_H * s.scale.y
+        sprite.x = spawnX
+        sprite.y = spawnY
+
+        // Прицеливание (ФАЗА 3, шаг 3, см. задачу) — начальная vy подбирается
+        // так, чтобы баллистическая дуга (BOSS_SPIKE_GRAVITY) прошла через
+        // центр героя НА МОМЕНТ спавна; дальше герой может уйти — это осознанно,
+        // не самонаводка.
+        const pb = getPlayerCombatBox()
+        const targetX = pb.x + pb.w / 2
+        const targetY = pb.y + pb.h / 2
+        const dx = targetX - spawnX
+        const dy = targetY - spawnY
+        const t = Math.abs(dx) / BOSS_SPIKE_SPEED_X
+        const vy = t > 0.01 ? (dy - 0.5 * BOSS_SPIKE_GRAVITY * t * t) / t : 0
+
+        worldContainer.addChild(sprite)
+        bossSpikesRef.current.push({ sprite, dir, vy, lifeMs: 0, hitApplied: false })
+      }
+
+      // Импакт шипа (ФАЗА 3, шаг 2, см. задачу) — разовая анимация на месте
+      // попадания, сама себя удаляет по onComplete. Если лист не загрузился
+      // (bossSpikeImpactFrames.length===0, см. try/catch выше) — просто не
+      // создаёт спрайт, урон уже применён отдельно (см. ticker).
+      function spawnBossSpikeImpact(worldX: number, worldY: number) {
+        if (bossSpikeImpactFrames.length === 0) return
+        const impact = new AnimatedSprite(bossSpikeImpactFrames)
+        impact.anchor.set(0.5, 0.5)
+        impact.loop = false
+        impact.animationSpeed = BOSS_SPIKE_IMPACT_ANIM_SPEED
+        impact.height = BOSS_SPIKE_IMPACT_DRAW_H
+        impact.width = BOSS_SPIKE_IMPACT_DRAW_H * (BOSS_SPIKE_IMPACT_CELL_W / BOSS_SPIKE_IMPACT_CELL_H)
+        impact.x = worldX
+        impact.y = worldY
+        impact.onComplete = () => {
+          worldContainer.removeChild(impact)
+          impact.destroy()
+        }
+        worldContainer.addChild(impact)
+        impact.play()
+      }
+
+      // AoE-волна топота (см. задачу, п.4) — создаётся ДВАЖДЫ на strike-кадре
+      // (dir=-1 и dir=+1, см. ticker), катится по земле. Если лист не
+      // загрузился (bossWaveLeftFrames/bossWaveRightFrames пустые, см.
+      // try/catch выше) — просто не создаёт спрайт, волны/урона не будет,
+      // остальная игра работает.
+      function spawnBossWave(boss: Boss, dir: 1 | -1) {
+        // Каждая половина листа уже смотрит в свою сторону (см. загрузку
+        // выше) — левая половина = волна влево, правая = волна вправо. Без
+        // зеркалирования (scale.x остаётся положительным у обеих).
+        const frames = dir === -1 ? bossWaveLeftFrames : bossWaveRightFrames
+        if (frames.length === 0) return
+        const sprite = new AnimatedSprite(frames)
+        // Якорь — на ВНУТРЕННЕЙ стороне куска, у точки удара: левая волна
+        // растёт влево от центра босса, её якорь на ПРАВОМ (внутреннем) крае
+        // куска (1.0); правая растёт вправо, якорь на ЛЕВОМ (внутреннем)
+        // крае (0.0). anchor.y=BOSS_WAVE_ANCHOR_Y, не 1.0 — низ дуги
+        // нарисован на y=137 из 153, не у самого края кадра.
+        sprite.anchor.set(dir === -1 ? 1.0 : 0.0, BOSS_WAVE_ANCHOR_Y)
+        sprite.loop = true
+        sprite.animationSpeed = BOSS_WAVE_ANIM_SPEED
+        sprite.height = BOSS_WAVE_DRAW_H
+        // Ширина — от высоты по пропорции СВОЕГО куска (куски разной ширины
+        // — левый уже, правый шире, лишнее место в клетке прозрачное).
+        sprite.width =
+          dir === -1
+            ? BOSS_WAVE_DRAW_H * (BOSS_WAVE_SPLIT_X / BOSS_WAVE_CELL_H)
+            : BOSS_WAVE_DRAW_H * ((BOSS_WAVE_CELL_W - BOSS_WAVE_SPLIT_X) / BOSS_WAVE_CELL_H)
+        // X — центр босса, Y — уровень пола под боссом (низ ФИЗИЧЕСКОГО
+        // бокса, boss.y+BOSS_HEIGHT — нам нужна земля, не точка на спрайте).
+        sprite.x = boss.x + BOSS_WIDTH / 2
+        sprite.y = boss.y + BOSS_HEIGHT
+        sprite.play()
+        worldContainer.addChild(sprite)
+        bossWavesRef.current.push({ sprite, dir, lifeMs: 0, hitApplied: false })
+      }
+
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
@@ -1914,9 +2707,17 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             console.error('Explore: enemy-событие без валидных точек кластера — нечего убивать', ev)
             return { ...ev, closed: true, remainingEnemies: 0 }
           }
-          for (const [ex, ey] of points) {
-            spawnedEnemies.push(spawnEnemy(ex, ey, eventIndex))
-          }
+          // Трофеи кластера разыгрываются ОДИН РАЗ на весь кластер (не на
+          // каждого врага отдельно — иначе random дал бы разные числа и
+          // сумма по группе поплыла бы). Каждому, кроме последнего, — ровная
+          // доля (Math.floor); последний добирает остаток, чтобы сумма долей
+          // всегда точно равнялась total.
+          const trophyTotal = rollTrophies(TROPHY_MULT_ENEMY)
+          const trophyShare = Math.floor(trophyTotal / points.length)
+          points.forEach(([ex, ey], i) => {
+            const trophyReward = i === points.length - 1 ? trophyTotal - trophyShare * (points.length - 1) : trophyShare
+            spawnedEnemies.push(spawnEnemy(ex, ey, eventIndex, trophyReward))
+          })
           return { ...ev, closed: false, remainingEnemies: points.length }
         }
 
@@ -1965,14 +2766,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           }
           applyChestLayout(chest)
           chestSprite.gotoAndStop(0) // закрыт, не играет — до удара
-          console.log('[chest-debug] spawn', {
-            y: chestSprite.y,
-            height: chestSprite.height,
-            width: chestSprite.width,
-            anchorY: chestSprite.anchor.y,
-            isMimic: chest.isMimic,
-            frameSet: 'chestFrames(closed)',
-          })
           chestsRef.current.push(chest)
         }
 
@@ -2013,9 +2806,31 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           spawnObelisk(ev.x, ev.y)
         }
 
+        // Босс — визуал несёт отдельный спрайт (см. spawnBoss ниже, точка
+        // та же slots.boss, что и здесь ev.x/ev.y), сам спавн НЕ трогаем —
+        // здесь только запоминаем eventIndex, им закрывается HUD-гнездо и
+        // выдаётся награда при завершении death-анимации (см. ticker, ФАЗА 5).
+        if (ev.kind === 'boss') {
+          marker.visible = false // визуал несёт спрайт босса, не кружок
+          bossEventIndexRef.current = eventIndex
+        }
+
         return { ...ev, marker, closed: false }
       })
       enemiesRef.current = spawnedEnemies
+
+      // Босс карты C (см. type Boss/spawnBoss выше) — спавн НЕ читает
+      // chosenEvents напрямую (не менялось, см. задачу ФАЗА 5): читаем
+      // slots.boss НАПРЯМУЮ — это ПЛОСКАЯ пара [x,y] (в отличие от
+      // enemyClusters/obelisk — там массив/объект точек). Спавн теперь
+      // ГЕЙТИТСЯ тем же bossWillSpawn, что решал пиннинг в chosenEvents
+      // (см. задачу, вероятностный босс) — иначе при невыпавшем броске
+      // спрайт всё равно появился бы на карте без eventIndex, и закрыть
+      // событие/выдать награду было бы нечем (bossEventIndexRef остался
+      // бы null навсегда). bossPoint и ev.x/ev.y кандидата 'boss' — одна и
+      // та же точка slots.boss, когда бросок выпал.
+      const bossPoint = (slots as { boss?: unknown } | null)?.boss
+      bossRef.current = bossWillSpawn && isPointXY(bossPoint) ? spawnBoss(bossPoint[0], bossPoint[1]) : null
 
       // Панель Смуглера (окно обмена) — ОДИН Container на весь забег (не по
       // смуглеру: в один момент активен максимум один, см. smugglerActiveRef
@@ -2344,6 +3159,117 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           }
         }
 
+        // Босс карты C (ФАЗА 2, шаг 5 — починка стан-лока, см. задачу) — ТОТ
+        // ЖЕ хит-тест, что у врага выше: lastHitSwingId дедупит один взмах,
+        // dead исключает повторные удары по трупу. Приоритеты состояний
+        // теперь dead > attack > hurt > walk > idle (attack ВЫШЕ hurt) —
+        // см. два слоя защиты ниже, оба применяются ТОЛЬКО на не смертельном
+        // попадании (лестница dead-веток та же, что была).
+        if (bossRef.current) {
+          const boss = bossRef.current
+          if (
+            !boss.dead &&
+            attackHitboxRef.current &&
+            boss.lastHitSwingId !== attackSwingIdRef.current
+          ) {
+            const hb = attackHitboxRef.current
+            const overlap =
+              hb.x < boss.x + BOSS_WIDTH &&
+              hb.x + hb.width > boss.x &&
+              hb.y < boss.y + BOSS_HEIGHT &&
+              hb.y + hb.height > boss.y
+            if (overlap) {
+              boss.lastHitSwingId = attackSwingIdRef.current
+              boss.hp = Math.max(0, boss.hp - attackDamageRef.current)
+              if (boss.hp <= 0) {
+                // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
+                // walk > idle, ничем не прерывается: boss.dead гейтит ВЕСЬ
+                // тикер (физика/AI/push-out/визуал, см. там) — мёртвый босс
+                // дальше не двигается, не разворачивается, не атакует и не
+                // получает урон повторно (гейт !boss.dead в самом начале
+                // этого блока). HP-бар СКРЫВАЕТСЯ (не просто пустая полоса).
+                // Death запускается ЗДЕСЬ один раз; applyBossLayout+флип
+                // фиксируют финальные позу/facing НАВСЕГДА (дальше тикер их
+                // не трогает, физика для мёртвого босса отключена) — само
+                // "падение" зашито в кадры Boss_Death (46, разовая,
+                // BOSS_ANIM_LOOP.death=false) — PixiJS AnimatedSprite сам
+                // держит последний кадр без loop, ничего досчитывать не надо.
+                // Труп ОСТАЁТСЯ до конца забега (в отличие от зверя —
+                // никакого despawn/DEATH_HOLD_MS). Награда/закрытие события —
+                // НЕ здесь, это фаза 5 (см. задачу, п.6).
+                boss.dead = true
+                boss.hpBarBg.visible = false
+                boss.hpBarFill.visible = false
+                playBossAnim('death')
+                applyBossLayout(boss)
+                boss.sprite.scale.x = boss.facing === -1 ? Math.abs(boss.sprite.scale.x) : -Math.abs(boss.sprite.scale.x)
+                console.log('BOSS DEAD')
+              } else {
+                redrawBossHpBar(boss)
+                // Стадия 2 — переход СЧИТАЕТСЯ один раз, на первом пересечении
+                // порога ВНИЗ (гейт stage===1), не каждый кадр, что дальше hp
+                // будет падать. САМ переход не выставляет и не продлевает
+                // никаких таймеров (hurtTimer/poiseImmuneTimer/hitFlashTimer)
+                // — это только boss.stage/console.log, см. задачу ("Разведи
+                // 'получил урон' и 'не может действовать'"). Пауза, которая
+                // раньше была заметна сразу после перехода — не следствие
+                // самого перехода, а совпадение: удар, снёсший HP за порог,
+                // это ОБЫЧНЫЙ удар и проходит через слои 1/2 ниже наравне со
+                // всеми остальными.
+                if (boss.stage === 1 && boss.hp <= boss.maxHp * BOSS_STAGE2_HP_RATIO) {
+                  boss.stage = 2
+                }
+
+                if (boss.attackAnimPlaying || boss.rangedAnimPlaying) {
+                  // СЛОЙ 1 (главный, см. задачу) — во время атаки ИЛИ броска
+                  // Hurt НЕ проигрывается ВООБЩЕ, ни на каком кадре, независимо
+                  // от poise: attackAnimPlaying/attackKind/attackHitApplied и
+                  // rangedAnimPlaying/rangedThrowApplied НЕ трогаем — действие
+                  // доигрывает до конца как обычно. Урон уже применён выше
+                  // (hp/HP-бар). Обратная связь без хитстана — короткая
+                  // вспышка (см. ticker).
+                  boss.hitFlashTimer = BOSS_HIT_FLASH_MS
+                } else {
+                  // СЛОЙ 2 (починка стан-лока, см. задачу) — СВОИМИ
+                  // константами BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS, но
+                  // структурой приведено к логике зверя (строки применения
+                  // POISE_POINT/STUN_LIMIT у enemy выше): там stunCount растёт
+                  // ТОЛЬКО когда попадание сбивает УЖЕ идущее состояние
+                  // (wasWindingUp), а не от любого удара — у босса нет фазы
+                  // замаха, поэтому эквивалент "уже идущего состояния,
+                  // которое сбивают" — это Hurt, который прямо сейчас играет
+                  // (boss.hurtTimer > 0).
+                  const poiseImmune = boss.poiseImmuneTimer > 0
+                  const alreadyHurt = boss.hurtTimer > 0
+                  if (poiseImmune) {
+                    // Иммунитет — Hurt не входит вообще, только вспышка (тот
+                    // же принцип, что и раньше).
+                    boss.hitFlashTimer = BOSS_HIT_FLASH_MS
+                  } else if (alreadyHurt) {
+                    // Попадание "в разгар" уже идущего Hurt (см. задачу, п.1) —
+                    // урон уже применён выше, добавляем вспышку, но hurtTimer
+                    // НЕ трогаем (не продлеваем и не перезапускаем анимацию).
+                    // Именно это попадание "сбивает уже идущий Hurt-цикл" —
+                    // аналог wasWindingUp у зверя, поэтому здесь (и только
+                    // здесь) растёт stunCount (см. задачу, п.2).
+                    boss.hitFlashTimer = BOSS_HIT_FLASH_MS
+                    boss.stunCount += 1
+                    if (boss.stunCount >= BOSS_STUN_LIMIT) {
+                      boss.poiseImmuneTimer = BOSS_POISE_IMMUNE_MS
+                      boss.stunCount = 0
+                    }
+                  } else {
+                    // Свежий хит: босс НЕ атаковал, Hurt ещё НЕ шёл, иммунитета
+                    // нет — обычный запуск хитстана. stunCount НЕ растёт (как
+                    // у зверя в ветке !wasWindingUp) — это не "сбитое" состояние.
+                    boss.hurtTimer = BOSS_HURT_MS
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // Сундук — открывается ударом (без "один удар = один засчёт" по
         // attackSwingIdRef, как у врагов: opening=true уже само по себе
         // блокирует повторный запуск на следующих свингах, дедуп не нужен).
@@ -2377,14 +3303,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
               chest.sprite.animationSpeed = CHEST_ANIM_SPEED
               chest.sprite.gotoAndPlay(0)
             }
-            console.log('[chest-debug] hit-start', {
-              y: chest.sprite.y,
-              height: chest.sprite.height,
-              width: chest.sprite.width,
-              anchorY: chest.sprite.anchor.y,
-              isMimic: chest.isMimic,
-              frameSet: chest.isMimic ? 'chestTrapFrames' : 'chestFrames',
-            })
           }
         }
 
@@ -2471,7 +3389,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             const last = obeliskLastStruckRef.current
             if (last) {
               spawnRewardFloat(last.sprite.x, last.sprite.y - last.sprite.height, [
-                { kind: 'gold', amount: randInt(OBELISK_REWARD_GOLD_MIN, OBELISK_REWARD_GOLD_MAX) },
+                { kind: 'trophy', amount: rollTrophies(TROPHY_MULT_OBELISK) },
               ])
             }
             if (obeliskEventIndexRef.current !== null) closeEvent(obeliskEventIndexRef.current)
@@ -2493,11 +3411,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           }
         }
 
-        // Горизонтальное движение — во время питья зелья (drinkingRef) герой
-        // закоренён: ввод движения игнорируется целиком, ноги на месте.
-        phys.vx = drinkingRef.current ? 0 : dirRef.current * MOVE_SPEED
+        // Горизонтальное движение — во время питья зелья (drinkingRef) ИЛИ
+        // после смерти (deathRef) герой закоренён: ввод движения игнорируется
+        // целиком, ноги на месте. deathRef никогда не сбрасывается — этот
+        // гейт держит мёртвого героя неподвижным до конца забега.
+        const heroLocked = drinkingRef.current || deathRef.current
+        phys.vx = heroLocked ? 0 : dirRef.current * MOVE_SPEED
         phys.x += phys.vx * dt
-        if (!drinkingRef.current && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
+        if (!heroLocked && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
 
         if (phys.vx > 0) {
           const px = phys.x + PLAYER_WIDTH - 1
@@ -2544,7 +3465,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         let jumpedThisFrame = false
         if (jumpPressedRef.current) {
           jumpPressedRef.current = false
-          if (phys.onGround && !drinkingRef.current) {
+          if (!deathRef.current && phys.onGround && !drinkingRef.current) {
             phys.vy = -JUMP_VELOCITY
             phys.onGround = false
             jumpedThisFrame = true
@@ -2636,7 +3557,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         // по успеху таймера события (см. блок таймера обелисков в тикере),
         // иначе простое прохождение мимо стартовой точки закрыло бы событие
         // раньше времени. Остальные типы (пока заглушки) — как раньше.
-        for (let i = 0; i < eventsRef.current.length; i++) {
+        // Мёртвый герой (deathRef) событий не закрывает вообще — тело
+        // неподвижно, но гейт на всякий случай (напр. если смерть настигла
+        // ровно в момент касания хитбокса).
+        for (let i = 0; i < eventsRef.current.length && !deathRef.current; i++) {
           const ev = eventsRef.current[i]
           if (
             ev.closed ||
@@ -2665,8 +3589,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
         if (attackPressedRef.current) {
           attackPressedRef.current = false
-          // Хитстан ИЛИ питьё зелья: во время них атаковать нельзя.
-          if (hurtTimerRef.current > 0 || drinkingRef.current) {
+          // Смерть ИЛИ хитстан ИЛИ питьё зелья: во время них атаковать нельзя.
+          // Смерть проверяется первой и НИКОГДА не сбрасывается — мёртвый
+          // герой не переигрывает атаку и не перебивает deathFrames текстурами.
+          if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) {
             // no-op — нажатие проигнорировано
           } else if (attackCooldownRef.current <= 0 && !attackingRef.current) {
             attackCooldownRef.current = ATTACK_COOLDOWN
@@ -2735,26 +3661,32 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
         dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
-          // Смуглер рядом — перехватывает dodge и открывает панель (пока
-          // только флаг + console.log, см. задачу) вместо обычного dodge.
-          const playerCenterXForSmuggler = phys.x + PLAYER_WIDTH / 2
-          const playerFeetYForSmuggler = phys.y + PLAYER_HEIGHT
-          const nearbySmuggler = smugglersRef.current.find((s) => {
-            const ev = eventsRef.current[s.eventIndex]
-            if (!ev || ev.closed) return false
-            const dx = Math.abs(playerCenterXForSmuggler - s.sprite.x)
-            const dy = Math.abs(playerFeetYForSmuggler - s.floorY)
-            return dx <= SMUGGLER_INTERACT_RANGE && dy <= FLOOR_Y_TOLERANCE * TILE_SIZE
-          })
-
           dodgePressedRef.current = false
-          if (nearbySmuggler) {
-            smugglerActiveRef.current = nearbySmuggler
-            smugglerPanelOpenRef.current = true
-            console.log('SMUGGLER PANEL OPEN')
-          } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
-            dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
-            dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
+          // Смерть — мёртвый герой не может ни увернуться, ни открыть
+          // окно Контрабандиста. deathRef никогда не сбрасывается.
+          if (deathRef.current) {
+            // no-op
+          } else {
+            // Смуглер рядом — перехватывает dodge и открывает панель (пока
+            // только флаг + console.log, см. задачу) вместо обычного dodge.
+            const playerCenterXForSmuggler = phys.x + PLAYER_WIDTH / 2
+            const playerFeetYForSmuggler = phys.y + PLAYER_HEIGHT
+            const nearbySmuggler = smugglersRef.current.find((s) => {
+              const ev = eventsRef.current[s.eventIndex]
+              if (!ev || ev.closed) return false
+              const dx = Math.abs(playerCenterXForSmuggler - s.sprite.x)
+              const dy = Math.abs(playerFeetYForSmuggler - s.floorY)
+              return dx <= SMUGGLER_INTERACT_RANGE && dy <= FLOOR_Y_TOLERANCE * TILE_SIZE
+            })
+
+            if (nearbySmuggler) {
+              smugglerActiveRef.current = nearbySmuggler
+              smugglerPanelOpenRef.current = true
+              console.log('SMUGGLER PANEL OPEN')
+            } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
+              dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
+              dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
+            }
           }
         }
 
@@ -2785,6 +3717,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             if (deathDone) {
               enemy.deathHoldTimer += ticker.deltaMS
               if (enemy.deathHoldTimer >= DEATH_HOLD_MS) {
+                // Трофеи за убийство (см. задачу) — доля этого врага уже
+                // разыграна при спавне кластера (enemy.trophyReward). 0 —
+                // не вызываем spawnRewardFloat, чтобы не всплывала пустая
+                // надпись "+0" (см. задачу, п.4).
+                if (enemy.trophyReward > 0) {
+                  spawnRewardFloat(enemy.sprite.x, enemy.sprite.y - enemy.sprite.height, [
+                    { kind: 'trophy', amount: enemy.trophyReward },
+                  ])
+                }
                 worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
                 enemy.rect.destroy()
                 enemy.sprite.destroy()
@@ -2866,7 +3807,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           // гейт логически не пересекается с уже существующей проверкой удара.
           const enemyFeetY = enemy.y + ENEMY_HEIGHT
           const playerFeetY = phys.y + PLAYER_HEIGHT
-          const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= FLOOR_Y_TOLERANCE * TILE_SIZE
+          const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= SAME_FLOOR_TOLERANCE_TILES * TILE_SIZE
           const aggroed = dist <= AGGRO_RANGE_TILES * TILE_SIZE && sameFloor
 
           // Хитстан (hurt) полностью замораживает эту AI-ветку — не двигается,
@@ -3086,6 +4027,443 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           enemy.rect.tint = enemy.windingUp ? 0xe0353b : 0xffffff
         }
 
+        // Босс карты C (ФАЗА 2, шаги 4-5, см. задачу) — передвижение к
+        // герою + ближний бой (2 атаки, см. visual-sync ниже): агро
+        // (BOSS_AGGRO_RANGE_TILES, sameFloor — та же проверка, что у зверя)
+        // + ходьба со стоп-дистанцией/гистерезисом + разворот facing.
+        // Патруля НЕТ — вне агро босс просто стоит. Твёрдость для героя
+        // ТОЛЬКО по горизонтали (pushPlayerOutX, как у врага/сундука/
+        // обелиска — герой не проходит сквозь, но может перепрыгнуть сверху,
+        // вставать на босса нельзя).
+        if (bossRef.current) {
+          const boss = bossRef.current
+
+          // Мёртвый босс (ФАЗА 2, шаг 6, см. задачу) ПОЛНОСТЬЮ инертен: сюда
+          // вообще не заходит физика/AI/push-out/пересчёт позиции — труп
+          // остаётся ровно там, где умер (поза/facing зафиксированы в
+          // applyAttackHit в момент смерти через applyBossLayout+флип, сама
+          // "анимация падения" — в кадрах Boss_Death, playBossAnim('death')
+          // запущен там же один раз и больше не трогается). Хитбокс для
+          // push-out тоже пропадает вместе с этим блоком — герой проходит
+          // сквозь труп, тело не перегораживает арену. В отличие от зверя
+          // (despawn через DEATH_HOLD_MS) — труп ОСТАЁТСЯ до конца забега.
+          if (!boss.dead) {
+            boss.vy = Math.min(boss.vy + GRAVITY * dt, MAX_FALL)
+            const prevBossFootY = boss.y + BOSS_HEIGHT
+            boss.y += boss.vy * dt
+            const bossFootY = boss.y + BOSS_HEIGHT
+            const bossBlockTop = sweepFootBlock(grid, TILE_SIZE, boss.x, BOSS_WIDTH, prevBossFootY, bossFootY)
+            if (bossBlockTop !== null) {
+              boss.y = bossBlockTop - BOSS_HEIGHT
+              boss.vy = 0
+            }
+
+            // Хитстан (hurt) полностью замораживает AI-ветку — та же логика,
+            // что у enemy.hurtTimer<=0 гейт выше (не двигается, не
+            // разворачивается, пока не истечёт boss.hurtTimer).
+            // !attackAnimPlaying/!rangedAnimPlaying — во время атаки ИЛИ
+            // броска босс не двигается и не пересчитывает агро/движение
+            // (см. задачу, п.4: "во время анимации броска босс неподвижен");
+            // сами они обрабатываются ниже, отдельной веткой visual-sync.
+            if (boss.hurtTimer <= 0 && !boss.attackAnimPlaying && !boss.rangedAnimPlaying && !boss.stompAnimPlaying) {
+              const playerCombatBox = getPlayerCombatBox()
+              const bossCenterX = boss.x + BOSS_WIDTH / 2
+              const dx = (playerCombatBox.x + playerCombatBox.w / 2) - bossCenterX
+              const dist = Math.abs(dx)
+
+              // sameFloor — ТА ЖЕ проверка, что у зверя (по ногам, не по
+              // верхней точке — рост игрока и босса разный), включая
+              // SAME_FLOOR_TOLERANCE_TILES вместо узкой FLOOR_Y_TOLERANCE —
+              // иначе прыжок героя формально снимал агро (см. задачу).
+              const bossFeetYNow = boss.y + BOSS_HEIGHT
+              const playerFeetYNow = phys.y + PLAYER_HEIGHT
+              const sameFloor = Math.abs(playerFeetYNow - bossFeetYNow) <= SAME_FLOOR_TOLERANCE_TILES * TILE_SIZE
+              const aggroed = dist <= BOSS_AGGRO_RANGE_TILES * TILE_SIZE && sameFloor
+
+              // Ranged (ФАЗА 3, см. задачу, п.3/4) — "наступает волнами":
+              // проверяется ПЕРЕД обычным сближением/melee ниже. Пока герой
+              // дальше BOSS_RANGED_MIN_TILES И кулдаун броска истёк — босс
+              // ОСТАНАВЛИВАЕТСЯ и кидает вместо того, чтобы продолжать идти
+              // к дистанции ближнего боя (перебивает уже начатое сближение
+              // на любом шаге, не только когда уже стоит). Доступно с ПЕРВОЙ
+              // стадии (в отличие от Melee2) — условия на stage нет. Ближе
+              // BOSS_RANGED_MIN_TILES бросок недоступен — идёт в ближний бой
+              // (см. else ниже, код там БЕЗ изменений).
+              const rangedTrigger =
+                aggroed && dist > BOSS_RANGED_MIN_TILES * TILE_SIZE && boss.rangedCooldownTimer <= 0
+              if (rangedTrigger) {
+                boss.moving = false
+                boss.rangedAnimPlaying = true
+                boss.rangedThrowApplied = false
+                // 1-2 шипа за бросок (ФАЗА 3, шаг 4, см. задачу) — второй
+                // розыгрыш решается ЗДЕСЬ один раз, на старте броска, не на
+                // каждый повтор анимации.
+                boss.rangedShotsLeft = Math.random() < BOSS_RANGED_DOUBLE_CHANCE ? 2 : 1
+              } else {
+                if (aggroed) {
+                  // Разворот к герою — применяется, пока агрён, движется он
+                  // или уже остановился вплотную (та же логика, что у зверя
+                  // bodiesTouchingX-ветка — доворачивается лицом, не трогая x).
+                  const dir = Math.sign(dx)
+                  if (dir !== 0) boss.facing = dir as 1 | -1
+
+                  // Гистерезис старт/стоп (см. задачу, п.5): уже идущий босс
+                  // тормозит РОВНО на STOP_DISTANCE, стоящий — трогается с
+                  // места только когда игрок отошёл на STOP_DISTANCE+запас.
+                  const stopDist = BOSS_STOP_DISTANCE
+                  boss.moving = boss.moving ? dist > stopDist : dist > stopDist + BOSS_STOP_HYSTERESIS
+
+                  if (boss.moving && dir !== 0) {
+                    const nextX = boss.x + dir * BOSS_MOVE_SPEED * dt
+                    const leadingX = dir > 0 ? nextX + BOSS_WIDTH : nextX
+                    // Стена впереди — та же 3-точечная проверка, что у зверя.
+                    const hitWall =
+                      isSolid(grid, TILE_SIZE, leadingX, boss.y + 1) ||
+                      isSolid(grid, TILE_SIZE, leadingX, boss.y + BOSS_HEIGHT / 2) ||
+                      isSolid(grid, TILE_SIZE, leadingX, boss.y + BOSS_HEIGHT - 1)
+                    // Край площадки впереди — ТА ЖЕ проверка, что в патруле у
+                    // зверя (noFloorAhead): в погоне зверь падать МОЖЕТ, но
+                    // боссу это запрещено (см. задачу, п.6) — переиспользуем
+                    // проверку из патруля, не пишем новую.
+                    const footCx = Math.floor(leadingX / TILE_SIZE)
+                    const footCy = Math.floor((boss.y + BOSS_HEIGHT) / TILE_SIZE)
+                    const noFloorAhead = cellFootBlockTop(grid, TILE_SIZE, footCx, footCy) === null
+                    if (!hitWall && !noFloorAhead) {
+                      boss.x = clamp(nextX, 0, worldWidthPx - BOSS_WIDTH)
+                    }
+                  }
+                } else {
+                  boss.moving = false
+                }
+
+                // Кулдаун броска (ФАЗА 3, см. задачу) — считается ВНИЗ до 0,
+                // тем же приёмом, что и кулдаун атаки ниже: тикает, пока
+                // боссу сейчас не до броска (игрок близко ИЛИ кулдаун ещё не
+                // истёк), выставляется на BOSS_RANGED_COOLDOWN_MS ПОСЛЕ конца
+                // анимации броска (см. visual-sync ниже), не при попадании.
+                if (boss.rangedCooldownTimer > 0) {
+                  boss.rangedCooldownTimer = Math.max(0, boss.rangedCooldownTimer - ticker.deltaMS)
+                }
+
+                // Кулдаун атаки (ФАЗА 2, шаг 5, см. задачу, п.4) — считается
+                // ВНИЗ до 0 (тот же приём, что enemy.attackTimer у зверя),
+                // выставляется на BOSS_ATTACK_COOLDOWN_MS ПОСЛЕ конца анимации
+                // атаки (см. visual-sync ниже), не после урона.
+                if (boss.attackCooldownTimer > 0) {
+                  boss.attackCooldownTimer = Math.max(0, boss.attackCooldownTimer - ticker.deltaMS)
+                }
+                // Кулдаун топота (ФАЗА 4, шаг 1, см. задачу) — тот же приём,
+                // что у ranged/attack выше.
+                if (boss.stompCooldownTimer > 0) {
+                  boss.stompCooldownTimer = Math.max(0, boss.stompCooldownTimer - ticker.deltaMS)
+                }
+                // Атака стартует, когда босс СТОИТ (boss.moving===false, дошёл
+                // до BOSS_STOP_DISTANCE) И кулдаун истёк — ТОЛЬКО пока агрён,
+                // иначе босс атаковал бы воздух вне боя (см. задачу, п.3).
+                // Выбор атаки: стадия 1 — всегда Melee; стадия 2 — 50/50
+                // Melee/Melee2 (Melee2 НИКОГДА не выбирается на стадии 1).
+                if (aggroed && !boss.moving && boss.attackCooldownTimer <= 0) {
+                  boss.attackKind = boss.stage === 2 && Math.random() < 0.5 ? 'melee2' : 'melee'
+                  boss.attackAnimPlaying = true
+                  boss.attackHitApplied = false
+                } else if (
+                  // Топот (ФАЗА 4, см. задачу) — ТОЛЬКО стадия 2, ДАЛЬШЕ
+                  // BOSS_STOMP_MIN_TILES, кулдаун истёк. Дальше, не ближе —
+                  // волне нужно время докатиться до игрока (телеграф из ТЗ),
+                  // вплотную она рождается под ногами и уклониться нельзя.
+                  // Приоритет: ниже melee (проверяется в if выше), выше ranged
+                  // (rangedTrigger проверен раньше по коду) — у топота кулдаун
+                  // 5с, шип заполняет паузы между топотами. Волна/урон —
+                  // следующий шаг, здесь только анимация + console.log на
+                  // strike-кадре.
+                  boss.stage === 2 &&
+                  aggroed &&
+                  dist > BOSS_STOMP_MIN_TILES * TILE_SIZE &&
+                  boss.stompCooldownTimer <= 0
+                ) {
+                  boss.moving = false
+                  boss.stompAnimPlaying = true
+                  boss.stompStrikeApplied = false
+                }
+              }
+            }
+
+            // Приоритет визуала/действия, строго (ФАЗА 4, см. задачу): attack >
+            // stomp > ranged > hurt > walk/idle (attack/stomp/ranged ВЫШЕ hurt —
+            // тот же слой 1, что и у melee, см. applyAttackHit). dead
+            // обрабатывается снаружи (см. общий if (!boss.dead) выше — мёртвый
+            // босс сюда вообще не доходит). Проверять attack/stomp/ranged
+            // первыми безопасно: пока attackAnimPlaying/stompAnimPlaying/
+            // rangedAnimPlaying, hurtTimer в принципе не может стать > 0 (см.
+            // applyAttackHit, слой 1 — попадание во время атаки/топота/броска
+            // идёт во вспышку, не в hurtTimer).
+            if (boss.attackAnimPlaying && boss.attackKind) {
+              const kind = boss.attackKind
+              playBossAnim(kind)
+              const strikeFrame = kind === 'melee' ? BOSS_MELEE_STRIKE_FRAME : BOSS_MELEE2_STRIKE_FRAME
+              const damage = kind === 'melee' ? BOSS_MELEE_DAMAGE : BOSS_MELEE2_DAMAGE
+              const range = kind === 'melee' ? BOSS_MELEE_RANGE : BOSS_MELEE2_RANGE
+              const kindFrames = bossFramesByKind[kind]
+              // Момент удара — РОВНО на strike-кадре (см. задачу, п.1/2), НЕ
+              // по началу анимации и НЕ по нажатию. attackHitApplied дедупит
+              // урон, пока currentFrame держится на/после strike-кадра —
+              // тот же приём, что enemy.attackHitApplied у зверя. Атака
+              // (слой 1, см. задачу) теперь ВСЕГДА доигрывает до этой точки —
+              // Hurt её больше не обрывает.
+              if (!boss.attackHitApplied && boss.sprite.currentFrame >= strikeFrame) {
+                boss.attackHitApplied = true
+                // Атака дошла до удара — сброс стан-резиста (СЛОЙ 2, см.
+                // задачу), тот же приём, что enemy.stunCount=0 у зверя.
+                boss.stunCount = 0
+                // Зона удара — перед боссом по направлению facing, шириной
+                // range (см. задачу, п.1/2). Урон — существующим путём
+                // (takeDamageRef), с учётом i-frames dodge героя
+                // (dodgeIframeRef) — переиспользуем проверку, не пишем свою.
+                const zoneX = boss.facing === 1 ? boss.x + BOSS_WIDTH : boss.x - range
+                const zone = { x: zoneX, y: boss.y, width: range, height: BOSS_HEIGHT }
+                const strikePlayerBox = getPlayerCombatBox()
+                const overlap =
+                  strikePlayerBox.x < zone.x + zone.width &&
+                  strikePlayerBox.x + strikePlayerBox.w > zone.x &&
+                  strikePlayerBox.y < zone.y + zone.height &&
+                  strikePlayerBox.y + strikePlayerBox.h > zone.y
+                if (overlap && dodgeIframeRef.current <= 0) {
+                  takeDamageRef.current(damage)
+                }
+              }
+              if (boss.sprite.currentFrame >= kindFrames.length - 1 || !boss.sprite.playing) {
+                // Анимация доиграла — кулдаун стартует ЗДЕСЬ, от конца
+                // анимации (см. задачу, "Отдельно — кулдаун"). После слоя 1
+                // это ЕДИНСТВЕННЫЙ способ закончить атаку (прерываний Hurt'ом
+                // больше не бывает), так что кулдаун гарантированно стартует
+                // при любом завершении атаки.
+                boss.attackAnimPlaying = false
+                boss.attackKind = null
+                boss.attackCooldownTimer = BOSS_ATTACK_COOLDOWN_MS
+              }
+            } else if (boss.stompAnimPlaying) {
+              // Топот (ФАЗА 4, см. задачу) — ПО ОБРАЗЦУ ranged ниже: доигрывает
+              // до конца (слой 1, тот же приём — размещена ВЫШЕ ranged в
+              // каскаде, см. приоритет "после melee, перед ranged"). На
+              // strike-кадре — ДВЕ независимые волны (влево/вправо), см.
+              // spawnBossWave/движение волн ниже.
+              playBossAnim('stomp')
+              const stompFrames = bossFramesByKind.stomp
+              if (!boss.stompStrikeApplied && boss.sprite.currentFrame >= BOSS_STOMP_STRIKE_FRAME) {
+                boss.stompStrikeApplied = true
+                spawnBossWave(boss, -1)
+                spawnBossWave(boss, 1)
+              }
+              if (boss.sprite.currentFrame >= stompFrames.length - 1 || !boss.sprite.playing) {
+                boss.stompAnimPlaying = false
+                boss.stompCooldownTimer = BOSS_STOMP_COOLDOWN_MS
+              }
+            } else if (boss.rangedAnimPlaying) {
+              // Ranged — ТОТ ЖЕ приём, что у melee/melee2 выше: доигрывает до
+              // конца (слой 1 не даёт Hurt его оборвать). 1-2 шипа за бросок
+              // (ФАЗА 3, шаг 4, см. задачу) — rangedShotsLeft разыгран на
+              // старте (см. rangedTrigger выше); создаётся на кадре выпуска,
+              // rangedThrowApplied дедупит спавн на кадрах после выпуска.
+              playBossAnim('ranged')
+              const rangedFrames = bossFramesByKind.ranged
+              if (!boss.rangedThrowApplied && boss.sprite.currentFrame >= BOSS_RANGED_RELEASE_FRAME) {
+                boss.rangedThrowApplied = true
+                spawnBossSpike(boss)
+              }
+              if (boss.sprite.currentFrame >= rangedFrames.length - 1 || !boss.sprite.playing) {
+                boss.rangedShotsLeft -= 1
+                if (boss.rangedShotsLeft > 0) {
+                  // Второй шип — повтор ТОЙ ЖЕ анимации с нулевого кадра, БЕЗ
+                  // возврата в стойку (см. задачу): playBossAnim('ranged') сам
+                  // не рестартит, т.к. это уже текущие textures (гейт
+                  // "тот же kind — return" в playBossAnim), поэтому рестарт —
+                  // прямой gotoAndPlay(0), тем же приёмом, каким playBossAnim
+                  // перезапускает разовые анимации. rangedAnimPlaying/
+                  // кулдаун НЕ трогаем — бросок продолжается.
+                  boss.rangedThrowApplied = false
+                  boss.sprite.gotoAndPlay(0)
+                } else {
+                  boss.rangedAnimPlaying = false
+                  boss.rangedCooldownTimer = BOSS_RANGED_COOLDOWN_MS
+                }
+              }
+            } else if (boss.hurtTimer > 0) {
+              boss.hurtTimer = Math.max(0, boss.hurtTimer - ticker.deltaMS)
+              playBossAnim('hurt')
+            } else {
+              playBossAnim(boss.moving ? 'walk' : 'idle')
+            }
+            // Вспышка попадания (СЛОИ 1/2, см. задачу) — визуальная замена
+            // Hurt в моменты, когда сам Hurt не проигрывается (во время
+            // атаки — ВСЕГДА, вне атаки — под иммунитетом poiseImmuneTimer):
+            // тикает вниз каждый кадр независимо от ветки выше, danger-tint
+            // на спрайте, пока активна.
+            boss.hitFlashTimer = Math.max(0, boss.hitFlashTimer - ticker.deltaMS)
+            boss.sprite.tint = boss.hitFlashTimer > 0 ? 0xe0353b : 0xffffff
+            // Накопительный стан-резист (СЛОЙ 2, см. задачу) — тикает вниз
+            // каждый кадр, как у зверя (STUN_LIMIT/POISE_IMMUNE_MS там,
+            // BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS здесь).
+            boss.poiseImmuneTimer = Math.max(0, boss.poiseImmuneTimer - ticker.deltaMS)
+
+            // Push-out — ПОСЛЕ движения (boss.x этого кадра уже финален), как
+            // у зверя (см. его pushPlayerOutX ниже по коду выше в enemy-цикле).
+            // ТОЛЬКО пока жив (см. задачу, п.3) — мёртвый босс не толкает
+            // героя, тело проходимо.
+            pushPlayerOutX({ x: boss.x, y: boss.y, width: BOSS_WIDTH, height: BOSS_HEIGHT }, getPlayerCombatBox())
+
+            applyBossLayout(boss)
+            // Флип — ПОСЛЕ applyBossLayout: тот каждый тик ставит scale.set(...)
+            // (равномерный, положительный масштаб), так что флип обязан идти
+            // последним, иначе applyBossLayout стирал бы знак scale.x обратно.
+            boss.sprite.scale.x = boss.facing === -1 ? Math.abs(boss.sprite.scale.x) : -Math.abs(boss.sprite.scale.x)
+          } else {
+            // ФАЗА 5 (см. задачу) — труп НЕ despawn'ится (в отличие от
+            // зверя), здесь только момент завершения death-анимации: ТЕМ ЖЕ
+            // способом, что у зверя (currentFrame на последнем кадре ИЛИ
+            // спрайт сам остановился). rewardGiven дедупит награду/
+            // closeEvent — без флага туша, висящая на последнем кадре,
+            // слала бы награду каждый тик.
+            const deathFrames = bossFramesByKind.death
+            const deathDone = boss.sprite.currentFrame >= deathFrames.length - 1 || !boss.sprite.playing
+            if (deathDone && !boss.rewardGiven) {
+              boss.rewardGiven = true
+              const amount = rollTrophies(TROPHY_MULT_BOSS)
+              spawnRewardFloat(boss.sprite.x, boss.sprite.y - boss.sprite.height, [
+                { kind: 'trophy', amount },
+              ])
+              if (bossEventIndexRef.current !== null) closeEvent(bossEventIndexRef.current)
+            }
+          }
+        }
+
+        // Летящие шипы дальней атаки босса (ФАЗА 3, шаг 3, см. задачу) —
+        // независимый от bossRef список (по образцу rewardFloatsRef ниже):
+        // шип, брошенный до смерти босса, должен долетать сам по себе.
+        // Баллистическая дуга (BOSS_SPIKE_GRAVITY, vy подобрана при спавне на
+        // попадание в героя — см. spawnBossSpike), НЕ прямая горизонтальная.
+        // Попадание в героя — тем же getPlayerCombatBox()/dodgeIframeRef, что
+        // и melee-удар босса выше (не пишем свою проверку). dtSec — своя
+        // переменная (НЕ путать с внешним ticker-scale dt=ticker.deltaTime,
+        // здесь нужны реальные секунды).
+        if (bossSpikesRef.current.length > 0) {
+          const stillFlying: BossSpike[] = []
+          for (const spike of bossSpikesRef.current) {
+            const dtSec = ticker.deltaMS / 1000
+            spike.vy += BOSS_SPIKE_GRAVITY * dtSec
+            const vx = spike.dir * BOSS_SPIKE_SPEED_X
+            spike.sprite.x += vx * dtSec
+            spike.sprite.y += spike.vy * dtSec
+            // Остриё на исходном PNG смотрит ВЛЕВО (см. задачу) — поворот
+            // спрайта по направлению полёта ВМЕСТО зеркалирования (scale.x
+            // остаётся положительным, см. spawnBossSpike).
+            spike.sprite.rotation = Math.atan2(-spike.vy, -vx)
+            spike.lifeMs += ticker.deltaMS
+
+            let remove = spike.lifeMs >= BOSS_SPIKE_LIFETIME_MS
+
+            // Падение на пол (см. задачу, п.6) — с гравитацией шип может
+            // промахнуться и уйти вниз. isSolid — твердь '#' (и края карты),
+            // isPlatformBandBlocking — верхняя полоса '=' (обе уже
+            // используются в файле для той же проверки, новой не пишем).
+            if (!remove && !spike.hitApplied) {
+              const groundHit =
+                isSolid(grid, TILE_SIZE, spike.sprite.x, spike.sprite.y) ||
+                isPlatformBandBlocking(grid, TILE_SIZE, spike.sprite.x, spike.sprite.y, spike.sprite.y + 1) !== null
+              if (groundHit) {
+                spike.hitApplied = true
+                remove = true
+                spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
+              }
+            }
+
+            if (!remove && !spike.hitApplied) {
+              const box = getPlayerCombatBox()
+              const spikeLeft = spike.sprite.x - BOSS_SPIKE_DRAW_W / 2
+              const spikeTop = spike.sprite.y - BOSS_SPIKE_DRAW_H / 2
+              const overlap =
+                box.x < spikeLeft + BOSS_SPIKE_DRAW_W &&
+                box.x + box.w > spikeLeft &&
+                box.y < spikeTop + BOSS_SPIKE_DRAW_H &&
+                box.y + box.h > spikeTop
+              // dodgeIframeRef активен — шип пролетает насквозь, без урона и
+              // без импакта (см. задачу, п.7 — не трогаем).
+              if (overlap && dodgeIframeRef.current <= 0) {
+                spike.hitApplied = true
+                remove = true
+                takeDamageRef.current(BOSS_RANGED_DAMAGE)
+                spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
+              }
+            }
+
+            if (remove) {
+              worldContainer.removeChild(spike.sprite)
+              spike.sprite.destroy()
+            } else {
+              stillFlying.push(spike)
+            }
+          }
+          bossSpikesRef.current = stillFlying
+        }
+
+        // AoE-волны топота босса (см. задачу) — независимый от bossRef список
+        // (по образцу bossSpikesRef выше): волна, рождённая до смерти/despawn
+        // босса, должна докатиться сама по себе. Y НЕ меняется — катится по
+        // земле, гравитации нет (в отличие от шипа). Уклонение ТОЛЬКО
+        // прыжком — dodgeIframeRef здесь НЕ учитывается (см. задачу, п.7):
+        // герой в прыжке физически выше волны своим боевым боксом, пересечения
+        // не будет само собой.
+        if (bossWavesRef.current.length > 0) {
+          const stillRolling: BossWave[] = []
+          for (const w of bossWavesRef.current) {
+            const dt = ticker.deltaMS / 1000
+            w.sprite.x += w.dir * BOSS_WAVE_SPEED * dt
+            w.lifeMs += ticker.deltaMS
+
+            let remove = w.lifeMs >= BOSS_WAVE_LIFETIME_MS
+
+            // Остановка о препятствие — тайл впереди волны, на уровне её
+            // ЦЕНТРА (не низа: низ лежит ровно на полу, точка "низ-1px"
+            // попадает в тайл земли, под которой волна и так едет — волна
+            // гасла об этот тайл сразу же). isSolid — ТА ЖЕ функция, что у
+            // шипа (проверка твёрдости '#'/края карты, см. блок шипов выше).
+            // Просто исчезает, без импакта.
+            if (!remove) {
+              const frontX = w.sprite.x + w.dir * (BOSS_WAVE_DRAW_W / 2)
+              const centerY = w.sprite.y - BOSS_WAVE_DRAW_H / 2
+              if (isSolid(grid, TILE_SIZE, frontX, centerY)) {
+                remove = true
+              }
+            }
+
+            // Попадание в героя (см. задачу, п.7) — тем же getPlayerCombatBox(),
+            // что и у шипа, НО БЕЗ dodgeIframeRef (уклонение только прыжком).
+            // Каждая волна бьёт максимум один раз.
+            if (!remove && !w.hitApplied) {
+              const box = getPlayerCombatBox()
+              const waveLeft = w.sprite.x - BOSS_WAVE_DRAW_W / 2
+              const waveTop = w.sprite.y - BOSS_WAVE_DRAW_H
+              const overlap =
+                box.x < waveLeft + BOSS_WAVE_DRAW_W &&
+                box.x + box.w > waveLeft &&
+                box.y < waveTop + BOSS_WAVE_DRAW_H &&
+                box.y + box.h > waveTop
+              if (overlap) {
+                w.hitApplied = true
+                remove = true
+                takeDamageRef.current(BOSS_WAVE_DAMAGE)
+              }
+            }
+
+            if (remove) {
+              worldContainer.removeChild(w.sprite)
+              w.sprite.destroy()
+            } else {
+              stillRolling.push(w)
+            }
+          }
+          bossWavesRef.current = stillRolling
+        }
+
         // Сундуки: завершение анимации открытия (тем же способом, каким
         // определяется конец attack/hurt у героя — конец текстур ИЛИ спрайт
         // сам остановился) + мягкая стена по X (та же pushPlayerOutX, что и
@@ -3129,21 +4507,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             chest.sprite.gotoAndStop(activeFrames.length - 1) // держим последний кадр (открыт/гарь)
             applyChestLayout(chest)
             chest.sprite.visible = true
-            console.log('[chest-debug] complete', {
-              y: chest.sprite.y,
-              height: chest.sprite.height,
-              width: chest.sprite.width,
-              anchorY: chest.sprite.anchor.y,
-              isMimic: chest.isMimic,
-              frameSet: chest.isMimic ? 'chestTrapFrames' : 'chestFrames',
-            })
             closeEvent(chest.eventIndex)
-            // Награда — ТОЛЬКО добрый исход. rand(10,50) — локальная
-            // заглушка (см. задачу): реальное начисление player.gold живёт
-            // на сервере, здесь только попап.
+            // Награда — ТОЛЬКО добрый исход, трофеями по общей формуле (см.
+            // задачу): реальное начисление player.trophies живёт на сервере,
+            // здесь только попап.
             if (!chest.isMimic) {
               spawnRewardFloat(chest.sprite.x, chest.sprite.y - chest.sprite.height, [
-                { kind: 'gold', amount: randInt(10, 50) },
+                { kind: 'trophy', amount: rollTrophies(TROPHY_MULT_CHEST) },
               ])
             }
           }
@@ -3396,6 +4766,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // выше — здесь только сбрасываем список, чтобы не держать ссылки на
       // уже уничтоженные Container при повторном mount (StrictMode).
       rewardFloatsRef.current = []
+      bossSpikesRef.current = []
+      bossWavesRef.current = []
     }
     // TEMP: map switcher — mapFile в зависимостях, чтобы смена карты через
     // временный переключатель (см. панель настроек ниже) перезапускала этот

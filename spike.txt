@@ -1,0 +1,21 @@
+3:import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO, backdropPaths, type BackdropPreset } from './mapRenderer'
+528:const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
+529:const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
+530:const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
+1171:// зоной ЗУБЬЕВ (нижние SPIKE_H_RATIO клетки, прижаты к низу — см. drawSpikes/
+1172:// SPIKE_H_RATIO в mapRenderer.ts), а не со всей клеткой: иначе нельзя было бы
+1174:function isTouchingSpikes(
+1191:    const bandTop = cellBottom - tileSize * SPIKE_H_RATIO
+1403:  const applySpikeDamageRef = useRef<() => void>(() => {})
+1406:  const spikeIframeRef = useRef(0)
+1614:  // (applySpikeDamageRef), и атакой зверя (takeDamageRef в ticker'е).
+1631:    applySpikeDamageRef.current = () => takeDamage(maxHp * SPIKE_DAMAGE_RATIO)
+1737:      // Шипы из слотов карты — не весь пул, а HAZARD_SPIKES_PER_RUN случайных
+1743:      const chosenHazards = pickRandom(hazardPool, HAZARD_SPIKES_PER_RUN)
+3258:        spikeIframeRef.current = Math.max(0, spikeIframeRef.current - ticker.deltaMS)
+3260:          spikeIframeRef.current <= 0 &&
+3261:          isTouchingSpikes(grid, TILE_SIZE, phys.x, PLAYER_WIDTH, phys.y, phys.y + PLAYER_HEIGHT)
+3263:          spikeIframeRef.current = SPIKE_IFRAME_MS
+3264:          applySpikeDamageRef.current()
+3375:        // независимо от i-frames шипов (spikeIframeRef) — отдельный механизм.
+3935:                console.log('SPIKE RELEASE')
