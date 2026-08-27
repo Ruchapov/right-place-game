@@ -3203,7 +3203,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
                 playBossAnim('death')
                 applyBossLayout(boss)
                 boss.sprite.scale.x = boss.facing === -1 ? Math.abs(boss.sprite.scale.x) : -Math.abs(boss.sprite.scale.x)
-                console.log('BOSS DEAD')
               } else {
                 redrawBossHpBar(boss)
                 // Стадия 2 — переход СЧИТАЕТСЯ один раз, на первом пересечении
@@ -3682,7 +3681,6 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             if (nearbySmuggler) {
               smugglerActiveRef.current = nearbySmuggler
               smugglerPanelOpenRef.current = true
-              console.log('SMUGGLER PANEL OPEN')
             } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
               dodgeIframeRef.current = PLAYER_DODGE_IFRAME_MS
               dodgeCooldownRef.current = PLAYER_DODGE_COOLDOWN_MS
