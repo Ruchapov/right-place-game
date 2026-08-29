@@ -20,6 +20,7 @@ import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from
 import { clamp, pickRandom } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 import { loadExploreAssets } from './explore/assets'
+import { createSkillsSystem } from './explore/entities/skills'
 
 type ExploreProps = {
   onClose?: () => void
@@ -92,7 +93,7 @@ type ExploreProps = {
 
 
 
-type PlayerPhysics = {
+export type PlayerPhysics = {
   x: number
   y: number
   vx: number
@@ -122,7 +123,7 @@ type AttackHitbox = { x: number; y: number; width: number; height: number }
 // patrolDir — текущее направление патруля (меняется на разворотах). facing —
 // куда сейчас "смотрит" враг (обновляется и в патруле, и в погоне; читается
 // для флипа rect.scale.x — задел под будущий спрайт).
-type Enemy = {
+export type Enemy = {
   x: number
   y: number
   vy: number
@@ -276,7 +277,7 @@ type Obelisk = {
 // RELEASE_FRAME) уже отмечен для этого броска (снаряда/урона на этом шаге
 // нет, только console.log); rangedCooldownTimer — тикает ВНИЗ до 0,
 // выставляется ПОСЛЕ конца анимации броска, не при попадании урона.
-type Boss = {
+export type Boss = {
   x: number
   y: number
   vy: number
@@ -559,6 +560,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
   const dodgeCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
 
+  // Скиллы (см. explore/entities/skills.ts) — флаги тапа по ⚡/🔥, читаются и
+  // сбрасываются ВНУТРИ createSkillsSystem().update(), тем же приёмом, что
+  // attackPressedRef/dodgePressedRef выше. Сама логика скиллов пока пуста —
+  // см. skills.ts.
+  const skill1PressedRef = useRef(false)
+  const skill2PressedRef = useRef(false)
+
   // Панель Смуглера (под-шаг): dodge рядом с живым смуглером открывает панель
   // вместо обычного dodge — пока флаг + console.log, самого окна ещё нет.
   const smugglerPanelOpenRef = useRef(false)
@@ -675,9 +683,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
   // Клавиатура — второй способ ввода поверх экранных кнопок (Шаг: keyboard
   // controls). Дёргает РОВНО те же refs, что и onPointerDown/Up у кнопок выше
-  // (dirRef/jumpPressedRef/attackPressedRef/dodgePressedRef/drinkPressedRef) —
-  // никакой отдельной логики. Скилл1/скилл2 НЕ забинжены: в Explore.tsx для
-  // них пока нет ни кнопок, ни обработчиков (см. "Skills" в Next Steps).
+  // (dirRef/jumpPressedRef/attackPressedRef/dodgePressedRef/drinkPressedRef/
+  // skill1PressedRef/skill2PressedRef) — никакой отдельной логики. Сами
+  // скиллы за флагами пока пусты, см. explore/entities/skills.ts.
   useEffect(() => {
     // Сравнение по e.code (физическая клавиша), НЕ по e.key (символ, зависящий
     // от раскладки) — на русской раскладке e.key для буквенных клавиш отдаёт
@@ -716,11 +724,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           break
         case 'Digit1':
           if (e.repeat) return
-          // скилл1 — заглушка, как и экранная кнопка ⚡ (onclick = () => {})
+          skill1PressedRef.current = true
           break
         case 'Digit2':
           if (e.repeat) return
-          // скилл2 — заглушка, как и экранная кнопка 🔥 (onclick = () => {})
+          skill2PressedRef.current = true
           break
       }
     }
@@ -756,6 +764,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     // ждёт fetch/init — без этого флага он ловил недоинициализированный app.
     let initialized = false
     let onBgResize: (() => void) | null = null
+    // Собирается внутри setup(), после worldContainer/grid/getPlayerCombatBox
+    // — сюда же, во внешнюю область видимости эффекта, чтобы cleanup ниже
+    // мог вызвать dispose() (тот же приём, что у onBgResize выше).
+    let skills: ReturnType<typeof createSkillsSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -952,6 +964,32 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         const y = phys.y + C.JUMP_HIT_OFFSET_Y
         return { x, y, w, h }
       }
+
+      // Скиллы (см. explore/entities/skills.ts) — создаётся ОДИН раз здесь,
+      // сразу как только есть worldContainer/grid/getPlayerCombatBox. Сама
+      // логика скиллов ещё не реализована (update() только гасит нажатия) —
+      // подключение сделано заранее, чтобы точку интеграции не пришлось
+      // переделывать позже.
+      skills = createSkillsSystem({
+        phys,
+        facing: facingRef,
+        getPlayerCombatBox,
+        worldContainer,
+        grid,
+        tileSize: C.TILE_SIZE,
+        isSolid,
+        isPlatformBandBlocking,
+        enemies: enemiesRef,
+        boss: bossRef,
+        attackDamage: attackDamageRef,
+        takeDamage,
+        dodgeIframe: dodgeIframeRef,
+        skill1Pressed: skill1PressedRef,
+        skill2Pressed: skill2PressedRef,
+        // Заглушка: Explore не получает equippedSkills пропом (источника
+        // данных пока нет, см. skills.ts) — оба слота пустые.
+        equipped: [null, null],
+      })
 
       // Вся последовательная загрузка спрайт-листов (герой/зверь/сундук/
       // смуглер/обелиск/босс/шип/волна/иконки наград) вынесена в
@@ -2451,6 +2489,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           }
         }
 
+        // Скиллы (см. explore/entities/skills.ts) — пока только гасит
+        // skill1Pressed/skill2Pressed, самой логики ещё нет.
+        skills?.update(ticker.deltaMS)
+
         // Враги (Шаг 2-3: СПИСОК — кластер из 3, может быть несколько
         // enemy-событий за забег). Каждый враг обрабатывается НЕЗАВИСИМО:
         // AI (преследование/windup/удар по игроку, Шаг 2-2). Урон от атаки
@@ -3510,6 +3552,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
     return () => {
       cancelled = true
+      skills?.dispose()
       // destroy() только если init() реально завершился — до этого у app нет
       // внутренностей, на которые destroy() рассчитывает (см. комментарий
       // у объявления initialized выше).
@@ -3634,6 +3677,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         attackPressedRef={attackPressedRef}
         dodgePressedRef={dodgePressedRef}
         drinkPressedRef={drinkPressedRef}
+        skill1PressedRef={skill1PressedRef}
+        skill2PressedRef={skill2PressedRef}
         potionBtnRef={potionBtnRef}
         updatePotionButton={updatePotionButton}
       />

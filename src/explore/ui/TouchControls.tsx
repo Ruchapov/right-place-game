@@ -6,6 +6,8 @@ interface TouchControlsProps {
   attackPressedRef: MutableRefObject<boolean>
   dodgePressedRef: MutableRefObject<boolean>
   drinkPressedRef: MutableRefObject<boolean>
+  skill1PressedRef: MutableRefObject<boolean>
+  skill2PressedRef: MutableRefObject<boolean>
   potionBtnRef: MutableRefObject<HTMLButtonElement | null>
   // Пишет "🧪 ×N"/opacity в potionBtnRef.current — вызывается сразу после
   // создания DOM-узла кнопки зелья (см. ref-колбэк ниже), чтобы подпись не
@@ -19,6 +21,8 @@ export default function TouchControls({
   attackPressedRef,
   dodgePressedRef,
   drinkPressedRef,
+  skill1PressedRef,
+  skill2PressedRef,
   potionBtnRef,
   updatePotionButton,
 }: TouchControlsProps) {
@@ -91,9 +95,11 @@ export default function TouchControls({
 
         {/* Правый блок — атака/dodge/скиллы/прыжок/зелье через JS в
             ref-колбэке, та же техника и геометрия, что в Battle.tsx.
-            skill1/skill2 — визуальные заглушки без логики (в Explore
-            скиллов пока нет). Зелье (🧪) — ТОЛЬКО визуал (анимация питья
-            через drinkPressedRef), без хила/зарядов/кулдауна. */}
+            skill1/skill2 пишут в skill1PressedRef/skill2PressedRef (как
+            dodge пишет в dodgePressedRef) — сама логика скиллов ещё не
+            реализована, см. explore/entities/skills.ts. Зелье (🧪) —
+            ТОЛЬКО визуал (анимация питья через drinkPressedRef), без
+            хила/зарядов/кулдауна. */}
         <div
           ref={(container) => {
             if (!container) return
@@ -228,10 +234,10 @@ export default function TouchControls({
             if (dodgeEl) bindTap(dodgeEl, () => { dodgePressedRef.current = true })
 
             const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
-            if (skill1El) bindTap(skill1El, () => {})
+            if (skill1El) bindTap(skill1El, () => { skill1PressedRef.current = true })
 
             const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
-            if (skill2El) bindTap(skill2El, () => {})
+            if (skill2El) bindTap(skill2El, () => { skill2PressedRef.current = true })
 
             bindTap(pot, () => { drinkPressedRef.current = true })
           }}
