@@ -1,10 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
-import { renderMapToCanvas, PLATFORM_H_RATIO, SPIKE_H_RATIO, backdropPaths, type BackdropPreset } from './mapRenderer'
+import { renderMapToCanvas, backdropPaths } from './mapRenderer'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
 import TouchControls from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
+import type { Grid, EventKind, EventCandidate, BossAnimKind, RewardKind } from './explore/types'
+import {
+  isSolid,
+  isPlatformBandBlocking,
+  isOverlappingPlatformBand,
+  isTouchingSpikes,
+  cellFootBlockTop,
+  sweepHeadBlock,
+  isOverlappingAtFrameStart,
+  sweepFootBlock,
+} from './explore/collision'
+import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from './explore/mapEvents'
+import { clamp, pickRandom } from './explore/utils'
+import { rollTrophies } from './explore/rewards'
+import { loadSheetFrames } from './explore/spriteLoader'
 
 type ExploreProps = {
   onClose?: () => void
@@ -20,43 +35,6 @@ type ExploreProps = {
 }
 
 
-function backdropForMap(mapFile: string): BackdropPreset {
-  const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
-  return C.BACKDROP_BY_MAP[mapId] ?? 'graveyard'
-}
-
-// Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt
-// и map_C_boss_descent.txt (два слова после id) оба -> map_<id>_slots.json.
-// Берём именно первый токен после "map_", а не отбрасываем последний "_xxx.txt" —
-// иначе на многословных именах (boss_descent) получим не тот файл.
-//
-// Карта D — ИСКЛЮЧЕНИЕ из этого правила: у неё слоты по СОСТОЯНИЮ (OPEN/SEALED
-// заваливаемого тайника, см. CLAUDE.md), не по первому токену — файлы называются
-// map_D_OPEN_slots.json / map_D_SEALED_slots.json, а не map_D_slots.json. Для
-// map_D_* берём ВСЁ имя без ".txt" и добавляем "_slots.json".
-function slotsFileForMap(mapFile: string): string {
-  if (mapFile.startsWith('map_D_')) {
-    return `${mapFile.replace(/\.txt$/, '')}_slots.json`
-  }
-  const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
-  return `map_${mapId}_slots.json`
-}
-
-
-
-
-
-
-
-
-
-
-
-
-// Тело босса стоит в клетке НЕ по центру и по-разному в каждом листе (см.
-// задачу) — anchor.x И anchor.y меняются ТОЛЬКО при смене листа (playBossAnim),
-// внутри одной анимации запрещено трогать оба.
-export type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'death' | 'ranged' | 'stomp'
 
 
 
@@ -70,19 +48,21 @@ export type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'deat
 
 
 
-// Плавающий попап награды над объектом (Explore офлайн — НИКАКОГО начисления
-// player.gold/trophies/crystals, только визуал поверх мира, см. spawnRewardFloat
-// в setup). Иконки — тот же способ пути (BASE_URL), что у героя/зверя/сундука.
-export type RewardKind = 'gold' | 'trophy' | 'rp'
+
+
+
+
+
+
+
+
+
+
+
+
 
                                  // не пробрасывается, считаем по 1
 
-// Базовые трофеи за событие. Множитель применяется снаружи.
-function rollTrophies(multiplier: number): number {
-  const level = C.PLAYER_LEVEL_FALLBACK
-  const spread = (1 - C.TROPHY_SPREAD / 2) + Math.random() * C.TROPHY_SPREAD
-  return Math.round(C.TROPHY_BASE * Math.pow(level, C.TROPHY_LEVEL_POWER) * spread * multiplier)
-}
 
 
 
@@ -111,8 +91,6 @@ function rollTrophies(multiplier: number): number {
 
 
 
-
-type Grid = string[][]
 
 type PlayerPhysics = {
   x: number
@@ -377,14 +355,9 @@ type BossWave = {
   hitApplied: boolean
 }
 
-// "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
-// со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
-// результат забега можно было отдать старому results-экрану без маппинга.
-export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
-
-// clusterPoints — ТОЛЬКО для kind='enemy': все 3 точки кластера (не только
-// points[0]) — нужны, чтобы заспавнить весь кластер, а не одного врага.
-type EventCandidate = { kind: EventKind; x: number; y: number; clusterPoints?: [number, number][] }
+// EventKind объявлен в ./explore/types.ts — реэкспорт нужен, т.к. HudPlate.tsx
+// импортирует его напрямую из Explore.tsx (см. import type выше).
+export type { EventKind }
 
 // marker — для enemy-события НЕ создаётся (визуал — сами враги, реальные
 // прямоугольники); для остальных типов (пока заглушки) — как раньше, кружок
@@ -397,333 +370,10 @@ type MapEvent = EventCandidate & { marker?: Graphics; closed: boolean; remaining
 
 
 
-function isPointXY(value: unknown): value is [number, number] {
-  return Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'number'
-}
 
-// Собирает ВСЕ доступные точки-кандидаты события из пулов слот-файла карты.
-// enemyCluster (3 врага) считается ОДНИМ событием — x/y (для HUD/логов) берём
-// из первой точки, но clusterPoints несёт ВСЕ валидные точки кластера, чтобы
-// на споне поставить весь кластер, а не одного врага. npc.smuggler/npc.puzzle/
-// boss могут отсутствовать (null) — на карте A их нет, но механизм общий для
-// всех карт A-F.
-function buildEventCandidates(slots: unknown): EventCandidate[] {
-  const s = slots as {
-    enemyClusters?: { points?: unknown }[]
-    reward?: unknown[]
-    npc?: { smuggler?: unknown; puzzle?: unknown }
-    boss?: unknown
-    obelisk?: { points?: unknown }
-  } | null
-  const candidates: EventCandidate[] = []
 
-  for (const cluster of s?.enemyClusters ?? []) {
-    const points = Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : []
-    const first = points[0]
-    if (first) candidates.push({ kind: 'enemy', x: first[0], y: first[1], clusterPoints: points })
-  }
-  for (const point of s?.reward ?? []) {
-    if (isPointXY(point)) candidates.push({ kind: 'chest', x: point[0], y: point[1] })
-  }
-  for (const point of Array.isArray(s?.npc?.smuggler) ? s.npc.smuggler : []) {
-    if (isPointXY(point)) candidates.push({ kind: 'smuggler', x: point[0], y: point[1] })
-  }
-  for (const point of Array.isArray(s?.npc?.puzzle) ? s.npc.puzzle : []) {
-    if (isPointXY(point)) candidates.push({ kind: 'puzzle', x: point[0], y: point[1] })
-  }
-  if (isPointXY(s?.boss)) candidates.push({ kind: 'boss', x: s.boss[0], y: s.boss[1] })
 
-  // Обелиски (карта F) — ОДИН кандидат на всё событие (не по одному на
-  // точку, иначе за забег могло бы выпасть несколько обелиск-событий сразу).
-  // Точка старта обелиска выбирается pickRandom'ом из пула здесь же; полный
-  // пул для доспавна оставшихся трёх (после первого удара) хранится отдельно
-  // в obeliskCandidatesRef (см. setup()), не в этом кандидате.
-  const obeliskPoints = Array.isArray(s?.obelisk?.points) ? (s.obelisk.points as unknown[]).filter(isPointXY) : []
-  const obeliskStart = pickRandom(obeliskPoints, 1)[0]
-  if (obeliskStart) candidates.push({ kind: 'obelisk', x: obeliskStart[0], y: obeliskStart[1] })
 
-  return candidates
-}
-
-// Общий выбор "N случайных без повторов" — используется и для событий (3 из
-// пула), и для шипов (10 из hazard). Если в пуле меньше count элементов —
-// отдаёт весь пул как есть, без падения.
-function pickRandom<T>(items: T[], count: number): T[] {
-  const pool = [...items]
-  const picked: T[] = []
-  while (pool.length > 0 && picked.length < count) {
-    const i = Math.floor(Math.random() * pool.length)
-    picked.push(pool[i])
-    pool.splice(i, 1)
-  }
-  return picked
-}
-
-// Режет спрайт-лист на кадры: cols колонок в ряд, дальше перенос вниз.
-// Все кадры анимации хранятся в одном base.source (не отдельные Texture.from
-// на кадр) — Pixi может переиспользовать GPU-текстуру между Texture-обрезками.
-async function loadSheetFrames(url: string, frameW: number, frameH: number, count: number, cols = 12): Promise<Texture[]> {
-  const base = await Assets.load(url)
-  base.source.scaleMode = 'linear' // сглаженное масштабирование — герой сильно уменьшается с 512px, 'nearest' даёт дрожащие края
-  const frames: Texture[] = []
-  for (let i = 0; i < count; i++) {
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    frames.push(new Texture({
-      source: base.source,
-      frame: new Rectangle(col * frameW, row * frameH, frameW, frameH),
-    }))
-  }
-  return frames
-}
-
-// Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
-// оси), выворачивать диапазон нельзя — ставим 0.
-function clamp(value: number, min: number, max: number): number {
-  if (min > max) return 0
-  return Math.min(max, Math.max(min, value))
-}
-
-// '#' — твердь. За боковыми и нижним краем сетки тоже твердь (чтобы не
-// улететь за карту), выше верхнего края — воздух. '=' здесь не учитываем.
-function isSolid(grid: Grid, tileSize: number, px: number, py: number): boolean {
-  const cx = Math.floor(px / tileSize)
-  const cy = Math.floor(py / tileSize)
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  if (cy < 0) return false
-  if (cy >= height) return true
-  if (cx < 0 || cx >= width) return true
-  return grid[cy][cx] === '#'
-}
-
-// Горизонтальная коллизия с полосой '=': блокирует ТОЛЬКО полоса сверху
-// клетки (bandH = tileSize*PLATFORM_H_RATIO), нижние ~56% клетки остаются
-// проходимы вбок. Проверяет реальное пересечение интервалов [top,bottom) и
-// [cellTop,cellTop+bandH) по всем строкам, которые занимает габарит игрока
-// — не точки выборки, иначе полоса может провалиться между сэмплами (как
-// уже было с вертикалью). '#' здесь не трогаем — для неё уже есть isSolid.
-function isPlatformBandBlocking(
-  grid: Grid,
-  tileSize: number,
-  px: number,
-  top: number,
-  bottom: number,
-): { cx: number; cy: number } | null {
-  const cx = Math.floor(px / tileSize)
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  if (cx < 0 || cx >= width) return null
-  const cyTop = Math.floor(top / tileSize)
-  const cyBottom = Math.floor((bottom - 1) / tileSize)
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    if (cy < 0 || cy >= height) continue
-    if (grid[cy][cx] !== '=') continue
-    const cellTop = cy * tileSize
-    const bandBottom = cellTop + tileSize * PLATFORM_H_RATIO
-    if (top < bandBottom && bottom > cellTop) return { cx, cy }
-  }
-  return null
-}
-
-// ЗАЩИТА ОТ ЗАСТРЕВАНИЯ по горизонтали: проверяет ТЕКУЩЕЕ положение игрока
-// (на начало кадра — left/top/bottom ещё не двигались в этом кадре), а не
-// целевую клетку. Если габарит [left,left+width)×[top,bottom) пересекает
-// полосу '=' хотя бы в ОДНОЙ из клеток, которые игрок сейчас занимает по
-// горизонтали (не только та, куда он движется), — значит он уже внутри
-// полосы (например, после прыжка). В этом состоянии блокировка по '=' не
-// применяется ни в одну сторону, пока игрок не выйдет из полосы целиком.
-function isOverlappingPlatformBand(
-  grid: Grid,
-  tileSize: number,
-  left: number,
-  width: number,
-  top: number,
-  bottom: number,
-): boolean {
-  const gridWidth = grid[0]?.length ?? 0
-  const gridHeight = grid.length
-  const cxLeft = Math.floor(left / tileSize)
-  const cxRight = Math.floor((left + width - 1) / tileSize)
-  const cyTop = Math.floor(top / tileSize)
-  const cyBottom = Math.floor((bottom - 1) / tileSize)
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    if (cy < 0 || cy >= gridHeight) continue
-    const cellTop = cy * tileSize
-    const bandBottom = cellTop + tileSize * PLATFORM_H_RATIO
-    if (!(top < bandBottom && bottom > cellTop)) continue
-    for (let cx = cxLeft; cx <= cxRight; cx++) {
-      if (cx < 0 || cx >= gridWidth) continue
-      if (grid[cy][cx] === '=') return true
-    }
-  }
-  return false
-}
-
-// Шипы '^' не твердь ни для одной из сторон (не проверяются в isSolid/
-// cellHeadBlockBottom/cellFootBlockTop выше) — игрок проходит/проваливается
-// сквозь них как через воздух. Здесь только определяем КАСАНИЕ — и только с
-// зоной ЗУБЬЕВ (нижние SPIKE_H_RATIO клетки, прижаты к низу — см. drawSpikes/
-// SPIKE_H_RATIO в mapRenderer.ts), а не со всей клеткой: иначе нельзя было бы
-// перепрыгнуть шип — урон бил бы и по воздуху над видимыми зубьями.
-function isTouchingSpikes(
-  grid: Grid,
-  tileSize: number,
-  left: number,
-  width: number,
-  top: number,
-  bottom: number,
-): boolean {
-  const gridWidth = grid[0]?.length ?? 0
-  const gridHeight = grid.length
-  const cxLeft = Math.floor(left / tileSize)
-  const cxRight = Math.floor((left + width - 1) / tileSize)
-  const cyTop = Math.floor(top / tileSize)
-  const cyBottom = Math.floor((bottom - 1) / tileSize)
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    if (cy < 0 || cy >= gridHeight) continue
-    const cellBottom = (cy + 1) * tileSize
-    const bandTop = cellBottom - tileSize * SPIKE_H_RATIO
-    // Хитбокс вообще пересекает полосу зубьев в этой строке клеток?
-    if (!(top < cellBottom && bottom > bandTop)) continue
-    for (let cx = cxLeft; cx <= cxRight; cx++) {
-      if (cx < 0 || cx >= gridWidth) continue
-      if (grid[cy][cx] === '^') return true
-    }
-  }
-  return false
-}
-
-// Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
-// если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
-// (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
-function cellHeadBlockBottom(
-  grid: Grid,
-  tileSize: number,
-  cx: number,
-  cy: number,
-): number | null {
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  const cellTop = cy * tileSize
-  if (cy < 0) return null // выше карты — воздух
-  if (cy >= height || cx < 0 || cx >= width) return cellTop + tileSize // край сетки — твердь
-  const ch = grid[cy][cx]
-  if (ch === '#') return cellTop + tileSize
-  if (ch === '=') return cellTop + tileSize * PLATFORM_H_RATIO
-  return null
-}
-
-// Верхняя граница поверхности в клетке (cx,cy) для приземления СВЕРХУ, или
-// null, если клетка не твердь. '#' — верх клетки. '=' — тоже верх клетки
-// (полоса начинается от верха, см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
-function cellFootBlockTop(
-  grid: Grid,
-  tileSize: number,
-  cx: number,
-  cy: number,
-): number | null {
-  const width = grid[0]?.length ?? 0
-  const height = grid.length
-  const cellTop = cy * tileSize
-  if (cy < 0) return null // выше карты — воздух
-  if (cy >= height || cx < 0 || cx >= width) return cellTop // край сетки — твердь
-  const ch = grid[cy][cx]
-  if (ch === '#' || ch === '=') return cellTop
-  return null
-}
-
-// Проверяет весь путь головы за кадр [headY, prevHeadY] (headY < prevHeadY,
-// движение вверх), а не только конечную точку — иначе на просевшем кадре
-// голова может перескочить всю полосу '=' (~28px), ни разу не попав внутрь
-// (туннелирование). Три колонки на путь: края + центр. Если пересекли
-// несколько границ — берём САМУЮ НИЖНЮЮ (max blockBottom): это первая, во
-// что игрок упёрся бы, двигаясь снизу вверх.
-function sweepHeadBlock(
-  grid: Grid,
-  tileSize: number,
-  playerX: number,
-  playerWidth: number,
-  prevHeadY: number,
-  headY: number,
-): number | null {
-  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
-  const cyTop = Math.floor(headY / tileSize)
-  const cyBottom = Math.floor(prevHeadY / tileSize)
-
-  let pushTo: number | null = null
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    for (const px of xPoints) {
-      const cx = Math.floor(px / tileSize)
-      const blockBottom = cellHeadBlockBottom(grid, tileSize, cx, cy)
-      if (blockBottom === null) continue
-      // Пересекли границу снизу вверх именно за этот кадр.
-      if (prevHeadY >= blockBottom && headY < blockBottom) {
-        pushTo = pushTo === null ? blockBottom : Math.max(pushTo, blockBottom)
-      }
-    }
-  }
-  return pushTo
-}
-
-// Случай "уже перекрываемся на начало кадра": игрок зашёл сбоку и на старте
-// кадра голова уже внутри полосы '=' (или клетки '#') — пересечения границы
-// не было, поэтому sweepHeadBlock ничего не находит и пропускает движение
-// вверх насквозь. Проверяет те же три колонки на пересечение прямоугольника
-// игрока (prevTop..prevBottom) с блокирующим прямоугольником клетки.
-function isOverlappingAtFrameStart(
-  grid: Grid,
-  tileSize: number,
-  playerX: number,
-  playerWidth: number,
-  prevTop: number,
-  prevBottom: number,
-): boolean {
-  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
-  const cyTop = Math.floor(prevTop / tileSize)
-  const cyBottom = Math.floor((prevBottom - 1) / tileSize)
-
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    for (const px of xPoints) {
-      const cx = Math.floor(px / tileSize)
-      const blockBottom = cellHeadBlockBottom(grid, tileSize, cx, cy)
-      if (blockBottom === null) continue
-      const cellTop = cy * tileSize
-      if (prevTop < blockBottom && prevBottom > cellTop) return true
-    }
-  }
-  return false
-}
-
-// Симметрично sweepHeadBlock, но для падения: путь [prevFootY, footY]
-// (footY > prevFootY, движение вниз). Берём САМУЮ ВЕРХНЮЮ пересечённую
-// границу (min blockTop) — первая поверхность, на которую падает игрок.
-function sweepFootBlock(
-  grid: Grid,
-  tileSize: number,
-  playerX: number,
-  playerWidth: number,
-  prevFootY: number,
-  footY: number,
-): number | null {
-  const xPoints = [playerX + 1, playerX + playerWidth / 2, playerX + playerWidth - 1]
-  const cyTop = Math.floor(prevFootY / tileSize)
-  const cyBottom = Math.floor(footY / tileSize)
-
-  let pushTo: number | null = null
-  for (let cy = cyTop; cy <= cyBottom; cy++) {
-    for (const px of xPoints) {
-      const cx = Math.floor(px / tileSize)
-      const blockTop = cellFootBlockTop(grid, tileSize, cx, cy)
-      if (blockTop === null) continue
-      // Пересекли границу сверху вниз именно за этот кадр.
-      if (prevFootY <= blockTop && footY > blockTop) {
-        pushTo = pushTo === null ? blockTop : Math.min(pushTo, blockTop)
-      }
-    }
-  }
-  return pushTo
-}
 
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее

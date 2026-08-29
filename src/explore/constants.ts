@@ -1,6 +1,6 @@
 // Константы верхнего уровня, вынесенные из Explore.tsx (механический перенос).
 import type { BackdropPreset } from '../mapRenderer'
-import type { BossAnimKind, RewardKind, EventKind } from '../Explore'
+import type { BossAnimKind, RewardKind, EventKind } from './types'
 
 export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
