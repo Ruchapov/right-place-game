@@ -53,6 +53,45 @@ export async function startRun(token: string): Promise<RunResult> {
   }
   return await response.json() as RunResult
 }
+// Event kind returned by /run/start-explore — same 6 kinds as
+// server/src/runEvents.ts's RunEventKind.
+export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
+
+export type StartExploreEvent = {
+  kind: StartExploreEventKind
+  x: number
+  y: number
+  clusterPoints?: [number, number][]
+}
+
+// Response shape of POST /run/start-explore (server/src/routes/run.ts) —
+// rewards (trophyReward/isMimic) are intentionally NOT part of this: the
+// server keeps them out of the response, see the endpoint's own comment.
+export type StartExploreResult = {
+  energy: number
+  mapFile: string
+  events: StartExploreEvent[]
+  maxHp: number
+  level: number
+  potions: number
+  armor: number
+}
+
+export async function startRunExplore(token: string, mapFile: string): Promise<StartExploreResult> {
+  const response = await fetch(`${SERVER_URL}/run/start-explore`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ mapFile }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Start explore failed: ${response.status} ${JSON.stringify(err)}`)
+  }
+  return await response.json() as StartExploreResult
+}
 export type RoomResult = {
   roomType: string
   goldGained: number

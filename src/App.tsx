@@ -127,6 +127,13 @@ export default function App() {
   // Telegram (обычный браузер) остаётся null, экран "Персонаж" сам рисует
   // запасной вариант (первая буква имени).
   const [photoUrl, setPhotoUrl] = useState<string | null>(null)
+  // Настоящая Telegram-сессия (initData реально был, loginWithTelegram
+  // отработал) — НЕ то же самое, что "в localStorage лежит jwt": в
+  // DevTester-режиме (вне Telegram) там может остаться токен от прошлого
+  // реального логина в этом же браузере. Explore получает токен ТОЛЬКО
+  // когда это true — иначе сервер списал бы энергию и открыл currentRun
+  // из-под DevTester, и реальный забег в Telegram стало бы нечем начать.
+  const [isTelegramSession, setIsTelegramSession] = useState(false)
   const [activeTab, setActiveTab] = useState<'hero' | 'shop' | 'explore' | 'gear' | 'friends'>('explore')
   const [savingSkills, setSavingSkills] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -220,6 +227,7 @@ export default function App() {
         }
         const data: LoginResponse = await loginWithTelegram(initDataRaw)
         localStorage.setItem('jwt', data.token)
+        setIsTelegramSession(true)
         setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
         setEnergyBase(data.character.energy)
         setEnergyBaseAt(Date.now())
@@ -1545,7 +1553,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} onRunComplete={handleExploreRunComplete} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
     </div>
   )
 }

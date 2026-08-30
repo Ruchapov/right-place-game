@@ -42,6 +42,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
+import { startRunExplore } from './api'
 
 type ExploreProps = {
   onClose?: () => void
@@ -54,6 +55,10 @@ type ExploreProps = {
   // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Не задан — DEFAULT_MAP_FILE
   // (см. ниже), 1:1 прежнее поведение. App.tsx пока этот проп не передаёт.
   mapFile?: string
+  // JWT — ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx: isTelegramSession,
+  // не просто "есть что-то в localStorage"). Не задан → setup() не ходит на
+  // /run/start-explore вообще, забег целиком на клиентской логике, как раньше.
+  token?: string
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -170,7 +175,7 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
   )
 }
 
-export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
   // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
   // чтобы перезапустить эффект инициализации PixiJS на другой карте (mapFile
@@ -564,6 +569,23 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
+
+      // Сервер уже умеет разыгрывать тройку событий (POST /run/start-explore,
+      // см. src/api.ts) — вызываем его здесь ТОЛЬКО чтобы проверить связь и
+      // увидеть реальный ответ. Результат пока НИКАК не используется: тройка
+      // событий/уровень/maxHp ниже по-прежнему считаются клиентом, как и
+      // раньше (следующий шаг — переключить на серверные данные).
+      // token приходит ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx,
+      // isTelegramSession — не просто "есть что-то в localStorage"). Не
+      // задан → запрос вообще не делаем, вне Telegram всё идёт как раньше.
+      // Ошибку НЕ глушим — она уходит в тот же .catch() на вызове setup()
+      // (см. конец файла), что показывает экран ошибки. Осознанно: на
+      // следующем шаге забег без ответа сервера станет невозможен, и лучше
+      // увидеть проблему сейчас, а не притворяться, что всё в порядке.
+      if (token) {
+        const startExploreResult = await startRunExplore(token, mapFile)
+        console.log('Explore: /run/start-explore ответ сервера', startExploreResult)
+      }
 
       // Шипы из слотов карты — не весь пул, а HAZARD_SPIKES_PER_RUN случайных
       // точек за забег (меньше пула — берём сколько есть). Вставляем прямо в
