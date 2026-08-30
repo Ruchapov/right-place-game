@@ -1839,7 +1839,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         // касанием НЕ должен. obelisk — тоже НЕ попадает: закрывается только
         // по успеху таймера события (см. блок таймера обелисков в тикере),
         // иначе простое прохождение мимо стартовой точки закрыло бы событие
-        // раньше времени. Остальные типы (пока заглушки) — как раньше.
+        // раньше времени. boss — тоже НЕ попадает: закрывается только по
+        // концу death-анимации (см. boss.ts, deathDone/rewardGiven), иначе
+        // касание точки спавна закрывало бы событие раньше самого боя, не
+        // убив босса. puzzle (пока заглушка) — как раньше.
         // Мёртвый герой (deathRef) событий не закрывает вообще — тело
         // неподвижно, но гейт на всякий случай (напр. если смерть настигла
         // ровно в момент касания хитбокса).
@@ -1850,7 +1853,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             ev.kind === 'enemy' ||
             ev.kind === 'chest' ||
             ev.kind === 'smuggler' ||
-            ev.kind === 'obelisk'
+            ev.kind === 'obelisk' ||
+            ev.kind === 'boss'
           ) continue
           const evLeft = ev.x * C.TILE_SIZE
           const evTop = ev.y * C.TILE_SIZE
