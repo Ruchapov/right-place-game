@@ -92,6 +92,68 @@ export async function startRunExplore(token: string, mapFile: string): Promise<S
   }
   return await response.json() as StartExploreResult
 }
+
+// Response shape of POST /run/finish-explore (server/src/routes/run.ts).
+export type FinishExploreResult = {
+  earned: number
+  trophies: number
+  died: boolean
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+type FinishExploreAttempt =
+  | { ok: true; data: FinishExploreResult }
+  | { ok: false; retry: boolean; error: Error }
+
+async function attemptFinishExplore(token: string, body: string): Promise<FinishExploreAttempt> {
+  let response: Response
+  try {
+    response = await fetch(`${SERVER_URL}/run/finish-explore`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+    })
+  } catch (e) {
+    // Сетевая ошибка (нет соединения и т.п., fetch сам бросает) — стоит повторить.
+    return { ok: false, retry: true, error: e instanceof Error ? e : new Error(String(e)) }
+  }
+  if (response.ok) {
+    return { ok: true, data: await response.json() as FinishExploreResult }
+  }
+  const err = await response.json().catch(() => ({}))
+  const error = new Error(`Finish explore failed: ${response.status} ${JSON.stringify(err)}`)
+  // 5xx — временная проблема на сервере, стоит повторить. 4xx — отказ по
+  // существу (нет активного explore-забега, невалидные данные и т.п.),
+  // повтор его не исправит.
+  return { ok: false, retry: response.status >= 500, error }
+}
+
+// До 3 попыток (1 обычная + до 2 повторов), пауза короткая-потом-длиннее
+// между ними. Повторяем ТОЛЬКО сетевую ошибку или 5xx — на 4xx бросаем сразу.
+const FINISH_EXPLORE_RETRY_DELAYS_MS = [300, 1200]
+
+export async function finishRunExplore(
+  token: string,
+  closedEvents: number[],
+  died: boolean,
+  smugglerOutcome?: 'gain' | 'steal',
+): Promise<FinishExploreResult> {
+  const body = JSON.stringify({ closedEvents, died, smugglerOutcome })
+  let attempt = 0
+  while (true) {
+    const result = await attemptFinishExplore(token, body)
+    if (result.ok) return result.data
+    if (!result.retry || attempt >= FINISH_EXPLORE_RETRY_DELAYS_MS.length) throw result.error
+    await sleep(FINISH_EXPLORE_RETRY_DELAYS_MS[attempt])
+    attempt++
+  }
+}
 export type RoomResult = {
   roomType: string
   goldGained: number

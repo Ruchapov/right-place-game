@@ -42,7 +42,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore } from './api'
+import { startRunExplore, finishRunExplore } from './api'
 
 type ExploreProps = {
   onClose?: () => void
@@ -227,10 +227,51 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   const eventsRef = useRef<MapEvent[]>([])
   const runCompleteFiredRef = useRef(false)
   const onRunCompleteRef = useRef<(closedEvents: { kind: EventKind }[]) => void>(() => {})
+  // /run/finish-explore уходит РОВНО ОДИН раз за забег — есть 3 триггера
+  // (смерть, выход через шестерёнку, все 3 события закрыты, см.
+  // sendFinishExplore ниже), но сработавший первым выставляет этот флаг, и
+  // остальные становятся no-op, даже если сработали подряд (напр. закрылось
+  // 3-е событие и следом игрок сразу нажал выход).
+  const finishExploreSentRef = useRef(false)
+  // Исход обмена у Контрабандиста в ЭТОМ забеге (gain/steal) — нужен для
+  // /run/finish-explore. "Уйти" его не выставляет вообще: без обмена нет
+  // исхода, а sendFinishExplore и так шлёт исход только если событие
+  // smuggler реально закрыто (см. ниже).
+  const smugglerOutcomeRef = useRef<'gain' | 'steal' | null>(null)
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
   const [eventKinds, setEventKinds] = useState<EventKind[]>([])
+
+  // Единая точка вызова /run/finish-explore — из трёх мест (смерть, выход
+  // через шестерёнку, все 3 события закрыты, см. вызовы ниже/в JSX).
+  // Fire-and-forget: НЕ блокирует выход/переход к результатам — вызывающий
+  // код не ждёт ответа. Ошибка отправки только логируется — забег уже
+  // кончился, показывать экран ошибки из-за нее нечего и незачем.
+  function sendFinishExplore(died: boolean) {
+    if (finishExploreSentRef.current) return
+    finishExploreSentRef.current = true
+    // Вне Telegram (DevTester) token не задан — как и /run/start-explore,
+    // ничего не отправляем вообще.
+    if (!token) return
+
+    const closedEvents: number[] = []
+    let smugglerClosed = false
+    eventsRef.current.forEach((ev, i) => {
+      if (!ev.closed) return
+      closedEvents.push(i)
+      if (ev.kind === 'smuggler') smugglerClosed = true
+    })
+    const smugglerOutcome = smugglerClosed ? (smugglerOutcomeRef.current ?? undefined) : undefined
+
+    finishRunExplore(token, closedEvents, died, smugglerOutcome)
+      .then((result) => {
+        console.log('Explore: /run/finish-explore ответ сервера', result)
+      })
+      .catch((err) => {
+        console.error('Explore: /run/finish-explore не удалось отправить', err)
+      })
+  }
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * C.HP_PER_ENDURANCE : C.FALLBACK_MAX_HP
@@ -992,6 +1033,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       enemiesRef.current = [] // сброс на случай повторного запуска setup()
       chestsRef.current = [] // сброс на случай повторного запуска setup()
       smugglersRef.current = [] // сброс на случай повторного запуска setup()
+      finishExploreSentRef.current = false // сброс на случай повторного запуска setup()
+      smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
       // обелиск создаётся НИЖЕ, внутри map-цикла событий, только если kind
@@ -1340,9 +1383,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         if (Math.random() < C.SMUGGLER_STEAL_CHANCE) {
           const after = Math.round(before * C.SMUGGLER_STEAL_FRAC)
           spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: before - after, negative: true }])
+          smugglerOutcomeRef.current = 'steal'
         } else {
           const after = Math.round(before * C.SMUGGLER_MULT)
           spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: after - before }])
+          smugglerOutcomeRef.current = 'gain'
         }
         closeEvent(activeSmuggler.eventIndex)
       })
@@ -1500,6 +1545,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         })
         if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
           runCompleteFiredRef.current = true
+          sendFinishExplore(false)
           onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
         }
       }
@@ -2309,6 +2355,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             deathHoldRef.current += ticker.deltaMS
             if (deathHoldRef.current >= C.DEATH_HOLD_MS && !deathAbandonFiredRef.current) {
               deathAbandonFiredRef.current = true
+              sendFinishExplore(true)
               onClose?.()
             }
           }
@@ -2473,6 +2520,22 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     // незачем. SettingsPanel тоже не нужен: выход есть прямо на этой рамке.
     return (
       <StoneFrameScreen title="ЗАБЕГ ПРЕРВАН" lines={['Не удалось загрузить забег.', 'Проверьте соединение.']}>
+        {/* TEMP: показ технической ошибки, убрать после отладки. На телефоне
+            нет консоли — это единственный способ увидеть код статуса и тело
+            ответа /run/start-explore прямо на экране. */}
+        {setupError && (
+          <div
+            style={{
+              fontSize: 'clamp(9px, 2.6vw, 11px)',
+              color: Theme.textDim,
+              lineHeight: 1.3,
+              whiteSpace: 'normal',
+              wordBreak: 'break-word',
+            }}
+          >
+            {setupError}
+          </div>
+        )}
         <button
           onClick={() => onClose?.()}
           style={{
@@ -2594,7 +2657,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         eventKinds={eventKinds}
       />
 
-      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={onClose} />
+      {/* Выход через шестерёнку = смерть по решению разработчика (трофеи
+          сгорают) — sendFinishExplore(true) ПЕРЕД самим onClose, тот же
+          приём, что и в ветке смерти выше. Дедуп (finishExploreSentRef)
+          общий на все 3 триггера — если забег уже закрылся по другому
+          пути, здесь просто no-op. */}
+      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={() => { sendFinishExplore(true); onClose?.() }} />
 
           <TouchControls
             dirRef={dirRef}
