@@ -44,6 +44,12 @@ export const TROPHY_MULT_BOSS = 4 // constants.ts:460
 export const TROPHY_BASE = 12.5 // constants.ts:452
 export const TROPHY_LEVEL_POWER = 0.446 // constants.ts:453
 export const TROPHY_SPREAD = 0.4 // constants.ts:454, разброс +-20%
+// Контрабандист (POST /run/finish-explore) — множитель применяется к ИТОГОВОЙ
+// сумме трофеев за забег, не к отдельному событию (см. run.ts). SMUGGLER_STEAL_CHANCE
+// сюда не перенесена — клиент уже прислал готовый исход (smugglerOutcome), сервер
+// сам бросок не разыгрывает.
+export const SMUGGLER_MULT = 1.5 // constants.ts:429
+export const SMUGGLER_STEAL_FRAC = 0.5 // constants.ts:431
 
 // --- Типы ---
 

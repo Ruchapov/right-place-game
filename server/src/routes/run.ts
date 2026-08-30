@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, generateRooms, applyStatProgress, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
-import { rollRunEvents, KNOWN_MAP_FILES, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, KNOWN_MAP_FILES, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -102,6 +102,11 @@ type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; 
 type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number }
 // Body shape for POST /run/start-explore.
 type StartExploreBody = { mapFile: string }
+// Body shape for POST /run/finish-explore. closedEvents — indices into the
+// ActiveExploreRun.events array (see FinishExplore route below for how
+// they're validated). smugglerOutcome is only meaningful if a 'smuggler'
+// event is among closedEvents; ignored otherwise.
+type FinishExploreBody = { closedEvents: number[]; died: boolean; smugglerOutcome?: 'gain' | 'steal' }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
 // Body shape for POST /run/smuggler-result.
@@ -226,6 +231,70 @@ export async function runRoutes(server: FastifyInstance) {
       level: character.level,
       potions,
       armor: totalArmor,
+    })
+  })
+
+  // Finish a map-based Explore run: award trophies for the events the client
+  // closed (amounts come ONLY from the server's own currentRun.events, never
+  // from the request body), apply the Contrabandist multiplier if rolled,
+  // zero trophies on death, close currentRun.
+  server.post<{ Body: FinishExploreBody }>('/run/finish-explore', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Distinguish from the old 3-room ActiveRun shape (no `mode` field) —
+    // this endpoint only ever makes sense for a currentRun that /run/start-explore
+    // itself created. A run in the old shape is a different flow entirely,
+    // not something to coerce/repair here.
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+
+    const died = request.body.died === true
+    // Indices only, deduped, in range — garbage from the client (out-of-range,
+    // negative, repeated, non-integer) is silently dropped rather than
+    // corrupting the sum or throwing.
+    const rawClosedEvents = Array.isArray(request.body.closedEvents) ? request.body.closedEvents : []
+    const closedEvents = [...new Set(
+      rawClosedEvents.filter((i) => Number.isInteger(i) && i >= 0 && i < run.events.length)
+    )]
+
+    const trophySum = closedEvents.reduce((sum, i) => sum + run.events[i].trophyReward, 0)
+
+    // Multiplier applies to the TOTAL for the run, after summing every closed
+    // event — not to the smuggler event's own (always-0) trophyReward. Order
+    // in which events were closed isn't tracked server-side, so this is a
+    // deliberate simplification (confirmed — not a bug): if the smuggler was
+    // the ONLY closed event, trophySum is 0 and the multiplier correctly
+    // yields 0 either way.
+    const smugglerClosed = closedEvents.some((i) => run.events[i].kind === 'smuggler')
+    const smugglerOutcome = request.body.smugglerOutcome
+    let trophyTotal = trophySum
+    if (smugglerClosed && smugglerOutcome === 'gain') {
+      trophyTotal = trophySum * SMUGGLER_MULT
+    } else if (smugglerClosed && smugglerOutcome === 'steal') {
+      trophyTotal = trophySum * (1 - SMUGGLER_STEAL_FRAC)
+    }
+    const earned = Math.round(trophyTotal)
+
+    const newTrophies = character.trophies + earned
+
+    await prisma.character.update({
+      where: { userId },
+      data: {
+        trophies: died ? 0 : newTrophies,
+        currentRun: Prisma.DbNull,
+      },
+    })
+
+    return reply.send({
+      earned,
+      trophies: died ? 0 : newTrophies,
+      died,
     })
   })
 
