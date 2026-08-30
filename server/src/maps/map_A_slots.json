@@ -148,5 +148,152 @@
     "smuggler": null,
     "puzzle": null
   },
-  "boss": null
+  "boss": null,
+  "decor": [
+    {
+      "x": 5,
+      "y": 6,
+      "type": "torch"
+    },
+    {
+      "x": 10,
+      "y": 6,
+      "type": "pillar"
+    },
+    {
+      "x": 15,
+      "y": 9,
+      "type": "chain"
+    },
+    {
+      "x": 19,
+      "y": 9,
+      "type": "banner"
+    },
+    {
+      "x": 24,
+      "y": 6,
+      "type": "barrel"
+    },
+    {
+      "x": 25,
+      "y": 6,
+      "type": "rubble"
+    },
+    {
+      "x": 28,
+      "y": 7,
+      "type": "torch"
+    },
+    {
+      "x": 35,
+      "y": 6,
+      "type": "pillar"
+    },
+    {
+      "x": 41,
+      "y": 9,
+      "type": "chain"
+    },
+    {
+      "x": 45,
+      "y": 6,
+      "type": "barrel"
+    },
+    {
+      "x": 3,
+      "y": 13,
+      "type": "rubble"
+    },
+    {
+      "x": 4,
+      "y": 13,
+      "type": "bones"
+    },
+    {
+      "x": 11,
+      "y": 16,
+      "type": "chain"
+    },
+    {
+      "x": 17,
+      "y": 13,
+      "type": "barrel"
+    },
+    {
+      "x": 22,
+      "y": 14,
+      "type": "torch"
+    },
+    {
+      "x": 26,
+      "y": 13,
+      "type": "pillar"
+    },
+    {
+      "x": 31,
+      "y": 16,
+      "type": "banner"
+    },
+    {
+      "x": 38,
+      "y": 13,
+      "type": "bones"
+    },
+    {
+      "x": 39,
+      "y": 13,
+      "type": "grass"
+    },
+    {
+      "x": 42,
+      "y": 14,
+      "type": "torch"
+    },
+    {
+      "x": 2,
+      "y": 20,
+      "type": "rubble"
+    },
+    {
+      "x": 3,
+      "y": 20,
+      "type": "bones"
+    },
+    {
+      "x": 9,
+      "y": 20,
+      "type": "grass"
+    },
+    {
+      "x": 17,
+      "y": 20,
+      "type": "barrel"
+    },
+    {
+      "x": 18,
+      "y": 20,
+      "type": "rubble"
+    },
+    {
+      "x": 28,
+      "y": 20,
+      "type": "pillar"
+    },
+    {
+      "x": 35,
+      "y": 20,
+      "type": "bones"
+    },
+    {
+      "x": 36,
+      "y": 20,
+      "type": "rubble"
+    },
+    {
+      "x": 44,
+      "y": 20,
+      "type": "grass"
+    }
+  ]
 }
