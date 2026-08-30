@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
 import { renderMapToCanvas, backdropPaths } from './mapRenderer'
 import * as C from './explore/constants'
@@ -60,9 +60,11 @@ type ExploreProps = {
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
 
-// Каменная рамка экрана ошибки (setupError, см. ниже) — тот же способ пути
-// (BASE_URL), что у HP_FRAME_SRC/SETTINGS_FRAME_SRC в explore/constants.ts,
-// иначе сломается на GitHub Pages (репозиторий не в корне домена).
+// Каменная рамка — общая для экрана ошибки (setupError) И экрана ожидания
+// (!ready, см. StoneFrameScreen/оба места использования ниже). Путь строится
+// тем же способом (BASE_URL), что у HP_FRAME_SRC/SETTINGS_FRAME_SRC в
+// explore/constants.ts, иначе сломается на GitHub Pages (репозиторий не в
+// корне домена).
 const ERROR_FRAME_SRC = `${import.meta.env.BASE_URL}assets/error_frame.png`
 // Реальный аспект файла (612×446), НЕ через CSS aspect-ratio — та же причина,
 // что у HP-плиты (ломает %-позиционирование абсолютных детей в некоторых
@@ -76,6 +78,98 @@ const ERROR_FIELD_Y = 0.195
 const ERROR_FIELD_W = 0.709
 const ERROR_FIELD_H = 0.605
 
+// Общая обёртка каменной рамки для экрана ошибки и экрана ожидания — чтобы
+// разметка (путь к картинке, доли внутреннего поля, шрифты) не дублировалась
+// в двух местах. pulse — мягкая пульсация opacity заголовка/текста (нужна
+// только экрану ожидания, чтобы не выглядел замершим); children — контент
+// ПОД текстом (кнопка "В меню" на экране ошибки, экран ожидания её не даёт).
+function StoneFrameScreen({ title, lines, pulse, children }: { title: string; lines: string[]; pulse?: boolean; children?: ReactNode }) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 1000,
+        background: Theme.appBg,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {pulse && (
+        // Только opacity, layout не трогает — тот же приём (глобальный
+        // <style> с @keyframes), что и eventRingPulse/obeliskTimerPulse
+        // в основном JSX ниже. Локальный, не общий тег — этот компонент
+        // может отрендериться ДО того, как основной return со своим
+        // <style> вообще существует (экран ошибки/ожидания — ранний return).
+        <style>{`
+          @keyframes exploreFramePulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.55; }
+          }
+        `}</style>
+      )}
+      <div
+        style={{
+          position: 'relative',
+          width: ERROR_FRAME_W,
+          height: ERROR_FRAME_H,
+        }}
+      >
+        <img
+          src={ERROR_FRAME_SRC}
+          alt=""
+          draggable={false}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+        />
+        {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
+            иначе текст/кнопка вылезают на камень. Шрифты — clamp(...vw...),
+            не фиксированные px, чтобы масштабировались вместе с рамкой
+            (та же зависимость от vw, что и сама ERROR_FRAME_W). */}
+        <div
+          style={{
+            position: 'absolute',
+            left: `${ERROR_FIELD_X * 100}%`,
+            top: `${ERROR_FIELD_Y * 100}%`,
+            width: `${ERROR_FIELD_W * 100}%`,
+            height: `${ERROR_FIELD_H * 100}%`,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 'clamp(6px, 2.5vw, 14px)',
+            textAlign: 'center',
+            animation: pulse ? 'exploreFramePulse 2s ease-in-out infinite' : undefined,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: C.FONT_DISPLAY,
+              fontSize: 'clamp(13px, 4.4vw, 19px)',
+              fontWeight: 700,
+              color: Theme.textMain,
+              lineHeight: 1.15,
+            }}
+          >
+            {title}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(3px, 1.2vw, 6px)' }}>
+            {lines.map((line, i) => (
+              <div key={i} style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
+                {line}
+              </div>
+            ))}
+          </div>
+          {children}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
   // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
@@ -87,6 +181,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // ассет и т.п.), .catch() на её вызове (см. ниже) кладёт ошибку сюда,
   // и вместо игры рендерится экран ошибки (см. return ниже).
   const [setupError, setSetupError] = useState<string | null>(null)
+  // Забег готов, когда setup() дошла до регистрации тикера (см. конец
+  // setup() ниже) — до этого момента показываем экран ожидания вместо
+  // HudPlate/SettingsPanel/TouchControls (см. return ниже).
+  const [ready, setReady] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
@@ -2296,6 +2394,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
         updateCamera(dt)
       })
+
+      // Тикер зарегистрирован — игра реально может идти. cancelled здесь
+      // не может стать true асинхронно (после loadExploreAssets выше это
+      // единственный оставшийся await-поинт... его и вовсе нет — до конца
+      // функции всё синхронно), но проверяем для консистентности с
+      // остальными cancelled-гейтами этой функции.
+      if (!cancelled) {
+        setReady(true)
+      }
     }
 
     setup().catch((err) => {
@@ -2343,90 +2450,24 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     // Игры нет — HudPlate/TouchControls/канвас-контейнер рендерить нечего и
     // незачем. SettingsPanel тоже не нужен: выход есть прямо на этой рамке.
     return (
-      <div
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          zIndex: 1000,
-          background: Theme.appBg,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <div
+      <StoneFrameScreen title="ЗАБЕГ ПРЕРВАН" lines={['Не удалось загрузить забег.', 'Проверьте соединение.']}>
+        <button
+          onClick={() => onClose?.()}
           style={{
-            position: 'relative',
-            width: ERROR_FRAME_W,
-            height: ERROR_FRAME_H,
+            padding: '10px 22px',
+            borderRadius: 10,
+            border: `2px solid ${Theme.glowEdge}`,
+            background: Theme.nicheDeep,
+            color: Theme.glowCore,
+            fontSize: 'clamp(12px, 3.8vw, 14px)',
+            fontWeight: 700,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
           }}
         >
-          <img
-            src={ERROR_FRAME_SRC}
-            alt=""
-            draggable={false}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-          />
-          {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
-              иначе текст/кнопка вылезают на камень. Шрифты — clamp(...vw...),
-              не фиксированные px, чтобы масштабировались вместе с рамкой
-              (та же зависимость от vw, что и сама ERROR_FRAME_W). */}
-          <div
-            style={{
-              position: 'absolute',
-              left: `${ERROR_FIELD_X * 100}%`,
-              top: `${ERROR_FIELD_Y * 100}%`,
-              width: `${ERROR_FIELD_W * 100}%`,
-              height: `${ERROR_FIELD_H * 100}%`,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 'clamp(6px, 2.5vw, 14px)',
-              textAlign: 'center',
-            }}
-          >
-            <div
-              style={{
-                fontFamily: C.FONT_DISPLAY,
-                fontSize: 'clamp(13px, 4.4vw, 19px)',
-                fontWeight: 700,
-                color: Theme.textMain,
-                lineHeight: 1.15,
-              }}
-            >
-              ЗАБЕГ ПРЕРВАН
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(3px, 1.2vw, 6px)' }}>
-              <div style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
-                Не удалось загрузить забег.
-              </div>
-              <div style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
-                Проверьте соединение.
-              </div>
-            </div>
-            <button
-              onClick={() => onClose?.()}
-              style={{
-                padding: '10px 22px',
-                borderRadius: 10,
-                border: `2px solid ${Theme.glowEdge}`,
-                background: Theme.nicheDeep,
-                color: Theme.glowCore,
-                fontSize: 'clamp(12px, 3.8vw, 14px)',
-                fontWeight: 700,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              В меню
-            </button>
-          </div>
-        </div>
-      </div>
+          В меню
+        </button>
+      </StoneFrameScreen>
     )
   }
 
@@ -2443,26 +2484,37 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         overflow: 'hidden',
       }}
     >
+      {/* Контейнер канваса — ВСЕГДА в дереве, вне гейта ready. setup()
+          вставляет app.canvas сюда (containerRef.current.appendChild) на
+          середине своей работы, задолго до setReady(true) в конце — если
+          рендерить этот div только при ready, вставка упадёт (containerRef
+          ещё null). Пока !ready, канвас физически существует и рисуется,
+          но полностью скрыт непрозрачным экраном ожидания поверх (см.
+          ниже) — игрок его не видит, что и требовалось по смыслу задачи. */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Keyframes для пульсации кольца "событие завершено" (см. гнёзда
-          иконок ниже) — только opacity тени, layout не трогает. Инлайн-стили
-          React не поддерживают @keyframes, поэтому один глобальный <style>. */}
-      <style>{`
-        @keyframes eventRingPulse {
-          0%, 100% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.6), 0 0 16px 4px rgba(232,178,58,0.3); }
-          50% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.9), 0 0 16px 4px rgba(232,178,58,0.5); }
-        }
-        @keyframes obeliskTimerPulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.55; }
-        }
-      `}</style>
+      {!ready && <StoneFrameScreen title="ПОДГОТОВКА" lines={['Забег готовится...']} pulse />}
 
-      {/* HUD события обелисков (карта F, см. задачу) — таймер + счётчик
-          сбитых, fixed сверху по центру, safe-area aware, только пока
-          событие активно. pointerEvents: none — не перехватывает тапы. */}
-      {obeliskHud?.active && (
+      {ready && (
+        <>
+          {/* Keyframes для пульсации кольца "событие завершено" (см. гнёзда
+              иконок ниже) — только opacity тени, layout не трогает. Инлайн-стили
+              React не поддерживают @keyframes, поэтому один глобальный <style>. */}
+          <style>{`
+            @keyframes eventRingPulse {
+              0%, 100% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.6), 0 0 16px 4px rgba(232,178,58,0.3); }
+              50% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.9), 0 0 16px 4px rgba(232,178,58,0.5); }
+            }
+            @keyframes obeliskTimerPulse {
+              0%, 100% { opacity: 1; }
+              50% { opacity: 0.55; }
+            }
+          `}</style>
+
+          {/* HUD события обелисков (карта F, см. задачу) — таймер + счётчик
+              сбитых, fixed сверху по центру, safe-area aware, только пока
+              событие активно. pointerEvents: none — не перехватывает тапы. */}
+          {obeliskHud?.active && (
         <div
           style={{
             position: 'fixed',
@@ -2522,17 +2574,19 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
       <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={onClose} />
 
-      <TouchControls
-        dirRef={dirRef}
-        jumpPressedRef={jumpPressedRef}
-        attackPressedRef={attackPressedRef}
-        dodgePressedRef={dodgePressedRef}
-        drinkPressedRef={drinkPressedRef}
-        skill1PressedRef={skill1PressedRef}
-        skill2PressedRef={skill2PressedRef}
-        potionBtnRef={potionBtnRef}
-        updatePotionButton={updatePotionButton}
-      />
+          <TouchControls
+            dirRef={dirRef}
+            jumpPressedRef={jumpPressedRef}
+            attackPressedRef={attackPressedRef}
+            dodgePressedRef={dodgePressedRef}
+            drinkPressedRef={drinkPressedRef}
+            skill1PressedRef={skill1PressedRef}
+            skill2PressedRef={skill2PressedRef}
+            potionBtnRef={potionBtnRef}
+            updatePotionButton={updatePotionButton}
+          />
+        </>
+      )}
     </div>
   )
 }
