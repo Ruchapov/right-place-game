@@ -3,8 +3,6 @@
 // тройки в src/Explore.tsx. Источник данных — server/src/maps/*_slots.json
 // (см. AUDIT.md §7 — синхронизированы с public/assets/maps/ вручную, но это
 // не гарантия на будущее: файлы могут снова разойтись).
-//
-// Модуль пока НИКЕМ не вызывается — не подключён в run.ts/index.ts.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -16,6 +14,22 @@ import { fileURLToPath } from 'node:url'
 // см. заметку в конце файла).
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const MAPS_DIR = join(MODULE_DIR, 'maps')
+
+// Белый список карт, которые реально существуют на клиенте (EXPLORE_MAPS в
+// src/App.tsx + D_OPEN/D_SEALED, см. "D Тайник (50/50)" там же) — источник
+// правды для валидации mapFile из запроса клиента (сверка на ТОЧНОЕ
+// совпадение, не префикс/regex — см. POST /run/start-explore в run.ts).
+export const KNOWN_MAP_FILES = [
+  'map_A_serpentine.txt',
+  'map_B_razlom.txt',
+  'map_C_boss_descent.txt',
+  'map_D_OPEN.txt',
+  'map_D_SEALED.txt',
+  'map_E_towers.txt',
+  'map_F_sanctuary.txt',
+] as const
+
+export type MapFile = (typeof KNOWN_MAP_FILES)[number]
 
 // --- Константы, перенесённые с клиента (src/explore/constants.ts) ---
 // Значения — 1:1 с клиентом на момент переноса. Если на клиенте изменятся,

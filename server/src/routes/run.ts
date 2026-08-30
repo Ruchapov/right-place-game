@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, generateRooms, applyStatProgress, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
+import { rollRunEvents, KNOWN_MAP_FILES, type RunEvent } from '../runEvents.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -91,6 +92,16 @@ function applyStatGrowth(
 // generated for it — remembers WHICH puzzle was shown, so the answer can be
 // checked against the same question later (puzzles are picked randomly).
 type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; puzzleId?: string }
+// Shape of the active run stored in Character.currentRun for the new
+// map-based Explore flow (POST /run/start-explore) — separate from ActiveRun
+// (old 3-room Battle.tsx flow) so the two never get confused reading the
+// same Json field. `mode: 'explore'` is the tag that tells them apart.
+// `events` carries the FULL roll (trophyReward/isMimic included) — that part
+// never leaves the server; the client only ever gets the stripped-down
+// version built in /run/start-explore's response.
+type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number }
+// Body shape for POST /run/start-explore.
+type StartExploreBody = { mapFile: string }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
 // Body shape for POST /run/smuggler-result.
@@ -142,6 +153,80 @@ export async function runRoutes(server: FastifyInstance) {
     })
 
     return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions, armor: totalArmor })
+  })
+
+  // Start a map-based Explore run: spend energy, roll 3 events for the given
+  // map (server/src/runEvents.ts), save them as the active run. Separate
+  // endpoint from /run/start (old 3-room flow) — that one is untouched, this
+  // is a parallel path for the new Explore map flow.
+  server.post<{ Body: StartExploreBody }>('/run/start-explore', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Unlike /run/start, refuse to start over an existing run of EITHER
+    // shape (old ActiveRun or ActiveExploreRun) — starting fresh here would
+    // silently discard whatever is in progress, old flow has no such guard.
+    if (character.currentRun !== null) {
+      return reply.status(400).send({ error: 'A run is already in progress' })
+    }
+
+    // Exact match against the whitelist — not a prefix/regex check — so the
+    // client can't hand us an arbitrary filename to read off disk.
+    const { mapFile } = request.body
+    if (!(KNOWN_MAP_FILES as readonly string[]).includes(mapFile)) {
+      return reply.status(400).send({ error: 'Unknown mapFile' })
+    }
+
+    const currentEnergy = getCurrentEnergy(character.energy, character.lastEnergyUpdate)
+    if (currentEnergy < RUN_COST) {
+      return reply.status(400).send({ error: 'Not enough energy', energy: currentEnergy })
+    }
+
+    const newEnergy = currentEnergy - RUN_COST
+    const maxHp = character.endurance * 8
+    const potions = Math.min(character.potionCharges, 3)
+
+    const equippedItems = await prisma.inventoryItem.findMany({
+      where: { characterId: character.id, equipped: true },
+      include: { item: true },
+    })
+    const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
+
+    const events = rollRunEvents(mapFile, character.level)
+
+    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions }
+
+    await prisma.character.update({
+      where: { userId },
+      data: {
+        energy: newEnergy,
+        lastEnergyUpdate: new Date(),
+        currentRun: activeRun,
+      },
+    })
+
+    // Rewards (trophyReward/isMimic) stay server-side — the client learns
+    // them per-event, later, through a separate mechanism. Only kind/x/y
+    // (and clusterPoints, needed to spawn the whole enemy group) go out.
+    const clientEvents = events.map((ev) => ({
+      kind: ev.kind,
+      x: ev.x,
+      y: ev.y,
+      ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
+    }))
+
+    return reply.send({
+      energy: newEnergy,
+      mapFile,
+      events: clientEvents,
+      maxHp,
+      level: character.level,
+      potions,
+      armor: totalArmor,
+    })
   })
 
   // Enter the current room: process it, then advance the run.
