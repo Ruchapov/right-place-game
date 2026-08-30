@@ -897,26 +897,61 @@ rollGold(multiplier) =
 Разброс ±30% (шире, чем у трофеев). Не реализована как функция в коде —
 просто зафиксированные числа, чтобы не терять подбор.
 
-## Скиллы (Explore) — каркас готов, реализации ещё нет
+## Модули сущностей (Explore) — контракт
 
 **Правило на будущее**: новые боевые механики Explore НЕ пишутся в
-`Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`
-(по образцу `skills.ts` ниже).
+`Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`.
+Готовы три: `skills.ts`, `enemy.ts`, `boss.ts`.
 
-Первый такой модуль — `src/explore/entities/skills.ts`:
+### Контракт
+
+```
+createXSystem(deps) → { spawn, update(dt, deltaMS), dispose }
+```
+
+- `dt` = `ticker.deltaTime` — кадро-масштабированный, для ДВИЖЕНИЯ (та же
+  единица, что у `phys` игрока: `x += vx * dt`).
+- `deltaMS` = `ticker.deltaMS` — реальные миллисекунды, для ВСЕХ таймеров
+  (кулдауны, hurt/windup, deathHold и т.п.).
+- Владение рефами (`enemiesRef`/`bossRef`/`bossSpikesRef`/`bossWavesRef` и
+  т.п.) остаётся в `Explore.tsx` — модуль получает их ДЕПОМ, не создаёт
+  свои копии. Так `applyAttackHit()` (осталась в `Explore.tsx`, её никто из
+  переносов не трогал) продолжает читать/писать те же объекты `Enemy`/
+  `Boss`, что и модуль в следующем кадре — без дополнительной проводки.
+- Чистые функции из `collision.ts`/`utils.ts`/`rewards.ts` (`isSolid`,
+  `sweepFootBlock`, `cellFootBlockTop`, `isPlatformBandBlocking`, `clamp`,
+  `rollTrophies`) — модуль импортирует их НАПРЯМУЮ, не депом. Депом
+  передаются только closure-функции `setup()` в `Explore.tsx`, которые
+  нельзя импортировать (`getPlayerCombatBox`, `pushPlayerOutX`,
+  `spawnRewardFloat`, `closeEvent`, `playBossAnim`, `applyBossLayout` и т.п.).
+- `takeDamage` передаётся ОБЁРТКОЙ `(amount) => takeDamageRef.current(amount)`,
+  не самой функцией `takeDamage` — deps собираются один раз при создании
+  системы в `setup()`, а `takeDamageRef` синхронизируется отдельным
+  `useEffect`'ом на каждый рендер именно затем, чтобы тикер всегда звал
+  АКТУАЛЬНУЮ версию функции.
+- Ничто внутри `src/explore/` не импортирует из `Explore.tsx` — только в
+  обратную сторону. Единственное исключение раньше было временным
+  (`PlayerPhysics`/`Enemy`/`Boss`/`EventKind` реэкспортировались из
+  `Explore.tsx`, пока типы не переехали в `types.ts`) — сейчас его больше
+  нет, все типы приходят из `explore/types.ts`.
+
+`skills.ts` — самый старый модуль, контракт у него ЧАСТИЧНО старый:
+`update(dt)` одним параметром (dt в мс, без движения — скиллам оно пока не
+нужно), `spawn()` нет вообще (скиллы пока ничего не спавнят). Это не баг,
+просто модуль писался ДО того, как контракт с двумя параметрами
+устоялся на `enemy.ts`/`boss.ts` — приводить его к общему виду не
+требовалось, раз внутри `update()` пока только гасит `skill1Pressed`/
+`skill2Pressed` (см. "entities/skills.ts" ниже).
+
+### `entities/skills.ts` — каркас готов, реализации ещё нет
+
 `createSkillsSystem(deps) → { update(dt), dispose() }`, создаётся ОДИН раз в
 `setup()` (после того как определены `worldContainer`/`grid`/
-`getPlayerCombatBox`), состояние будущих снарядов/кулдаунов будет жить
-ВНУТРИ модуля, наружу в `Explore.tsx` не течёт. `update(dt)` — dt в
-МИЛЛИСЕКУНДАХ (`ticker.deltaMS`, тот же выбор единиц, что у
-`bossSpikesRef`/`bossWavesRef`/`rewardFloatsRef`), вызывается из тикера
-рядом с блоком атаки/dodge; `dispose()` — при cleanup эффекта.
-
-Кнопки ⚡/🔥 (`TouchControls`) и клавиши `Digit1`/`Digit2` уже подключены и
-пишут `true` в `skill1PressedRef`/`skill2PressedRef` — тем же приёмом, что
+`getPlayerCombatBox`). Кнопки ⚡/🔥 (`TouchControls`) и клавиши
+`Digit1`/`Digit2` уже подключены и пишут `true` в
+`skill1PressedRef`/`skill2PressedRef` — тем же приёмом, что
 `attackPressedRef`/`dodgePressedRef`. Сам `update()` внутри модуля пока
-только гасит эти флаги обратно в `false` (чтобы не залипали) — логики
-скиллов внутри ещё нет.
+только гасит эти флаги обратно в `false` — логики скиллов внутри ещё нет.
 
 `equipped: [SkillId | null, SkillId | null]` в `SkillsDeps` — ЗАГЛУШКА
 `[null, null]`. Explore не получает `equippedSkills` пропом (в отличие от
@@ -932,13 +967,70 @@ rollGold(multiplier) =
 нет. Поэтому поле `textures` в `SkillsDeps` НАМЕРЕННО не заведено — перед
 реализацией скиллов нужно сначала посчитать кадры по каждому файлу глазами.
 
+### `entities/enemy.ts` и `entities/boss.ts` — AI обычного врага и босса, ГОТОВО
+
+Оба вынесены из `Explore.tsx` дословно (та же логика/пороги/тайминги/
+порядок проверок, только точки доступа заменены на `deps.*`).
+`enemy.ts`: `createEnemySystem(deps) → { spawn, update(dt, deltaMS), dispose }`
+— `spawn(tileX, tileY, eventIndex, trophyReward)` пушит нового врага сразу в
+`deps.enemies.current` (сам `enemiesRef` остаётся в `Explore.tsx`).
+`boss.ts`: `createBossSystem(deps) → { spawn, update(dt, deltaMS), dispose }`
+— ОДИН модуль на AI+шипы+волны (не три отдельных — снаряды рождаются AI и
+почти полностью пересекаются с ним по deps, разносить по файлам разбирали и
+отклонили). `redrawEnemyHpBar`/`redrawBossHpBar` — экспортированы из своих
+модулей и импортированы обратно в `Explore.tsx`, т.к. их вызывает
+`applyAttackHit()`, которую переносы НЕ трогали ни на строку. А вот
+`playBossAnim`/`applyBossLayout` в `boss.ts` НЕ переехали — они читают
+`bossRef`/кадры босса через closure `setup()`, и `applyAttackHit()` держит
+прямые вызовы к ним по имени; перенести их "по-честному" означало бы
+поменять сигнатуру и здесь же переписать `applyAttackHit()` — вместо этого
+они переданы в `boss.ts` депом-функцией, как есть.
+
+⚠️ **КРИТИЧНО — порядок вызовов внутри тикера, менять нельзя**:
+```
+skills.update → enemySystem.update → bossSystem.update → события
+(сундук/зелье/смуглер/обелиск) → анимации героя (там же, на strike-кадре,
+вызывается applyAttackHit()) → камера
+```
+Внутри `bossSystem.update()` — тоже фиксированный порядок: **AI → шипы →
+волны**. Ranged/stomp-ветки AI порождают снаряд/волну В ЭТОМ ЖЕ кадре
+(`spawnBossSpike`/`spawnBossWave`) — блоки шипов/волн обязаны идти СРАЗУ
+ПОСЛЕ AI, чтобы новорождённый снаряд получил первый шаг физики/hit-теста
+сразу, а не на следующем кадре.
+
+⚠️ **`!` vs `?.` на вызовах systems — РАЗНОЕ и осознанное**:
+`update()`/`spawn()` внутри тикера/`setup()` вызываются через `!`
+(`enemySystem!.update(...)`, `bossSystem!.spawn(...)`) — там инвариант
+"система уже создана" держится железно (создание — раньше первого вызова в
+той же линейной `setup()`), и молчаливый пропуск через `?.` не нужен: если
+он всё же нарушится, `!` уронит явную ошибку вместо тихого "враги просто
+перестали двигаться". Но `dispose()` в CLEANUP эффекта — ЧЕРЕЗ `?.`
+(`skills?.dispose()`): `setup()` асинхронный, а cleanup может сработать
+РАНЬШЕ, чем системы созданы (React 19 StrictMode монтирует эффект дважды,
+второй cleanup срабатывает почти сразу) — там инвариант НЕ держится. `!` на
+`dispose()` уже один раз уронил белый экран (`Cannot read properties of
+null (reading 'dispose')`) — обратно на `?.`, не трогать снова.
+
+⚠️ **Особенность анти-стан-лока босса, перенесена как есть, не проверено,
+задумана ли**: первый слой защиты в `applyAttackHit()` проверяет
+`boss.attackAnimPlaying || boss.rangedAnimPlaying`, но НЕ включает
+`boss.stompAnimPlaying`. Если удар прилетает во время топота — код уходит в
+слой 2 и МОЖЕТ выставить `boss.hurtTimer`, но в приоритете анимаций
+`boss.ts` ветка топота стоит ВЫШЕ ветки `hurtTimer>0` — значит выставленный
+`hurtTimer` не тикает (декремент живёт внутри своей же ветки), пока топот не
+доиграет, и Hurt-анимация проигрывается только ПОСЛЕ конца топота. Не
+чинили при переносе — это существующее поведение до рефакторинга, вынесено
+без изменений.
+
 ## Explore / Platforming Engine (Phase 1 — ГОТОВО)
 
-Файл разбит (5407 → 3687 строк): появилась папка `src/explore/`:
+Файл разбит (5407 → 2414 строк): появилась папка `src/explore/`:
 - `constants.ts` — все физические/визуальные константы и пути к спрайтам
   в одном месте (TILE_SIZE, PLAYER_*, HERO_*_SRC, размеры клеток и т.п.)
-- `types.ts` — общие типы (`Grid`, `EventKind`, `EventCandidate`,
-  `BossAnimKind`, `RewardKind`)
+- `types.ts` — все общие типы: `Grid`, `EventKind`, `EventCandidate`,
+  `BossAnimKind`, `RewardKind`, а также перенесённые из `Explore.tsx`
+  `PlayerPhysics`, `Enemy`, `Chest`, `Smuggler`, `Obelisk`, `Boss`,
+  `ObeliskHud`, `RewardFloat`, `BossSpike`, `BossWave`, `MapEvent`
 - `collision.ts` — коллизия/физика по сетке (`isSolid`,
   `isPlatformBandBlocking`, `isOverlappingPlatformBand`, `isTouchingSpikes`,
   `cellHeadBlockBottom`/`cellFootBlockTop`, `sweepHeadBlock`/`sweepFootBlock`,
@@ -951,11 +1043,15 @@ rollGold(multiplier) =
 - `spriteLoader.ts` — нарезка спрайт-листа на кадры (`loadSheetFrames`)
 - `assets.ts` — последовательная загрузка всех спрайт-листов/иконок Explore
   (`loadExploreAssets`)
-- `entities/skills.ts` — см. "Скиллы (Explore)" выше
+- `entities/skills.ts`, `entities/enemy.ts`, `entities/boss.ts` — см.
+  "Модули сущностей (Explore) — контракт" выше
 - `ui/` — `HudPlate.tsx`, `SettingsPanel.tsx`, `TouchControls.tsx`
 
-`Explore.tsx` — 3687 строк, в нём остались `setup()`, тикер, создание
-спрайтов и состояние компонента.
+`Explore.tsx` — 2414 строк. В нём остались: физика игрока, анимации героя,
+`applyAttackHit()` (хит-тест удара игрока по врагу/боссу/сундуку/обелиску —
+единая функция на все цели, переносы её не трогали), события забега
+(сундук/зелье/смуглер/обелиск), сборка сцены (`setup()`: фон/карта/спрайты/
+загрузка ассетов), камера, состояние компонента (`useState`/`useRef`), JSX.
 
 Explore.tsx теперь содержит движок платформинга (игрок ходит/прыгает по карте),
 не только показ карты. Игрок пока красный прямоугольник 64×128 (2 тайла).
@@ -2377,6 +2473,14 @@ Leveling System"). Статы растут от действий: выносли
 ## Next Steps (приоритет)
 
 ### Открытые задачи (очередь, всплыли в Phase 2)
+- **[EXPLORE, мелкое]** `enemiesRef` НЕ очищается в cleanup эффекта
+  `Explore.tsx`, в отличие от `bossSpikesRef`/`bossWavesRef`/`rewardFloatsRef`
+  (те обнуляются там же явно). Список врагов обнуляется ТОЛЬКО перед фазой
+  спавна следующего забега (`enemiesRef.current = []` в `setup()`, до
+  `chosenEvents.map(...)`), не на unmount. Всплыло при выносе AI врага в
+  `entities/enemy.ts` — разобраться, нужна ли явная очистка на unmount, или
+  текущее поведение осознанно (Pixi-узлы всё равно уничтожаются деревом
+  `app.destroy(true, {children:true})`, реальной утечки может не быть).
 - **[БАГ, до релиза]** `setup()` в `Explore.tsx` вызывается без `.catch()`.
   Если любая загрузка ассетов упадёт (например, сеть моргнула на телефоне),
   инициализация обрывается молча: тикер не регистрируется, экран зависает,
