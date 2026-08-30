@@ -41,6 +41,7 @@ import { createSkillsSystem } from './explore/entities/skills'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
+import { C as Theme } from './ui/theme'
 
 type ExploreProps = {
   onClose?: () => void
@@ -59,6 +60,22 @@ type ExploreProps = {
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
 
+// Каменная рамка экрана ошибки (setupError, см. ниже) — тот же способ пути
+// (BASE_URL), что у HP_FRAME_SRC/SETTINGS_FRAME_SRC в explore/constants.ts,
+// иначе сломается на GitHub Pages (репозиторий не в корне домена).
+const ERROR_FRAME_SRC = `${import.meta.env.BASE_URL}assets/error_frame.png`
+// Реальный аспект файла (612×446), НЕ через CSS aspect-ratio — та же причина,
+// что у HP-плиты (ломает %-позиционирование абсолютных детей в некоторых
+// WebView): высота считается от вычисленной ширины через calc().
+const ERROR_FRAME_ASPECT = 446 / 612
+const ERROR_FRAME_W = 'clamp(280px, 92vw, 420px)'
+const ERROR_FRAME_H = `calc(${ERROR_FRAME_W} * ${ERROR_FRAME_ASPECT})`
+// Внутреннее поле рамки — доли от размера рамки, замерено по файлу.
+const ERROR_FIELD_X = 0.145
+const ERROR_FIELD_Y = 0.195
+const ERROR_FIELD_W = 0.709
+const ERROR_FIELD_H = 0.605
+
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
   // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
@@ -66,6 +83,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // в его массиве зависимостей). setup() читает актуальное значение через
   // обычное замыкание, как и раньше читал endurance/strength для maxHp.
   const [mapFile, setMapFile] = useState(mapFileProp ?? C.DEFAULT_MAP_FILE)
+  // setup() ничего не ловит сама — если она упадёт (сеть, отсутствующий
+  // ассет и т.п.), .catch() на её вызове (см. ниже) кладёт ошибку сюда,
+  // и вместо игры рендерится экран ошибки (см. return ниже).
+  const [setupError, setSetupError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const physicsRef = useRef<PlayerPhysics>({ x: 0, y: 0, vx: 0, vy: 0, onGround: false })
@@ -2277,7 +2298,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       })
     }
 
-    setup()
+    setup().catch((err) => {
+      console.error('Explore: setup() упала, забег не запущен', err)
+      // cancelled уже true, если это отработавший cleanup StrictMode-дубля
+      // (см. объявление выше) — в этом случае instance уже не тот, что
+      // остался на экране, ошибку ему показывать не нужно.
+      if (!cancelled) {
+        setSetupError(err instanceof Error ? err.message : String(err))
+      }
+    })
 
     return () => {
       cancelled = true
@@ -2309,6 +2338,97 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     // эффект целиком; существующий cleanup выше уже корректно уничтожает
     // app, отдельный механизм не нужен.
   }, [mapFile])
+
+  if (setupError) {
+    // Игры нет — HudPlate/TouchControls/канвас-контейнер рендерить нечего и
+    // незачем. SettingsPanel тоже не нужен: выход есть прямо на этой рамке.
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 1000,
+          background: Theme.appBg,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <div
+          style={{
+            position: 'relative',
+            width: ERROR_FRAME_W,
+            height: ERROR_FRAME_H,
+          }}
+        >
+          <img
+            src={ERROR_FRAME_SRC}
+            alt=""
+            draggable={false}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+          />
+          {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
+              иначе текст/кнопка вылезают на камень. Шрифты — clamp(...vw...),
+              не фиксированные px, чтобы масштабировались вместе с рамкой
+              (та же зависимость от vw, что и сама ERROR_FRAME_W). */}
+          <div
+            style={{
+              position: 'absolute',
+              left: `${ERROR_FIELD_X * 100}%`,
+              top: `${ERROR_FIELD_Y * 100}%`,
+              width: `${ERROR_FIELD_W * 100}%`,
+              height: `${ERROR_FIELD_H * 100}%`,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 'clamp(6px, 2.5vw, 14px)',
+              textAlign: 'center',
+            }}
+          >
+            <div
+              style={{
+                fontFamily: C.FONT_DISPLAY,
+                fontSize: 'clamp(13px, 4.4vw, 19px)',
+                fontWeight: 700,
+                color: Theme.textMain,
+                lineHeight: 1.15,
+              }}
+            >
+              ЗАБЕГ ПРЕРВАН
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(3px, 1.2vw, 6px)' }}>
+              <div style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
+                Не удалось загрузить забег.
+              </div>
+              <div style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
+                Проверьте соединение.
+              </div>
+            </div>
+            <button
+              onClick={() => onClose?.()}
+              style={{
+                padding: '10px 22px',
+                borderRadius: 10,
+                border: `2px solid ${Theme.glowEdge}`,
+                background: Theme.nicheDeep,
+                color: Theme.glowCore,
+                fontSize: 'clamp(12px, 3.8vw, 14px)',
+                fontWeight: 700,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              В меню
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
