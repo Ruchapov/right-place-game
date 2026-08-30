@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import type { Container } from 'pixi.js'
 import type { Grid } from '../types'
-import type { PlayerPhysics, Enemy, Boss } from '../../Explore'
+import type { PlayerPhysics, Enemy, Boss } from '../types'
 
 // Скиллы игрока (fireball/iceball/slash/dash) — модуль подключён к игровому
 // циклу ПУСТЫМ, до реализации самих скиллов (см. задачу). Арт уже лежит в

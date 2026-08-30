@@ -897,13 +897,65 @@ rollGold(multiplier) =
 Разброс ±30% (шире, чем у трофеев). Не реализована как функция в коде —
 просто зафиксированные числа, чтобы не терять подбор.
 
+## Скиллы (Explore) — каркас готов, реализации ещё нет
+
+**Правило на будущее**: новые боевые механики Explore НЕ пишутся в
+`Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`
+(по образцу `skills.ts` ниже).
+
+Первый такой модуль — `src/explore/entities/skills.ts`:
+`createSkillsSystem(deps) → { update(dt), dispose() }`, создаётся ОДИН раз в
+`setup()` (после того как определены `worldContainer`/`grid`/
+`getPlayerCombatBox`), состояние будущих снарядов/кулдаунов будет жить
+ВНУТРИ модуля, наружу в `Explore.tsx` не течёт. `update(dt)` — dt в
+МИЛЛИСЕКУНДАХ (`ticker.deltaMS`, тот же выбор единиц, что у
+`bossSpikesRef`/`bossWavesRef`/`rewardFloatsRef`), вызывается из тикера
+рядом с блоком атаки/dodge; `dispose()` — при cleanup эффекта.
+
+Кнопки ⚡/🔥 (`TouchControls`) и клавиши `Digit1`/`Digit2` уже подключены и
+пишут `true` в `skill1PressedRef`/`skill2PressedRef` — тем же приёмом, что
+`attackPressedRef`/`dodgePressedRef`. Сам `update()` внутри модуля пока
+только гасит эти флаги обратно в `false` (чтобы не залипали) — логики
+скиллов внутри ещё нет.
+
+`equipped: [SkillId | null, SkillId | null]` в `SkillsDeps` — ЗАГЛУШКА
+`[null, null]`. Explore не получает `equippedSkills` пропом (в отличие от
+`Battle.tsx`) — источник данных появится вместе с серверной интеграцией
+(см. Next Steps, [СЕРВЕР, Phase 2.5]).
+
+⚠️ **Открытый вопрос по арту**: набор на диске (`public/assets/skills/`) НЕ
+совпадает с тем, что описано в "Готовые ассеты — Скиллы (VFX)" выше
+(там — раздельные Projectile/Impact на скилл). По факту на диске один файл
+на скилл: `dash` 8200×128, `fireball` 5120×640, `iceball` 7680×640,
+`slash` 3968×496, `blood` 600×600, `blood_strip` 3000×100. Число кадров и
+колонок по одним заголовкам PNG не вывести, отдельных импактов на диске
+нет. Поэтому поле `textures` в `SkillsDeps` НАМЕРЕННО не заведено — перед
+реализацией скиллов нужно сначала посчитать кадры по каждому файлу глазами.
+
 ## Explore / Platforming Engine (Phase 1 — ГОТОВО)
 
-Файл разбит: появилась папка `src/explore/` с `constants`, `types`,
-`collision`, `mapEvents`, `utils`, `rewards`, `spriteLoader`, `assets` и
-`ui/` (`HudPlate`, `SettingsPanel`, `TouchControls`). `Explore.tsx` —
-3642 строки, в нём остались `setup()`, тикер, создание спрайтов и состояние
-компонента.
+Файл разбит (5407 → 3687 строк): появилась папка `src/explore/`:
+- `constants.ts` — все физические/визуальные константы и пути к спрайтам
+  в одном месте (TILE_SIZE, PLAYER_*, HERO_*_SRC, размеры клеток и т.п.)
+- `types.ts` — общие типы (`Grid`, `EventKind`, `EventCandidate`,
+  `BossAnimKind`, `RewardKind`)
+- `collision.ts` — коллизия/физика по сетке (`isSolid`,
+  `isPlatformBandBlocking`, `isOverlappingPlatformBand`, `isTouchingSpikes`,
+  `cellHeadBlockBottom`/`cellFootBlockTop`, `sweepHeadBlock`/`sweepFootBlock`,
+  `isOverlappingAtFrameStart`)
+- `mapEvents.ts` — выбор темы/слот-файла по карте (`backdropForMap`,
+  `slotsFileForMap`), парсинг точек (`isPointXY`), сборка пула кандидатов
+  "3 события за забег" (`buildEventCandidates`)
+- `utils.ts` — мелкие чистые хелперы (`pickRandom`, `clamp`)
+- `rewards.ts` — формула трофеев (`rollTrophies`)
+- `spriteLoader.ts` — нарезка спрайт-листа на кадры (`loadSheetFrames`)
+- `assets.ts` — последовательная загрузка всех спрайт-листов/иконок Explore
+  (`loadExploreAssets`)
+- `entities/skills.ts` — см. "Скиллы (Explore)" выше
+- `ui/` — `HudPlate.tsx`, `SettingsPanel.tsx`, `TouchControls.tsx`
+
+`Explore.tsx` — 3687 строк, в нём остались `setup()`, тикер, создание
+спрайтов и состояние компонента.
 
 Explore.tsx теперь содержит движок платформинга (игрок ходит/прыгает по карте),
 не только показ карты. Игрок пока красный прямоугольник 64×128 (2 тайла).

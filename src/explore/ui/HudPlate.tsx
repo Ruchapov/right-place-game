@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import * as C from '../constants'
-import type { EventKind } from '../../Explore'
+import type { EventKind } from '../types'
 
 interface HudPlateProps {
   hpFillRef: RefObject<HTMLDivElement | null>
