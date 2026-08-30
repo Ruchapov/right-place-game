@@ -26,3 +26,7 @@ dist-ssr
 
 # Reference files (not part of build)
 _ref/
+
+# Python cache
+__pycache__/
+*.pyc
