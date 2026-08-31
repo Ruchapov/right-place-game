@@ -1,8 +1,9 @@
 import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
 import { getCurrentEnergy } from '../game.js'
+import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
 
@@ -66,6 +67,43 @@ export async function authRoutes(server: FastifyInstance) {
     const char = user.character
     if (!char) return reply.status(500).send({ error: 'No character' })
 
+    // A map-based Explore run (mode: 'explore', see routes/run.ts) left open
+    // when the player closed the app is abandoned on the next login — there
+    // is no way to know what they were doing, so it's closed as a death,
+    // same treatment POST /run/finish-explore gives an explicit died:true.
+    // Trophies and currentRun are wiped in the SAME update (not two separate
+    // calls) — split them and a crash between the two would leave the run
+    // closed but the trophies intact, making closing the app strictly better
+    // than dying, which is exactly the outcome the design forbids (see
+    // CLAUDE.md: "закрыть приложение никогда не должно быть выгоднее, чем
+    // умереть в забеге"). A run in the OLD (3-room Battle.tsx) shape has no
+    // `mode` field at all — left completely untouched, it's a different flow.
+    const rawRun = char.currentRun as unknown
+    let interruptedRun: RunResultSummary | undefined
+
+    if (rawRun && typeof rawRun === 'object' && (rawRun as { mode?: unknown }).mode === 'explore') {
+      const run = rawRun as { events?: unknown[] }
+      const trophiesLost = char.trophies
+      const eventsTotal = Array.isArray(run.events) ? run.events.length : 0
+
+      await prisma.character.update({
+        where: { id: char.id },
+        data: { trophies: 0, currentRun: Prisma.DbNull },
+      })
+      char.trophies = 0
+
+      interruptedRun = {
+        interrupted: true,
+        died: true,
+        trophiesEarned: 0,
+        trophiesLost,
+        eventsClosed: 0, // сервер не знает прогресс брошенного забега — осознанно всегда 0
+        eventsTotal,
+        items: [],
+        bonuses: [],
+      }
+    }
+
     return reply.send({
       token,
       user: {
@@ -74,6 +112,7 @@ export async function authRoutes(server: FastifyInstance) {
         username: user.username,
       },
       character: { ...char, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate), equippedSkills: char.equippedSkills, potionCharges: char.potionCharges },
+      ...(interruptedRun ? { interruptedRun } : {}),
     })
   })
 }

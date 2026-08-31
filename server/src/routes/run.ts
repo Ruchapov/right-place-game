@@ -107,6 +107,24 @@ type StartExploreBody = { mapFile: string }
 // they're validated). smugglerOutcome is only meaningful if a 'smuggler'
 // event is among closedEvents; ignored otherwise.
 type FinishExploreBody = { closedEvents: number[]; died: boolean; smugglerOutcome?: 'gain' | 'steal' }
+// Shared "run result" shape — one results screen for both ways an Explore
+// run can end: the client explicitly finishing it (POST /run/finish-explore)
+// or the server finding a stale one still open on the NEXT login (POST
+// /auth/login, see auth.ts) and closing it as a death. `interrupted`
+// distinguishes the two (false = client-reported finish, true = server
+// found it abandoned). `items`/`bonuses` are always empty for now — the
+// item-drop and boss "choose a stat" systems don't exist yet; the shape is
+// here so those can slot in later without another response-shape change.
+export type RunResultSummary = {
+  interrupted: boolean
+  died: boolean
+  trophiesEarned: number
+  trophiesLost: number
+  eventsClosed: number
+  eventsTotal: number
+  items: never[]
+  bonuses: never[]
+}
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
 // Body shape for POST /run/smuggler-result.
@@ -282,6 +300,10 @@ export async function runRoutes(server: FastifyInstance) {
     const earned = Math.round(trophyTotal)
 
     const newTrophies = character.trophies + earned
+    // trophiesLost — the balance actually wiped by death (the character's
+    // PRE-update total, not just this run's earned amount): on a normal
+    // (non-death) finish nothing was lost, so 0.
+    const trophiesLost = died ? character.trophies : 0
 
     await prisma.character.update({
       where: { userId },
@@ -291,11 +313,17 @@ export async function runRoutes(server: FastifyInstance) {
       },
     })
 
-    return reply.send({
-      earned,
-      trophies: died ? 0 : newTrophies,
+    const result: RunResultSummary = {
+      interrupted: false,
       died,
-    })
+      trophiesEarned: earned,
+      trophiesLost,
+      eventsClosed: closedEvents.length,
+      eventsTotal: run.events.length,
+      items: [],
+      bonuses: [],
+    }
+    return reply.send(result)
   })
 
   // Enter the current room: process it, then advance the run.
