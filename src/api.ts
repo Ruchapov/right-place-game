@@ -15,6 +15,11 @@ export type LoginResponse = {
     equippedSkills: string[]
     potionCharges: number
   }
+  // Present only if the server found a stale map-based Explore run (mode:
+  // 'explore') still open from a previous session and closed it as a death
+  // — see server/src/routes/auth.ts. character.trophies above already
+  // reflects the wipe; this just carries the summary for the results screen.
+  interruptedRun?: RunResultSummary
 }
 
 export async function loginWithTelegram(initDataRaw: string): Promise<LoginResponse> {
@@ -77,14 +82,18 @@ export type StartExploreResult = {
   armor: number
 }
 
-export async function startRunExplore(token: string, mapFile: string): Promise<StartExploreResult> {
+// mapFile необязателен — не передан → сервер сам выбирает карту (см.
+// server/src/runEvents.ts, pickRunMapFile) и называет её в ответе
+// (StartExploreResult.mapFile); тело запроса в этом случае уходит БЕЗ поля
+// mapFile вовсе, а не с mapFile: undefined.
+export async function startRunExplore(token: string, mapFile?: string): Promise<StartExploreResult> {
   const response = await fetch(`${SERVER_URL}/run/start-explore`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ mapFile }),
+    body: JSON.stringify(mapFile !== undefined ? { mapFile } : {}),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -93,12 +102,23 @@ export async function startRunExplore(token: string, mapFile: string): Promise<S
   return await response.json() as StartExploreResult
 }
 
-// Response shape of POST /run/finish-explore (server/src/routes/run.ts).
-export type FinishExploreResult = {
-  earned: number
-  trophies: number
+// Shared "run result" shape — server/src/routes/run.ts's RunResultSummary,
+// 1:1. Returned by POST /run/finish-explore, and also shows up as
+// LoginResponse.interruptedRun (see below) when the server finds a stale
+// explore run still open on the next login and closes it as a death.
+export type RunResultSummary = {
+  interrupted: boolean
   died: boolean
+  trophiesEarned: number
+  trophiesLost: number
+  eventsClosed: number
+  eventsTotal: number
+  items: never[]
+  bonuses: never[]
 }
+
+// Response shape of POST /run/finish-explore (server/src/routes/run.ts).
+export type FinishExploreResult = RunResultSummary
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

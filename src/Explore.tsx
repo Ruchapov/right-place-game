@@ -42,7 +42,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore, type RunResultSummary } from './api'
+import { startRunExplore, finishRunExplore, type RunResultSummary, type StartExploreResult } from './api'
 
 type ExploreProps = {
   onClose?: () => void
@@ -52,8 +52,13 @@ type ExploreProps = {
   // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
   // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
   onRunComplete?: (closedEvents: { kind: EventKind }[]) => void
-  // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Не задан — DEFAULT_MAP_FILE
-  // (см. ниже), 1:1 прежнее поведение. App.tsx пока этот проп не передаёт.
+  // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Задан (debug-панель
+  // карт A-F в App.tsx) — карта известна заранее, 1:1 прежнее поведение. Не
+  // задан (обычная кнопка "Начать забег") — карту называет сервер: см.
+  // mapFile/setup() ниже, /run/start-explore зовётся БЕЗ mapFile, а сетка/
+  // слоты грузятся по имени из его ответа. Нет токена (вне Telegram) —
+  // сервер недоступен вообще, тогда C.DEFAULT_MAP_FILE, как и раньше в
+  // браузере без бэкенда.
   mapFile?: string
   // JWT — ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx: isTelegramSession,
   // не просто "есть что-то в localStorage"). Не задан → setup() не ходит на
@@ -431,12 +436,17 @@ function ResultsScreen({
 }
 
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token, trophies }: ExploreProps) {
-  // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
-  // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
-  // чтобы перезапустить эффект инициализации PixiJS на другой карте (mapFile
-  // в его массиве зависимостей). setup() читает актуальное значение через
+  // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
+  // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
+  // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
+  // mapFile ДО загрузки сетки, вместо после неё с уже известным именем).
+  // Без токена (вне Telegram) сервер всё равно недоступен — сразу
+  // C.DEFAULT_MAP_FILE, минуя сентинел, как и раньше в браузере без бэкенда.
+  // State (не const) — TEMP: map switcher (см. ниже) меняет её, чтобы
+  // перезапустить эффект инициализации PixiJS на другой карте (mapFile в
+  // его массиве зависимостей). setup() читает актуальное значение через
   // обычное замыкание, как и раньше читал endurance/strength для maxHp.
-  const [mapFile, setMapFile] = useState(mapFileProp ?? C.DEFAULT_MAP_FILE)
+  const [mapFile, setMapFile] = useState(mapFileProp ?? (token ? '' : C.DEFAULT_MAP_FILE))
   // setup() ничего не ловит сама — если она упадёт (сеть, отсутствующий
   // ассет и т.п.), .catch() на её вызове (см. ниже) кладёт ошибку сюда,
   // и вместо игры рендерится экран ошибки (см. return ниже).
@@ -907,28 +917,49 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       app = new Application()
       const base = import.meta.env.BASE_URL
 
+      // Сервер уже умеет разыгрывать тройку событий (POST /run/start-explore,
+      // см. src/api.ts) — вызывается здесь и/или ниже ТОЛЬКО чтобы проверить
+      // связь/увидеть реальный ответ (и, когда карта не выбрана заранее,
+      // узнать её имя). Результат пока НИКАК не используется дальше: тройка
+      // событий/уровень/maxHp по-прежнему считаются клиентом, как и раньше
+      // (следующий шаг — переключить на серверные данные). token приходит
+      // ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx, isTelegramSession —
+      // не просто "есть что-то в localStorage"). Не задан → запрос вообще не
+      // делаем, вне Telegram всё идёт как раньше. Ошибку НЕ глушим — она
+      // уходит в тот же .catch() на вызове setup() (см. конец файла), что
+      // показывает экран ошибки.
+      //
+      // mapFile==='' — сентинел "карта не выбрана, пусть решает сервер" (см.
+      // useState выше: только когда проп не передан И есть token) — тогда
+      // запрос уходит ДО загрузки сетки/слотов (иначе грузить нечего), а не
+      // после, как в обычном пути ниже. resolvedMapFile — то, что реально
+      // используется остальной setup(); React-состояние mapFile НЕ пишем
+      // (setMapFile сюда не зовём) — оно в зависимостях эффекта (см. конец
+      // файла), и запись в него перезапустила бы этот же эффект второй раз,
+      // а с ним и повторный /run/start-explore (вторая трата энергии, вторая
+      // попытка создать currentRun поверх уже существующего).
+      let resolvedMapFile = mapFile
+      let startExploreResult: StartExploreResult | null = null
+      if (mapFile === '') {
+        startExploreResult = await startRunExplore(token!) // token точно есть, см. useState выше
+        resolvedMapFile = startExploreResult.mapFile
+      }
+
       const [mapText, slots] = await Promise.all([
-        fetch(`${base}assets/maps/${mapFile}`).then((res) => res.text()),
-        fetch(`${base}assets/maps/${slotsFileForMap(mapFile)}`).then((res) => res.json()),
+        fetch(`${base}assets/maps/${resolvedMapFile}`).then((res) => res.text()),
+        fetch(`${base}assets/maps/${slotsFileForMap(resolvedMapFile)}`).then((res) => res.json()),
       ])
 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
 
-      // Сервер уже умеет разыгрывать тройку событий (POST /run/start-explore,
-      // см. src/api.ts) — вызываем его здесь ТОЛЬКО чтобы проверить связь и
-      // увидеть реальный ответ. Результат пока НИКАК не используется: тройка
-      // событий/уровень/maxHp ниже по-прежнему считаются клиентом, как и
-      // раньше (следующий шаг — переключить на серверные данные).
-      // token приходит ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx,
-      // isTelegramSession — не просто "есть что-то в localStorage"). Не
-      // задан → запрос вообще не делаем, вне Telegram всё идёт как раньше.
-      // Ошибку НЕ глушим — она уходит в тот же .catch() на вызове setup()
-      // (см. конец файла), что показывает экран ошибки. Осознанно: на
-      // следующем шаге забег без ответа сервера станет невозможен, и лучше
-      // увидеть проблему сейчас, а не притворяться, что всё в порядке.
-      if (token) {
-        const startExploreResult = await startRunExplore(token, mapFile)
+      // Карта была известна заранее (debug-панель/mapFile-проп) — запрос
+      // выше не делался (mapFile !== ''), делаем его теперь для уже
+      // известного имени — 1:1 прежнее поведение.
+      if (token && !startExploreResult) {
+        startExploreResult = await startRunExplore(token, resolvedMapFile)
+      }
+      if (startExploreResult) {
         console.log('Explore: /run/start-explore ответ сервера', startExploreResult)
       }
 
@@ -968,7 +999,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // события добираются обычным путём без него.
       const eventPool = buildEventCandidates(slots)
       let chosenEvents: EventCandidate[]
-      const smugglerIndex = mapFile.startsWith('map_D_OPEN')
+      const smugglerIndex = resolvedMapFile.startsWith('map_D_OPEN')
         ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
         : -1
       const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
@@ -1004,7 +1035,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       }
       const start = { x: startRaw[0], y: startRaw[1] }
 
-      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: C.TILE_SIZE, theme: backdropForMap(mapFile) })
+      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: C.TILE_SIZE, theme: backdropForMap(resolvedMapFile) })
 
       if (cancelled || !containerRef.current) {
         // Всё ещё ДО init() — по той же причине ничего не разрушаем.
@@ -1043,7 +1074,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
       // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
       // глубины. Пресет фиксирован по карте (см. BACKDROP_BY_MAP выше).
-      const preset = backdropForMap(mapFile)
+      const preset = backdropForMap(resolvedMapFile)
       const { far: farUrl, mid: midUrl } = backdropPaths(preset)
       const [farTexture, midTexture] = await Promise.all([
         Assets.load(farUrl) as Promise<Texture>,

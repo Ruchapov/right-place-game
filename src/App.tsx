@@ -159,7 +159,10 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
   const [equipping, setEquipping] = useState(false)
   const [showExploreTest, setShowExploreTest] = useState(false)
-  const [exploreMapFile, setExploreMapFile] = useState<string>('map_A_serpentine.txt')
+  // undefined — обычный запуск ("Начать забег"): Explore получает mapFile
+  // не заданным и просит карту у сервера сам. Debug-панель карт A-F (и
+  // кнопка "D Тайник (50/50)") ставят сюда конкретный файл явно.
+  const [exploreMapFile, setExploreMapFile] = useState<string | undefined>(undefined)
   // ВРЕМЕННО: отладочная подпись выпавшего состояния D (50/50 OPEN/SEALED,
   // см. кнопку ниже) — убрать вместе с самой тестовой панелью.
   const [dRolledState, setDRolledState] = useState<string | null>(null)
@@ -267,6 +270,12 @@ export default function App() {
       setRunError(e instanceof Error ? e.message : 'Run failed')
     } finally { setRunning(false) }
   }
+  // "Начать забег" больше не вызывает handleStartRun (переключено на Explore,
+  // см. кнопку ниже) — старый поток (Battle.tsx, комнаты, /run/start)
+  // остаётся в коде мёртвым до отдельного шага, ссылка ниже только чтобы TS
+  // (noUnusedLocals) не считал функцию мёртвым кодом (тот же приём, что у
+  // handleBuyPotion ниже).
+  void handleStartRun
 
   function showRoomIntro(index: number, currentRooms: string[]) {
     if (index >= currentRooms.length) return
@@ -1376,7 +1385,7 @@ export default function App() {
           {rooms === null && (
             <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + env(safe-area-inset-bottom))' }}>
               <div
-                onClick={() => { if (!running && !notEnoughEnergy) handleStartRun() }}
+                onClick={() => { if (!running && !notEnoughEnergy) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
                 style={{
                   boxSizing:'border-box',
                   background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
