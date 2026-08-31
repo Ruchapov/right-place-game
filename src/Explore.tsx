@@ -59,6 +59,13 @@ type ExploreProps = {
   // не просто "есть что-то в localStorage"). Не задан → setup() не ходит на
   // /run/start-explore вообще, забег целиком на клиентской логике, как раньше.
   token?: string
+  // Текущий баланс трофеев персонажа ДО забега (App.tsx: player.trophies) —
+  // нужен ТОЛЬКО для клиентского fallback экрана итогов на смерти (см.
+  // buildClientResult ниже): смерть обнуляет ВЕСЬ баланс, а не только
+  // добытое за забег, и без этого пропа Explore о нём не знает вообще. Не
+  // задан → fallback показывает добытое за забег (как раньше, заведомо
+  // заниженная, но хоть какая-то оценка).
+  trophies?: number
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -423,7 +430,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token, trophies }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
   // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
   // чтобы перезапустить эффект инициализации PixiJS на другой карте (mapFile
@@ -505,18 +512,21 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
   // Клиентская оценка итогов — используется СРАЗУ (см. sendFinishExplore
   // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
-  // trophiesEarned/trophiesLost считаются из trophiesEarnedRef — единственное,
-  // что клиент вообще знает о трофеях этого забега; реальный предрановый
-  // баланс игрока (нужен для точного trophiesLost на смерти) Explore не
-  // получает пропом вообще, поэтому на смерти честная оценка потери — то,
-  // что заработано за ЭТОТ забег, а не весь банк (как считает сервер).
+  // trophiesEarned считается из trophiesEarnedRef — единственное, что
+  // клиент вообще знает о добыче ЭТОГО забега. trophiesLost на смерти —
+  // ВЕСЬ предрановый баланс (trophies-проп, см. ExploreProps): смерть
+  // обнуляет счёт целиком, а не только добытое за забег (см. сервер,
+  // /run/finish-explore — trophiesLost = character.trophies ДО обнуления).
+  // Проп не передан (напр. вызов Explore без него) → fallback на earned,
+  // как раньше — заниженная, но хоть какая-то оценка вместо голого 0.
   function buildClientResult(died: boolean): RunResultSummary {
     const earned = Math.max(0, Math.round(trophiesEarnedRef.current))
+    const lost = trophies !== undefined ? Math.max(0, Math.round(trophies)) : earned
     return {
       interrupted: false,
       died,
       trophiesEarned: died ? 0 : earned,
-      trophiesLost: died ? earned : 0,
+      trophiesLost: died ? lost : 0,
       eventsClosed: eventsRef.current.filter((e) => e.closed).length,
       eventsTotal: eventsRef.current.length,
       items: [],
