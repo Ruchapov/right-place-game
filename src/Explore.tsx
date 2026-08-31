@@ -42,7 +42,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore } from './api'
+import { startRunExplore, finishRunExplore, type RunResultSummary } from './api'
 
 type ExploreProps = {
   onClose?: () => void
@@ -175,6 +175,254 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
   )
 }
 
+// Экран итогов забега — своя каменная рамка (results_frame.png, не
+// переиспользует ERROR_FRAME_SRC — другие пропорции/содержимое), но тот же
+// приём (доли внутреннего поля + calc() вместо CSS aspect-ratio), что у
+// StoneFrameScreen/HP-плиты выше. Показывается ВМЕСТО обычного экрана игры,
+// когда забег завершился (см. runResult в Explore ниже) — к этому моменту
+// тикер уже остановлен (см. sendFinishExplore), так что канвас/AI под ним
+// больше не работают.
+const RESULTS_FRAME_SRC = `${import.meta.env.BASE_URL}assets/results_frame.png`
+const RESULTS_PLATE_SRC = `${import.meta.env.BASE_URL}assets/results_plate.png`
+// Реальный аспект файла (420×596), НЕ через CSS aspect-ratio — та же причина,
+// что у ERROR_FRAME/HP-плиты (ломает %-позиционирование абсолютных детей в
+// некоторых WebView).
+const RESULTS_FRAME_ASPECT = 596 / 420
+const RESULTS_FRAME_W = 'clamp(300px, 94vw, 400px)'
+const RESULTS_FRAME_H = `calc(${RESULTS_FRAME_W} * ${RESULTS_FRAME_ASPECT})`
+// Внутреннее поле рамки — доли (0..1) от размера рамки, замерено по файлу.
+const RESULTS_FIELD_X = 0.105
+const RESULTS_FIELD_Y = 0.075
+const RESULTS_FIELD_W = 0.789
+const RESULTS_FIELD_H = 0.847
+// Аспект плиты (420×139, высота/ширина) — задаёт ОБЁРТКЕ реальную высоту
+// через padding-bottom% (см. плиту ниже). padding-bottom% считается от
+// ШИРИНЫ элемента (она определена — 100% готовой к тому моменту колонки),
+// в отличие от auto-высоты от <img>: без этого %-позиционирование
+// внутреннего поля не работало — родитель имел auto-высоту, а проценты
+// top/height дочернего абсолютного блока относительно auto-высоты не
+// резолвятся (тот же класс бага, что и у HP-плиты/ERROR_FRAME, см. их
+// calc()-выражения выше, — здесь ширина не своя формула, а 100% колонки,
+// поэтому calc() неприменим, нужен padding-bottom-трюк).
+const RESULTS_PLATE_ASPECT = 139 / 420
+// Внутреннее поле плиты — доли от размера ПЛИТЫ, замерено по файлу заново
+// (см. задачу): левая/верхняя граница ниши и её размер.
+const RESULTS_PLATE_FIELD_X = 0.055
+const RESULTS_PLATE_FIELD_Y = 0.165
+const RESULTS_PLATE_FIELD_W = 0.89
+const RESULTS_PLATE_FIELD_H = 0.619
+
+function ResultsScreen({
+  result,
+  eventKinds,
+  eventClosed,
+  onMenu,
+}: {
+  result: RunResultSummary
+  eventKinds: EventKind[]
+  eventClosed: boolean[]
+  onMenu: () => void
+}) {
+  // На смерти показываем "потеряно", на успехе — "получено"; оба числа
+  // вместе никогда не нужны (см. buildClientResult в Explore ниже — один из
+  // них всегда 0).
+  const trophyCount = result.died ? result.trophiesLost : result.trophiesEarned
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 2000,
+        background: Theme.appBg,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H }}>
+        <img
+          src={RESULTS_FRAME_SRC}
+          alt=""
+          draggable={false}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+        />
+        {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
+            плюс ещё ~16px отступ по кругу (padding). overflowY на случай
+            совсем маленького экрана — контент не должен вылезать на камень. */}
+        <div
+          style={{
+            position: 'absolute',
+            left: `${RESULTS_FIELD_X * 100}%`,
+            top: `${RESULTS_FIELD_Y * 100}%`,
+            width: `${RESULTS_FIELD_W * 100}%`,
+            height: `${RESULTS_FIELD_H * 100}%`,
+            padding: 16,
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            // space-evenly — секции распределяются РАВНЫМИ промежутками по
+            // всей высоте поля (см. задачу: "провал" внизу был из-за
+            // marginTop:'auto' на кнопке — единственный, кто забирал всё
+            // свободное место, вместо того чтобы поделить его между всеми
+            // секциями). gap — минимальный пол на случай переполнения
+            // (overflowY), когда свободного места для space-evenly не остаётся.
+            justifyContent: 'space-evenly',
+            gap: 10,
+            overflowY: 'auto',
+          }}
+        >
+          {/* 1. Заголовок + разделитель — одна секция (разделитель держится
+              вплотную к заголовку своим fixed gap, а не общим space-evenly). */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <div
+              style={{
+                fontFamily: C.FONT_DISPLAY,
+                fontWeight: 900,
+                fontSize: 'clamp(19px, 6.2vw, 26px)',
+                letterSpacing: '0.08em',
+                color: result.died ? Theme.danger : Theme.textMain,
+                textAlign: 'center',
+              }}
+            >
+              {result.died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '68%' }}>
+              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+              <div style={{ width: 6, height: 6, background: Theme.glowEdge, transform: 'rotate(45deg)', flexShrink: 0 }} />
+              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+            </div>
+          </div>
+
+          {/* 2. Гнёзда событий — БЕЗ круглой оправы (иконка сама уже каменная
+              и круглая — обводка+заливка+кольцо были лишним слоем и
+              перетягивали внимание с трофеев ниже). Иконка стоит сама по
+              себе: закрытая — в полную силу + тёплое drop-shadow-свечение
+              ПО ЕЁ СИЛУЭТУ (не широкий ореол); незакрытая — просто
+              приглушена, без свечения. Без подписей под ними — иконки те
+              же, что весь забег были в HUD, игрок их уже знает; а два
+              одинаковых кластера врагов давали бы "Враг"/"Враг" подряд,
+              что читается как ошибка. */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 'clamp(18px, 6.5vw, 30px)', flexShrink: 0 }}>
+            {eventClosed.map((closed, i) => {
+              const kind = eventKinds[i]
+              if (!kind) return null
+              return (
+                <img
+                  key={i}
+                  src={C.EVENT_ICON_SRC[kind]}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    width: 'clamp(42px, 13vw, 56px)',
+                    aspectRatio: '1',
+                    objectFit: 'contain',
+                    flexShrink: 0,
+                    opacity: closed ? 1 : 0.35,
+                    filter: closed
+                      ? `drop-shadow(0 0 3px ${Theme.glowCore}) drop-shadow(0 0 5px ${Theme.glowEdge})`
+                      : 'none',
+                  }}
+                />
+              )
+            })}
+          </div>
+
+          {/* 3. Плита с трофеями — обёртка получает РЕАЛЬНУЮ высоту через
+              padding-bottom% (RESULTS_PLATE_ASPECT выше), иначе %-поле внутри
+              не позиционируется (родитель без явной высоты — см. задачу). */}
+          <div style={{ position: 'relative', width: '100%', paddingBottom: `${RESULTS_PLATE_ASPECT * 100}%`, flexShrink: 0 }}>
+            <img
+              src={RESULTS_PLATE_SRC}
+              alt=""
+              draggable={false}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: `${RESULTS_PLATE_FIELD_X * 100}%`,
+                top: `${RESULTS_PLATE_FIELD_Y * 100}%`,
+                width: `${RESULTS_PLATE_FIELD_W * 100}%`,
+                height: `${RESULTS_PLATE_FIELD_H * 100}%`,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 2,
+              }}
+            >
+              <div style={{ fontSize: 'clamp(8px, 2.4vw, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
+                {result.died ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    fontFamily: C.FONT_DISPLAY,
+                    fontWeight: 900,
+                    fontSize: 'clamp(19px, 5.8vw, 25px)',
+                    color: result.died ? Theme.danger : Theme.glowCore,
+                    lineHeight: 1,
+                  }}
+                >
+                  {trophyCount}
+                </span>
+                <img src={C.REWARD_ICON_SRC.trophy} alt="" draggable={false} style={{ width: 20, height: 20, objectFit: 'contain' }} />
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Сумка — одна секция (заголовок+содержимое держатся вплотную
+              своим fixed gap). items/bonuses с сервера ВСЕГДА пустые
+              (дроп-система ещё не реализована, см. CLAUDE.md), так что
+              здесь только заглушка "пусто"; секция готова принять реальные
+              предметы, когда появится тип для них. */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+              <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                В СУМКЕ
+              </div>
+              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+            </div>
+            {result.items.length === 0 && (
+              <div style={{ fontSize: 'clamp(10px, 3vw, 12px)', color: Theme.stoneDark, fontStyle: 'italic' }}>
+                пусто
+              </div>
+            )}
+          </div>
+
+          {/* 5. Кнопка "В меню" — единственный способ закрыть этот экран,
+              onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
+              Без marginTop:'auto' — space-evenly на родителе уже распределяет
+              место равномерно, auto-маргин перетянул бы его весь на себя. */}
+          <button
+            onClick={onMenu}
+            style={{
+              padding: '12px 30px',
+              borderRadius: 10,
+              border: `2px solid ${Theme.glowEdge}`,
+              background: Theme.nicheDeep,
+              color: Theme.glowCore,
+              fontFamily: C.FONT_DISPLAY,
+              fontWeight: 700,
+              fontSize: 'clamp(13px, 4vw, 15px)',
+              letterSpacing: '0.06em',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            В МЕНЮ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token }: ExploreProps) {
   // Проп не задан (текущий вход из App.tsx) → DEFAULT_MAP_FILE, 1:1 прежнее
   // поведение. State (не const) — TEMP: map switcher (см. ниже) меняет её,
@@ -238,21 +486,67 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // исхода, а sendFinishExplore и так шлёт исход только если событие
   // smuggler реально закрыто (см. ниже).
   const smugglerOutcomeRef = useRef<'gain' | 'steal' | null>(null)
+  // Сумма всех трофейных float-попапов за забег (kind:'trophy', с учётом
+  // negative) — накапливается в spawnRewardFloat (см. ниже). Explore не
+  // ведёт реальный счёт трофеев игрока (офлайн по деньгам, см. CLAUDE.md,
+  // "Reward float") — это единственное, что клиент вообще знает о трофеях
+  // ЭТОГО забега, используется как fallback экрана итогов (buildClientResult
+  // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
+  const trophiesEarnedRef = useRef(0)
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
   const [eventKinds, setEventKinds] = useState<EventKind[]>([])
+  // Итоги забега для экрана результатов (см. ResultsScreen выше) — null,
+  // пока забег идёт. Выставляется РОВНО один раз, синхронно клиентскими
+  // числами (см. sendFinishExplore), и может быть заменён на авторитетные
+  // числа сервера, когда придёт ответ /run/finish-explore.
+  const [runResult, setRunResult] = useState<RunResultSummary | null>(null)
 
-  // Единая точка вызова /run/finish-explore — из трёх мест (смерть, выход
-  // через шестерёнку, все 3 события закрыты, см. вызовы ниже/в JSX).
-  // Fire-and-forget: НЕ блокирует выход/переход к результатам — вызывающий
-  // код не ждёт ответа. Ошибка отправки только логируется — забег уже
-  // кончился, показывать экран ошибки из-за нее нечего и незачем.
+  // Клиентская оценка итогов — используется СРАЗУ (см. sendFinishExplore
+  // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
+  // trophiesEarned/trophiesLost считаются из trophiesEarnedRef — единственное,
+  // что клиент вообще знает о трофеях этого забега; реальный предрановый
+  // баланс игрока (нужен для точного trophiesLost на смерти) Explore не
+  // получает пропом вообще, поэтому на смерти честная оценка потери — то,
+  // что заработано за ЭТОТ забег, а не весь банк (как считает сервер).
+  function buildClientResult(died: boolean): RunResultSummary {
+    const earned = Math.max(0, Math.round(trophiesEarnedRef.current))
+    return {
+      interrupted: false,
+      died,
+      trophiesEarned: died ? 0 : earned,
+      trophiesLost: died ? earned : 0,
+      eventsClosed: eventsRef.current.filter((e) => e.closed).length,
+      eventsTotal: eventsRef.current.length,
+      items: [],
+      bonuses: [],
+    }
+  }
+
+  // Единая точка завершения забега — из трёх мест (смерть, выход через
+  // шестерёнку, все 3 события закрыты, см. вызовы ниже/в JSX). Дедуп —
+  // finishExploreSentRef, первый вызов "выигрывает", остальные no-op (напр.
+  // если 3-е событие закрылось и следом сразу нажали выход).
+  //
+  // Экран итогов (ResultsScreen, см. runResult выше) показывается СРАЗУ
+  // клиентскими числами (buildClientResult) — не ждём сеть, чтобы не
+  // держать игрока на пустом экране. Если есть token — параллельно уходит
+  // /run/finish-explore, и когда сервер ответит, числа заменяются на
+  // авторитетные (setRunResult(result)). Ошибка отправки (после ретраев
+  // внутри finishRunExplore) только логируется — клиентские числа уже на
+  // экране, блокировать выход нечем и незачем. Без токена (DevTester вне
+  // Telegram) на сервер не ходим вообще — как и /run/start-explore.
   function sendFinishExplore(died: boolean) {
     if (finishExploreSentRef.current) return
     finishExploreSentRef.current = true
-    // Вне Telegram (DevTester) token не задан — как и /run/start-explore,
-    // ничего не отправляем вообще.
+
+    // Тикер больше не нужен — забег кончился, дальнейшая физика/AI под
+    // экраном итогов только сажали бы батарею телефона без всякой пользы.
+    appRef.current?.ticker.stop()
+
+    setRunResult(buildClientResult(died))
+
     if (!token) return
 
     const closedEvents: number[] = []
@@ -266,7 +560,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
     finishRunExplore(token, closedEvents, died, smugglerOutcome)
       .then((result) => {
-        console.log('Explore: /run/finish-explore ответ сервера', result)
+        setRunResult(result)
       })
       .catch((err) => {
         console.error('Explore: /run/finish-explore не удалось отправить', err)
@@ -941,6 +1235,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         rewards: { kind: RewardKind; amount: number; negative?: boolean }[]
       ) {
         rewards.forEach((reward, i) => {
+          // Клиентская оценка трофейного итога забега (см. trophiesEarnedRef/
+          // buildClientResult выше) — суммируем то же число, что игрок видит
+          // в этом попапе. Смуглер тоже сюда попадает (его gain/steal уже
+          // выражены как +/- amount в rewards) — иначе итог на экране
+          // результатов разошёлся бы с тем, что игрок только что видел.
+          if (reward.kind === 'trophy') {
+            trophiesEarnedRef.current += reward.negative ? -reward.amount : reward.amount
+          }
           const label = new Text({
             text: `${reward.negative ? '−' : '+'}${reward.amount}`,
             style: {
@@ -1035,6 +1337,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       smugglersRef.current = [] // сброс на случай повторного запуска setup()
       finishExploreSentRef.current = false // сброс на случай повторного запуска setup()
       smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
+      trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
+      setRunResult(null) // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
       // обелиск создаётся НИЖЕ, внутри map-цикла событий, только если kind
@@ -1545,8 +1849,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         })
         if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
           runCompleteFiredRef.current = true
+          // onRunCompleteRef (App.tsx) раньше сразу переключало экран на
+          // старый results-стаб — теперь итоги показывает сам Explore
+          // (ResultsScreen, см. sendFinishExplore/runResult выше), поэтому
+          // здесь больше НЕ дёргаем onRunCompleteRef: иначе App.tsx
+          // размонтировал бы Explore раньше, чем игрок увидит этот экран.
           sendFinishExplore(false)
-          onRunCompleteRef.current(eventsRef.current.map((e) => ({ kind: e.kind })))
         }
       }
 
@@ -2355,8 +2663,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             deathHoldRef.current += ticker.deltaMS
             if (deathHoldRef.current >= C.DEATH_HOLD_MS && !deathAbandonFiredRef.current) {
               deathAbandonFiredRef.current = true
+              // onClose теперь НЕ вызывается отсюда напрямую — sendFinishExplore
+              // сама включает экран итогов (runResult), onClose уходит только
+              // по кнопке "В меню" на нём (см. return ниже).
               sendFinishExplore(true)
-              onClose?.()
             }
           }
           hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
@@ -2556,6 +2866,20 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     )
   }
 
+  // Забег кончился (смерть/выход/все 3 события закрыты, см. sendFinishExplore
+  // выше) — экран итогов вместо игры. Канвас/HudPlate/SettingsPanel/TouchControls
+  // ниже больше не рендерятся; onClose уходит только по кнопке "В меню" внутри.
+  if (runResult) {
+    return (
+      <ResultsScreen
+        result={runResult}
+        eventKinds={eventKinds}
+        eventClosed={eventClosed}
+        onMenu={() => onClose?.()}
+      />
+    )
+  }
+
   return (
     <div
       style={{
@@ -2658,11 +2982,12 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       />
 
       {/* Выход через шестерёнку = смерть по решению разработчика (трофеи
-          сгорают) — sendFinishExplore(true) ПЕРЕД самим onClose, тот же
-          приём, что и в ветке смерти выше. Дедуп (finishExploreSentRef)
-          общий на все 3 триггера — если забег уже закрылся по другому
-          пути, здесь просто no-op. */}
-      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={() => { sendFinishExplore(true); onClose?.() }} />
+          сгорают) — sendFinishExplore(true) включает экран итогов ниже,
+          onClose родителя уходит только по кнопке "В меню" на нём, не
+          отсюда напрямую (тот же приём, что и в ветке смерти выше). Дедуп
+          (finishExploreSentRef) общий на все 3 триггера — если забег уже
+          закрылся по другому пути, здесь просто no-op. */}
+      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={() => sendFinishExplore(true)} />
 
           <TouchControls
             dirRef={dirRef}
