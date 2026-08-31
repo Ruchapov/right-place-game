@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, generateRooms, applyStatProgress, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
-import { rollRunEvents, KNOWN_MAP_FILES, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -100,8 +100,10 @@ type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; 
 // never leaves the server; the client only ever gets the stripped-down
 // version built in /run/start-explore's response.
 type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number }
-// Body shape for POST /run/start-explore.
-type StartExploreBody = { mapFile: string }
+// Body shape for POST /run/start-explore. mapFile is optional — omitted →
+// the server picks one itself (pickRunMapFile); the debug map switcher
+// (App.tsx) still sends an explicit one, still validated below.
+type StartExploreBody = { mapFile?: string }
 // Body shape for POST /run/finish-explore. closedEvents — indices into the
 // ActiveExploreRun.events array (see FinishExplore route below for how
 // they're validated). smugglerOutcome is only meaningful if a 'smuggler'
@@ -196,11 +198,19 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'A run is already in progress' })
     }
 
-    // Exact match against the whitelist — not a prefix/regex check — so the
-    // client can't hand us an arbitrary filename to read off disk.
-    const { mapFile } = request.body
-    if (!(KNOWN_MAP_FILES as readonly string[]).includes(mapFile)) {
-      return reply.status(400).send({ error: 'Unknown mapFile' })
+    // Not sent — server rolls a map itself (pickRunMapFile). Sent — exact
+    // match against the whitelist, not a prefix/regex check, so the client
+    // can't hand us an arbitrary filename to read off disk (this path is
+    // still used by the debug map switcher in App.tsx).
+    const { mapFile: requestedMapFile } = request.body
+    let mapFile: string
+    if (requestedMapFile === undefined) {
+      mapFile = pickRunMapFile()
+    } else {
+      if (!(KNOWN_MAP_FILES as readonly string[]).includes(requestedMapFile)) {
+        return reply.status(400).send({ error: 'Unknown mapFile' })
+      }
+      mapFile = requestedMapFile
     }
 
     const currentEnergy = getCurrentEnergy(character.energy, character.lastEnergyUpdate)

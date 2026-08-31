@@ -31,6 +31,31 @@ export const KNOWN_MAP_FILES = [
 
 export type MapFile = (typeof KNOWN_MAP_FILES)[number]
 
+// Логический пул карт для авто-выбора сервером, когда клиент не прислал
+// mapFile (см. POST /run/start-explore) — 6 СЛОТОВ, не 7 файлов из
+// KNOWN_MAP_FILES: карта D — ОДНА позиция в пуле, а не две (D_OPEN и
+// D_SEALED там — два отдельных элемента белого списка), иначе D выпадала бы
+// вдвое чаще остальных пяти карт. Если выпал слот D — состояние (OPEN/SEALED)
+// разыгрывается отдельным 50/50, тем же броском, что раньше делал клиент в
+// App.tsx (кнопка "D Тайник (50/50)": `Math.random() < 0.5`).
+const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F'] as const
+
+// Выбирает карту забега сама (см. POST /run/start-explore: mapFile в теле
+// запроса теперь необязателен). Возвращает готовое имя файла из
+// KNOWN_MAP_FILES — дальше по коду (rollRunEvents/slotsFileForMap/
+// pickChosenEvents) не отличается от mapFile, присланного клиентом.
+export function pickRunMapFile(): MapFile {
+  const slot = MAP_POOL[Math.floor(Math.random() * MAP_POOL.length)]
+  switch (slot) {
+    case 'A': return 'map_A_serpentine.txt'
+    case 'B': return 'map_B_razlom.txt'
+    case 'C': return 'map_C_boss_descent.txt'
+    case 'D': return Math.random() < 0.5 ? 'map_D_OPEN.txt' : 'map_D_SEALED.txt'
+    case 'E': return 'map_E_towers.txt'
+    case 'F': return 'map_F_sanctuary.txt'
+  }
+}
+
 // --- Константы, перенесённые с клиента (src/explore/constants.ts) ---
 // Значения — 1:1 с клиентом на момент переноса. Если на клиенте изменятся,
 // здесь придётся обновить руками — общего источника констант нет.
