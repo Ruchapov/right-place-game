@@ -129,7 +129,9 @@ function pickRandom<T>(items: T[], count: number): T[] {
 
 // Та же формула, что rollTrophies в src/explore/rewards.ts — level передаётся
 // параметром (на клиенте там PLAYER_LEVEL_FALLBACK=1, на сервере — реальный
-// character.level).
+// calculateLevel(character.strength, character.agility, character.endurance,
+// character.bonusLevels), см. вызов в routes/run.ts — уровень не хранится
+// колонкой, эта функция ничего о его источнике не знает).
 export function rollTrophies(multiplier: number, level: number): number {
   const spread = (1 - TROPHY_SPREAD / 2) + Math.random() * TROPHY_SPREAD
   return Math.round(TROPHY_BASE * Math.pow(level, TROPHY_LEVEL_POWER) * spread * multiplier)

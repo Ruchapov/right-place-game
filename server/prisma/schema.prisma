@@ -21,18 +21,24 @@ model Character {
   id                  Int      @id @default(autoincrement())
   userId              Int      @unique
   user                User     @relation(fields: [userId], references: [id])
+  /// Снимок для аналитики и отладки. Источник истины —
+  /// calculateLevel(strength, agility, endurance, bonusLevels).
+  /// Любая запись статов обязана обновить это поле.
   level               Int      @default(1)
   energy              Int      @default(100)
   lastEnergyUpdate    DateTime @default(now())
   endurance           Int      @default(10)
   strength            Int      @default(10)
-  strengthAtLevelUp   Int      @default(0)
   agility             Int      @default(10)
-  enduranceAtLevelUp  Int      @default(10)
   luck                Int      @default(0)
-  strengthProgress    Float    @default(0)   // accumulated normalized attack damage toward next Strength point
-  enduranceProgress   Float    @default(0)   // accumulated normalized damage taken toward next Endurance point
-  agilityProgress     Float    @default(0)   // accumulated normalized skill damage + healed amount toward next Agility point
+  // Уровни, полученные НЕ от статов — прибавляются дискретными событиями
+  // (сейчас только убийство босса, +1, см. /run/battle-result), НИКОГДА не
+  // пересчитываются из статов. Складывается с чисто-статовой частью внутри
+  // calculateLevel.
+  bonusLevels         Int      @default(0)
+  strengthProgress    Float    @default(0)   // accumulated raw attack damage toward next Strength point
+  enduranceProgress   Float    @default(0)   // accumulated raw damage taken toward next Endurance point
+  agilityProgress     Float    @default(0)   // accumulated raw skill damage + healed amount toward next Agility point
   gold                Int      @default(0)
   trophies            Int      @default(0)
   crystals            Int      @default(0)

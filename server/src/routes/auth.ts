@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy } from '../game.js'
+import { getCurrentEnergy, calculateLevel } from '../game.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -101,8 +101,21 @@ export async function authRoutes(server: FastifyInstance) {
         eventsTotal,
         items: [],
         bonuses: [],
+        // Брошенный забег закрывается как смерть БЕЗ applyStatGrowth (сервер
+        // не знает, что игрок успел сделать) — тот же принцип, что и у
+        // eventsClosed/items/bonuses выше: нечего показать, значит нули.
+        strengthGained: 0,
+        enduranceGained: 0,
+        agilityGained: 0,
+        leveledUp: false,
       }
     }
+
+    // level — денормализованный снимок в БД (см. комментарий к полю в
+    // schema.prisma), но эндпоинт профиля им не пользуется — уровень для
+    // ответа клиенту всегда пересчитывается явно, как и везде в проекте
+    // (см. calculateLevel в game.ts, правило "логика level не читает").
+    const level = calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels)
 
     return reply.send({
       token,
@@ -111,7 +124,7 @@ export async function authRoutes(server: FastifyInstance) {
         firstName: user.firstName,
         username: user.username,
       },
-      character: { ...char, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate), equippedSkills: char.equippedSkills, potionCharges: char.potionCharges },
+      character: { ...char, level, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate), equippedSkills: char.equippedSkills, potionCharges: char.potionCharges },
       ...(interruptedRun ? { interruptedRun } : {}),
     })
   })

@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, applyStatProgress, normalizeDealtDamage, normalizeReceivedDamage } from '../game.js'
+import { getCurrentEnergy, generateRooms, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
 import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
 
@@ -41,35 +41,30 @@ function getUserId(request: FastifyRequest): number | null {
   }
 }
 
-const LEVELUP_ENDURANCE_GAIN = 3
-const LEVELUP_STRENGTH_GAIN = 6
-
-// Applies one fight's worth of normalized damage to all three stats via applyStatProgress,
-// then checks for level-ups from Endurance/Strength gains and adjusts HP for any maxHp increase.
+// Applies one fight's worth of RAW damage (no more per-level normalization —
+// see game.ts) to all three stats via applyStatProgress, then recomputes
+// level via calculateLevel (stat-derived channels + bonusLevels) and adjusts
+// HP for any maxHp increase. bonusLevels here is Character.bonusLevels AS OF
+// THIS WRITE — the caller decides whether it changed (currently only
+// /run/battle-result increments it on a boss kill, see there) and passes the
+// already-updated value in; this function only reads it, never mutates it.
 function applyStatGrowth(
-  currentStrength: number, currentStrengthProgress: number, normalizedAttackDamage: number,
-  currentEndurance: number, currentEnduranceProgress: number, normalizedDamageTaken: number,
-  currentAgility: number, currentAgilityProgress: number, normalizedSkillDamage: number,
+  currentStrength: number, currentStrengthProgress: number, attackDamage: number,
+  currentEndurance: number, currentEnduranceProgress: number, damageTaken: number,
+  currentAgility: number, currentAgilityProgress: number, skillDamage: number,
   previousMaxHp: number,
   currentHp: number,
-  currentLevel: number,
-  enduranceAtLevelUp: number,
-  strengthAtLevelUp: number,
+  bonusLevels: number,
 ) {
-  const strResult = applyStatProgress(currentStrength, currentStrengthProgress, normalizedAttackDamage, 300, 1.15)
-  const endResult = applyStatProgress(currentEndurance, currentEnduranceProgress, normalizedDamageTaken, 120, 1.20)
-  const agiResult = applyStatProgress(currentAgility, currentAgilityProgress, normalizedSkillDamage, 300, 1.15)
+  const strResult = applyStatProgress(currentStrength, currentStrengthProgress, attackDamage, STRENGTH_THRESHOLD_BASE)
+  const endResult = applyStatProgress(currentEndurance, currentEnduranceProgress, damageTaken, ENDURANCE_THRESHOLD_BASE)
+  const agiResult = applyStatProgress(currentAgility, currentAgilityProgress, skillDamage, AGILITY_THRESHOLD_BASE)
 
   const maxHp = endResult.stat * 8
   const hpGain = Math.max(0, maxHp - previousMaxHp)
   const hp = currentHp + hpGain
 
-  const levelsFromEndurance = Math.floor((endResult.stat - enduranceAtLevelUp) / LEVELUP_ENDURANCE_GAIN)
-  const levelsFromStrength = Math.floor((strResult.stat - strengthAtLevelUp) / LEVELUP_STRENGTH_GAIN)
-  const levelsGained = levelsFromEndurance + levelsFromStrength
-  const level = currentLevel + levelsGained
-  const newEnduranceAtLevelUp = enduranceAtLevelUp + levelsFromEndurance * LEVELUP_ENDURANCE_GAIN
-  const newStrengthAtLevelUp = strengthAtLevelUp + levelsFromStrength * LEVELUP_STRENGTH_GAIN
+  const level = calculateLevel(strResult.stat, agiResult.stat, endResult.stat, bonusLevels)
 
   return {
     strength: strResult.stat,
@@ -81,9 +76,6 @@ function applyStatGrowth(
     maxHp,
     hp,
     level,
-    levelsGained,
-    enduranceAtLevelUp: newEnduranceAtLevelUp,
-    strengthAtLevelUp: newStrengthAtLevelUp,
   }
 }
 
@@ -107,8 +99,21 @@ type StartExploreBody = { mapFile?: string }
 // Body shape for POST /run/finish-explore. closedEvents — indices into the
 // ActiveExploreRun.events array (see FinishExplore route below for how
 // they're validated). smugglerOutcome is only meaningful if a 'smuggler'
-// event is among closedEvents; ignored otherwise.
-type FinishExploreBody = { closedEvents: number[]; died: boolean; smugglerOutcome?: 'gain' | 'steal' }
+// event is among closedEvents; ignored otherwise. attackDamageDealt/
+// skillDamageDealt/healedAmount/damageTaken — RAW counters accumulated by
+// the client over the whole run (Explore.tsx: attackDamageDealtRef/
+// skillDamageDealtRef/healedAmountRef/damageTakenRef), NOT pre-computed stat
+// gains — the server runs them through applyStatGrowth itself, after
+// clamping to the anti-cheat caps below (see the route).
+type FinishExploreBody = {
+  closedEvents: number[]
+  died: boolean
+  smugglerOutcome?: 'gain' | 'steal'
+  attackDamageDealt?: number
+  skillDamageDealt?: number
+  healedAmount?: number
+  damageTaken?: number
+}
 // Shared "run result" shape — one results screen for both ways an Explore
 // run can end: the client explicitly finishing it (POST /run/finish-explore)
 // or the server finding a stale one still open on the NEXT login (POST
@@ -117,6 +122,10 @@ type FinishExploreBody = { closedEvents: number[]; died: boolean; smugglerOutcom
 // found it abandoned). `items`/`bonuses` are always empty for now — the
 // item-drop and boss "choose a stat" systems don't exist yet; the shape is
 // here so those can slot in later without another response-shape change.
+// strengthGained/enduranceGained/agilityGained/leveledUp — added for the
+// results-screen stat growth display (see /run/finish-explore); an
+// interrupted run (auth.ts) never calls applyStatGrowth, so it always
+// reports zeros/false there, same convention as items/bonuses above.
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
@@ -126,6 +135,10 @@ export type RunResultSummary = {
   eventsTotal: number
   items: never[]
   bonuses: never[]
+  strengthGained: number
+  enduranceGained: number
+  agilityGained: number
+  leveledUp: boolean
 }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
@@ -228,7 +241,10 @@ export async function runRoutes(server: FastifyInstance) {
     })
     const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
 
-    const events = rollRunEvents(mapFile, character.level)
+    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+    // (см. game.ts calculateLevel), никогда не читается напрямую.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+    const events = rollRunEvents(mapFile, characterLevel)
 
     const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions }
 
@@ -256,7 +272,7 @@ export async function runRoutes(server: FastifyInstance) {
       mapFile,
       events: clientEvents,
       maxHp,
-      level: character.level,
+      level: characterLevel,
       potions,
       armor: totalArmor,
     })
@@ -315,10 +331,84 @@ export async function runRoutes(server: FastifyInstance) {
     // (non-death) finish nothing was lost, so 0.
     const trophiesLost = died ? character.trophies : 0
 
+    // --- Stat growth (see game.ts applyStatGrowth) — applies regardless of
+    // died: the player still dealt/took damage over the run either way. ---
+    // level больше не колонка в БД — вычисляется на месте (тот же приём, что
+    // в остальных эндпоинтах этого файла), нужен ДО роста статов — и для
+    // потолка урона (масштаб врага на текущем уровне), и для сравнения
+    // "levelUp?" после.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+
+    const safeAttackDamageDealt = Math.max(0, request.body.attackDamageDealt ?? 0)
+    const safeSkillDamageDealt = Math.max(0, request.body.skillDamageDealt ?? 0)
+    const safeHealedAmount = Math.max(0, request.body.healedAmount ?? 0)
+    const safeDamageTaken = Math.max(0, request.body.damageTaken ?? 0)
+
+    // Потолок нанесённого урона (анти-чит) — число врагов ЭТОГО забега
+    // (сумма clusterPoints у kind:'enemy' событий run.events — из
+    // currentRun, клиенту не доверяем) × HP врага на уровне персонажа, ПЛЮС
+    // число боссов × HP босса на том же уровне (scaledBossMaxHp — множитель
+    // BOSS_HP_MULT поверх scaledEnemyMaxHp, см. game.ts) — иначе забег с
+    // одним боссом и без обычных врагов давал потолок 0 и обрезал весь урон.
+    // Всё вместе × запас 1.5 (промахи/оверкилл).
+    const enemyCount = run.events
+      .filter((ev) => ev.kind === 'enemy')
+      .reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0)
+    const bossCount = run.events.filter((ev) => ev.kind === 'boss').length
+    const maxDamageDealt = (enemyCount * scaledEnemyMaxHp(characterLevel) + bossCount * scaledBossMaxHp(characterLevel)) * 1.5
+
+    const combinedAttackSkill = safeAttackDamageDealt + safeSkillDamageDealt
+    const attackSkillScale =
+      combinedAttackSkill > maxDamageDealt && combinedAttackSkill > 0 ? maxDamageDealt / combinedAttackSkill : 1
+    if (attackSkillScale < 1) {
+      request.log.warn(
+        { userId, combinedAttackSkill, maxDamageDealt, enemyCount, bossCount, characterLevel },
+        'finish-explore: attackDamageDealt+skillDamageDealt exceeded cap, clamped',
+      )
+    }
+    const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
+    const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
+
+    // Потолок полученного урона (анти-чит) — maxHp ЭТОГО забега (снимок
+    // run.maxHp из currentRun, посчитан при /run/start-explore — не
+    // character.endurance*8 заново: доверяем тому же снимку, что и ниже у
+    // "зарядов зелья") × (1 + заряды зелий забега × 0.25 — полное лечение
+    // каждым зарядом) × запас 1.5.
+    const maxDamageTaken = run.maxHp * (1 + run.potions * 0.25) * 1.5
+    if (safeDamageTaken > maxDamageTaken) {
+      request.log.warn(
+        { userId, damageTaken: safeDamageTaken, maxDamageTaken, runMaxHp: run.maxHp, potions: run.potions },
+        'finish-explore: damageTaken exceeded cap, clamped',
+      )
+    }
+    const clampedDamageTaken = Math.min(safeDamageTaken, maxDamageTaken)
+
+    // healedAmount — та же схема, что /run/battle-result: clamp к maxHp
+    // забега (не отдельный "потолок" из задачи, а то же базовое ограничение,
+    // что там), складывается со skillDamageDealt внутри applyStatGrowth —
+    // скиллы + лечение растят ловкость.
+    const clampedHealedAmount = Math.min(safeHealedAmount, run.maxHp)
+
+    const growth = applyStatGrowth(
+      character.strength, character.strengthProgress, clampedAttackDamageDealt,
+      character.endurance, character.enduranceProgress, clampedDamageTaken,
+      character.agility, character.agilityProgress, clampedSkillDamageDealt + clampedHealedAmount,
+      run.maxHp,
+      run.hp,
+      character.bonusLevels, // не трогаем — босс отдельным шагом
+    )
+
     await prisma.character.update({
       where: { userId },
       data: {
         trophies: died ? 0 : newTrophies,
+        strength: growth.strength,
+        strengthProgress: growth.strengthProgress,
+        endurance: growth.endurance,
+        enduranceProgress: growth.enduranceProgress,
+        agility: growth.agility,
+        agilityProgress: growth.agilityProgress,
+        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         currentRun: Prisma.DbNull,
       },
     })
@@ -332,6 +422,10 @@ export async function runRoutes(server: FastifyInstance) {
       eventsTotal: run.events.length,
       items: [],
       bonuses: [],
+      strengthGained: growth.strength - character.strength,
+      enduranceGained: growth.endurance - character.endurance,
+      agilityGained: growth.agility - character.agility,
+      leveledUp: growth.level > characterLevel,
     }
     return reply.send(result)
   })
@@ -349,6 +443,9 @@ export async function runRoutes(server: FastifyInstance) {
 
     const roomType = run.rooms[run.index]
     const maxHp = character.endurance * 8
+    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+    // (см. game.ts calculateLevel), никогда не читается напрямую.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
 
     let goldGained = 0
     let damageTaken = 0
@@ -357,7 +454,7 @@ export async function runRoutes(server: FastifyInstance) {
 
     if (roomType === 'chest') {
       goldGained = 10 + Math.floor(Math.random() * 41) // 10..50
-      const item = await rollRandomItem(character.level)
+      const item = await rollRandomItem(characterLevel)
       if (item) {
         await grantItem(character.id, item)
         droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
@@ -368,18 +465,18 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
+    // bonusLevels не меняется в этой комнате — передаём как есть, не пишем
+    // обратно в БД (в data ниже поля bonusLevels нет).
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, 0,
-      character.endurance, character.enduranceProgress, normalizedDamageTaken,
+      character.endurance, character.enduranceProgress, damageTaken,
       character.agility, character.agilityProgress, 0,
       maxHp,
       hp,
-      character.level,
-      character.enduranceAtLevelUp,
-      character.strengthAtLevelUp,
+      character.bonusLevels,
     )
+    const levelsGained = growth.level - characterLevel
 
     const died = growth.hp <= 0
     const nextIndex = run.index + 1
@@ -396,9 +493,7 @@ export async function runRoutes(server: FastifyInstance) {
         enduranceProgress: growth.enduranceProgress,
         agility: growth.agility,
         agilityProgress: growth.agilityProgress,
-        level: growth.level,
-        enduranceAtLevelUp: growth.enduranceAtLevelUp,
-        strengthAtLevelUp: growth.strengthAtLevelUp,
+        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
@@ -426,7 +521,7 @@ export async function runRoutes(server: FastifyInstance) {
       index: nextIndex,
       done,
       level: growth.level,
-      levelsGained: growth.levelsGained,
+      levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
       droppedItem,
@@ -459,7 +554,14 @@ export async function runRoutes(server: FastifyInstance) {
     const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
     const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
     const maxHp = character.endurance * 8
-    const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (character.level - 1)))
+    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+    // (см. game.ts calculateLevel), никогда не читается напрямую. Это
+    // уровень ДО этого боя — SCALED_ENEMY_HP/дроп считаются по нему же, а не
+    // по уровню ПОСЛЕ (даже если этот бой — победа над боссом и bonusLevels
+    // сейчас вырастет, врага в ЭТОМ бою масштабируем по тому, каким игрок
+    // был, когда в него зашёл).
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+    const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (characterLevel - 1)))
     const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
     const damageDealt = Math.max(0, Math.min(rawDamageDealt, SCALED_ENEMY_HP))
     const safeAttackDamageDealt = Math.max(0, attackDamageDealt)
@@ -469,9 +571,6 @@ export async function runRoutes(server: FastifyInstance) {
     const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
     const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
     const clampedHealedAmount = Math.max(0, Math.min(healedAmount, maxHp))
-    const normalizedAttackDamage = normalizeDealtDamage(clampedAttackDamageDealt, character.level)
-    const normalizedSkillDamage = normalizeDealtDamage(clampedSkillDamageDealt + clampedHealedAmount, character.level)
-    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
     const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
     let trophyGained = 0
@@ -486,7 +585,7 @@ export async function runRoutes(server: FastifyInstance) {
     if (won && !isBoss) {
       const dropChance = 1.0 // TODO: lower to 0.15 after testing
       if (Math.random() < dropChance) {
-        const item = await rollRandomItem(character.level)
+        const item = await rollRandomItem(characterLevel)
         if (item) {
           await grantItem(character.id, item)
           droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
@@ -494,17 +593,22 @@ export async function runRoutes(server: FastifyInstance) {
       }
     }
 
+    // Убийство босса — bonusLevels += 1, НАВСЕГДА (не пересчитывается из
+    // статов, только инкремент по событию — см. calculateLevel в game.ts).
+    // Ничего больше отсюда не следует: сам бой прокачивает силу/выносл./
+    // ловкость обычным путём (нормальный applyStatGrowth ниже), bonusLevels
+    // — отдельная, независимая надбавка поверх стат-уровня.
     const bossLevelUp = isBoss && won
+    const newBonusLevels = character.bonusLevels + (bossLevelUp ? 1 : 0)
     const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, normalizedAttackDamage,
-      character.endurance, character.enduranceProgress, normalizedDamageTaken,
-      character.agility, character.agilityProgress, normalizedSkillDamage,
+      character.strength, character.strengthProgress, clampedAttackDamageDealt,
+      character.endurance, character.enduranceProgress, damageTaken,
+      character.agility, character.agilityProgress, clampedSkillDamageDealt + clampedHealedAmount,
       maxHp,
       hp,
-      character.level + (bossLevelUp ? 1 : 0),
-      character.enduranceAtLevelUp,
-      character.strengthAtLevelUp,
+      newBonusLevels,
     )
+    const levelsGained = growth.level - characterLevel
 
     const died = growth.hp <= 0
     const nextIndex = run.index + 1
@@ -523,9 +627,8 @@ export async function runRoutes(server: FastifyInstance) {
         enduranceProgress: growth.enduranceProgress,
         agility: growth.agility,
         agilityProgress: growth.agilityProgress,
-        level: growth.level,
-        enduranceAtLevelUp: growth.enduranceAtLevelUp,
-        strengthAtLevelUp: growth.strengthAtLevelUp,
+        bonusLevels: newBonusLevels,
+        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         potionCharges: newPotionCharges,
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp, potions: Math.max(0, potionsInRun) },
       },
@@ -551,7 +654,7 @@ export async function runRoutes(server: FastifyInstance) {
       index: nextIndex,
       done,
       level: growth.level,
-      levelsGained: growth.levelsGained,
+      levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
       potions: Math.max(0, potionsInRun),
@@ -680,6 +783,9 @@ export async function runRoutes(server: FastifyInstance) {
     const { selectedIndex } = request.body
     const correct = selectedIndex === puzzle.correctIndex
     const maxHp = character.endurance * 8
+    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+    // (см. game.ts calculateLevel), никогда не читается напрямую.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
 
     let goldGained = 0
     let damageTaken = 0
@@ -693,18 +799,18 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newGold = character.gold + goldGained
-    const normalizedDamageTaken = normalizeReceivedDamage(damageTaken, character.level)
 
+    // bonusLevels не меняется в загадке — передаём как есть, не пишем
+    // обратно в БД (в data ниже поля bonusLevels нет).
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, 0,
-      character.endurance, character.enduranceProgress, normalizedDamageTaken,
+      character.endurance, character.enduranceProgress, damageTaken,
       character.agility, character.agilityProgress, 0,
       maxHp,
       hp,
-      character.level,
-      character.enduranceAtLevelUp,
-      character.strengthAtLevelUp,
+      character.bonusLevels,
     )
+    const levelsGained = growth.level - characterLevel
 
     const died = growth.hp <= 0
     const nextIndex = run.index + 1
@@ -721,9 +827,7 @@ export async function runRoutes(server: FastifyInstance) {
         enduranceProgress: growth.enduranceProgress,
         agility: growth.agility,
         agilityProgress: growth.agilityProgress,
-        level: growth.level,
-        enduranceAtLevelUp: growth.enduranceAtLevelUp,
-        strengthAtLevelUp: growth.strengthAtLevelUp,
+        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
       },
     })
@@ -747,7 +851,7 @@ export async function runRoutes(server: FastifyInstance) {
       index: nextIndex,
       done,
       level: growth.level,
-      levelsGained: growth.levelsGained,
+      levelsGained,
       strength: growth.strength,
       endurance: growth.endurance,
     })
@@ -847,7 +951,10 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     if (equip === true) {
-      if (character.level < inventoryItem.item.levelRequired) {
+      // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+      // (см. game.ts calculateLevel), никогда не читается напрямую.
+      const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+      if (characterLevel < inventoryItem.item.levelRequired) {
         return reply.status(400).send({ error: 'Недостаточный уровень' })
       }
 
