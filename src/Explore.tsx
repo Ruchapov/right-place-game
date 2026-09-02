@@ -80,6 +80,12 @@ type ExploreProps = {
   // задан → fallback показывает добытое за забег (как раньше, заведомо
   // заниженная, но хоть какая-то оценка).
   trophies?: number
+  // Суммарная броня надетых предметов (App.tsx: та же сумма
+  // inventory.filter(equipped).reduce armor, что уже показывает статистика
+  // "Броня" на экране "Персонаж") — тот же проброс, что у endurance/strength
+  // выше. Не задан → 0 (см. armorRef ниже, как characterLevelRef откатывается
+  // на C.PLAYER_LEVEL_FALLBACK при отсутствующем level).
+  armor?: number
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -521,7 +527,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -764,6 +770,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   const characterLevel = level ?? C.PLAYER_LEVEL_FALLBACK
   const characterLevelRef = useRef(characterLevel)
 
+  // Броня (см. задачу "броня в бою") — тот же проброс, что у characterLevel
+  // выше: прямой проп из App.tsx (сумма armor надетых предметов), ref читается
+  // внутри takeDamage (см. там же), не задан → 0 (безопасный откат, как ноль
+  // брони у ещё не загруженного/DevTester-профиля).
+  const armorRef = useRef(armor ?? 0)
+
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * C.HP_PER_ENDURANCE : C.FALLBACK_MAX_HP
   // Текущее hp — в ref, не в state: меняется в игровом цикле каждый кадр,
@@ -776,6 +788,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
   const takeDamageRef = useRef<(amount: number) => void>(() => {})
+  // Стабильная ссылка на killPlayer (см. задачу "обелиск перестал убивать") —
+  // тот же приём, что у takeDamageRef выше, для того же ticker-кода.
+  const killPlayerRef = useRef<() => void>(() => {})
   // Готовый вызов "нанести урон шипов" с уже посчитанной дозой (maxHp * ratio).
   // Обновляется тем же эффектом, что и takeDamageRef — так основной ticker-эффект
   // (mount-once, deps []) не должен напрямую читать maxHp из тела компонента.
@@ -987,11 +1002,28 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // функцию, так что перехват здесь один на все источники. HP/hurt/death
     // тоже не трогаем — раз урона не было, реагировать не на что.
     if (invincible) return
+    // Округление ЗДЕСЬ, в единой точке применения урона — не при отображении
+    // (см. задачу "HP должно быть всегда целым"): любой источник урона
+    // (шипы/мимик — доли maxHp, враг/босс — масштаб по уровню) проходит
+    // через эту функцию, поэтому один Math.ceil здесь закрывает все текущие
+    // и будущие источники разом. Вверх, не round/floor — округление никогда
+    // не должно уменьшать урон в пользу игрока.
+    const dmg = Math.ceil(amount)
+    // Броня (см. задачу "броня в бою") — вычитается из урона, но не может
+    // срезать больше половины: половина всегда проходит (ARMOR_MAX_REDUCTION).
+    // ОДНА точка на всех — шипы/мимик (доли maxHp) и враг/босс (масштаб по
+    // уровню) уже сведены к целому dmg выше, так что формула применяется
+    // одинаково ко всем источникам без отдельных проверок на каждом.
+    // round()/dmg-armorRef.current — оба целые (dmg целое, armorRef.current
+    // целое — сумма armor надетых предметов), результат max() тоже целый.
+    const armored = Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorRef.current)
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
-    const actualDamage = Math.min(amount, hpRef.current)
+    // После брони, не до — иначе выносливость росла бы от урона, которого
+    // игрок не получил.
+    const actualDamage = Math.min(armored, hpRef.current)
     damageTakenRef.current += actualDamage
-    hpRef.current = Math.max(0, hpRef.current - amount)
+    hpRef.current = Math.max(0, hpRef.current - armored)
     updateHpBar()
     if (hpRef.current <= 0) {
       triggerDeath()
@@ -1000,14 +1032,31 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     }
   }
 
-  // "Свежая" ссылка на takeDamage кладётся в ref эффектом (не во время рендера),
-  // чтобы будущий hazard-код внутри ticker'а всегда вызывал актуальную версию.
+  // Гарантированная смерть, В ОБХОД takeDamage/брони (см. задачу "обелиск
+  // перестал убивать") — единственный сейчас источник: провал таймера
+  // обелиска (см. вызов ниже). Это НЕ боевой урон, а скриптовая смерть по
+  // дизайну события — броня не должна её смягчать, а damageTakenRef не
+  // должен расти (иначе выносливость качалась бы от урона, которого не
+  // было). invincible всё же уважаем — это debug-тумблер для тестирования,
+  // а не часть боевого баланса, который отменяет обелиск.
+  function killPlayer() {
+    if (invincible) return
+    hpRef.current = 0
+    updateHpBar()
+    triggerDeath()
+  }
+
+  // "Свежая" ссылка на takeDamage/killPlayer кладётся в ref эффектом (не во
+  // время рендера), чтобы будущий hazard-код внутри ticker'а всегда вызывал
+  // актуальную версию.
   useEffect(() => {
     takeDamageRef.current = takeDamage
+    killPlayerRef.current = killPlayer
     applySpikeDamageRef.current = () => takeDamage(maxHp * C.SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     attackDamageRef.current = attackDamage
     characterLevelRef.current = characterLevel
+    armorRef.current = armor ?? 0
   })
 
   // Клавиатура — второй способ ввода поверх экранных кнопок (Шаг: keyboard
@@ -2433,9 +2482,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           } else if (obeliskTimerRef.current <= 0) {
             obeliskEventActiveRef.current = false
             setObeliskHud(null)
-            // Провал = смерть героя — переиспользуем ЕДИНУЮ точку смерти
-            // (takeDamage -> triggerDeath), не дублируем анимацию/hold/abandon.
-            takeDamageRef.current(hpRef.current)
+            // Провал = смерть героя — ГАРАНТИРОВАННАЯ, броня её не смягчает
+            // (см. задачу "обелиск перестал убивать" — раньше шло через
+            // takeDamage(hpRef.current), расчёт на "урон == текущий HP"
+            // сломался, когда броня стала срезать до половины урона).
+            // killPlayer переиспользует ЕДИНУЮ точку смерти (triggerDeath),
+            // не дублируя анимацию/hold/abandon, но минует и броню, и
+            // damageTakenRef — это скриптовая смерть, не боевой урон.
+            killPlayerRef.current()
           } else {
             const secondsLeft = Math.ceil(obeliskTimerRef.current / 1000)
             // Стартовый обелиск в счёт не идёт — HUD считает только 3 доспавненных.
@@ -2957,7 +3011,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           if (!potionHealedThisDrinkRef.current && hero.currentFrame >= C.POTION_GULP_FRAME) {
             potionHealedThisDrinkRef.current = true
             const hpBeforeHeal = hpRef.current
-            hpRef.current = Math.min(maxHp, hpRef.current + maxHp * C.POTION_HEAL_FRAC)
+            // Округление ВНИЗ здесь же, в момент вычисления хила (см. задачу
+            // "HP должно быть всегда целым") — не round/ceil: округление
+            // никогда не должно добавлять игроку HP сверх честных 25% maxHp.
+            hpRef.current = Math.min(maxHp, hpRef.current + Math.floor(maxHp * C.POTION_HEAL_FRAC))
             // Реально долитое, не полный потенциал зелья — тот же приём, что
             // у damageTakenRef/attackDamageDealtRef (клэмп у края, не заявка).
             healedAmountRef.current += hpRef.current - hpBeforeHeal

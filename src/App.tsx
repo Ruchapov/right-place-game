@@ -148,38 +148,6 @@ export default function App() {
         })
     }
   }
-  // TODO: временная диагностика (см. задачу "player становится null") —
-  // ловит переход player из non-null в null ВНУТРИ уже смонтированного
-  // компонента (в отличие от лога в useEffect(init, []) выше, который ловит
-  // размонтирование/пересоздание всего App целиком). Грепом по файлу нет ни
-  // одного setPlayer(null) — если этот console.trace() всё же напечатается,
-  // он покажет стек вызова, который до сих пор не нашёлся чтением кода.
-  const prevPlayerForDebugRef = useRef(player)
-  useEffect(() => {
-    if (prevPlayerForDebugRef.current !== null && player === null) {
-      console.trace('App: player стал null (был не null)', { time: Date.now() })
-    }
-    prevPlayerForDebugRef.current = player
-  }, [player])
-  // TODO: временная диагностика — потеря фокуса/сворачивание/переоткрытие
-  // Mini App как кандидат на причину. persisted:true у pageshow означает
-  // "страница восстановлена из bfcache БЕЗ повторного выполнения JS" — если
-  // именно это происходит, ни один из логов выше (main.tsx/init()) не
-  // напечатается повторно, а player при этом всё равно может показывать
-  // устаревшее состояние из-за того, как WebView разморозил старый DOM/JS.
-  useEffect(() => {
-    const onVisibility = () => console.log('App: visibilitychange', { state: document.visibilityState, hidden: document.hidden, time: Date.now() })
-    const onPageHide = (e: PageTransitionEvent) => console.log('App: pagehide', { persisted: e.persisted, time: Date.now() })
-    const onPageShow = (e: PageTransitionEvent) => console.log('App: pageshow', { persisted: e.persisted, time: Date.now() })
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('pagehide', onPageHide)
-    window.addEventListener('pageshow', onPageShow)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('pagehide', onPageHide)
-      window.removeEventListener('pageshow', onPageShow)
-    }
-  }, [])
   // Фото профиля из Telegram initData (фронт-only, сервер не трогаем) — вне
   // Telegram (обычный браузер) остаётся null, экран "Персонаж" сам рисует
   // запасной вариант (первая буква имени).
@@ -259,7 +227,7 @@ export default function App() {
 
   // Логин-флоу — переиспользуемый: и при первом запуске (useEffect ниже),
   // и как фолбэк, когда merge в player не удался, потому что player был
-  // null (см. requestPlayerRefresh/prevPlayerForDebugRef выше — ВСЕ
+  // null (см. requestPlayerRefresh выше — ВСЕ
   // setPlayer(prev => prev ? {...} : prev) по файлу теперь на null дёргают
   // именно эту функцию вместо того, чтобы молча терять результат сервера).
   // НЕ трогает loading/error — это забота вызывающей стороны: при первом
@@ -297,16 +265,19 @@ export default function App() {
     setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
+    // Инвентарь — ЗДЕСЬ ЖЕ, вместе с профилем, а не лениво при первом открытии
+    // вкладки "Снаряжение" (см. задачу "броня не работает" — totalArmor
+    // читает inventory, и Explore должен получить его ДО первого удара, не
+    // подгружать во время боя). loadInventory() читает токен из localStorage
+    // (уже записан строкой выше) и сама не бросает — неудача уходит в
+    // console.error, login всё равно завершается, totalArmor просто
+    // останется 0 до следующего успешного рефреша (тот же деградационный
+    // путь, что был у ленивой загрузки, просто теперь это исключение, а не
+    // норма).
+    await loadInventory()
   }
 
   useEffect(() => {
-    // TODO: временная диагностика (см. задачу) — этот эффект (deps: [])
-    // по контракту React обязан сработать РОВНО ОДИН раз за жизнь
-    // компонента App. Если строка ниже напечаталась больше одного раза —
-    // значит <App/> целиком размонтировался и смонтировался заново
-    // (единственный способ обнулить player без явного setPlayer(null),
-    // которого в файле нет вообще — грепом проверено).
-    console.log('App: init() effect firing — component (re)mounted', { time: Date.now() })
     async function init() {
       try {
         await refreshPlayerFromServer()
@@ -329,6 +300,16 @@ export default function App() {
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
+  // Суммарная броня надетых предметов — та же формула, что уже показывает
+  // статистика "Броня" на экране "Персонаж" (см. charStats ниже), вынесена
+  // сюда же, чтобы прокинуть тем же числом в Explore (см. задача "броня в
+  // бою"). inventory грузится СРАЗУ при логине (см. refreshPlayerFromServer
+  // выше — там же, где player), не лениво при первом открытии вкладки
+  // "Снаряжение": броня должна быть известна ДО первого удара в забеге, а
+  // не подгружаться посреди боя. useEffect'ы выше (gearTab/slotFilter)
+  // остаются как есть — это refetch при открытии/фильтрации UI инвентаря,
+  // не единственный источник данных.
+  const totalArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
 
   async function handleStartRun() {
     const token = localStorage.getItem('jwt')
@@ -659,7 +640,7 @@ export default function App() {
             const heroSkillSlots = [0, 1].map(i => p.equippedSkills[i] ?? null)
             const charStats = [
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: 15 + Math.floor(p.strength / 2), label:'Урон' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0), label:'Броня' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: totalArmor, label:'Броня' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
@@ -1696,7 +1677,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
     </div>
   )
 }

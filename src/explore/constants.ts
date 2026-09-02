@@ -560,6 +560,10 @@ export const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp 
 export const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
 export const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
 
+// Броня (см. задачу "броня в бою", takeDamage в Explore.tsx) — вычитается из
+// урона, но не может срезать больше половины: max(round(урон*0.5), урон-броня).
+export const ARMOR_MAX_REDUCTION = 0.5
+
 // Зелье (Explore офлайн — заряды/кулдаун ТОЛЬКО локальные, currentRun/сервер
 // не трогаем). Хил применяется один раз за питьё — на кадре глотка анимации
 // (POTION_GULP_FRAME из 14 кадров drink.png), не на нажатии кнопки.
