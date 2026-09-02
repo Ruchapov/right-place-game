@@ -72,11 +72,18 @@ Boss:
 
 When changing balance, change the constant — don't scatter magic numbers across the file.
 
-## Enemy scaling (planned — apply consistently when built)
-Enemies scale with player level: per level → enemy HP +10%, damage +8%. Apply the
-scaling factor in ONE place when the enemy is created, so the rest of the loop reads
-already-scaled values. Stat growth on the server is normalized by this factor, so do
-NOT double-apply it inside the combat loop.
+## Enemy scaling (done — src/explore/scaling.ts)
+Enemies scale with player level via a LINEAR formula, not compound growth — an
+earlier +10% HP / +8% damage per-level plan was rejected (compound growth gave
+~1.5M HP by level 100). Computed ONCE when the enemy/boss is spawned and cached
+on the entity (`Enemy.attackDamage`, `Boss.maxHp/meleeDamage/melee2Damage/
+spikeDamage/waveDamage`) — the rest of the loop reads the cached field, never
+recomputes from level:
+  enemy HP     = round(ENEMY_MAX_HP + ENEMY_HP_PER_LEVEL * (lvl-1))
+  enemy damage = round(ENEMY_ATTACK_DAMAGE + ENEMY_DAMAGE_PER_LEVEL * (lvl-1))
+Boss stats are multipliers on top of the already-scaled enemy stats at the same
+level (BOSS_HP_MULT=2.5, BOSS_MELEE_DMG_MULT=1.3, BOSS_MELEE2_DMG_MULT=1.9,
+BOSS_SPIKE_DMG_MULT=1.0, BOSS_WAVE_DMG_MULT=1.15), not an independent formula.
 
 ## Mobile / Telegram constraints
 - The game runs inside Telegram's in-app browser (WebView), often on weak phones.

@@ -149,7 +149,12 @@ export const BOSS_WAVE_CELL_W = 280
 export const BOSS_WAVE_CELL_H = 153
 export const BOSS_WAVE_COUNT = 8
 export const BOSS_WAVE_COLS = 8
-export const BOSS_WAVE_DAMAGE = 16
+// Масштабирование по уровню (см. BOSS_MAX_HP/BOSS_MELEE_DAMAGE выше) — живой
+// урон волны считается ОДИН раз при спавне через BOSS_WAVE_DMG_MULT (см.
+// scaling.ts), эта константа — значение НА УРОВНЕ 1 (было 16 фиксированно,
+// теперь 20 — то, что формула даёт на уровне 1).
+export const BOSS_WAVE_DAMAGE = 20
+export const BOSS_WAVE_DMG_MULT = 1.15
 export const BOSS_WAVE_SPEED = 300 // px/сек
 export const BOSS_WAVE_DRAW_H = 100 // высота отрисовки в мире
 export const BOSS_WAVE_DRAW_W = BOSS_WAVE_DRAW_H * (BOSS_WAVE_CELL_W / BOSS_WAVE_CELL_H) // пропорция листа
@@ -235,7 +240,14 @@ export const BOSS_ANIM_LOOP: Record<BossAnimKind, boolean> = {
 }
 
 // Босс (карта C, ФАЗА 2, шаг 3, см. задачу) — урон/HP/hurt, ещё БЕЗ AI/атак.
-export const BOSS_MAX_HP = 300 // было 200, баланс — порог стадии 2 (50%) теперь 150
+// Масштабирование по уровню (см. задачу "масштабирование по уровню") — HP
+// босса считается ОДИН раз при спавне как BOSS_HP_MULT × (уже отмасштабиро-
+// ванный HP обычного врага на этом уровне, см. scaling.ts), а НЕ читается из
+// этой константы напрямую. BOSS_MAX_HP оставлена как значение НА УРОВНЕ 1
+// (было 300 фиксированно без масштабирования — теперь 250, ровно то, что
+// формула даёт на уровне 1: round(2.5 * 100)), живой HP заспавненного босса
+// берётся из boss.maxHp, посчитанного в boss.ts.
+export const BOSS_MAX_HP = 250
 // Хитстан ЖЁСТКО выведен из длины/скорости hurt-листа босса (31 кадр,
 // BOSS_ANIM_SPEED.hurt) — та же причина, что у ENEMY_HURT_MS выше: иначе
 // таймер и анимация могли бы разъехаться (таймер истёк бы раньше конца
@@ -277,10 +289,18 @@ export const BOSS_STOP_HYSTERESIS = 20
 // AI, как только босс СТОИТ (boss.moving===false, дошёл до BOSS_STOP_
 // DISTANCE) и кулдаун истёк; сама анимация — единственный телеграф, урон —
 // на конкретном кадре (strike-кадр), не по началу анимации и не по нажатию.
-export const BOSS_MELEE_DAMAGE = 18
+// Масштабирование по уровню (см. BOSS_MAX_HP выше) — живой урон атак босса
+// считается ОДИН раз при спавне через BOSS_MELEE_DMG_MULT/BOSS_MELEE2_DMG_MULT
+// поверх отмасштабированного урона обычного врага (см. scaling.ts), эти
+// константы — значения НА УРОВНЕ 1 (было 18/26 фиксированно, теперь 22/32 —
+// то, что формула даёт на уровне 1). Множители см. ниже, у BOSS_SPIKE_DMG_MULT.
+export const BOSS_MELEE_DAMAGE = 22
 export const BOSS_MELEE_STRIKE_FRAME = 9
-export const BOSS_MELEE2_DAMAGE = 26
+export const BOSS_MELEE2_DAMAGE = 32
 export const BOSS_MELEE2_STRIKE_FRAME = 19
+export const BOSS_HP_MULT = 2.5
+export const BOSS_MELEE_DMG_MULT = 1.3
+export const BOSS_MELEE2_DMG_MULT = 1.9
 // RANGE/COOLDOWN — зафиксированы после подбора живым тюнером (тюнер убран,
 // см. историю — та же судьба, что у BOSS_STOP_DISTANCE/BOSS_MOVE_SPEED).
 export const BOSS_MELEE_RANGE = 160
@@ -326,7 +346,12 @@ export const BOSS_RANGED_DOUBLE_CHANCE = 0.5 // шанс второго шипа
 // Шип дальней атаки — снаряд + импакт (ФАЗА 3, шаг 2, см. задачу). Траектория
 // ПРЯМАЯ горизонтальная, снаряд НЕ вращается. Импакт при попадании
 // обязателен — вблизи иначе непонятно, откуда урон (см. задачу).
-export const BOSS_RANGED_DAMAGE = 14
+// Масштабирование по уровню (см. BOSS_MAX_HP/BOSS_MELEE_DAMAGE выше) — живой
+// урон шипа считается ОДИН раз при спавне через BOSS_SPIKE_DMG_MULT (см.
+// scaling.ts), эта константа — значение НА УРОВНЕ 1 (было 14 фиксированно,
+// теперь 17 — то, что формула даёт на уровне 1, множитель ×1.0).
+export const BOSS_RANGED_DAMAGE = 17
+export const BOSS_SPIKE_DMG_MULT = 1.0
 export const BOSS_SPIKE_SPEED_X = 700 // горизонтальная скорость, px/сек
 export const BOSS_SPIKE_GRAVITY = 1400 // ускорение вниз, px/сек^2
 export const BOSS_SPIKE_SRC = `${import.meta.env.BASE_URL}assets/objects/Boss_Spike.png`
@@ -583,10 +608,14 @@ export const TOUCH_EPS = 4
 // в edge-to-edge позицию (phys.x + PLAYER_WIDTH === enemy.x), строгое >
 // в этой точке даёт false, замах не стартует (см. диагностику: touch=false
 // при dist=80)
-// BASE_ENEMY_HP обычного (не boss) врага из Battle.tsx — берём как есть, БЕЗ
-// level-scaling (там `Math.round(BASE_ENEMY_HP * (1 + 0.18*(level-1)))` — в
-// Explore пока нет level, это база "как в бою"; см. CLAUDE.md "normal 120HP".
-export const ENEMY_MAX_HP = 120
+// Масштабирование по уровню персонажа (см. задачу) — линейная формула,
+// считается ОДИН раз при спавне (см. scaling.ts), не на лету. ENEMY_MAX_HP —
+// теперь БАЗА формулы (значение НА УРОВНЕ 1), не фиксированный HP без
+// масштабирования, как раньше (было 120, без level; см. CLAUDE.md "normal
+// 120HP" — устарело). ENEMY_HP_PER_LEVEL — прирост HP за каждый уровень
+// сверх первого.
+export const ENEMY_MAX_HP = 100
+export const ENEMY_HP_PER_LEVEL = 9.0
 export const ENEMY_HP_BAR_HEIGHT = 8
 export const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
 // Спрайт зверя (BEAST_CELL_RENDER_H) заметно выше хитбокса (ENEMY_HEIGHT) —
@@ -595,15 +624,15 @@ export const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской H
 // Было 58 — висело слишком высоко над зверем, уменьшено вживую на глаз.
 export const ENEMY_HPBAR_OFFSET_Y = 30
 
-// AI зверя (Шаг 2-2) — числа из Battle.tsx (обычный враг, БЕЗ level-scaling —
-// как и ENEMY_MAX_HP выше, в Explore пока нет level):
+// AI зверя (Шаг 2-2) — числа изначально были из Battle.tsx (без level-scaling);
+// HP/урон теперь масштабируются по уровню персонажа (см. ENEMY_MAX_HP/
+// ENEMY_HP_PER_LEVEL/ENEMY_ATTACK_DAMAGE/ENEMY_DAMAGE_PER_LEVEL выше и
+// scaling.ts), остальное (скорость/интервал/дальность) — как раньше, без level:
 // - ENEMY_SPEED=1 px/кадр в Battle БЕЗ dt (там ticker вообще не масштабирует
 //   движение врага по deltaTime) — здесь то же число, но умножаем на dt, как
 //   уже сделано для игрока (MOVE_SPEED*dt).
-// - ENEMY_ATTACK_INTERVAL=2с (обычный, не boss) — кулдаун МЕЖДУ атаками:
+// - ENEMY_ATTACK_INTERVAL=0.5с (обычный, не boss) — кулдаун МЕЖДУ атаками:
 //   стартует ПОСЛЕ удара (см. ниже), не перед первым — см. настройку боя.
-// - BASE_ENEMY_DAMAGE=14 (обычный, не boss) — урон удара, без dmgMultiplier
-//   по той же причине (нет level).
 // - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
 //   же константа используется и для атаки игрока, и для дальности врага; это
 //   по-прежнему радиус ПОПАДАНИЯ удара, отдельно от ATTACK_STOP_DIST ниже.
@@ -628,7 +657,7 @@ export const ENEMY_PATROL_SPEED = 0.55
 //   (она и была 0.6с), а ENEMY_ATTACK_INTERVAL, накапливавшийся ДО первого
 //   windup как пауза "подумать" — эта пауза убрана отдельно, см. ниже.
 export const ATTACK_STOP_DIST = 45
-export const WINDUP_MS = 650
+export const WINDUP_MS = 400
 
 // Attack-анимация зверя (24 кадра, 481×288, loop=НЕТ) — урон теперь наносится
 // на strike-кадре анимации, а НЕ по истечении WINDUP_MS напрямую (см. ticker,
@@ -642,8 +671,12 @@ export const WINDUP_MS = 650
 export const BEAST_ATTACK_STRIKE_FRAME = 13
 export const BEAST_ATTACK_ANIM_SPEED = BEAST_ATTACK_STRIKE_FRAME / (60 * (WINDUP_MS / 1000))
 
-export const ENEMY_ATTACK_INTERVAL = 2
-export const ENEMY_ATTACK_DAMAGE = 14
+export const ENEMY_ATTACK_INTERVAL = 0.5
+// ENEMY_ATTACK_DAMAGE — БАЗА формулы масштабирования (значение НА УРОВНЕ 1),
+// та же схема, что у ENEMY_MAX_HP выше (было 14, фиксированный урон без
+// масштабирования). ENEMY_DAMAGE_PER_LEVEL — прирост урона за уровень.
+export const ENEMY_ATTACK_DAMAGE = 17
+export const ENEMY_DAMAGE_PER_LEVEL = 4.7
 
 // Hurt-анимация зверя (12 кадров, 600×288, loop=НЕТ) — короткий читаемый
 // хитстан. Скорость выбрана напрямую (~0.3-0.4с ощущается коротко и чётко),

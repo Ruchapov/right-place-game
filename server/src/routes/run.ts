@@ -339,6 +339,20 @@ export async function runRoutes(server: FastifyInstance) {
     // "levelUp?" после.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
 
+    // TODO: временная диагностика (см. задачу) — убрать после выяснения,
+    // почему strengthProgress/enduranceProgress не растут. Сырые значения
+    // ДО клэмпа/дефолта, как пришли в теле запроса.
+    request.log.info(
+      {
+        userId,
+        rawAttackDamageDealt: request.body.attackDamageDealt,
+        rawSkillDamageDealt: request.body.skillDamageDealt,
+        rawHealedAmount: request.body.healedAmount,
+        rawDamageTaken: request.body.damageTaken,
+      },
+      'finish-explore: raw counters received',
+    )
+
     const safeAttackDamageDealt = Math.max(0, request.body.attackDamageDealt ?? 0)
     const safeSkillDamageDealt = Math.max(0, request.body.skillDamageDealt ?? 0)
     const safeHealedAmount = Math.max(0, request.body.healedAmount ?? 0)

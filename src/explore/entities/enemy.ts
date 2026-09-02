@@ -5,6 +5,7 @@ import type { Grid, PlayerPhysics, Enemy, MapEvent, RewardKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp } from '../utils'
+import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
 
 // Кадры зверя (Шаг "спрайт зверя") — загружаются ОДИН раз в setup(), общие
 // для всех врагов кластера (каждый враг заводит СВОЙ AnimatedSprite поверх
@@ -58,6 +59,12 @@ export type EnemyDeps = {
   grid: Grid
   beastFrames: MutableRefObject<BeastFrames | null>
   enemies: MutableRefObject<Enemy[]>
+  // Уровень персонажа (см. задачу "масштабирование по уровню") — читается
+  // РОВНО ОДИН РАЗ, в момент спавна (см. spawn ниже), не в update(): уже
+  // заспавненный враг не должен менять HP/урон, если уровень посреди забега
+  // почему-то изменится (сейчас не меняется, см. characterLevelRef в
+  // Explore.tsx, но spawn — единственное место, где этот реф читается).
+  characterLevel: MutableRefObject<number>
 }
 
 // Создаётся ОДИН раз в setup() (тот же момент, что и createSkillsSystem —
@@ -126,12 +133,19 @@ export function createEnemySystem(deps: EnemyDeps) {
     hpBarFill.y = hpBarBg.y
     deps.worldContainer.addChild(hpBarFill)
 
+    // Масштабирование по уровню (см. задачу) — считается ОДИН раз здесь, при
+    // спавне; дальше живёт как обычное поле enemy.hp/maxHp/attackDamage, update()
+    // формулу больше не трогает.
+    const level = deps.characterLevel.current
+    const scaledMaxHp = scaledEnemyMaxHp(level)
+    const scaledAttackDamage = scaledEnemyAttackDamage(level)
+
     const enemy: Enemy = {
       x: enemyWorldX,
       y: enemyWorldY,
       vy: 0,
-      hp: C.ENEMY_MAX_HP,
-      maxHp: C.ENEMY_MAX_HP,
+      hp: scaledMaxHp,
+      maxHp: scaledMaxHp,
       lastHitSwingId: 0,
       attackTimer: 0,
       windingUp: false,
@@ -150,6 +164,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       dead: false,
       deathHoldTimer: 0,
       trophyReward,
+      attackDamage: scaledAttackDamage,
       hpBarBg,
       hpBarFill,
     }
@@ -463,7 +478,7 @@ export function createEnemySystem(deps: EnemyDeps) {
                 (enemy.facing === -1 && !playerOnRight)
               const canHit = (inMeleeReach || bodiesTouchingX) && verticalReach && playerInFront
               if (canHit && deps.dodgeIframe.current <= 0) {
-                deps.takeDamage(C.ENEMY_ATTACK_DAMAGE)
+                deps.takeDamage(enemy.attackDamage)
               }
             }
             if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {

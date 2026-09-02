@@ -6,6 +6,7 @@ import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } from '../collision'
 import { clamp } from '../utils'
 import { rollTrophies } from '../rewards'
+import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 
 // HP-бар босса — тот же приём, что у зверя (redrawEnemyHpBar, см.
 // explore/entities/enemy.ts). Экспортируется отдельно (не только через
@@ -64,6 +65,10 @@ export type BossDeps = {
   bossSpikeImpactFrames: Texture[]
   bossWaveLeftFrames: Texture[]
   bossWaveRightFrames: Texture[]
+  // Уровень персонажа (см. задачу "масштабирование по уровню") — тот же
+  // смысл, что characterLevel в EnemyDeps (enemy.ts): читается РОВНО ОДИН
+  // РАЗ, в момент spawn ниже, не в update().
+  characterLevel: MutableRefObject<number>
 }
 
 // Создаётся ОДИН раз в setup(), ПОЗЖЕ, чем createSkillsSystem/
@@ -109,7 +114,9 @@ export function createBossSystem(deps: BossDeps) {
     const vy = t > 0.01 ? (dy - 0.5 * C.BOSS_SPIKE_GRAVITY * t * t) / t : 0
 
     deps.worldContainer.addChild(sprite)
-    deps.bossSpikes.current.push({ sprite, dir, vy, lifeMs: 0, hitApplied: false })
+    // damage — снят с boss.spikeDamage В МОМЕНТ спавна (посчитан один раз,
+    // при спавне босса, см. задачу), не константа C.BOSS_RANGED_DAMAGE.
+    deps.bossSpikes.current.push({ sprite, dir, vy, lifeMs: 0, hitApplied: false, damage: boss.spikeDamage })
   }
 
   // Импакт шипа (ФАЗА 3, шаг 2, см. задачу) — разовая анимация на месте
@@ -167,7 +174,9 @@ export function createBossSystem(deps: BossDeps) {
     sprite.y = boss.y + C.BOSS_HEIGHT
     sprite.play()
     deps.worldContainer.addChild(sprite)
-    deps.bossWaves.current.push({ sprite, dir, lifeMs: 0, hitApplied: false })
+    // damage — снят с boss.waveDamage В МОМЕНТ спавна (посчитан один раз, при
+    // спавне босса, см. задачу), не константа C.BOSS_WAVE_DAMAGE.
+    deps.bossWaves.current.push({ sprite, dir, lifeMs: 0, hitApplied: false, damage: boss.waveDamage })
   }
 
   function spawn(tileX: number, tileY: number): void {
@@ -201,14 +210,20 @@ export function createBossSystem(deps: BossDeps) {
     hpBarFill.y = hpBarBg.y
     deps.worldContainer.addChild(hpBarFill)
 
+    // Масштабирование по уровню (см. задачу) — считается ОДИН раз здесь, при
+    // спавне; дальше живёт как обычные поля boss.hp/maxHp/meleeDamage/
+    // melee2Damage/spikeDamage/waveDamage, update() формулу больше не трогает.
+    const level = deps.characterLevel.current
+    const scaledMaxHp = scaledBossMaxHp(level)
+
     const boss: Boss = {
       x: bossWorldX,
       y: bossWorldY,
       vy: 0,
       facing: -1,
       moving: false,
-      hp: C.BOSS_MAX_HP,
-      maxHp: C.BOSS_MAX_HP,
+      hp: scaledMaxHp,
+      maxHp: scaledMaxHp,
       lastHitSwingId: 0,
       hurtTimer: 0,
       stunCount: 0,
@@ -229,6 +244,10 @@ export function createBossSystem(deps: BossDeps) {
       stompCooldownTimer: 0,
       hitFlashTimer: 0,
       rewardGiven: false,
+      meleeDamage: scaledBossMeleeDamage(level),
+      melee2Damage: scaledBossMelee2Damage(level),
+      spikeDamage: scaledBossSpikeDamage(level),
+      waveDamage: scaledBossWaveDamage(level),
       hpBarBg,
       hpBarFill,
       sprite,
@@ -416,7 +435,7 @@ export function createBossSystem(deps: BossDeps) {
           const kind = boss.attackKind
           deps.playBossAnim(kind)
           const strikeFrame = kind === 'melee' ? C.BOSS_MELEE_STRIKE_FRAME : C.BOSS_MELEE2_STRIKE_FRAME
-          const damage = kind === 'melee' ? C.BOSS_MELEE_DAMAGE : C.BOSS_MELEE2_DAMAGE
+          const damage = kind === 'melee' ? boss.meleeDamage : boss.melee2Damage
           const range = kind === 'melee' ? C.BOSS_MELEE_RANGE : C.BOSS_MELEE2_RANGE
           const kindFrames = deps.bossFrames[kind]
           // Момент удара — РОВНО на strike-кадре (см. задачу, п.1/2), НЕ
@@ -542,7 +561,8 @@ export function createBossSystem(deps: BossDeps) {
         const deathDone = boss.sprite.currentFrame >= deathFrames.length - 1 || !boss.sprite.playing
         if (deathDone && !boss.rewardGiven) {
           boss.rewardGiven = true
-          const amount = rollTrophies(C.TROPHY_MULT_BOSS)
+          // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
+          const amount = rollTrophies(C.TROPHY_MULT_BOSS, 1)
           deps.spawnRewardFloat(boss.sprite.x, boss.sprite.y - boss.sprite.height, [
             { kind: 'trophy', amount },
           ])
@@ -607,7 +627,7 @@ export function createBossSystem(deps: BossDeps) {
           if (overlap && deps.dodgeIframe.current <= 0) {
             spike.hitApplied = true
             remove = true
-            deps.takeDamage(C.BOSS_RANGED_DAMAGE)
+            deps.takeDamage(spike.damage)
             spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
           }
         }
@@ -669,7 +689,7 @@ export function createBossSystem(deps: BossDeps) {
           if (overlap) {
             w.hitApplied = true
             remove = true
-            deps.takeDamage(C.BOSS_WAVE_DAMAGE)
+            deps.takeDamage(w.damage)
           }
         }
 

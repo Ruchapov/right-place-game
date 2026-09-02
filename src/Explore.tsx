@@ -48,6 +48,11 @@ type ExploreProps = {
   onClose?: () => void
   endurance?: number
   strength?: number
+  // Уровень персонажа (App.tsx: player.level) — тот же источник и тот же
+  // способ проброса, что у endurance/strength выше. Не задан → характерLevel
+  // ниже откатывается на C.PLAYER_LEVEL_FALLBACK, как maxHp откатывается на
+  // C.FALLBACK_MAX_HP при отсутствующем endurance.
+  level?: number
   // Временный каркас "3 события за забег": вызывается ровно один раз, когда
   // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
   // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
@@ -228,11 +233,13 @@ function ResultsScreen({
   result,
   eventKinds,
   eventClosed,
+  saveStatus,
   onMenu,
 }: {
   result: RunResultSummary
   eventKinds: EventKind[]
   eventClosed: boolean[]
+  saveStatus: 'offline' | 'failed' | null
   onMenu: () => void
 }) {
   // На смерти показываем "потеряно", на успехе — "получено"; оба числа
@@ -302,6 +309,18 @@ function ResultsScreen({
             >
               {result.died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'}
             </div>
+            {saveStatus && (
+              <div
+                style={{
+                  fontSize: 'clamp(10px, 3vw, 12px)',
+                  fontStyle: 'italic',
+                  textAlign: 'center',
+                  color: saveStatus === 'failed' ? Theme.danger : Theme.stoneDark,
+                }}
+              >
+                {saveStatus === 'failed' ? 'Забег не запомнят — итоги потеряны' : 'Ты вне мира — забег не сохранён'}
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '68%' }}>
               <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
               <div style={{ width: 6, height: 6, background: Theme.glowEdge, transform: 'rotate(45deg)', flexShrink: 0 }} />
@@ -435,7 +454,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, onRunComplete, mapFile: mapFileProp, token, trophies }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -510,6 +529,24 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // ЭТОГО забега, используется как fallback экрана итогов (buildClientResult
   // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
   const trophiesEarnedRef = useRef(0)
+  // Сырые счётчики за забег — ФАКТИЧЕСКИ снятые/нанесённые/восстановленные,
+  // не запрошенные (см. takeDamage/applyAttackHit/питьё зелья ниже:
+  // смертельный удар засчитывает только остаток HP цели, а не полный урон
+  // атаки; лечение у полного HP засчитывает только реально долитое). Копятся
+  // для /run/finish-explore (см. sendFinishExplore ниже) — сервер прогоняет
+  // их через applyStatGrowth сам, после клэмпа по анти-читерским потолкам.
+  // Оружие и скиллы — РАЗДЕЛЬНО (оружие растит силу, скиллы+лечение —
+  // ловкость), поэтому два разных счётчика урона, не один общий.
+  const damageTakenRef = useRef(0) // получено игроком: шипы, враги, босс, мимик, обелиск — всё через takeDamage
+  const attackDamageDealtRef = useRef(0) // нанесено ОРУЖИЕМ: обычный враг + босс, обе ветки applyAttackHit
+  // Урон скиллами — ВСЕГДА 0 сейчас: скиллы в Explore ещё не реализованы
+  // (см. entities/skills.ts — каркас есть, урона никакого нет). Счётчик
+  // заведён заранее, чтобы формат запроса на сервер не пришлось менять,
+  // когда скиллы подключат — инкрементировать его будет их логика.
+  const skillDamageDealtRef = useRef(0)
+  // Реально восстановленное зельем HP (клэмп к maxHp — см. место применения
+  // хила ниже), НЕ полный потенциал зелья.
+  const healedAmountRef = useRef(0)
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
@@ -519,6 +556,15 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
   // числа сервера, когда придёт ответ /run/finish-explore.
   const [runResult, setRunResult] = useState<RunResultSummary | null>(null)
+  // Экран итогов раньше показывал buildClientResult молча и на этом
+  // успокаивался — если сеть/сервер потом падали, игрок никак об этом не
+  // узнавал (ошибка уходила только в console.error). null — ответ ещё не
+  // пришёл (или сохранять некуда не требовалось — 'saved' наступит раньше,
+  // чем игрок успеет посмотреть); 'offline' — токена нет вообще, на сервер
+  // не ходили (см. sendFinishExplore, тот же !token, что раньше просто
+  // return'ил); 'failed' — сходили, но не сохранилось (после ретраев внутри
+  // finishRunExplore). См. рендер в ResultsScreen ниже.
+  const [saveStatus, setSaveStatus] = useState<'offline' | 'failed' | null>(null)
 
   // Клиентская оценка итогов — используется СРАЗУ (см. sendFinishExplore
   // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
@@ -541,6 +587,13 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       eventsTotal: eventsRef.current.length,
       items: [],
       bonuses: [],
+      // Прирост статов клиент оценить не может (пороги/progress — только в
+      // БД) — нули-заглушки до ответа сервера, тем же приёмом, что items/
+      // bonuses выше.
+      strengthGained: 0,
+      enduranceGained: 0,
+      agilityGained: 0,
+      leveledUp: false,
     }
   }
 
@@ -553,10 +606,14 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // клиентскими числами (buildClientResult) — не ждём сеть, чтобы не
   // держать игрока на пустом экране. Если есть token — параллельно уходит
   // /run/finish-explore, и когда сервер ответит, числа заменяются на
-  // авторитетные (setRunResult(result)). Ошибка отправки (после ретраев
-  // внутри finishRunExplore) только логируется — клиентские числа уже на
-  // экране, блокировать выход нечем и незачем. Без токена (DevTester вне
-  // Telegram) на сервер не ходим вообще — как и /run/start-explore.
+  // авторитетные (setRunResult(result)) и saveStatus молчит (null — "всё
+  // сохранилось", отдельного 'saved' не заводили, показывать нечего).
+  // Ошибка отправки (после ретраев внутри finishRunExplore) логируется В
+  // КОНСОЛЬ КАК И РАНЬШЕ, но теперь ЕЩЁ и выставляет saveStatus='failed' —
+  // экран итогов обязан явно показать игроку, что результат не сохранён, а
+  // не молчать (раньше молчал). Без токена (DevTester вне Telegram) на
+  // сервер не ходим вообще — как и /run/start-explore, но теперь явно
+  // помечаем это как saveStatus='offline', а не тихий return.
   function sendFinishExplore(died: boolean) {
     if (finishExploreSentRef.current) return
     finishExploreSentRef.current = true
@@ -567,7 +624,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
 
     setRunResult(buildClientResult(died))
 
-    if (!token) return
+    if (!token) {
+      setSaveStatus('offline')
+      return
+    }
 
     const closedEvents: number[] = []
     let smugglerClosed = false
@@ -578,14 +638,42 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     })
     const smugglerOutcome = smugglerClosed ? (smugglerOutcomeRef.current ?? undefined) : undefined
 
-    finishRunExplore(token, closedEvents, died, smugglerOutcome)
+    // TODO: временная диагностика (см. задачу) — убрать после выяснения,
+    // почему strengthProgress/enduranceProgress не растут.
+    console.log('Explore: finish-explore counters', {
+      attackDamageDealt: attackDamageDealtRef.current,
+      skillDamageDealt: skillDamageDealtRef.current,
+      healedAmount: healedAmountRef.current,
+      damageTaken: damageTakenRef.current,
+    })
+
+    finishRunExplore(
+      token,
+      closedEvents,
+      died,
+      smugglerOutcome,
+      attackDamageDealtRef.current,
+      skillDamageDealtRef.current,
+      healedAmountRef.current,
+      damageTakenRef.current,
+    )
       .then((result) => {
         setRunResult(result)
       })
       .catch((err) => {
         console.error('Explore: /run/finish-explore не удалось отправить', err)
+        setSaveStatus('failed')
       })
   }
+
+  // Уровень персонажа — тем же способом, что maxHp ниже: прямой проп из
+  // App.tsx (player.level, тот же источник, что endurance/strength), с
+  // откатом на PLAYER_LEVEL_FALLBACK, если профиль ещё не загрузился.
+  // Ref — по образцу attackDamageRef ниже (готово для будущего потребителя
+  // внутри ticker'а, см. задачу "масштабирование по уровню" — следующий шаг);
+  // rollTrophies() сейчас ЭТО значение всё ещё не читает, см. её вызовы.
+  const characterLevel = level ?? C.PLAYER_LEVEL_FALLBACK
+  const characterLevelRef = useRef(characterLevel)
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
   const maxHp = endurance && endurance > 0 ? endurance * C.HP_PER_ENDURANCE : C.FALLBACK_MAX_HP
@@ -805,6 +893,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
   // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
   // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
   function takeDamage(amount: number) {
+    // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
+    // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
+    const actualDamage = Math.min(amount, hpRef.current)
+    damageTakenRef.current += actualDamage
     hpRef.current = Math.max(0, hpRef.current - amount)
     updateHpBar()
     if (hpRef.current <= 0) {
@@ -821,6 +913,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
     applySpikeDamageRef.current = () => takeDamage(maxHp * C.SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     attackDamageRef.current = attackDamage
+    characterLevelRef.current = characterLevel
   })
 
   // Клавиатура — второй способ ввода поверх экранных кнопок (Шаг: keyboard
@@ -1200,6 +1293,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         grid,
         beastFrames: beastFramesRef,
         enemies: enemiesRef,
+        characterLevel: characterLevelRef,
       })
 
       // Вся последовательная загрузка спрайт-листов (герой/зверь/сундук/
@@ -1379,6 +1473,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
       finishExploreSentRef.current = false // сброс на случай повторного запуска setup()
       smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
       trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
+      damageTakenRef.current = 0 // сброс на случай повторного запуска setup()
+      attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
+      skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
+      healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
       setRunResult(null) // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
@@ -1508,6 +1606,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         bossSpikeImpactFrames,
         bossWaveLeftFrames,
         bossWaveRightFrames,
+        characterLevel: characterLevelRef,
       })
 
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
@@ -1522,7 +1621,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           // сумма по группе поплыла бы). Каждому, кроме последнего, — ровная
           // доля (Math.floor); последний добирает остаток, чтобы сумма долей
           // всегда точно равнялась total.
-          const trophyTotal = rollTrophies(C.TROPHY_MULT_ENEMY)
+          // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
+          const trophyTotal = rollTrophies(C.TROPHY_MULT_ENEMY, 1)
           const trophyShare = Math.floor(trophyTotal / points.length)
           points.forEach(([ex, ey], i) => {
             const trophyReward = i === points.length - 1 ? trophyTotal - trophyShare * (points.length - 1) : trophyShare
@@ -1924,6 +2024,10 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
               hb.y + hb.height > enemy.y
             if (overlap) {
               enemy.lastHitSwingId = attackSwingIdRef.current
+              // Фактически снятое, не заявленный урон удара — тот же приём,
+              // что в takeDamage (см. attackDamageDealtRef): добивающий удар
+              // не должен раздувать счётчик сверх реального остатка HP врага.
+              attackDamageDealtRef.current += Math.min(attackDamageRef.current, enemy.hp)
               enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
               if (enemy.hp <= 0) {
                 // Смерть — высший приоритет, перебивает hurt/attack/windup
@@ -2000,6 +2104,9 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
               hb.y + hb.height > boss.y
             if (overlap) {
               boss.lastHitSwingId = attackSwingIdRef.current
+              // Фактически снятое, не заявленный урон удара — см. тот же
+              // приём в ветке обычного врага выше / takeDamage.
+              attackDamageDealtRef.current += Math.min(attackDamageRef.current, boss.hp)
               boss.hp = Math.max(0, boss.hp - attackDamageRef.current)
               if (boss.hp <= 0) {
                 // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
@@ -2208,7 +2315,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             const last = obeliskLastStruckRef.current
             if (last) {
               spawnRewardFloat(last.sprite.x, last.sprite.y - last.sprite.height, [
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_OBELISK) },
+                // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
+                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_OBELISK, 1) },
               ])
             }
             if (obeliskEventIndexRef.current !== null) closeEvent(obeliskEventIndexRef.current)
@@ -2581,7 +2689,8 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
             // здесь только попап.
             if (!chest.isMimic) {
               spawnRewardFloat(chest.sprite.x, chest.sprite.y - chest.sprite.height, [
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_CHEST) },
+                // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
+                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_CHEST, 1) },
               ])
             }
           }
@@ -2737,7 +2846,11 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
           // и заряд/хил/кулдаун не применятся — как и требовалось.
           if (!potionHealedThisDrinkRef.current && hero.currentFrame >= C.POTION_GULP_FRAME) {
             potionHealedThisDrinkRef.current = true
+            const hpBeforeHeal = hpRef.current
             hpRef.current = Math.min(maxHp, hpRef.current + maxHp * C.POTION_HEAL_FRAC)
+            // Реально долитое, не полный потенциал зелья — тот же приём, что
+            // у damageTakenRef/attackDamageDealtRef (клэмп у края, не заявка).
+            healedAmountRef.current += hpRef.current - hpBeforeHeal
             updateHpBar()
             potionChargesRef.current -= 1
             potionCdRef.current = C.POTION_COOLDOWN
@@ -2916,6 +3029,7 @@ export default function Explore({ onClose, endurance, strength, onRunComplete, m
         result={runResult}
         eventKinds={eventKinds}
         eventClosed={eventClosed}
+        saveStatus={saveStatus}
         onMenu={() => onClose?.()}
       />
     )

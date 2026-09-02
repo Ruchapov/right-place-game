@@ -93,6 +93,12 @@ export type Enemy = {
   // ОДИН раз при спавне всего кластера (rollTrophies), не при смерти
   // каждого врага отдельно, иначе сумма по группе не сходилась бы с total.
   trophyReward: number
+  // Урон удара этого врага — посчитан ОДИН раз при спавне по формуле
+  // масштабирования (см. scaling.ts/ENEMY_DAMAGE_PER_LEVEL), не константа
+  // C.ENEMY_ATTACK_DAMAGE напрямую и не пересчитывается на лету (см. задачу
+  // "масштабирование по уровню" — уровень персонажа не должен влиять на уже
+  // заспавненного врага посреди забега).
+  attackDamage: number
   hpBarBg: Graphics
   hpBarFill: Graphics
 }
@@ -230,6 +236,15 @@ export type Boss = {
   hpBarBg: Graphics
   hpBarFill: Graphics
   sprite: AnimatedSprite
+  // Урон атак босса — посчитаны ОДИН раз при спавне по формуле
+  // масштабирования (см. scaling.ts), тем же приёмом, что Enemy.attackDamage
+  // выше: множитель (BOSS_*_DMG_MULT) поверх уже отмасштабированного урона
+  // обычного врага на этом же уровне персонажа, не константы C.BOSS_*_DAMAGE
+  // напрямую.
+  meleeDamage: number
+  melee2Damage: number
+  spikeDamage: number
+  waveDamage: number
 }
 
 // HUD события обелисков (таймер + счётчик над экраном, см. задачу) — ЭТО
@@ -261,6 +276,9 @@ export type BossSpike = {
   vy: number
   lifeMs: number
   hitApplied: boolean
+  // Урон этого конкретного шипа — снят с boss.spikeDamage в момент спавна
+  // (см. spawnBossSpike), не константа C.BOSS_RANGED_DAMAGE напрямую.
+  damage: number
 }
 
 // AoE-волна топота (см. задачу) — независимая головка, катится по земле
@@ -272,6 +290,9 @@ export type BossWave = {
   dir: 1 | -1
   lifeMs: number
   hitApplied: boolean
+  // Урон этой конкретной волны — снят с boss.waveDamage в момент спавна
+  // (см. spawnBossWave), не константа C.BOSS_WAVE_DAMAGE напрямую.
+  damage: number
 }
 
 // marker — для enemy-события НЕ создаётся (визуал — сами враги, реальные

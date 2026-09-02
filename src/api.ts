@@ -106,6 +106,12 @@ export async function startRunExplore(token: string, mapFile?: string): Promise<
 // 1:1. Returned by POST /run/finish-explore, and also shows up as
 // LoginResponse.interruptedRun (see below) when the server finds a stale
 // explore run still open on the next login and closes it as a death.
+// strengthGained/enduranceGained/agilityGained/leveledUp — always 0/false on
+// an interrupted run (server never runs stat growth there); on a normal
+// finish, real numbers from the server — the client-side fallback
+// (Explore.tsx buildClientResult) can't estimate these itself (no access to
+// the DB-side progress accumulators), so it also reports 0/false until the
+// server's response replaces it.
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
@@ -115,6 +121,10 @@ export type RunResultSummary = {
   eventsTotal: number
   items: never[]
   bonuses: never[]
+  strengthGained: number
+  enduranceGained: number
+  agilityGained: number
+  leveledUp: boolean
 }
 
 // Response shape of POST /run/finish-explore (server/src/routes/run.ts).
@@ -163,8 +173,17 @@ export async function finishRunExplore(
   closedEvents: number[],
   died: boolean,
   smugglerOutcome?: 'gain' | 'steal',
+  // Сырые счётчики за забег (см. Explore.tsx — attackDamageDealtRef/
+  // skillDamageDealtRef/healedAmountRef/damageTakenRef), НЕ готовые приросты
+  // статов — сервер сам прогоняет их через applyStatGrowth, после клэмпа по
+  // анти-читерским потолкам (см. server/src/routes/run.ts). Оружие и скиллы
+  // — раздельно (оружие растит силу, скиллы+лечение — ловкость).
+  attackDamageDealt?: number,
+  skillDamageDealt?: number,
+  healedAmount?: number,
+  damageTaken?: number,
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, smugglerOutcome })
+  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken })
   let attempt = 0
   while (true) {
     const result = await attemptFinishExplore(token, body)
