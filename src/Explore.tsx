@@ -238,12 +238,14 @@ function ResultsScreen({
   eventKinds,
   eventClosed,
   saveStatus,
+  localEventFallback,
   onMenu,
 }: {
   result: RunResultSummary
   eventKinds: EventKind[]
   eventClosed: boolean[]
   saveStatus: 'offline' | 'failed' | null
+  localEventFallback: boolean
   onMenu: () => void
 }) {
   // На смерти показываем "потеряно", на успехе — "получено"; оба числа
@@ -323,6 +325,24 @@ function ResultsScreen({
                 }}
               >
                 {saveStatus === 'failed' ? 'Забег не запомнят — итоги потеряны' : 'Ты вне мира — забег не сохранён'}
+              </div>
+            )}
+            {/* Отдельная от saveStatus пометка — про ИСТОЧНИК самих событий,
+                не про сохранение. Сейчас оба условия совпадают (нет token),
+                но это разные факты, и оба должны быть явно видны (см. задачу
+                про молчаливый ??10-фолбэк — тихая заглушка стоит времени
+                на отладке). */}
+            {localEventFallback && (
+              <div
+                style={{
+                  fontSize: 'clamp(9px, 2.8vw, 11px)',
+                  fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  textAlign: 'center',
+                  color: '#F08A24',
+                }}
+              >
+                ⚠ ЗАГЛУШКА: события разыграны локально, не сервером
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '68%' }}>
@@ -598,6 +618,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
   const [eventKinds, setEventKinds] = useState<EventKind[]>([])
+  // Видимая пометка "забег на локальной заглушке" — включается ТОЛЬКО когда
+  // нет token и тройку событий пришлось разыгрывать в браузере вместо
+  // сервера (см. setup() ниже, ветка else у startExploreResult). Небольшая,
+  // но не скрытая — умышленно, чтобы отладочный забег без сервера нельзя
+  // было принять за настоящий (см. задачу: тихий фолбэк — отложенная
+  // потеря времени).
+  const [localEventFallback, setLocalEventFallback] = useState(false)
   // Итоги забега для экрана результатов (см. ResultsScreen выше) — null,
   // пока забег идёт. Выставляется РОВНО один раз, синхронно клиентскими
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
@@ -1077,12 +1104,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       app = new Application()
       const base = import.meta.env.BASE_URL
 
-      // Сервер уже умеет разыгрывать тройку событий (POST /run/start-explore,
-      // см. src/api.ts) — вызывается здесь и/или ниже ТОЛЬКО чтобы проверить
-      // связь/увидеть реальный ответ (и, когда карта не выбрана заранее,
-      // узнать её имя). Результат пока НИКАК не используется дальше: тройка
-      // событий/уровень/maxHp по-прежнему считаются клиентом, как и раньше
-      // (следующий шаг — переключить на серверные данные). token приходит
+      // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
+      // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
+      // единственный источник chosenEvents (см. ниже, "3 события за забег").
+      // Раньше клиент параллельно считал свою тройку и результат этого
+      // запроса использовал только для лога — привело к рассинхрону индексов
+      // с серверным currentRun.events на финише (см. задачу). token приходит
       // ТОЛЬКО из настоящей Telegram-сессии (см. App.tsx, isTelegramSession —
       // не просто "есть что-то в localStorage"). Не задан → запрос вообще не
       // делаем, вне Telegram всё идёт как раньше. Ошибку НЕ глушим — она
@@ -1136,48 +1163,60 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         }
       }
 
-      // "3 события за забег" — выбираем случайно, без повторов, из общего пула
-      // (enemyCluster / сундук / смуглер / загадка / босс — что есть у карты).
-      // На карте A есть только enemyClusters и reward. enemy-событие несёт
-      // clusterPoints (все 3 точки кластера) — враги спавнятся ниже, после
-      // создания worldContainer.
-      //
-      // Карта D в состоянии OPEN — ИСКЛЮЧЕНИЕ: Контрабандист там ГАРАНТИРОВАН
-      // (см. CLAUDE.md), а не рядовой равновероятный кандидат среди ~11 —
-      // иначе он часто не попадал в тройку. Вынимаем smuggler-кандидата из
-      // пула и ставим ПЕРВЫМ, остальные EVENTS_PER_RUN-1 добираем pickRandom
-      // из пула БЕЗ него (не задваивается). SEALED сюда не попадает — там
-      // npc.smuggler=null, buildEventCandidates и так его не кладёт в пул.
-      // Карта C — босс ВЕРОЯТНОСТНЫЙ (см. задачу): бросок BOSS_SPAWN_CHANCE
-      // решается ОДИН раз здесь же, той же схемой пиннинга, что у
-      // Контрабандиста на карте D OPEN выше — если выпало, единственный
-      // kind:'boss' кандидат вынимается из пула и ставится ПЕРВЫМ (иначе
-      // среди общего пула часто не попадал бы в тройку сам по себе). Не
-      // выпало — кандидат просто исключается из пула (см. poolWithoutBoss
-      // ниже), чтобы pickRandom не мог случайно вытащить его САМ; bossRef/
-      // bossEventIndexRef остаются null (см. spawnBoss/сброс выше) — 3
-      // события добираются обычным путём без него.
-      const eventPool = buildEventCandidates(slots)
+      setLocalEventFallback(false) // сброс на случай повторного запуска setup() (напр. debug-переключатель карт)
+
+      // "3 события за забег" — источник истины теперь СЕРВЕР
+      // (startExploreResult.events, см. server/src/runEvents.ts
+      // rollRunEvents — та же логика/гарантии, что была здесь раньше,
+      // перенесена туда 1:1). Раньше клиент разыгрывал свою тройку
+      // независимым Math.random() ПАРАЛЛЕЛЬНО серверу — оба честно считали
+      // одну и ту же вероятностную модель, но разными бросками, поэтому
+      // индексы closedEvents на финише указывали не на те события в
+      // серверном currentRun.events: bonusLevels за босса не начислялся
+      // (сервер не видел boss в СВОЁМ массиве), потолок урона (anti-cheat в
+      // /run/finish-explore) считался по чужому, обычно меньшему набору
+      // событий и честно обрезал урон. Больше НЕ пересчитываем этот бросок
+      // на клиенте — берём готовый массив как есть.
       let chosenEvents: EventCandidate[]
-      const smugglerIndex = resolvedMapFile.startsWith('map_D_OPEN')
-        ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
-        : -1
-      const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
-      // bossWillSpawn читается позже (spawnBoss ниже) — держит спавн самого
-      // босса и его присутствие в chosenEvents синхронными: один и тот же
-      // бросок решает и то, и другое.
-      const bossWillSpawn = bossIndex !== -1 && Math.random() < C.BOSS_SPAWN_CHANCE
-      if (smugglerIndex !== -1) {
-        const smugglerCandidate = eventPool[smugglerIndex]
-        const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
-        chosenEvents = [smugglerCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
-      } else if (bossWillSpawn) {
-        const bossCandidate = eventPool[bossIndex]
-        const restPool = eventPool.filter((_, i) => i !== bossIndex)
-        chosenEvents = [bossCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
+      let bossWillSpawn: boolean
+      if (startExploreResult) {
+        chosenEvents = startExploreResult.events
+        bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
       } else {
-        const poolWithoutBoss = bossIndex !== -1 ? eventPool.filter((_, i) => i !== bossIndex) : eventPool
-        chosenEvents = pickRandom(poolWithoutBoss, C.EVENTS_PER_RUN)
+        // ТОЛЬКО офлайн UI-отладка вне Telegram (нет token, см. CLAUDE.md
+        // "UI-отладка через localhost") — сервера спросить не у кого,
+        // /run/start-explore не звался. Настоящая Telegram-сессия сюда
+        // НИКОГДА не попадает (token есть всегда — см. App.tsx,
+        // isTelegramSession), так что рассинхрон с сервером здесь в
+        // принципе невозможен: финиш в этом режиме на сервер не уходит
+        // (см. sendFinishExplore, !token → saveStatus='offline'). Розыгрыш
+        // — старая клиентская копия правил сервера (buildEventCandidates +
+        // та же схема пиннинга смуглера/босса), нужна только чтобы на
+        // экране вообще было что показать. localEventFallback ниже включает
+        // ВИДИМУЮ пометку поверх игры — забег на заглушке не должен
+        // выглядеть неотличимо от настоящего (см. задачу, урок про тихий
+        // ??10-фолбэк на вкладке "Персонаж" — молчаливый фолбэк это
+        // отложенная потеря времени).
+        setLocalEventFallback(true)
+        const eventPool = buildEventCandidates(slots)
+        const smugglerIndex = resolvedMapFile.startsWith('map_D_OPEN')
+          ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
+          : -1
+        const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
+        const bossRoll = bossIndex !== -1 && Math.random() < C.BOSS_SPAWN_CHANCE
+        if (smugglerIndex !== -1) {
+          const smugglerCandidate = eventPool[smugglerIndex]
+          const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
+          chosenEvents = [smugglerCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
+        } else if (bossRoll) {
+          const bossCandidate = eventPool[bossIndex]
+          const restPool = eventPool.filter((_, i) => i !== bossIndex)
+          chosenEvents = [bossCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
+        } else {
+          const poolWithoutBoss = bossIndex !== -1 ? eventPool.filter((_, i) => i !== bossIndex) : eventPool
+          chosenEvents = pickRandom(poolWithoutBoss, C.EVENTS_PER_RUN)
+        }
+        bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
       }
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
@@ -1798,13 +1837,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // Босс карты C (см. type Boss/explore/entities/boss.ts) — спавн НЕ
       // читает chosenEvents напрямую (не менялось, см. задачу ФАЗА 5): читаем
       // slots.boss НАПРЯМУЮ — это ПЛОСКАЯ пара [x,y] (в отличие от
-      // enemyClusters/obelisk — там массив/объект точек). Спавн теперь
-      // ГЕЙТИТСЯ тем же bossWillSpawn, что решал пиннинг в chosenEvents
-      // (см. задачу, вероятностный босс) — иначе при невыпавшем броске
-      // спрайт всё равно появился бы на карте без eventIndex, и закрыть
-      // событие/выдать награду было бы нечем (bossEventIndexRef остался
-      // бы null навсегда). bossPoint и ev.x/ev.y кандидата 'boss' — одна и
-      // та же точка slots.boss, когда бросок выпал.
+      // enemyClusters/obelisk — там массив/объект точек). Спавн ГЕЙТИТСЯ
+      // bossWillSpawn — тем же "boss попал в chosenEvents", что видно в
+      // eventsRef.current выше (см. bossEventIndexRef), не отдельным
+      // броском — иначе при невыпавшем боссе спрайт всё равно появился бы
+      // на карте без eventIndex, и закрыть событие/выдать награду было бы
+      // нечем (bossEventIndexRef остался бы null навсегда). bossPoint и
+      // ev.x/ev.y кандидата 'boss' — одна и та же точка slots.boss, когда
+      // босс есть в тройке.
       const bossPoint = (slots as { boss?: unknown } | null)?.boss
       if (bossWillSpawn && isPointXY(bossPoint)) {
         bossSystem!.spawn(bossPoint[0], bossPoint[1])
@@ -3100,6 +3140,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         eventKinds={eventKinds}
         eventClosed={eventClosed}
         saveStatus={saveStatus}
+        localEventFallback={localEventFallback}
         onMenu={() => onClose?.()}
       />
     )
@@ -3126,6 +3167,44 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           но полностью скрыт непрозрачным экраном ожидания поверх (см.
           ниже) — игрок его не видит, что и требовалось по смыслу задачи. */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Видимая пометка "события розыграны локально, не сервером" (см.
+          localEventFallback выше, setup()) — ТОЛЬКО офлайн-отладка без
+          token. Небольшая, но не скрытая: намеренно НЕ прячем за !ready,
+          чтобы было видно уже на экране подготовки, и НЕ прячем внутри
+          HudPlate/меню — заметность важнее аккуратности здесь. pointerEvents
+          none — не перехватывает тапы по игре под ней. */}
+      {localEventFallback && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 'env(safe-area-inset-top)',
+            left: 0,
+            right: 0,
+            zIndex: 1002,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              marginTop: 4,
+              padding: '3px 10px',
+              borderRadius: 6,
+              background: 'rgba(21,18,24,0.85)',
+              border: '1px solid #F08A24',
+              color: '#F08A24',
+              fontSize: 'clamp(9px, 2.6vw, 11px)',
+              fontWeight: 700,
+              letterSpacing: '0.03em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            ⚠ ЗАГЛУШКА — события офлайн, не с сервера
+          </div>
+        </div>
+      )}
 
       {!ready && <StoneFrameScreen title="ПОДГОТОВКА" lines={['Забег готовится...']} pulse />}
 
