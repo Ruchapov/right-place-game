@@ -18,10 +18,15 @@ interface SettingsPanelProps {
   // TEMP_MAP_SWITCHER и самой панелью-переключателем перед релизом.
   mapFile: string
   onSelectMap: (file: string) => void
+  // TEMP: тумблер бессмертия — заменяет бывшую константу C.DEBUG_INVINCIBLE
+  // (Explore.tsx, useState). Убрать оба пропа вместе с TEMP_MAP_SWITCHER
+  // перед релизом.
+  invincible: boolean
+  onToggleInvincible: (value: boolean) => void
   onClose?: () => void
 }
 
-export default function SettingsPanel({ mapFile, onSelectMap, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ mapFile, onSelectMap, invincible, onToggleInvincible, onClose }: SettingsPanelProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false)
 
@@ -125,6 +130,25 @@ export default function SettingsPanel({ mapFile, onSelectMap, onClose }: Setting
                   </button>
                 ))}
               </div>
+              {/* TEMP: тумблер бессмертия — для проверки начисления уровня за
+                  босса без скиллов, убрать вместе с TEMP_MAP_SWITCHER. Тот же
+                  стиль активного/неактивного состояния, что у кнопок карт
+                  выше (граница #E8B23A при true). */}
+              <button
+                onClick={() => onToggleInvincible(!invincible)}
+                style={{
+                  padding: '8px 0',
+                  borderRadius: 6,
+                  border: invincible ? '2px solid #E8B23A' : '1px solid #3A3344',
+                  background: '#221E2B',
+                  color: '#EDE7F2',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Бессмертие: {invincible ? 'ВКЛ' : 'ВЫКЛ'}
+              </button>
               <button
                 onClick={() => setSettingsOpen(false)}
                 style={{

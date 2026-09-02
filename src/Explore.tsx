@@ -612,6 +612,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // return'ил); 'failed' — сходили, но не сохранилось (после ретраев внутри
   // finishRunExplore). См. рендер в ResultsScreen ниже.
   const [saveStatus, setSaveStatus] = useState<'offline' | 'failed' | null>(null)
+  // ВРЕМЕННО, для отладки (см. SettingsPanel — тумблер рядом с TEMP_MAP_SWITCHER,
+  // убрать вместе с ним перед релизом) — заменяет бывшую константу
+  // C.DEBUG_INVINCIBLE. React state, не ref: takeDamage() определена прямо в
+  // теле компонента (не внутри setup()), поэтому пересоздаётся на каждый
+  // рендер и сама по себе всегда видит актуальное значение — отдельный
+  // invincibleRef не нужен (в отличие от attackDamage/characterLevel, чьи
+  // сырые значения читаются ИЗ ticker'а через ref, синкаемый эффектом).
+  const [invincible, setInvincible] = useState(false)
 
   // Клиентская оценка итогов — используется СРАЗУ (см. sendFinishExplore
   // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
@@ -947,11 +955,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
   // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
   function takeDamage(amount: number) {
-    // ВРЕМЕННО (см. constants.ts, DEBUG_INVINCIBLE) — полный ранний выход,
-    // ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту функцию,
-    // так что перехват здесь один на все источники. HP/hurt/death тоже не
-    // трогаем — раз урона не было, реагировать не на что.
-    if (C.DEBUG_INVINCIBLE) return
+    // ВРЕМЕННО (см. invincible state выше и SettingsPanel) — полный ранний
+    // выход, ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту
+    // функцию, так что перехват здесь один на все источники. HP/hurt/death
+    // тоже не трогаем — раз урона не было, реагировать не на что.
+    if (invincible) return
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
     const actualDamage = Math.min(amount, hpRef.current)
@@ -3204,7 +3212,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           отсюда напрямую (тот же приём, что и в ветке смерти выше). Дедуп
           (finishExploreSentRef) общий на все 3 триггера — если забег уже
           закрылся по другому пути, здесь просто no-op. */}
-      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} onClose={() => sendFinishExplore(true)} />
+      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible} onClose={() => sendFinishExplore(true)} />
 
           <TouchControls
             dirRef={dirRef}

@@ -798,11 +798,3 @@ export const EVENTS_PER_RUN = 3
 // при выборе chosenEvents, наравне с гарантией Контрабандиста на карте D
 // OPEN; не выпало — босс не спавнится вообще (см. spawnBoss/bossRef ниже).
 export const BOSS_SPAWN_CHANCE = 0.3
-
-// ВРЕМЕННО, для отладки (проверка начисления уровня за босса без скиллов) —
-// убрать перед релизом вместе с TEMP_MAP_SWITCHER (тот живёт не здесь, а в
-// src/explore/ui/SettingsPanel.tsx). true — игрок не получает урон вообще:
-// перехватывается в единой точке takeDamage() в Explore.tsx (враги/босс/
-// шипы/мимик — все источники урона идут через неё), damageTakenRef при этом
-// НЕ инкрементируется — иначе выносливость росла бы от урона, которого не было.
-export const DEBUG_INVINCIBLE = false
