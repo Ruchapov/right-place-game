@@ -108,6 +108,14 @@ export async function authRoutes(server: FastifyInstance) {
         enduranceGained: 0,
         agilityGained: 0,
         leveledUp: false,
+        // Абсолютные значения — статы тут НЕ менялись (см. выше), просто
+        // текущие char.*, тем же приёмом, что ответ /run/finish-explore.
+        trophies: 0,
+        strength: char.strength,
+        endurance: char.endurance,
+        agility: char.agility,
+        level: calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels),
+        bonusLevels: char.bonusLevels, // не менялся — брошенный забег бонус не даёт
       }
     }
 

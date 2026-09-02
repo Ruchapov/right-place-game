@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult, type InventoryItem } from './api'
+import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult, type InventoryItem, type RunResultSummary } from './api'
 import Battle from './Battle'
 import Smuggler from './Smuggler'
 import Puzzle from './Puzzle'
@@ -123,6 +123,63 @@ function hexToRgb(hex: string): string {
 
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
+  // Дедуп параллельных фоновых рефрешей (см. requestPlayerRefresh ниже) —
+  // если несколько merge-хендлеров подряд (или почти одновременно) обнаружат
+  // player===null, должен уйти ОДИН логин-запрос, а не N параллельных.
+  // in-flight промис — синхронно проставляется в ref ДО первого await внутри
+  // refreshPlayerFromServer, поэтому дедуп срабатывает даже если два вызова
+  // requestPlayerRefresh происходят в один и тот же синхронный тик.
+  const playerRefreshInFlightRef = useRef<Promise<void> | null>(null)
+  // Фоновый фолбэк для ВСЕХ setPlayer(prev => prev ? {...} : prev) по файлу
+  // (см. вызовы ниже) — раньше при prev===null результат сервера молча
+  // терялся; теперь вызывающая сторона проверяет player напрямую (не через
+  // updater — побочные эффекты внутри апдейтера React не гарантирует
+  // однократными) и, если null, зовёт это вместо merge. НЕ ждём результат и
+  // не пробрасываем ошибку — вызывающая сторона всё равно ничего не может с
+  // этим сделать, кроме как залогировать (что и делаем здесь же).
+  function requestPlayerRefresh() {
+    if (!playerRefreshInFlightRef.current) {
+      playerRefreshInFlightRef.current = refreshPlayerFromServer()
+        .catch((e) => {
+          console.error('App: не удалось восстановить player после потерянного merge', e)
+        })
+        .finally(() => {
+          playerRefreshInFlightRef.current = null
+        })
+    }
+  }
+  // TODO: временная диагностика (см. задачу "player становится null") —
+  // ловит переход player из non-null в null ВНУТРИ уже смонтированного
+  // компонента (в отличие от лога в useEffect(init, []) выше, который ловит
+  // размонтирование/пересоздание всего App целиком). Грепом по файлу нет ни
+  // одного setPlayer(null) — если этот console.trace() всё же напечатается,
+  // он покажет стек вызова, который до сих пор не нашёлся чтением кода.
+  const prevPlayerForDebugRef = useRef(player)
+  useEffect(() => {
+    if (prevPlayerForDebugRef.current !== null && player === null) {
+      console.trace('App: player стал null (был не null)', { time: Date.now() })
+    }
+    prevPlayerForDebugRef.current = player
+  }, [player])
+  // TODO: временная диагностика — потеря фокуса/сворачивание/переоткрытие
+  // Mini App как кандидат на причину. persisted:true у pageshow означает
+  // "страница восстановлена из bfcache БЕЗ повторного выполнения JS" — если
+  // именно это происходит, ни один из логов выше (main.tsx/init()) не
+  // напечатается повторно, а player при этом всё равно может показывать
+  // устаревшее состояние из-за того, как WebView разморозил старый DOM/JS.
+  useEffect(() => {
+    const onVisibility = () => console.log('App: visibilitychange', { state: document.visibilityState, hidden: document.hidden, time: Date.now() })
+    const onPageHide = (e: PageTransitionEvent) => console.log('App: pagehide', { persisted: e.persisted, time: Date.now() })
+    const onPageShow = (e: PageTransitionEvent) => console.log('App: pageshow', { persisted: e.persisted, time: Date.now() })
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  }, [])
   // Фото профиля из Telegram initData (фронт-only, сервер не трогаем) — вне
   // Telegram (обычный браузер) остаётся null, экран "Персонаж" сам рисует
   // запасной вариант (первая буква имени).
@@ -200,40 +257,59 @@ export default function App() {
     img.src = `${import.meta.env.BASE_URL}assets/error_frame.png`
   }, [])
 
+  // Логин-флоу — переиспользуемый: и при первом запуске (useEffect ниже),
+  // и как фолбэк, когда merge в player не удался, потому что player был
+  // null (см. requestPlayerRefresh/prevPlayerForDebugRef выше — ВСЕ
+  // setPlayer(prev => prev ? {...} : prev) по файлу теперь на null дёргают
+  // именно эту функцию вместо того, чтобы молча терять результат сервера).
+  // НЕ трогает loading/error — это забота вызывающей стороны: при первом
+  // запуске это критично для полноэкранного индикатора/экрана ошибки,
+  // при фоновом восстановлении посреди сессии полноэкранный "⏳ Загрузка..."
+  // поверх уже открытого приложения был бы неуместен.
+  async function refreshPlayerFromServer() {
+    let initDataRaw: string | undefined
+    try {
+      initDataRaw = retrieveRawInitData()
+    } catch {
+      initDataRaw = undefined
+    }
+    if (!initDataRaw) {
+      // Вне Telegram (обычный браузер) — заглушка для локальной разработки,
+      // на сервер не ходим.
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['heal', 'dash'], potionCharges: 3 })
+      setEnergyBase(MAX_ENERGY)
+      setEnergyBaseAt(Date.now())
+      return
+    }
+    // Фото профиля — фронт-only чтение launch params, СЕРВЕР НЕ ТРОГАЕМ.
+    // Отдельный try/catch: если SDK не отдаёт photoUrl (старый клиент,
+    // пользователь без фото), функция должна отработать запасным
+    // вариантом (буква), а не упасть целиком.
+    try {
+      const launchParams = retrieveLaunchParams(true)
+      setPhotoUrl(launchParams.tgWebAppData?.user?.photoUrl ?? null)
+    } catch {
+      setPhotoUrl(null)
+    }
+    const data: LoginResponse = await loginWithTelegram(initDataRaw)
+    localStorage.setItem('jwt', data.token)
+    setIsTelegramSession(true)
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
+    setEnergyBase(data.character.energy)
+    setEnergyBaseAt(Date.now())
+  }
+
   useEffect(() => {
+    // TODO: временная диагностика (см. задачу) — этот эффект (deps: [])
+    // по контракту React обязан сработать РОВНО ОДИН раз за жизнь
+    // компонента App. Если строка ниже напечаталась больше одного раза —
+    // значит <App/> целиком размонтировался и смонтировался заново
+    // (единственный способ обнулить player без явного setPlayer(null),
+    // которого в файле нет вообще — грепом проверено).
+    console.log('App: init() effect firing — component (re)mounted', { time: Date.now() })
     async function init() {
       try {
-        let initDataRaw: string | undefined
-        try {
-          initDataRaw = retrieveRawInitData()
-        } catch {
-          initDataRaw = undefined
-        }
-        if (!initDataRaw) {
-          // Вне Telegram (обычный браузер) — заглушка для локальной разработки,
-          // на сервер не ходим.
-          setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['heal', 'dash'], potionCharges: 3 })
-          setEnergyBase(MAX_ENERGY)
-          setEnergyBaseAt(Date.now())
-          setLoading(false)
-          return
-        }
-        // Фото профиля — фронт-only чтение launch params, СЕРВЕР НЕ ТРОГАЕМ.
-        // Отдельный try/catch: если SDK не отдаёт photoUrl (старый клиент,
-        // пользователь без фото), экран должен отработать запасным
-        // вариантом (буква), а не уронить весь логин.
-        try {
-          const launchParams = retrieveLaunchParams(true)
-          setPhotoUrl(launchParams.tgWebAppData?.user?.photoUrl ?? null)
-        } catch {
-          setPhotoUrl(null)
-        }
-        const data: LoginResponse = await loginWithTelegram(initDataRaw)
-        localStorage.setItem('jwt', data.token)
-        setIsTelegramSession(true)
-        setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
-        setEnergyBase(data.character.energy)
-        setEnergyBaseAt(Date.now())
+        await refreshPlayerFromServer()
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Unknown error')
       } finally {
@@ -264,7 +340,10 @@ export default function App() {
       setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
       setRunHp(result.hp); setRunMaxHp(result.maxHp)
       if (result.armor !== undefined) setRunArmor(result.armor)
-      if (result.potions !== undefined) setPlayer(prev => prev ? { ...prev, potionCharges: result.potions! } : prev)
+      if (result.potions !== undefined) {
+        if (player) setPlayer(prev => prev ? { ...prev, potionCharges: result.potions! } : prev)
+        else requestPlayerRefresh()
+      }
       showRoomIntro(0, result.rooms)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Run failed')
@@ -315,7 +394,11 @@ export default function App() {
       setResults((prev) => [...prev, { room: roomType, message: result.message }])
       setRoomIndex(result.index)
       setRunHp(result.hp)
-      setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
+      if (player) {
+        setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
+      } else {
+        requestPlayerRefresh()
+      }
       if (result.droppedItem) {
         setItemDropToast({ name: result.droppedItem.name, slot: result.droppedItem.slot })
         setTimeout(() => setItemDropToast(null), 3000)
@@ -338,7 +421,11 @@ export default function App() {
       setRunHp(br.hp)
       if (br.died) setRunDied(true)
       if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
-      setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
+      if (player) {
+        setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
+      } else {
+        requestPlayerRefresh()
+      }
       if (br.droppedItem) {
         setItemDropToast({ name: br.droppedItem.name, slot: br.droppedItem.slot })
         setTimeout(() => setItemDropToast(null), 3000)
@@ -358,7 +445,11 @@ export default function App() {
       setResults((prev) => [...prev, { room: 'smuggler', message: sr.message }])
       setRoomIndex(sr.index)
       setRunHp(sr.hp)
-      setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
+      if (player) {
+        setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
+      } else {
+        requestPlayerRefresh()
+      }
       if (!sr.done && rooms) {
         setTimeout(() => showRoomIntro(sr.index, rooms), 100)
       }
@@ -378,7 +469,11 @@ export default function App() {
       setRoomIndex(pr.index)
       setRunHp(pr.hp)
       if (!pr.done && !pr.died && rooms) showRoomIntro(pr.index, rooms)
-      setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
+      if (player) {
+        setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
+      } else {
+        requestPlayerRefresh()
+      }
     } catch (e) {
       setRunError(e instanceof Error ? e.message : 'Puzzle failed')
     }
@@ -388,15 +483,34 @@ export default function App() {
     setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false); setRunArmor(0)
   }
 
-  // ВРЕМЕННО: Explore ещё не ходит на сервер за наградой (нет /run/* вызовов
-  // для новой модели событий) — переиспользуем старый results-экран только
-  // визуально, message ниже не отражает реальную награду. См. разбор в ответе
-  // на задачу "3 события за забег".
-  function handleExploreRunComplete(closedEvents: { kind: string }[]) {
-    setShowExploreTest(false)
-    setRooms(closedEvents.map((e) => e.kind))
-    setRoomIndex(closedEvents.length)
-    setResults(closedEvents.map((e) => ({ room: e.kind, message: '(заглушка) награда не подключена' })))
+  // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
+  // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
+  // обновляет player тем же приёмом, что уже применяется для старого
+  // 3-комнатного потока ниже (handleRoomEnter/handleBattleEnd:
+  // setPlayer(prev => ({...prev, ...}))). result.trophies/strength/endurance/
+  // agility/level — АБСОЛЮТНЫЕ значения из БД, не приросты, поэтому просто
+  // перезаписываем, не складываем. Экран Explore закрывается отдельно, по
+  // кнопке "В меню" на его собственном ResultsScreen (см. onClose проп ниже) —
+  // здесь НЕ трогаем showExploreTest/rooms/results, это был старый стаб,
+  // который Explore больше не использует (свой ResultsScreen).
+  function handleExploreRunComplete(result: RunResultSummary) {
+    if (player) {
+      setPlayer(prev => prev ? {
+        ...prev,
+        trophies: result.trophies,
+        strength: result.strength,
+        endurance: result.endurance,
+        agility: result.agility,
+        level: result.level,
+      } : prev)
+    } else {
+      // player===null — merge выше нечем применить (см. requestPlayerRefresh).
+      // Само значение result при этом не теряется: сервер уже записал его в
+      // БД (finish-explore отработал ДО того, как этот колбэк вызвался), так
+      // что полный рефетч профиля вернёт те же цифры — реприменять result
+      // поверх отдельно не нужно.
+      requestPlayerRefresh()
+    }
   }
 
   async function handleSkillToggle(skillId: string) {
@@ -414,7 +528,11 @@ export default function App() {
     setSavingSkills(true)
     try {
       const result = await saveEquippedSkills(token, next)
-      setPlayer(prev => prev ? { ...prev, equippedSkills: result.equippedSkills } : prev)
+      if (player) {
+        setPlayer(prev => prev ? { ...prev, equippedSkills: result.equippedSkills } : prev)
+      } else {
+        requestPlayerRefresh()
+      }
     } catch (e) {
       console.error('Save skills failed', e)
     } finally {
@@ -428,7 +546,11 @@ export default function App() {
     if (player.gold < 20) return
     try {
       const result = await buyPotion(token)
-      setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
+      if (player) {
+        setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
+      } else {
+        requestPlayerRefresh()
+      }
     } catch (e) {
       console.error('Buy potion failed', e)
     }
@@ -516,19 +638,31 @@ export default function App() {
       {activeTab !== 'explore' && (
         <div>
           {activeTab === 'hero' && (() => {
+            // player === null здесь означает, что данные реально отсутствуют
+            // (после initial-loading guard выше по файлу это уже не должно
+            // случаться в норме — если случилось, значит player где-то
+            // молча обнулился, см. диагностику ниже по компоненту). Раньше
+            // тут были фолбэки вида `?? 10`/`?? 0` на каждое поле — они
+            // рисовали правдоподобные, но ложные цифры вместо того, чтобы
+            // показать, что данных нет. Явный guard + локальная `p` без `?.`
+            // не даёт этому случиться снова незаметно.
+            if (!player) {
+              return <div style={{ padding: 20, color: C.textDim, fontSize: 12 }}>Данные персонажа недоступны.</div>
+            }
+            const p = player
             const sectionHeaderStyle = {
               fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY,
             }
             const HERO_SKILL_NAMES: Record<string, string> = {
               heal:'Лечение', dash:'Рывок-удар', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар',
             }
-            const heroSkillSlots = [0, 1].map(i => player?.equippedSkills?.[i] ?? null)
+            const heroSkillSlots = [0, 1].map(i => p.equippedSkills[i] ?? null)
             const charStats = [
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: 15 + Math.floor((player?.strength ?? 0) / 2), label:'Урон' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: 15 + Math.floor(p.strength / 2), label:'Урон' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0), label:'Броня' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: player?.endurance ?? 10, label:'Выносл.' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: player?.strength ?? 0, label:'Сила' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: player?.agility ?? 0, label:'Ловкость' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0), label:'Удача' },
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
@@ -559,21 +693,21 @@ export default function App() {
                       />
                     ) : (
                       <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.bone }}>
-                        {player?.firstName?.[0]?.toUpperCase() ?? '?'}
+                        {p.firstName[0]?.toUpperCase() ?? '?'}
                       </div>
                     )}
                   </div>
                 </div>
                 <div style={{ flex:1 }}>
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>
-                    {player?.firstName}
+                    {p.firstName}
                   </div>
                   <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
                     — класс не выбран —
                   </div>
                 </div>
                 <div style={{ background:C.nicheDeep, borderRadius:6, padding:'5px 10px' }}>
-                  <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.glowCore }}>ур. {player?.level ?? 1}</div>
+                  <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.glowCore }}>ур. {p.level}</div>
                 </div>
               </div>
 
@@ -581,11 +715,11 @@ export default function App() {
               <div style={{ margin:'0 8px 16px', background:C.nicheDeep, borderRadius:8, padding:'7px 10px', display:'flex', gap:14 }}>
                 <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                   <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                  <span style={{ fontSize:12, color:C.bone }}>{player?.gold ?? 0}</span>
+                  <span style={{ fontSize:12, color:C.bone }}>{p.gold}</span>
                 </div>
                 <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                   <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                  <span style={{ fontSize:12, color:C.bone }}>{player?.trophies ?? 0}</span>
+                  <span style={{ fontSize:12, color:C.bone }}>{p.trophies}</span>
                 </div>
               </div>
 

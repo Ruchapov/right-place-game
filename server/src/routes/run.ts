@@ -126,6 +126,16 @@ type FinishExploreBody = {
 // results-screen stat growth display (see /run/finish-explore); an
 // interrupted run (auth.ts) never calls applyStatGrowth, so it always
 // reports zeros/false there, same convention as items/bonuses above.
+// trophies/strength/endurance/agility/level — the character's CURRENT
+// (post-update) absolute values, not deltas — same idea as the old 3-room
+// flow's /run/room and /run/battle-result responses (`level`/`strength`/
+// `endurance` there), which the client already merges straight into
+// `player` via setPlayer(prev => ({...prev, ...})). Explore never had that
+// wiring at all (onRunComplete was dead code) — this is what finally closes
+// that gap (see App.tsx handleExploreRunComplete). Returning absolute
+// values, not deltas, means the client can never compute a wrong number by
+// adding a gain to a stale base — it just overwrites with what the server
+// already wrote to the DB.
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
@@ -139,6 +149,16 @@ export type RunResultSummary = {
   enduranceGained: number
   agilityGained: number
   leveledUp: boolean
+  trophies: number
+  strength: number
+  endurance: number
+  agility: number
+  level: number
+  // Уровни, полученные НЕ от статов (сейчас только убийство босса в Explore,
+  // +1, см. bossClosed в /run/finish-explore) — level выше УЖЕ включает этот
+  // бонус (calculateLevel складывает их), это поле для клиента/аналитики
+  // отдельно, не источник истины само по себе.
+  bonusLevels: number
 }
 // Body shape for POST /run/battle-result.
 type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
@@ -316,6 +336,14 @@ export async function runRoutes(server: FastifyInstance) {
     // the ONLY closed event, trophySum is 0 and the multiplier correctly
     // yields 0 either way.
     const smugglerClosed = closedEvents.some((i) => run.events[i].kind === 'smuggler')
+    // Убийство босса — bonusLevels += 1 (см. задачу). "Закрыт" здесь значит
+    // ТО ЖЕ самое, что уже решает выплату трофеев выше (closedEvents,
+    // провалидированные индексы в run.events ИЗ currentRun, не из тела
+    // запроса) — тот же уровень доверия клиенту, что и у trophySum, отдельный
+    // сырой флаг "bossKilled" от клиента не заводим и не читаем. run.events[i]
+    // само по себе доказывает, что босс в ЭТОМ забеге был (currentRun —
+    // серверные данные), а не то, что клиент придумал.
+    const bossClosed = closedEvents.some((i) => run.events[i].kind === 'boss')
     const smugglerOutcome = request.body.smugglerOutcome
     let trophyTotal = trophySum
     if (smugglerClosed && smugglerOutcome === 'gain') {
@@ -338,20 +366,6 @@ export async function runRoutes(server: FastifyInstance) {
     // потолка урона (масштаб врага на текущем уровне), и для сравнения
     // "levelUp?" после.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-
-    // TODO: временная диагностика (см. задачу) — убрать после выяснения,
-    // почему strengthProgress/enduranceProgress не растут. Сырые значения
-    // ДО клэмпа/дефолта, как пришли в теле запроса.
-    request.log.info(
-      {
-        userId,
-        rawAttackDamageDealt: request.body.attackDamageDealt,
-        rawSkillDamageDealt: request.body.skillDamageDealt,
-        rawHealedAmount: request.body.healedAmount,
-        rawDamageTaken: request.body.damageTaken,
-      },
-      'finish-explore: raw counters received',
-    )
 
     const safeAttackDamageDealt = Math.max(0, request.body.attackDamageDealt ?? 0)
     const safeSkillDamageDealt = Math.max(0, request.body.skillDamageDealt ?? 0)
@@ -403,13 +417,18 @@ export async function runRoutes(server: FastifyInstance) {
     // скиллы + лечение растят ловкость.
     const clampedHealedAmount = Math.min(safeHealedAmount, run.maxHp)
 
+    // bonusLevels инкрементируется здесь, ДО applyStatGrowth — level (снимок)
+    // обязан пересчитаться уже с новым bonusLevels в той же формуле
+    // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
+    const newBonusLevels = character.bonusLevels + (bossClosed ? 1 : 0)
+
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, clampedAttackDamageDealt,
       character.endurance, character.enduranceProgress, clampedDamageTaken,
       character.agility, character.agilityProgress, clampedSkillDamageDealt + clampedHealedAmount,
       run.maxHp,
       run.hp,
-      character.bonusLevels, // не трогаем — босс отдельным шагом
+      newBonusLevels,
     )
 
     await prisma.character.update({
@@ -422,6 +441,7 @@ export async function runRoutes(server: FastifyInstance) {
         enduranceProgress: growth.enduranceProgress,
         agility: growth.agility,
         agilityProgress: growth.agilityProgress,
+        bonusLevels: newBonusLevels,
         level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         currentRun: Prisma.DbNull,
       },
@@ -440,6 +460,12 @@ export async function runRoutes(server: FastifyInstance) {
       enduranceGained: growth.endurance - character.endurance,
       agilityGained: growth.agility - character.agility,
       leveledUp: growth.level > characterLevel,
+      trophies: died ? 0 : newTrophies,
+      strength: growth.strength,
+      endurance: growth.endurance,
+      agility: growth.agility,
+      level: growth.level,
+      bonusLevels: newBonusLevels,
     }
     return reply.send(result)
   })

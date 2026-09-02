@@ -112,6 +112,13 @@ export async function startRunExplore(token: string, mapFile?: string): Promise<
 // (Explore.tsx buildClientResult) can't estimate these itself (no access to
 // the DB-side progress accumulators), so it also reports 0/false until the
 // server's response replaces it.
+// trophies/strength/endurance/agility/level — CURRENT absolute values (not
+// deltas), same idea as the old 3-room flow's RoomResult/BattleResult below
+// (their `level`/`strength`/`endurance` — App.tsx merges those straight into
+// `player`). Explore.tsx's buildClientResult fallback also fills these in,
+// but with best-effort numbers that are never actually consumed — the
+// player-state merge (App.tsx handleExploreRunComplete) only ever fires
+// from the real server response, not the client-only estimate.
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
@@ -125,6 +132,15 @@ export type RunResultSummary = {
   enduranceGained: number
   agilityGained: number
   leveledUp: boolean
+  trophies: number
+  strength: number
+  endurance: number
+  agility: number
+  level: number
+  // Уровни НЕ от статов (сейчас только убийство босса, +1) — level выше УЖЕ
+  // включает этот бонус (calculateLevel на сервере складывает их), это поле
+  // отдельно на будущее/аналитику, само по себе не источник истины.
+  bonusLevels: number
 }
 
 // Response shape of POST /run/finish-explore (server/src/routes/run.ts).

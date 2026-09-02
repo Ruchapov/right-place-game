@@ -53,10 +53,14 @@ type ExploreProps = {
   // ниже откатывается на C.PLAYER_LEVEL_FALLBACK, как maxHp откатывается на
   // C.FALLBACK_MAX_HP при отсутствующем endurance.
   level?: number
-  // Временный каркас "3 события за забег": вызывается ровно один раз, когда
-  // все 3 выбранных события закрыты. kind — 'enemy'|'chest'|'smuggler'|'puzzle'|
-  // 'boss', совпадает с ключами ROOM_LABELS в App.tsx.
-  onRunComplete?: (closedEvents: { kind: EventKind }[]) => void
+  // Вызывается РОВНО ОДИН раз, когда пришёл настоящий (не клиентский
+  // fallback) ответ /run/finish-explore — App.tsx использует это, чтобы
+  // обновить player тем же приёмом, что уже применяется для старого
+  // 3-комнатного потока (setPlayer(prev => ({...prev, ...}))): trophies/
+  // strength/endurance/agility/level в result — АБСОЛЮТНЫЕ значения из БД,
+  // не приросты (см. RunResultSummary в api.ts). НЕ вызывается на
+  // прерванном/офлайн/неудачном сохранении — обновлять player нечем.
+  onRunComplete?: (result: RunResultSummary) => void
   // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Задан (debug-панель
   // карт A-F в App.tsx) — карта известна заранее, 1:1 прежнее поведение. Не
   // задан (обычная кнопка "Начать забег") — карту называет сервер: см.
@@ -406,7 +410,50 @@ function ResultsScreen({
             </div>
           </div>
 
-          {/* 4. Сумка — одна секция (заголовок+содержимое держатся вплотную
+          {/* 4. Прокачка — ТОЛЬКО прибавка (не выросло — не показываем),
+              тем же приёмом заголовка-с-разделителями, что "В СУМКЕ" ниже.
+              На прерванном забеге (interruptedRun из /auth/login) сервер
+              всегда отдаёт нули/false — секция сама не рендерится, ничего
+              лишнего проверять не нужно. Левелап — заметнее (крупнее,
+              FONT_DISPLAY, glowCore — тот же вес, что у заголовка экрана),
+              отдельной строкой над списком статов. */}
+          {(result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp) && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+                <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                  ПРОКАЧКА
+                </div>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+              </div>
+              {result.leveledUp && (
+                <div
+                  style={{
+                    fontFamily: C.FONT_DISPLAY,
+                    fontWeight: 900,
+                    fontSize: 'clamp(14px, 4.4vw, 18px)',
+                    letterSpacing: '0.06em',
+                    color: Theme.glowCore,
+                  }}
+                >
+                  УРОВЕНЬ ПОВЫШЕН
+                </div>
+              )}
+              {[
+                { label: 'Сила', value: result.strengthGained },
+                { label: 'Выносливость', value: result.enduranceGained },
+                { label: 'Ловкость', value: result.agilityGained },
+              ]
+                .filter((stat) => stat.value > 0)
+                .map((stat) => (
+                  <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}>
+                    +{stat.value} {stat.label}
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {/* 5. Сумка — одна секция (заголовок+содержимое держатся вплотную
               своим fixed gap). items/bonuses с сервера ВСЕГДА пустые
               (дроп-система ещё не реализована, см. CLAUDE.md), так что
               здесь только заглушка "пусто"; секция готова принять реальные
@@ -426,7 +473,7 @@ function ResultsScreen({
             )}
           </div>
 
-          {/* 5. Кнопка "В меню" — единственный способ закрыть этот экран,
+          {/* 6. Кнопка "В меню" — единственный способ закрыть этот экран,
               onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
               Без marginTop:'auto' — space-evenly на родителе уже распределяет
               место равномерно, auto-маргин перетянул бы его весь на себя. */}
@@ -510,7 +557,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // за забег, — в отличие от HP лишний ререндер тут не проблема).
   const eventsRef = useRef<MapEvent[]>([])
   const runCompleteFiredRef = useRef(false)
-  const onRunCompleteRef = useRef<(closedEvents: { kind: EventKind }[]) => void>(() => {})
+  const onRunCompleteRef = useRef<(result: RunResultSummary) => void>(() => {})
   // /run/finish-explore уходит РОВНО ОДИН раз за забег — есть 3 триггера
   // (смерть, выход через шестерёнку, все 3 события закрыты, см.
   // sendFinishExplore ниже), но сработавший первым выставляет этот флаг, и
@@ -594,6 +641,19 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       enduranceGained: 0,
       agilityGained: 0,
       leveledUp: false,
+      // Абсолютные значения — тоже заглушки: player этими полями обновляется
+      // ТОЛЬКО из настоящего ответа сервера (см. sendFinishExplore, .then),
+      // не из этого клиентского fallback — эти конкретные числа никогда не
+      // читаются, просто заполняют форму RunResultSummary. agility нет среди
+      // пропов Explore — 0, как и everywhere в файле, где agility недоступен.
+      trophies: died ? 0 : (trophies ?? 0) + earned,
+      strength: strength ?? 0,
+      endurance: endurance ?? 0,
+      agility: 0,
+      level: characterLevel,
+      // bonusLevels клиенту вообще не известен (нет такого пропа у Explore) —
+      // заглушка 0, тем же приёмом, что и остальные поля выше.
+      bonusLevels: 0,
     }
   }
 
@@ -638,15 +698,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     })
     const smugglerOutcome = smugglerClosed ? (smugglerOutcomeRef.current ?? undefined) : undefined
 
-    // TODO: временная диагностика (см. задачу) — убрать после выяснения,
-    // почему strengthProgress/enduranceProgress не растут.
-    console.log('Explore: finish-explore counters', {
-      attackDamageDealt: attackDamageDealtRef.current,
-      skillDamageDealt: skillDamageDealtRef.current,
-      healedAmount: healedAmountRef.current,
-      damageTaken: damageTakenRef.current,
-    })
-
     finishRunExplore(
       token,
       closedEvents,
@@ -659,6 +710,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     )
       .then((result) => {
         setRunResult(result)
+        // Настоящий ответ сервера, не клиентский fallback — App.tsx обновляет
+        // player этими абсолютными значениями (см. ExploreProps.onRunComplete).
+        onRunCompleteRef.current(result)
       })
       .catch((err) => {
         console.error('Explore: /run/finish-explore не удалось отправить', err)
@@ -893,6 +947,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
   // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
   function takeDamage(amount: number) {
+    // ВРЕМЕННО (см. constants.ts, DEBUG_INVINCIBLE) — полный ранний выход,
+    // ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту функцию,
+    // так что перехват здесь один на все источники. HP/hurt/death тоже не
+    // трогаем — раз урона не было, реагировать не на что.
+    if (C.DEBUG_INVINCIBLE) return
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
     const actualDamage = Math.min(amount, hpRef.current)
@@ -1993,8 +2052,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           // onRunCompleteRef (App.tsx) раньше сразу переключало экран на
           // старый results-стаб — теперь итоги показывает сам Explore
           // (ResultsScreen, см. sendFinishExplore/runResult выше), поэтому
-          // здесь больше НЕ дёргаем onRunCompleteRef: иначе App.tsx
-          // размонтировал бы Explore раньше, чем игрок увидит этот экран.
+          // ЗДЕСЬ его больше не дёргаем напрямую — иначе App.tsx размонтировал
+          // бы Explore раньше, чем игрок увидит этот экран. onRunCompleteRef
+          // всё же вызывается, но позже и из другого места — внутри
+          // sendFinishExplore, когда придёт настоящий ответ сервера (см. там,
+          // обновляет player в App.tsx).
           sendFinishExplore(false)
         }
       }
