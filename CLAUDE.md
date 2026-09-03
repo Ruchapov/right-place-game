@@ -96,19 +96,13 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 
 ### Server (server/src/)
 
-Полный список (server/src/routes/run.ts — 12, + auth.ts + index.ts — сверено по факту, не по памяти):
+Полный список (server/src/routes/run.ts — 6, + auth.ts + index.ts — сверено по факту, не по памяти):
 
 | Endpoint | Body | Description |
 |---|---|---|
 | `POST /auth/login` | `{initData}` | Verify Telegram initData → JWT; закрывает зависший explore-забег как смерть (`interruptedRun`, см. Phase 2.5) |
-| `POST /run/start` | — | СТАРЫЙ поток: spend energy, generate 3 rooms, save currentRun |
 | `POST /run/start-explore` | `{mapFile?}` | Explore: карту выбирает сервер, если `mapFile` не прислан; см. Phase 2.5 |
 | `POST /run/finish-explore` | `{closedEvents, died, smugglerOutcome?}` | Explore: начисляет/обнуляет трофеи, закрывает currentRun; см. Phase 2.5 |
-| `POST /run/room` | — | СТАРЫЙ поток: process chest/trap |
-| `POST /run/battle-result` | `{won, damageTaken, damageDealt, skillUses?, actualHpLost?, potionsUsed?, attackDamageDealt?, skillDamageDealt?, healedAmount?}` | СТАРЫЙ поток: after fight |
-| `POST /run/smuggler-result` | `{exchange: bool}` | СТАРЫЙ поток: smuggler choice |
-| `POST /run/puzzle` | — | СТАРЫЙ поток: get puzzle question |
-| `POST /run/puzzle-result` | `{selectedIndex}` | СТАРЫЙ поток: submit puzzle answer |
 | `POST /character/skills` | `{skills: string[]}` | Save equipped skills (max 2) |
 | `POST /character/buy-potion` | — | Buy 1 potion for 20 gold |
 | `GET /character/inventory` | — | Список предметов персонажа. ⚠️ Текущий UI вкладки "Снаряжение" на хардкоде и этот эндпоинт не зовёт (см. "Система предметов" ниже) |
@@ -117,45 +111,21 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 
 **Prisma Character fields** (сверено по `server/prisma/schema.prisma`, без id/userId/createdAt/updatedAt/relations):
 `level, energy, lastEnergyUpdate, endurance, strength, strengthAtLevelUp, agility, enduranceAtLevelUp, luck, strengthProgress, enduranceProgress, agilityProgress, gold, trophies, crystals, potionCharges, equippedSkills([]), currentRun(Json?)`. Полей `totalDamageReceived`/`totalDamageDealt`/`totalSkillUses` в схеме НЕТ (были в старой версии этой записи, не сверялись).
+⚠️ **`luck` и `crystals` нигде не читаются и не пишутся в `server/src`** (сверено grep'ом по всему серверу) — открытый вопрос, не задача: это не следствие удаления старого потока, поля были мёртвыми и до него.
 
-**`currentRun` shape** — два варианта, различаются по `mode`:
-- СТАРЫЙ поток: `{ rooms, index, hp, potions, puzzleId? }`
-- Explore (Phase 2.5): `{ mode:'explore', mapFile, events, hp, maxHp, potions }` — `events` несёт полный розыгрыш (trophyReward/isMimic), клиенту наружу не идёт целиком (см. Phase 2.5)
+**`currentRun` shape** — один вид, старого 3-комнатного потока больше нет:
+`{ mode:'explore', mapFile, events, hp, maxHp, potions }` (Phase 2.5) — `events` несёт полный розыгрыш (trophyReward/isMimic), клиенту наружу не идёт целиком (см. Phase 2.5)
 
 ### Frontend (src/)
 
-**`Battle.tsx`** — PixiJS v8 fullscreen combat.
-Props: `{initialHp, maxHp, isBoss?, level?, equippedSkills?, potionCharges?, strength?, onBattleEnd}`
-
-**⚠️ Спрайты игрока — УСТАРЕВШИЙ раздел, см. "Art & Animation Pipeline" ниже.**
-Старые заглушки (Walk.png 8 кадров 128×128 и т.д.) заменены полным набором
-анимаций героя и первого врага, ещё не подключённым к коду. Секция ниже
-оставлена как есть до момента интеграции нового набора в Battle.tsx.
-
-**Координаты в Battle.tsx:**
-- FLOOR_Y = height - 200
-- player.y = FLOOR_Y (anchor = 0.5, 1 — ногами на полу)
-- enemy.y = FLOOR_Y - ENEMY_H + 40
-- WORLD_WIDTH = 3000, камера следует за игроком
-
-**Анимации игрока (реализовано в коде на момент последней проверки):**
-- idle: idleFrames, speed 0.15, когда стоит
-- walk: walkFrames, speed 0.3, когда движется
-- attack: attackFrames, speed 0.4, один раз при нажатии ⚔, потом возврат к idle/walk
-- Флип: scale.x отрицательный = смотрит влево, положительный = вправо
-
-**Параллакс в ticker:**
-- bgSky.tilePosition.x = -cameraX * 0.1
-- bgRuins.tilePosition.x = -cameraX * 0.3
-- platform.tilePosition.x = -cameraX
+`Battle.tsx`, `Smuggler.tsx`, `Puzzle.tsx` — старый 3-комнатный боевой поток
+(PixiJS-сцена боя + окна смуглера/загадки старого потока) — УДАЛЕНЫ целиком
+(см. Next Steps, [СТАРЫЙ ПОТОК]).
 
 **`App.tsx`** — Main state.
 PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility, equippedSkills, potionCharges}`
 - Navigation: 5-tab bottom nav (Персонаж / Магазин / Исследовать / Снаряжение / Друзья)
-- СТАРЫЙ run flow (мёртв как маршрут, код остаётся — `handleStartRun` держится
-  `void`-ссылкой, см. Next Steps): Start → showRoomIntro(2s) →
-  enterCurrentRoomDirect → auto-next → results screen
-- Кнопка "Начать забег" теперь открывает `<Explore>` БЕЗ `mapFile` — карту
+- Кнопка "Начать забег" открывает `<Explore>` БЕЗ `mapFile` — карту
   называет сервер (Phase 2.5, см. ниже). Debug-панель карт A-F передаёт
   `mapFile` явно и продолжает работать как раньше.
 
@@ -734,6 +704,12 @@ X заметно смещён от центра (0.593, не ~0.5) — фигу�
 - **Превью-GIF собирать с ЕДИНОЙ палитрой** на все кадры (MEDIANCUT по склеенным
   кадрам). `ADAPTIVE` на каждый кадр = цвета плавают = ложная «рябь», которой в PNG нет.
 - Переделанные файлы отдавать **под новым именем** — иначе кеш показывает старую версию.
+- **Документации о наличии ассетов на диске верить нельзя — проверять листингом папки.**
+  Реальный случай: этот файл утверждал, что VFX-арт всех 5 скиллов готов и лежит в
+  `public/assets/skills/` (раздел "Готовые ассеты — Скиллы (VFX)"), а по факту на
+  диске лежали только старые строчные заглушки `Battle.tsx`, PascalCase-файлов не
+  было вообще (см. "Skills" выше). Расхождение вскрылось только когда перед
+  удалением `Battle.tsx` прогнали `ls` по папке, а не поверили записи в документе.
 - **Veo меняет отдалённость камеры между роликами** — заявленный единый масштаб
   персонажа между листами НЕ гарантирован, даже если так написано в README набора.
   Проверять обязательно. Численные метрики масштаба ВРУТ: высота силуэта завышена
@@ -867,25 +843,6 @@ App.tsx + ref) — сумма `armor` всех НАДЕТЫХ предметов
 
 ---
 
-## Room System
-
-| Room | Chance | Reward |
-|---|---|---|
-| Enemy | 60% | Trophies 10-15 |
-| Chest | 15% | Gold 10-50 |
-| Trap | 10% | −20% maxHP |
-| Puzzle | 10% | +15-60 gold OR −20% maxHP |
-| Smuggler | 3% | Trophies ×1.5 OR ×0.5 |
-| Boss | 2% | Trophies 15-22, level-up |
-
-⚠️ Эта таблица — старая модель (проценты по типу комнаты на уровне забега).
-Актуальная модель для готовых карт A–F другая: **каждая карта закрывает ровно 3
-события за забег**, рандомно выбранных из слот-пулов конкретной карты (см. раздел
-**Maps System** ниже). Нужно решить, как две модели соотносятся (глобальный
-шанс комнаты vs слоты конкретной карты) до интеграции.
-
----
-
 ## Economy
 - Trophies = risky currency. Копятся МЕЖДУ забегами (не сгорают по одному
   забегу), стираются ТОЛЬКО смертью (весь банк целиком, см.
@@ -901,7 +858,7 @@ App.tsx + ref) — сумма `armor` всех НАДЕТЫХ предметов
 
 ---
 
-## Skills (реализовано частично)
+## Skills (НЕ реализовано — старая реализация была в удалённом Battle.tsx)
 
 ### Иконки скиллов и дроп улучшения — АРТ ГОТОВ
 
@@ -932,12 +889,26 @@ App.tsx + ref) — сумма `armor` всех НАДЕТЫХ предметов
 определено.
 
 - Игрок экипирует 2 скилла из 5: heal, dash, fireball, slash, iceball
-- heal — РЕАЛИЗОВАН: восстанавливает 10% maxHp, кулдаун 5с
-- dash, fireball, slash, iceball — кнопки есть в UI, логика НЕ реализована
-- Все скиллы: кулдаун 5с, инкрементируют skillUses
-- **Арт для всех 5 скиллов готов** (см. "Готовые ассеты — Скиллы (VFX)" выше),
-  ждёт только подключения спрайтов в Battle.tsx — логика урона/кулдаунов
-  не меняется, меняется только визуал + добавление импакт-эффектов.
+- Все пять были реализованы в `Battle.tsx` (старый поток) — весь этот код
+  удалён вместе с файлом (см. Next Steps, [СТАРЫЙ ПОТОК]). Кулдауны НЕ были
+  одинаковыми, вопреки прежней записи "все скиллы: кулдаун 5с": heal/
+  fireball/iceball/dash — 5с, **slash — 10с**. Зелье (не скилл, отдельная
+  кнопка) лечило 50% maxHp в Battle.tsx против 25% в Explore. Iceball урона
+  вообще не наносил, только замораживал врага на 3с. Подробности и номера
+  строк — в архивной записи ниже ("Реализация в Battle.tsx"), сохранённой
+  специально перед удалением файла как исходник для будущей задачи [SKILLS].
+- В `src/explore/entities/skills.ts` (новый поток) скиллы НЕ реализованы —
+  пустой каркас, гасит только флаги нажатий кнопок (см. "entities/skills.ts"
+  ниже).
+- ⚠️ **VFX-арта скиллов в репозитории НЕТ.** Формулировка "арт для всех 5
+  скиллов готов" (была здесь раньше) — НЕВЕРНА: PascalCase-файлов
+  Projectile/Impact, описанных в "Готовые ассеты — Скиллы (VFX)" выше, на
+  диске никогда не было. На диске лежали только старые строчные заглушки
+  `Battle.tsx` (`dash.png`/`fireball.png`/`iceball.png`/`slash.png`/
+  `blood.png`/`blood_strip.png`) — они удалены вместе со старым потоком,
+  `public/assets/skills/` удалена как опустевшая папка. Арт существует
+  только в истории чата — при старте задачи [SKILLS] его нужно сначала
+  сгенерировать/залить заново в `public/assets/skills/`.
 
 ### Реализация в Battle.tsx — выписано ПЕРЕД удалением файла (сверено по коду,
 не по документации выше — есть расхождения, см. пометки). Это исходник для
@@ -1031,6 +1002,10 @@ App.tsx + ref) — сумма `armor` всех НАДЕТЫХ предметов
   фактически лежит под тем же строчным именем, что и старые файлы — по
   одному только регистру имени "старое vs новое" не различить, только по
   факту использования в Battle.tsx.
+- ⚠️ **Все шесть файлов удалены** вместе со старым потоком (см. Next Steps,
+  [СТАРЫЙ ПОТОК]), `public/assets/skills/` удалена как опустевшая — этот
+  листинг актуален только как исторический снимок на момент записи, на
+  диске сейчас этих файлов нет.
 
 ## Potion (Explore) — ГОТОВО
 - `drink.png`: 14 кадров, клетка 394×296 (та же, что у idle/run/attack/hurt/
@@ -3166,6 +3141,16 @@ A-F по-прежнему передаёт `mapFile` явно — для неё 
      (Phase 2.5, см. ниже). Копия ручная — источник правды `public/assets/`,
      сверка `python tools/check_map_sync.py` (read-only, сравнивает по
      sha256) — гонять ПЕРЕД деплоем сервера, см. "Грабли" ниже.
+- **[УБОРКА] Ассеты старого боевого потока — ГОТОВО.** Отдельная от пункта
+  выше уборка (другой повод, старый поток, см. [СТАРЫЙ ПОТОК]): удалено 19
+  файлов (старые заглушки `Idle.png`/`Walk.png`/`Attack_1.png`/`Hurt.png`/
+  `bg-sky.png`/`bg-ruins.png`/`bg-floor.png`/`platform.png` в корне
+  `public/assets/`, весь `public/assets/enemy/orc/` — 5 файлов, весь
+  `public/assets/skills/` — 6 файлов). Перед удалением каждое имя
+  прогонялось обратным поиском по всему репозиторию (не только `src/`) —
+  ни одно не оказалось используемым за пределами уже удалённого кода.
+  Папки `public/assets/enemy/` и `public/assets/skills/` удалены как
+  опустевшие.
 
 ### Открытые задачи (Phase 2.5)
 - **[EXPLORE] Загрузка параллакс-фона не обёрнута в try/catch.**
@@ -3184,21 +3169,15 @@ A-F по-прежнему передаёт `mapFile` явно — для неё 
   Integration", `POST /run/finish-explore`: `applyStatGrowth` подключён,
   читает `attackDamageDealt`/`skillDamageDealt`/`healedAmount`/`damageTaken`
   из тела запроса (клэмпнутые анти-читом), растит статы даже на смерти.
-- **[СЕРВЕР] Старые эндпоинты не проверяют формат `currentRun`.**
-  `/run/room`/`/run/battle-result`/`/run/smuggler-result`/`/run/puzzle`/
-  `/run/puzzle-result` делают `character.currentRun as unknown as ActiveRun`
-  без проверки `mode` (в отличие от `/run/finish-explore`, которая явно
-  проверяет `run.mode !== 'explore'`). Если у персонажа сейчас Explore-забег
-  (`mode:'explore'`, нет поля `rooms`) и почему-то вызван старый эндпоинт —
-  упадёт на `run.rooms[run.index]` (undefined). Актуально до тех пор, пока
-  оба потока живы одновременно.
-- **[СТАРЫЙ ПОТОК] Удалять `Battle.tsx`/`/run/start`/`/run/room`/
-  `/run/battle-result`/`/run/puzzle*`/`/run/smuggler-result`/`puzzles.ts`** —
-  БЛОКЕР СНЯТ: раньше это было условлено "только после переноса роста
-  статов в Explore" (см. предыдущий пункт [СТАТЫ]), перенос сделан. Теперь
-  готово к удалению как приоритетная задача — см. также [СЕРВЕР] выше
-  (старые эндпоинты не проверяют `currentRun.mode`, что перестанет быть
-  риском, как только они исчезнут).
+- ~~**[СЕРВЕР] Старые эндпоинты не проверяют формат `currentRun`.**~~ —
+  СНЯТО: эндпоинты, о которых шла речь (`/run/room`/`/run/battle-result`/
+  `/run/smuggler-result`/`/run/puzzle`/`/run/puzzle-result`), удалены
+  вместе со старым потоком (см. пункт ниже) — риск исчез вместе с кодом.
+- ~~**[СТАРЫЙ ПОТОК] Удалить `Battle.tsx`/`Smuggler.tsx`/`Puzzle.tsx`/
+  `/run/start`/`/run/room`/`/run/battle-result`/`/run/puzzle*`/
+  `/run/smuggler-result`/`puzzles.ts`**~~ — ВЫПОЛНЕНО: удалено тремя
+  коммитами (фронт → сервер → ассеты), задеплоено и проверено живым
+  забегом в Telegram. Старого 3-комнатного потока в проекте больше нет.
 - **[БЕЗОПАСНОСТЬ] Контрабандист: исход обмена сообщает клиент, сервер
   верит на слово.** `/run/finish-explore` берёт `smugglerOutcome` из тела
   запроса как есть и применяет `SMUGGLER_MULT`/`SMUGGLER_STEAL_FRAC` без
@@ -3215,13 +3194,13 @@ A-F по-прежнему передаёт `mapFile` явно — для неё 
    после ответа `/run/finish-explore`. Открытых остатков по интеграции
    Explore⇄сервер не осталось — оставшиеся [ЭКОНОМИКА]/[БЕЗОПАСНОСТЬ]/
    [ПРЕДМЕТЫ]-пункты выше — отдельные, не блокирующие задачи.
-2. **Интеграция спрайтов героя и зверя в Battle.tsx** (СТАРАЯ боевая сцена,
-   отдельно от Explore — там герой/зверь уже готовы, см. выше) — подключить
-   тот же набор анимаций вместо старых заглушек Walk/Attack_1/Idle/Hurt.
-   Актуальные размеры клеток смотреть в разделах "Готовые ассеты" выше (не
-   фиксируем здесь — несколько раз менялись по ходу интеграции в Explore).
+2. ~~**Интеграция спрайтов героя и зверя в Battle.tsx**~~ — ОТПАЛО:
+   `Battle.tsx` удалён вместе со старым потоком (см. [СТАРЫЙ ПОТОК] выше),
+   подключать спрайты стало некуда. Герой и зверь уже интегрированы в
+   `Explore.tsx` (см. "Спрайты героя"/"Спрайты и боевая логика зверя" выше).
 3. **Интеграция карт** — положить сетки/слоты из `RightPlace_maps.zip` в репо,
-   решить как слоты карты соотносятся с текущей моделью `Room System` выше.
+   решить как слоты карты соотносятся с моделью "3 события за забег из
+   слот-пулов карты" (см. `Maps System` выше).
 4. ~~Механика обелисков (F)~~ — ГОТОВО, подключено в Explore.tsx (см. "Готовые
    ассеты — Загадка-обелиск" выше: рулетка событий, таймер с добавкой за удар,
    награда, closeEvent, смерть по таймеру).
@@ -3260,13 +3239,15 @@ A-F по-прежнему передаёт `mapFile` явно — для неё 
    `src/explore/scaling.ts`+`constants.ts`, те же числа надо поменять в
    `game.ts`, иначе потолок урона молча разъедется с тем, что реально
    заспавнено в игре.
-7. **[SKILLS] Skills** — подключить готовый арт + реализовать dash, fireball,
-   slash, iceball в бою (см. "Готовые ассеты — Скиллы (VFX)"). Место в коде —
-   `src/explore/entities/skills.ts` (каркас уже там, см. "Модули сущностей"
-   выше), НЕ инлайн в `Explore.tsx` — тот же контракт, что у `enemy.ts`/
-   `boss.ts`. Design decision: ЛОВКОСТЬ должна давать УРОН скиллов (не
-   только их разблокировку/рост ловкости от использования — это разные
-   направления одной связи ловкость↔скиллы), деталей формулы пока нет.
+7. **[SKILLS] Skills** — ⚠️ готового арта в репозитории НЕТ (см. "Skills"
+   выше) — СНАЧАЛА сгенерировать/залить VFX для dash/fireball/iceball/slash
+   в `public/assets/skills/` (папка удалена как пустая), ПОТОМ реализовать
+   сами скиллы в бою. Место в коде — `src/explore/entities/skills.ts`
+   (каркас уже там, см. "Модули сущностей" выше), НЕ инлайн в `Explore.tsx`
+   — тот же контракт, что у `enemy.ts`/`boss.ts`. Design decision: ЛОВКОСТЬ
+   должна давать УРОН скиллов (не только их разблокировку/рост ловкости от
+   использования — это разные направления одной связи ловкость↔скиллы),
+   деталей формулы пока нет.
 8. **Equipment** — 6 слотов, тиры каждые 5 уровней. Иконки пустых слотов
    готовы, иконки реальных предметов — нет. Плюс полировка UI (сейчас плоские
    заглушки, не под общий каменный стиль HUD-арта).
