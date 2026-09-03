@@ -561,8 +561,7 @@ export function createBossSystem(deps: BossDeps) {
         const deathDone = boss.sprite.currentFrame >= deathFrames.length - 1 || !boss.sprite.playing
         if (deathDone && !boss.rewardGiven) {
           boss.rewardGiven = true
-          // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
-          const amount = rollTrophies(C.TROPHY_MULT_BOSS, 1)
+          const amount = rollTrophies(C.TROPHY_MULT_BOSS, deps.characterLevel.current)
           deps.spawnRewardFloat(boss.sprite.x, boss.sprite.y - boss.sprite.height, [
             { kind: 'trophy', amount },
           ])

@@ -53,14 +53,15 @@ model Character {
 model Item {
   id            String   @id @default(cuid())
   slot          String   // "weapon" | "armor" | "helmet" | "boots" | "gloves" | "amulet"
-  tier          Int      // 1-10 for weapon/armor, 1-5 for helmet/boots/gloves/amulet
+  tier          Int      // 1-6, same range for all six slots (see CLAUDE.md "СПИСОК ПРЕДМЕТОВ")
   nameRu        String   // Russian display name, e.g. "Стальной длинный меч"
   iconPath      String   // e.g. "weapons/weapon_07.png"
-  levelRequired Int      // minimum character level to equip
+  levelRequired Int      // minimum character level to equip — tier * 5
   damage        Int?     // weapon only
   armor         Int?     // armor/helmet/gloves only
-  moveSpeed     Float?   // boots only
+  moveSpeed     Float?   // boots only — PERCENT bonus (e.g. 5 = +5% move speed), not a multiplier
   luck          Int?     // amulet only
+  description   String?  // Russian flavor text (see CLAUDE.md "СПИСОК ПРЕДМЕТОВ") — not rendered by any UI yet
   inventoryItems InventoryItem[]
 }
 

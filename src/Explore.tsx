@@ -764,9 +764,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Уровень персонажа — тем же способом, что maxHp ниже: прямой проп из
   // App.tsx (player.level, тот же источник, что endurance/strength), с
   // откатом на PLAYER_LEVEL_FALLBACK, если профиль ещё не загрузился.
-  // Ref — по образцу attackDamageRef ниже (готово для будущего потребителя
-  // внутри ticker'а, см. задачу "масштабирование по уровню" — следующий шаг);
-  // rollTrophies() сейчас ЭТО значение всё ещё не читает, см. её вызовы.
+  // Ref — по образцу attackDamageRef ниже, читается из ticker'а: и
+  // масштабированием врагов/босса по уровню (enemy.ts/boss.ts), и всеми
+  // вызовами rollTrophies() (враг/обелиск/сундук здесь, босс в boss.ts).
   const characterLevel = level ?? C.PLAYER_LEVEL_FALLBACK
   const characterLevelRef = useRef(characterLevel)
 
@@ -1776,8 +1776,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           // сумма по группе поплыла бы). Каждому, кроме последнего, — ровная
           // доля (Math.floor); последний добирает остаток, чтобы сумма долей
           // всегда точно равнялась total.
-          // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
-          const trophyTotal = rollTrophies(C.TROPHY_MULT_ENEMY, 1)
+          const trophyTotal = rollTrophies(C.TROPHY_MULT_ENEMY, characterLevelRef.current)
           const trophyShare = Math.floor(trophyTotal / points.length)
           points.forEach(([ex, ey], i) => {
             const trophyReward = i === points.length - 1 ? trophyTotal - trophyShare * (points.length - 1) : trophyShare
@@ -2474,8 +2473,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             const last = obeliskLastStruckRef.current
             if (last) {
               spawnRewardFloat(last.sprite.x, last.sprite.y - last.sprite.height, [
-                // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_OBELISK, 1) },
+                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_OBELISK, characterLevelRef.current) },
               ])
             }
             if (obeliskEventIndexRef.current !== null) closeEvent(obeliskEventIndexRef.current)
@@ -2853,8 +2851,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             // здесь только попап.
             if (!chest.isMimic) {
               spawnRewardFloat(chest.sprite.x, chest.sprite.y - chest.sprite.height, [
-                // TODO: экономика трофеев не пересчитана под уровень, временно фиксируем 1
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_CHEST, 1) },
+                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_CHEST, characterLevelRef.current) },
               ])
             }
           }
