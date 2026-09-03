@@ -1,23 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, startRun, enterRoom, submitBattleResult, submitSmugglerResult, getPuzzle, submitPuzzleResult, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type BattleResult, type SmugglerResult, type PuzzleResult, type InventoryItem, type RunResultSummary } from './api'
-import Battle from './Battle'
-import Smuggler from './Smuggler'
-import Puzzle from './Puzzle'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import Explore from './Explore'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; potionCharges: number }
-
-const ROOM_LABELS: Record<string, string> = {
-  enemy: '⚔️ Враг',
-  boss: '👹 Босс',
-  chest: '📦 Сундук',
-  trap: '💥 Ловушка',
-  smuggler: '🤝 Контрабандист',
-  puzzle: '🧩 Загадка',
-}
 
 const SLOT_LABELS: Record<string, string> = {
   weapon: 'Оружие',
@@ -163,12 +151,6 @@ export default function App() {
   const [savingSkills, setSavingSkills] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [inBattle, setInBattle] = useState(false)
-  const [inSmuggler, setInSmuggler] = useState(false)
-  const [puzzleData, setPuzzleData] = useState<{ question: string; options: string[] } | null>(null)
-  const [runHp, setRunHp] = useState(80)
-  const [runMaxHp, setRunMaxHp] = useState(80)
-  const [runArmor, setRunArmor] = useState(0)
   const [gearTab, setGearTab] = useState<'skills' | 'equipment' | 'consumables'>('skills')
   const [slotFilter, setSlotFilter] = useState<string | null>(null)
   const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги'>('Расходники')
@@ -191,16 +173,6 @@ export default function App() {
   // ВРЕМЕННО: отладочная подпись выпавшего состояния D (50/50 OPEN/SEALED,
   // см. кнопку ниже) — убрать вместе с самой тестовой панелью.
   const [dRolledState, setDRolledState] = useState<string | null>(null)
-
-  // Run state
-  const [rooms, setRooms] = useState<string[] | null>(null)
-  const [roomIndex, setRoomIndex] = useState(0)
-  const [results, setResults] = useState<{ room: string; message: string }[]>([])
-  const [running, setRunning] = useState(false)
-  const [runError, setRunError] = useState<string | null>(null)
-  const [roomIntro, setRoomIntro] = useState(false)
-  const [runDied, setRunDied] = useState(false)
-  const [itemDropToast, setItemDropToast] = useState<{ name: string; slot: string } | null>(null)
 
   // Live energy
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
@@ -311,169 +283,12 @@ export default function App() {
   // не единственный источник данных.
   const totalArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
 
-  async function handleStartRun() {
-    const token = localStorage.getItem('jwt')
-    if (!token) return
-    setRunning(true); setRunError(null)
-    try {
-      const result = await startRun(token)
-      setRooms(result.rooms); setRoomIndex(0); setResults([])
-      setEnergyBase(result.energy); setEnergyBaseAt(Date.now())
-      setRunHp(result.hp); setRunMaxHp(result.maxHp)
-      if (result.armor !== undefined) setRunArmor(result.armor)
-      if (result.potions !== undefined) {
-        if (player) setPlayer(prev => prev ? { ...prev, potionCharges: result.potions! } : prev)
-        else requestPlayerRefresh()
-      }
-      showRoomIntro(0, result.rooms)
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : 'Run failed')
-    } finally { setRunning(false) }
-  }
-  // "Начать забег" больше не вызывает handleStartRun (переключено на Explore,
-  // см. кнопку ниже) — старый поток (Battle.tsx, комнаты, /run/start)
-  // остаётся в коде мёртвым до отдельного шага, ссылка ниже только чтобы TS
-  // (noUnusedLocals) не считал функцию мёртвым кодом (тот же приём, что у
-  // handleBuyPotion ниже).
-  void handleStartRun
-
-  function showRoomIntro(index: number, currentRooms: string[]) {
-    if (index >= currentRooms.length) return
-    setRoomIntro(true)
-    setTimeout(() => {
-      setRoomIntro(false)
-      enterCurrentRoomDirect(index, currentRooms)
-    }, 2000)
-  }
-
-  async function enterCurrentRoomDirect(index: number, currentRooms: string[]) {
-    const token = localStorage.getItem('jwt')
-    if (!token) return
-    const roomType = currentRooms[index]
-    setRoomIndex(index)
-    if (roomType === 'enemy' || roomType === 'boss') {
-      setInBattle(true)
-      return
-    }
-    if (roomType === 'smuggler') {
-      setInSmuggler(true)
-      return
-    }
-    if (roomType === 'puzzle') {
-      setRunError(null)
-      try {
-        const pz = await getPuzzle(token)
-        setPuzzleData(pz)
-      } catch (e) {
-        setRunError(e instanceof Error ? e.message : 'Puzzle failed')
-      }
-      return
-    }
-    setRunError(null)
-    try {
-      const result = await enterRoom(token)
-      setResults((prev) => [...prev, { room: roomType, message: result.message }])
-      setRoomIndex(result.index)
-      setRunHp(result.hp)
-      if (player) {
-        setPlayer((prev) => (prev ? { ...prev, gold: result.gold, level: result.level, strength: result.strength, endurance: result.endurance } : prev))
-      } else {
-        requestPlayerRefresh()
-      }
-      if (result.droppedItem) {
-        setItemDropToast({ name: result.droppedItem.name, slot: result.droppedItem.slot })
-        setTimeout(() => setItemDropToast(null), 3000)
-      }
-      if (!result.done && !result.died) showRoomIntro(result.index, currentRooms)
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : 'Room failed')
-    }
-  }
-
-  async function handleBattleEnd(result: { won: boolean; damageTaken: number; damageDealt: number; skillUses: number; actualHpLost: number; potionsUsed: number; attackDamageDealt: number; skillDamageDealt: number; healedAmount: number }) {
-    setInBattle(false)
-    const token = localStorage.getItem('jwt')
-    if (!token) return
-    setRunError(null)
-    try {
-      const br: BattleResult = await submitBattleResult(token, result.won, result.damageTaken, result.damageDealt, result.skillUses, result.actualHpLost, result.potionsUsed, result.attackDamageDealt, result.skillDamageDealt, result.healedAmount)
-      setResults((prev) => [...prev, { room: rooms?.[roomIndex] ?? 'enemy', message: br.message }])
-      setRoomIndex(br.index)
-      setRunHp(br.hp)
-      if (br.died) setRunDied(true)
-      if (!br.done && !br.died && rooms) showRoomIntro(br.index, rooms)
-      if (player) {
-        setPlayer((prev) => (prev ? { ...prev, level: br.level, strength: br.strength, endurance: br.endurance, agility: br.agility ?? prev.agility, trophies: br.trophies, potionCharges: br.potions ?? prev.potionCharges } : prev))
-      } else {
-        requestPlayerRefresh()
-      }
-      if (br.droppedItem) {
-        setItemDropToast({ name: br.droppedItem.name, slot: br.droppedItem.slot })
-        setTimeout(() => setItemDropToast(null), 3000)
-      }
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : 'Battle result failed')
-    }
-  }
-
-  async function handleSmugglerChoice(exchange: boolean) {
-    setInSmuggler(false)
-    const token = localStorage.getItem('jwt')
-    if (!token) return
-    setRunError(null)
-    try {
-      const sr: SmugglerResult = await submitSmugglerResult(token, exchange)
-      setResults((prev) => [...prev, { room: 'smuggler', message: sr.message }])
-      setRoomIndex(sr.index)
-      setRunHp(sr.hp)
-      if (player) {
-        setPlayer((prev) => (prev ? { ...prev, trophies: sr.trophies } : prev))
-      } else {
-        requestPlayerRefresh()
-      }
-      if (!sr.done && rooms) {
-        setTimeout(() => showRoomIntro(sr.index, rooms), 100)
-      }
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : 'Smuggler failed')
-    }
-  }
-
-  async function handlePuzzleAnswer(selectedIndex: number) {
-    setPuzzleData(null)
-    const token = localStorage.getItem('jwt')
-    if (!token) return
-    setRunError(null)
-    try {
-      const pr: PuzzleResult = await submitPuzzleResult(token, selectedIndex)
-      setResults((prev) => [...prev, { room: 'puzzle', message: pr.message }])
-      setRoomIndex(pr.index)
-      setRunHp(pr.hp)
-      if (!pr.done && !pr.died && rooms) showRoomIntro(pr.index, rooms)
-      if (player) {
-        setPlayer((prev) => (prev ? { ...prev, gold: pr.gold, level: pr.level, strength: pr.strength, endurance: pr.endurance } : prev))
-      } else {
-        requestPlayerRefresh()
-      }
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : 'Puzzle failed')
-    }
-  }
-
-  function backToMenu() {
-    setRooms(null); setRoomIndex(0); setResults([]); setRoomIntro(false); setRunning(false); setRunError(null); setRunDied(false); setRunArmor(0)
-  }
-
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
   // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
-  // обновляет player тем же приёмом, что уже применяется для старого
-  // 3-комнатного потока ниже (handleRoomEnter/handleBattleEnd:
-  // setPlayer(prev => ({...prev, ...}))). result.trophies/strength/endurance/
-  // agility/level — АБСОЛЮТНЫЕ значения из БД, не приросты, поэтому просто
-  // перезаписываем, не складываем. Экран Explore закрывается отдельно, по
-  // кнопке "В меню" на его собственном ResultsScreen (см. onClose проп ниже) —
-  // здесь НЕ трогаем showExploreTest/rooms/results, это был старый стаб,
-  // который Explore больше не использует (свой ResultsScreen).
+  // result.trophies/strength/endurance/agility/level — АБСОЛЮТНЫЕ значения из
+  // БД, не приросты, поэтому просто перезаписываем, не складываем. Экран
+  // Explore закрывается отдельно, по кнопке "В меню" на его собственном
+  // ResultsScreen (см. onClose проп ниже).
   function handleExploreRunComplete(result: RunResultSummary) {
     if (player) {
       setPlayer(prev => prev ? {
@@ -601,11 +416,6 @@ export default function App() {
         backgroundRepeat: 'no-repeat',
       } : {}),
     }}>
-      {itemDropToast && (
-        <div style={{ position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)', background: '#221E2B', border: '1px solid #E8B23A', color: '#EDE7F2', padding: '10px 20px', borderRadius: 8, zIndex: 9999 }}>
-          🎁 Выпал предмет: {itemDropToast.name}
-        </div>
-      )}
       <div style={{
         flex: 1,
         minHeight: 0,
@@ -1497,72 +1307,27 @@ export default function App() {
           </div>
 
           {/* 5. Главная кнопка */}
-          {rooms === null && (
-            <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + env(safe-area-inset-bottom))' }}>
-              <div
-                onClick={() => { if (!running && !notEnoughEnergy) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
-                style={{
-                  boxSizing:'border-box',
-                  background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
-                  borderRadius:9, padding:13, textAlign:'center',
-                  boxShadow:'inset 0 0 14px rgba(209,151,68,0.3)',
-                  opacity: (running || notEnoughEnergy) ? 0.5 : 1,
-                  cursor: (running || notEnoughEnergy) ? 'default' : 'pointer',
-                }}>
-                <span style={{ fontFamily:FONT_DISPLAY, fontSize:14, color:C.glowCore }}>
-                  {running ? 'Забег...' : `Начать забег (−${RUN_COST} ⚡)`}
-                </span>
-              </div>
-              {notEnoughEnergy && (
-                <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
-                  Недостаточно энергии (нужно {RUN_COST}).
-                </div>
-              )}
+          <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + env(safe-area-inset-bottom))' }}>
+            <div
+              onClick={() => { if (!notEnoughEnergy) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
+              style={{
+                boxSizing:'border-box',
+                background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                borderRadius:9, padding:13, textAlign:'center',
+                boxShadow:'inset 0 0 14px rgba(209,151,68,0.3)',
+                opacity: notEnoughEnergy ? 0.5 : 1,
+                cursor: notEnoughEnergy ? 'default' : 'pointer',
+              }}>
+              <span style={{ fontFamily:FONT_DISPLAY, fontSize:14, color:C.glowCore }}>
+                {`Начать забег (−${RUN_COST} ⚡)`}
+              </span>
             </div>
-          )}
-
-          {inBattle && <Battle initialHp={runHp} maxHp={runMaxHp} isBoss={rooms ? rooms[roomIndex] === 'boss' : false} level={player?.level ?? 1} equippedSkills={player?.equippedSkills ?? []} potionCharges={player?.potionCharges ?? 0} strength={player?.strength ?? 0} armor={runArmor} onBattleEnd={handleBattleEnd} />}
-          {inSmuggler && <Smuggler trophies={player?.trophies ?? 0} onChoice={handleSmugglerChoice} />}
-          {puzzleData && <Puzzle question={puzzleData.question} options={puzzleData.options} onAnswer={handlePuzzleAnswer} />}
-          {roomIntro && rooms && roomIndex < rooms.length && (
-            <div style={{
-              position:'fixed', top:0, left:0, right:0, bottom:0,
-              background:'#1a1a2e', display:'flex', flexDirection:'column',
-              alignItems:'center', justifyContent:'center', zIndex:500
-            }}>
-              <div style={{ fontSize: 80 }}>
-                {rooms[roomIndex] === 'enemy' ? '⚔️' :
-                 rooms[roomIndex] === 'boss' ? '👹' :
-                 rooms[roomIndex] === 'chest' ? '📦' :
-                 rooms[roomIndex] === 'trap' ? '💥' :
-                 rooms[roomIndex] === 'smuggler' ? '🤝' : '🧩'}
+            {notEnoughEnergy && (
+              <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                Недостаточно энергии (нужно {RUN_COST}).
               </div>
-              <div style={{ fontSize: 28, fontWeight: 'bold', marginTop: 16, color: 'white' }}>
-                {ROOM_LABELS[rooms[roomIndex]]}
-              </div>
-              <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
-                Комната {roomIndex + 1} из {rooms.length}
-              </div>
-            </div>
-          )}
-          {rooms !== null && (roomIndex >= rooms.length || runDied) && (
-            <div style={{ position:'relative', zIndex:3, marginTop: 20 }}>
-              {runDied && <p style={{ color: '#ff4444', fontWeight: 'bold', fontSize: 18, marginBottom: 12 }}>Вы погибли. Трофеи потеряны.</p>}
-              <h2>🏆 Забег завершён!</h2>
-              {results.map((r, i) => (
-                <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8, fontSize:16 }}>
-                  <span>{ROOM_LABELS[r.room] ?? r.room}</span>
-                  <span style={{ color:'#aaa' }}>→</span>
-                  <span style={{ color:'#ffd700' }}>{r.message}</span>
-                </div>
-              ))}
-              <button onClick={backToMenu} style={{ marginTop:16, padding:'12px 24px', borderRadius:8, border:'none', background:'#4caf50', color:'white', fontSize:16 }}>
-                Исследовать снова
-              </button>
-            </div>
-          )}
-
-          {runError && <p style={{ position:'relative', zIndex:3, color: 'red', marginTop: 8 }}>{runError}</p>}
+            )}
+          </div>
 
           {/* Debug: тестовая панель карт — свёрнута по умолчанию.
               Прижата к верху, ширина всегда в пределах экрана (left+right:8),

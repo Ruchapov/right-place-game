@@ -36,28 +36,6 @@ export async function loginWithTelegram(initDataRaw: string): Promise<LoginRespo
 
   return await response.json() as LoginResponse
 }
-export type RunResult = {
-  energy: number
-  rooms: string[]
-  hp: number
-  maxHp: number
-  potions?: number
-  armor?: number
-}
-
-export async function startRun(token: string): Promise<RunResult> {
-  const response = await fetch(`${SERVER_URL}/run/start`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-    },
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Run failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as RunResult
-}
 // Event kind returned by /run/start-explore — same 6 kinds as
 // server/src/runEvents.ts's RunEventKind.
 export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
@@ -113,9 +91,8 @@ export async function startRunExplore(token: string, mapFile?: string): Promise<
 // the DB-side progress accumulators), so it also reports 0/false until the
 // server's response replaces it.
 // trophies/strength/endurance/agility/level — CURRENT absolute values (not
-// deltas), same idea as the old 3-room flow's RoomResult/BattleResult below
-// (their `level`/`strength`/`endurance` — App.tsx merges those straight into
-// `player`). Explore.tsx's buildClientResult fallback also fills these in,
+// deltas) — App.tsx merges those straight into `player`. Explore.tsx's
+// buildClientResult fallback also fills these in,
 // but with best-effort numbers that are never actually consumed — the
 // player-state merge (App.tsx handleExploreRunComplete) only ever fires
 // from the real server response, not the client-only estimate.
@@ -209,160 +186,6 @@ export async function finishRunExplore(
     attempt++
   }
 }
-export type RoomResult = {
-  roomType: string
-  goldGained: number
-  damageTaken: number
-  hp: number
-  maxHp: number
-  died: boolean
-  message: string
-  gold: number
-  index: number
-  done: boolean
-  level: number
-  levelsGained: number
-  strength: number
-  endurance: number
-  droppedItem?: { name: string; slot: string; iconPath: string } | null
-}
-
-export async function enterRoom(token: string): Promise<RoomResult> {
-  const response = await fetch(`${SERVER_URL}/run/room`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Room failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as RoomResult
-}
-export type BattleResult = {
-  roomType: string
-  trophyGained: number
-  damageTaken: number
-  hp: number
-  maxHp: number
-  died: boolean
-  message: string
-  trophies: number
-  index: number
-  done: boolean
-  level: number
-  levelsGained: number
-  strength: number
-  endurance: number
-  agility?: number
-  potions?: number
-  droppedItem?: { name: string; slot: string; iconPath: string } | null
-}
-
-export async function submitBattleResult(
-  token: string,
-  won: boolean,
-  damageTaken: number,
-  damageDealt: number,
-  skillUses: number,
-  actualHpLost: number,
-  potionsUsed: number,
-  attackDamageDealt: number,
-  skillDamageDealt: number,
-  healedAmount: number,
-): Promise<BattleResult> {
-  const response = await fetch(`${SERVER_URL}/run/battle-result`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ won, damageTaken, damageDealt, skillUses, actualHpLost, potionsUsed, attackDamageDealt, skillDamageDealt, healedAmount }),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Battle result failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as BattleResult
-}
-export type SmugglerResult = {
-  roomType: string
-  exchanged: boolean
-  stolen: boolean
-  trophies: number
-  message: string
-  hp: number
-  maxHp: number
-  died: boolean
-  index: number
-  done: boolean
-}
-
-export async function submitSmugglerResult(token: string, exchange: boolean): Promise<SmugglerResult> {
-  const response = await fetch(`${SERVER_URL}/run/smuggler-result`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ exchange }),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Smuggler result failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as SmugglerResult
-}
-export type PuzzleQuestion = {
-  question: string
-  options: string[]
-}
-
-export async function getPuzzle(token: string): Promise<PuzzleQuestion> {
-  const response = await fetch(`${SERVER_URL}/run/puzzle`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Get puzzle failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as PuzzleQuestion
-}
-
-export type PuzzleResult = {
-  roomType: string
-  correct: boolean
-  goldGained: number
-  damageTaken: number
-  hp: number
-  maxHp: number
-  died: boolean
-  message: string
-  gold: number
-  index: number
-  done: boolean
-  level: number
-  levelsGained: number
-  strength: number
-  endurance: number
-}
-
-export async function submitPuzzleResult(token: string, selectedIndex: number): Promise<PuzzleResult> {
-  const response = await fetch(`${SERVER_URL}/run/puzzle-result`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ selectedIndex }),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Puzzle result failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as PuzzleResult
-}
-
 export async function saveEquippedSkills(token: string, skills: string[]): Promise<{ equippedSkills: string[] }> {
   const response = await fetch(`${SERVER_URL}/character/skills`, {
     method: 'POST',
