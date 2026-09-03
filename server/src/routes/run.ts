@@ -1,30 +1,11 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, generateRooms, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
-import { PUZZLES, pickRandomPuzzle } from '../puzzles.js'
+import { getCurrentEnergy, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
-
-async function rollRandomItem(characterLevel: number) {
-  const eligible = await prisma.item.findMany({
-    where: { levelRequired: { lte: characterLevel } },
-  })
-  if (eligible.length === 0) return null
-  return eligible[Math.floor(Math.random() * eligible.length)]
-}
-
-async function grantItem(characterId: number, item: { id: string }) {
-  const existing = await prisma.inventoryItem.findFirst({
-    where: { characterId, itemId: item.id },
-  })
-  if (existing) return null // already owned, skip silently
-  return prisma.inventoryItem.create({
-    data: { characterId, itemId: item.id, equipped: false },
-  })
-}
 
 // Read & verify the JWT from the Authorization header. Returns userId or null.
 function getUserId(request: FastifyRequest): number | null {
@@ -46,8 +27,9 @@ function getUserId(request: FastifyRequest): number | null {
 // level via calculateLevel (stat-derived channels + bonusLevels) and adjusts
 // HP for any maxHp increase. bonusLevels here is Character.bonusLevels AS OF
 // THIS WRITE — the caller decides whether it changed (currently only
-// /run/battle-result increments it on a boss kill, see there) and passes the
-// already-updated value in; this function only reads it, never mutates it.
+// /run/finish-explore increments it on a boss kill, see bossClosed there)
+// and passes the already-updated value in; this function only reads it,
+// never mutates it.
 function applyStatGrowth(
   currentStrength: number, currentStrengthProgress: number, attackDamage: number,
   currentEndurance: number, currentEnduranceProgress: number, damageTaken: number,
@@ -79,15 +61,9 @@ function applyStatGrowth(
   }
 }
 
-// Shape of the active run stored in Character.currentRun (JSON).
-// puzzleId is set when the current room is 'puzzle' and a question has been
-// generated for it — remembers WHICH puzzle was shown, so the answer can be
-// checked against the same question later (puzzles are picked randomly).
-type ActiveRun = { rooms: string[]; index: number; hp: number; potions: number; puzzleId?: string }
-// Shape of the active run stored in Character.currentRun for the new
-// map-based Explore flow (POST /run/start-explore) — separate from ActiveRun
-// (old 3-room Battle.tsx flow) so the two never get confused reading the
-// same Json field. `mode: 'explore'` is the tag that tells them apart.
+// Shape of the active run stored in Character.currentRun for the
+// map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
+// the tag that identifies this shape in the JSON field.
 // `events` carries the FULL roll (trophyReward/isMimic included) — that part
 // never leaves the server; the client only ever gets the stripped-down
 // version built in /run/start-explore's response.
@@ -127,10 +103,8 @@ type FinishExploreBody = {
 // interrupted run (auth.ts) never calls applyStatGrowth, so it always
 // reports zeros/false there, same convention as items/bonuses above.
 // trophies/strength/endurance/agility/level — the character's CURRENT
-// (post-update) absolute values, not deltas — same idea as the old 3-room
-// flow's /run/room and /run/battle-result responses (`level`/`strength`/
-// `endurance` there), which the client already merges straight into
-// `player` via setPlayer(prev => ({...prev, ...})). Explore never had that
+// (post-update) absolute values, not deltas — the client merges those
+// straight into `player` via setPlayer(prev => ({...prev, ...})). Explore never had that
 // wiring at all (onRunComplete was dead code) — this is what finally closes
 // that gap (see App.tsx handleExploreRunComplete). Returning absolute
 // values, not deltas, means the client can never compute a wrong number by
@@ -160,63 +134,10 @@ export type RunResultSummary = {
   // отдельно, не источник истины само по себе.
   bonusLevels: number
 }
-// Body shape for POST /run/battle-result.
-type BattleResultBody = { won: boolean; damageTaken: number; damageDealt: number; skillUses?: number; actualHpLost?: number; potionsUsed?: number; attackDamageDealt?: number; skillDamageDealt?: number; healedAmount?: number }
-// Body shape for POST /run/smuggler-result.
-type SmugglerResultBody = { exchange: boolean }
-// Body shape for POST /run/puzzle-result.
-type PuzzleResultBody = { selectedIndex: number }
-
-const SMUGGLER_MULTIPLIER = 1.5
-const SMUGGLER_STEAL_CHANCE = 0.2
-const SMUGGLER_STEAL_FRACTION = 0.5
-
-const PUZZLE_DAMAGE_FRACTION = 0.2 // same as Trap: 20% of maxHP on a wrong answer
-const PUZZLE_GOLD_MIN = 15
-const PUZZLE_GOLD_MAX = 60
 
 export async function runRoutes(server: FastifyInstance) {
-  // Start a run: spend energy, generate 3 rooms, save them as the active run.
-  server.post('/run/start', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const currentEnergy = getCurrentEnergy(character.energy, character.lastEnergyUpdate)
-    if (currentEnergy < RUN_COST) {
-      return reply.status(400).send({ error: 'Not enough energy', energy: currentEnergy })
-    }
-
-    const newEnergy = currentEnergy - RUN_COST
-    const rooms = generateRooms(3)
-    const maxHp = character.endurance * 8
-    const existingRun = character.currentRun as ActiveRun | null
-    const potions = existingRun ? existingRun.potions : Math.min(character.potionCharges, 3)
-
-    const equippedItems = await prisma.inventoryItem.findMany({
-      where: { characterId: character.id, equipped: true },
-      include: { item: true },
-    })
-    const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
-
-    await prisma.character.update({
-      where: { userId },
-      data: {
-        energy: newEnergy,
-        lastEnergyUpdate: new Date(),
-        currentRun: { rooms, index: 0, hp: maxHp, potions },
-      },
-    })
-
-    return reply.send({ energy: newEnergy, rooms, index: 0, hp: maxHp, maxHp, potions, armor: totalArmor })
-  })
-
   // Start a map-based Explore run: spend energy, roll 3 events for the given
-  // map (server/src/runEvents.ts), save them as the active run. Separate
-  // endpoint from /run/start (old 3-room flow) — that one is untouched, this
-  // is a parallel path for the new Explore map flow.
+  // map (server/src/runEvents.ts), save them as the active run.
   server.post<{ Body: StartExploreBody }>('/run/start-explore', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
@@ -224,9 +145,8 @@ export async function runRoutes(server: FastifyInstance) {
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    // Unlike /run/start, refuse to start over an existing run of EITHER
-    // shape (old ActiveRun or ActiveExploreRun) — starting fresh here would
-    // silently discard whatever is in progress, old flow has no such guard.
+    // Refuse to start over an existing run — starting fresh here would
+    // silently discard whatever is in progress.
     if (character.currentRun !== null) {
       return reply.status(400).send({ error: 'A run is already in progress' })
     }
@@ -309,10 +229,8 @@ export async function runRoutes(server: FastifyInstance) {
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    // Distinguish from the old 3-room ActiveRun shape (no `mode` field) —
-    // this endpoint only ever makes sense for a currentRun that /run/start-explore
-    // itself created. A run in the old shape is a different flow entirely,
-    // not something to coerce/repair here.
+    // This endpoint only ever makes sense for a currentRun that
+    // /run/start-explore itself created (mode: 'explore').
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
@@ -411,9 +329,8 @@ export async function runRoutes(server: FastifyInstance) {
     }
     const clampedDamageTaken = Math.min(safeDamageTaken, maxDamageTaken)
 
-    // healedAmount — та же схема, что /run/battle-result: clamp к maxHp
-    // забега (не отдельный "потолок" из задачи, а то же базовое ограничение,
-    // что там), складывается со skillDamageDealt внутри applyStatGrowth —
+    // healedAmount — clamp к maxHp забега (тот же базовый принцип, что и у
+    // damageTaken выше), складывается со skillDamageDealt внутри applyStatGrowth —
     // скиллы + лечение растят ловкость.
     const clampedHealedAmount = Math.min(safeHealedAmount, run.maxHp)
 
@@ -468,433 +385,6 @@ export async function runRoutes(server: FastifyInstance) {
       bonusLevels: newBonusLevels,
     }
     return reply.send(result)
-  })
-
-  // Enter the current room: process it, then advance the run.
-  server.post('/run/room', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const run = character.currentRun as unknown as ActiveRun | null
-    if (!run) return reply.status(400).send({ error: 'No active run' })
-
-    const roomType = run.rooms[run.index]
-    const maxHp = character.endurance * 8
-    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
-    // (см. game.ts calculateLevel), никогда не читается напрямую.
-    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-
-    let goldGained = 0
-    let damageTaken = 0
-    let hp = run.hp
-    let droppedItem: { name: string; slot: string; iconPath: string } | null = null
-
-    if (roomType === 'chest') {
-      goldGained = 10 + Math.floor(Math.random() * 41) // 10..50
-      const item = await rollRandomItem(characterLevel)
-      if (item) {
-        await grantItem(character.id, item)
-        droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
-      }
-    } else if (roomType === 'trap') {
-      damageTaken = Math.ceil(maxHp * 0.2) // DEV: 20% макс. HP, балансим позже
-      hp = hp - damageTaken
-    }
-
-    const newGold = character.gold + goldGained
-
-    // bonusLevels не меняется в этой комнате — передаём как есть, не пишем
-    // обратно в БД (в data ниже поля bonusLevels нет).
-    const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, 0,
-      character.endurance, character.enduranceProgress, damageTaken,
-      character.agility, character.agilityProgress, 0,
-      maxHp,
-      hp,
-      character.bonusLevels,
-    )
-    const levelsGained = growth.level - characterLevel
-
-    const died = growth.hp <= 0
-    const nextIndex = run.index + 1
-    const done = !died && nextIndex >= run.rooms.length
-    const runEnds = died || done
-
-    await prisma.character.update({
-      where: { userId },
-      data: {
-        gold: newGold,
-        strength: growth.strength,
-        strengthProgress: growth.strengthProgress,
-        endurance: growth.endurance,
-        enduranceProgress: growth.enduranceProgress,
-        agility: growth.agility,
-        agilityProgress: growth.agilityProgress,
-        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
-      },
-    })
-
-    let message: string
-    if (died) {
-      message = `Trap! −${damageTaken} HP. You died.`
-    } else if (roomType === 'chest') {
-      message = `Chest! +${goldGained} gold`
-    } else if (roomType === 'trap') {
-      message = `Trap! −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
-    } else {
-      message = `Entered a ${roomType} room (not implemented yet)`
-    }
-
-    return reply.send({
-      roomType,
-      goldGained,
-      damageTaken,
-      hp: Math.max(0, growth.hp),
-      maxHp: growth.maxHp,
-      died,
-      message,
-      gold: newGold,
-      index: nextIndex,
-      done,
-      level: growth.level,
-      levelsGained,
-      strength: growth.strength,
-      endurance: growth.endurance,
-      droppedItem,
-    })
-  })
-
-  // Submit the result of a client-played battle (enemy or boss room). Advances the run.
-  server.post<{ Body: BattleResultBody }>('/run/battle-result', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const run = character.currentRun as unknown as ActiveRun | null
-    if (!run) return reply.status(400).send({ error: 'No active run' })
-
-    const roomType = run.rooms[run.index]
-    if (roomType !== 'enemy' && roomType !== 'boss') {
-      return reply.status(400).send({ error: `Current room is '${roomType}', not 'enemy' or 'boss'` })
-    }
-    const isBoss = roomType === 'boss'
-
-    const { won, damageTaken: rawDamageTaken, damageDealt: rawDamageDealt } = request.body
-    const actualHpLost = request.body.actualHpLost ?? rawDamageTaken
-    const potionsUsed = request.body.potionsUsed ?? 0
-    const attackDamageDealt = request.body.attackDamageDealt ?? 0
-    const skillDamageDealt = request.body.skillDamageDealt ?? 0
-    const healedAmount = request.body.healedAmount ?? 0
-    const potionsInRun = (run.potions ?? Math.min(character.potionCharges, 3)) - potionsUsed
-    const newPotionCharges = Math.max(0, character.potionCharges - potionsUsed)
-    const maxHp = character.endurance * 8
-    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
-    // (см. game.ts calculateLevel), никогда не читается напрямую. Это
-    // уровень ДО этого боя — SCALED_ENEMY_HP/дроп считаются по нему же, а не
-    // по уровню ПОСЛЕ (даже если этот бой — победа над боссом и bonusLevels
-    // сейчас вырастет, врага в ЭТОМ бою масштабируем по тому, каким игрок
-    // был, когда в него зашёл).
-    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-    const SCALED_ENEMY_HP = Math.round((isBoss ? 200 : 120) * (1 + 0.18 * (characterLevel - 1)))
-    const damageTaken = Math.max(0, Math.min(rawDamageTaken, maxHp))
-    const damageDealt = Math.max(0, Math.min(rawDamageDealt, SCALED_ENEMY_HP))
-    const safeAttackDamageDealt = Math.max(0, attackDamageDealt)
-    const safeSkillDamageDealt = Math.max(0, skillDamageDealt)
-    const combinedAttackSkill = safeAttackDamageDealt + safeSkillDamageDealt
-    const attackSkillScale = combinedAttackSkill > SCALED_ENEMY_HP ? SCALED_ENEMY_HP / combinedAttackSkill : 1
-    const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
-    const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
-    const clampedHealedAmount = Math.max(0, Math.min(healedAmount, maxHp))
-
-    const hp = run.hp - Math.max(0, Math.min(actualHpLost, maxHp))
-    let trophyGained = 0
-    let droppedItem: { name: string; slot: string; iconPath: string } | null = null
-
-    if (won) {
-      trophyGained = isBoss
-        ? Math.floor(Math.random() * (22 - 15 + 1)) + 15
-        : Math.floor(Math.random() * (15 - 10 + 1)) + 10
-    }
-
-    if (won && !isBoss) {
-      const dropChance = 1.0 // TODO: lower to 0.15 after testing
-      if (Math.random() < dropChance) {
-        const item = await rollRandomItem(characterLevel)
-        if (item) {
-          await grantItem(character.id, item)
-          droppedItem = { name: item.nameRu, slot: item.slot, iconPath: item.iconPath }
-        }
-      }
-    }
-
-    // Убийство босса — bonusLevels += 1, НАВСЕГДА (не пересчитывается из
-    // статов, только инкремент по событию — см. calculateLevel в game.ts).
-    // Ничего больше отсюда не следует: сам бой прокачивает силу/выносл./
-    // ловкость обычным путём (нормальный applyStatGrowth ниже), bonusLevels
-    // — отдельная, независимая надбавка поверх стат-уровня.
-    const bossLevelUp = isBoss && won
-    const newBonusLevels = character.bonusLevels + (bossLevelUp ? 1 : 0)
-    const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, clampedAttackDamageDealt,
-      character.endurance, character.enduranceProgress, damageTaken,
-      character.agility, character.agilityProgress, clampedSkillDamageDealt + clampedHealedAmount,
-      maxHp,
-      hp,
-      newBonusLevels,
-    )
-    const levelsGained = growth.level - characterLevel
-
-    const died = growth.hp <= 0
-    const nextIndex = run.index + 1
-    const done = !died && nextIndex >= run.rooms.length
-    const runEnds = died || done
-
-    const newTrophies = character.trophies + trophyGained
-
-    await prisma.character.update({
-      where: { userId },
-      data: {
-        trophies: died ? 0 : newTrophies,
-        strength: growth.strength,
-        strengthProgress: growth.strengthProgress,
-        endurance: growth.endurance,
-        enduranceProgress: growth.enduranceProgress,
-        agility: growth.agility,
-        agilityProgress: growth.agilityProgress,
-        bonusLevels: newBonusLevels,
-        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
-        potionCharges: newPotionCharges,
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp, potions: Math.max(0, potionsInRun) },
-      },
-    })
-
-    const message = died
-      ? `Defeated! −${damageTaken} HP. You died.`
-      : won
-        ? (isBoss
-            ? `Boss defeated! −${damageTaken} HP, +${trophyGained} trophy, Level Up! (${Math.max(0, growth.hp)}/${growth.maxHp})`
-            : `Victory! −${damageTaken} HP, +${trophyGained} trophy (${Math.max(0, growth.hp)}/${growth.maxHp})`)
-        : `Retreated. −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
-
-    return reply.send({
-      roomType,
-      trophyGained,
-      damageTaken,
-      hp: Math.max(0, growth.hp),
-      maxHp: growth.maxHp,
-      died,
-      message,
-      trophies: died ? 0 : newTrophies,
-      index: nextIndex,
-      done,
-      level: growth.level,
-      levelsGained,
-      strength: growth.strength,
-      endurance: growth.endurance,
-      potions: Math.max(0, potionsInRun),
-      droppedItem,
-    })
-  })
-
-  // Submit the player's choice in a Smuggler room: exchange trophies or walk away.
-  server.post<{ Body: SmugglerResultBody }>('/run/smuggler-result', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const run = character.currentRun as unknown as ActiveRun | null
-    if (!run) return reply.status(400).send({ error: 'No active run' })
-
-    const roomType = run.rooms[run.index]
-    if (roomType !== 'smuggler') {
-      return reply.status(400).send({ error: `Current room is '${roomType}', not 'smuggler'` })
-    }
-
-    const { exchange } = request.body
-    let trophies = character.trophies
-    let stolen = false
-
-    if (exchange && trophies > 0) {
-      const isStolen = Math.random() < SMUGGLER_STEAL_CHANCE
-      if (isStolen) {
-        trophies = Math.floor(trophies * (1 - SMUGGLER_STEAL_FRACTION))
-        stolen = true
-      } else {
-        trophies = Math.floor(trophies * SMUGGLER_MULTIPLIER)
-      }
-    }
-
-    const nextIndex = run.index + 1
-    const done = nextIndex >= run.rooms.length
-
-    await prisma.character.update({
-      where: { userId },
-      data: {
-        trophies,
-        currentRun: done ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: run.hp },
-      },
-    })
-
-    let message: string
-    if (!exchange) {
-      message = 'You walked away from the smuggler.'
-    } else if (trophies === character.trophies && character.trophies === 0) {
-      message = 'Nothing to trade.'
-    } else if (stolen) {
-      message = `The smuggler stole half your trophies! (${trophies} left)`
-    } else {
-      message = `Trade successful! Trophies: ${trophies}`
-    }
-
-    return reply.send({
-      roomType,
-      exchanged: exchange && character.trophies > 0,
-      stolen,
-      trophies,
-      message,
-      hp: run.hp,
-      maxHp: character.endurance * 8,
-      died: false,
-      index: nextIndex,
-      done,
-    })
-  })
-
-  // Get the puzzle question for the current room (generates and remembers one if
-  // not already picked for this room visit, so a refresh doesn't get a new question).
-  server.post('/run/puzzle', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const run = character.currentRun as unknown as ActiveRun | null
-    if (!run) return reply.status(400).send({ error: 'No active run' })
-
-    const roomType = run.rooms[run.index]
-    if (roomType !== 'puzzle') {
-      return reply.status(400).send({ error: `Current room is '${roomType}', not 'puzzle'` })
-    }
-
-    // Reuse the puzzle if one was already picked for this room visit; otherwise
-    // pick a new one and remember it in currentRun.
-    let puzzle = PUZZLES.find((p) => p.id === run.puzzleId)
-    if (!puzzle) {
-      puzzle = pickRandomPuzzle()
-      await prisma.character.update({
-        where: { userId },
-        data: { currentRun: { ...run, puzzleId: puzzle.id } },
-      })
-    }
-
-    return reply.send({ question: puzzle.question, options: puzzle.options })
-  })
-
-  // Submit the player's answer to the current puzzle. Advances the run.
-  server.post<{ Body: PuzzleResultBody }>('/run/puzzle-result', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
-
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
-    const run = character.currentRun as unknown as ActiveRun | null
-    if (!run) return reply.status(400).send({ error: 'No active run' })
-
-    const roomType = run.rooms[run.index]
-    if (roomType !== 'puzzle') {
-      return reply.status(400).send({ error: `Current room is '${roomType}', not 'puzzle'` })
-    }
-
-    const puzzle = PUZZLES.find((p) => p.id === run.puzzleId)
-    if (!puzzle) {
-      return reply.status(400).send({ error: 'No puzzle was generated for this room — call /run/puzzle first' })
-    }
-
-    const { selectedIndex } = request.body
-    const correct = selectedIndex === puzzle.correctIndex
-    const maxHp = character.endurance * 8
-    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
-    // (см. game.ts calculateLevel), никогда не читается напрямую.
-    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-
-    let goldGained = 0
-    let damageTaken = 0
-    let hp = run.hp
-
-    if (correct) {
-      goldGained = Math.floor(Math.random() * (PUZZLE_GOLD_MAX - PUZZLE_GOLD_MIN + 1)) + PUZZLE_GOLD_MIN
-    } else {
-      damageTaken = Math.ceil(maxHp * PUZZLE_DAMAGE_FRACTION)
-      hp = hp - damageTaken
-    }
-
-    const newGold = character.gold + goldGained
-
-    // bonusLevels не меняется в загадке — передаём как есть, не пишем
-    // обратно в БД (в data ниже поля bonusLevels нет).
-    const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, 0,
-      character.endurance, character.enduranceProgress, damageTaken,
-      character.agility, character.agilityProgress, 0,
-      maxHp,
-      hp,
-      character.bonusLevels,
-    )
-    const levelsGained = growth.level - characterLevel
-
-    const died = growth.hp <= 0
-    const nextIndex = run.index + 1
-    const done = !died && nextIndex >= run.rooms.length
-    const runEnds = died || done
-
-    await prisma.character.update({
-      where: { userId },
-      data: {
-        gold: newGold,
-        strength: growth.strength,
-        strengthProgress: growth.strengthProgress,
-        endurance: growth.endurance,
-        enduranceProgress: growth.enduranceProgress,
-        agility: growth.agility,
-        agilityProgress: growth.agilityProgress,
-        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
-        currentRun: runEnds ? Prisma.DbNull : { rooms: run.rooms, index: nextIndex, hp: growth.hp },
-      },
-    })
-
-    const message = died
-      ? `Wrong answer! −${damageTaken} HP. You died.`
-      : correct
-        ? `Correct! +${goldGained} gold`
-        : `Wrong answer! −${damageTaken} HP (${Math.max(0, growth.hp)}/${growth.maxHp})`
-
-    return reply.send({
-      roomType,
-      correct,
-      goldGained,
-      damageTaken,
-      hp: Math.max(0, growth.hp),
-      maxHp: growth.maxHp,
-      died,
-      message,
-      gold: newGold,
-      index: nextIndex,
-      done,
-      level: growth.level,
-      levelsGained,
-      strength: growth.strength,
-      endurance: growth.endurance,
-    })
   })
 
   server.post<{ Body: { skills: string[] } }>('/character/skills', async (request, reply) => {

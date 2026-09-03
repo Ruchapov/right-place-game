@@ -12,33 +12,6 @@ export function getCurrentEnergy(storedEnergy: number, lastUpdate: Date): number
   const regenerated = storedEnergy + minutesPassed * ENERGY_PER_MINUTE
   return Math.min(MAX_ENERGY, regenerated)
 }
-// --- Room generation ---
-
-export type RoomType = 'enemy' | 'boss' | 'chest' | 'trap' | 'smuggler' | 'puzzle'
-
-// Weights sum to 100, matching the design's spawn rates.
-const ROOM_WEIGHTS: { type: RoomType; weight: number }[] = [
-  { type: 'enemy', weight: 60 },
-  { type: 'chest', weight: 15 },
-  { type: 'trap', weight: 10 },
-  { type: 'puzzle', weight: 10 },
-  { type: 'smuggler', weight: 3 },
-  { type: 'boss', weight: 2 },
-]
-
-function pickRoom(): RoomType {
-  const roll = Math.random() * 100
-  let cumulative = 0
-  for (const room of ROOM_WEIGHTS) {
-    cumulative += room.weight
-    if (roll < cumulative) return room.type
-  }
-  return 'enemy' // safety fallback (shouldn't happen)
-}
-
-export function generateRooms(count = 3): RoomType[] {
-  return Array.from({ length: count }, () => pickRoom())
-}
 // --- Stat growth: incremental accumulation ---
 
 // Given the current stat value, current leftover progress, and new RAW damage
@@ -78,7 +51,7 @@ export const AGILITY_THRESHOLD_BASE = 710
 // is further ahead sets the stat-derived level; bonusLevels is added on top.
 // bonusLevels is NOT derived from stats — it's Character.bonusLevels, a
 // persisted counter incremented by discrete events (currently: boss kills,
-// see /run/battle-result). Level overall is not stat-history-free — it's
+// see /run/finish-explore's bossClosed). Level overall is not stat-history-free — it's
 // still a pure function of (strength, agility, endurance, bonusLevels), it
 // just has a second, non-stat input now.
 export function calculateLevel(strength: number, agility: number, endurance: number, bonusLevels: number): number {
