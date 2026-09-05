@@ -446,6 +446,28 @@ export const HEAL_AURA_OFFSET_X = 0
 export const HEAL_AURA_OFFSET_Y = 25
 export const HEAL_AURA_ANIM_SPEED = 0.4 // подобрано тюнером: 14 кадров ≈ 0.58с при 60fps
 
+// Slash — дуга взмаха. Лист 1920×174 (сверено по IHDR), ОДНОРЯДНЫЙ: высота
+// листа равна высоте кадра, 1920/12 = 160 без остатка. Разовая анимация, НЕ
+// луп. COLS=12 совпадает с дефолтом loadSheetFrames, но передаётся ЯВНО — так
+// правка числа кадров не сломает нарезку молча.
+// Размер отрисовки и скорость появятся вместе с механикой скилла — числа
+// наугад здесь не заводим.
+export const SLASH_STREAK_SRC = `${import.meta.env.BASE_URL}assets/skills/Slash_Streak.png`
+export const SLASH_STREAK_CELL_W = 160
+export const SLASH_STREAK_CELL_H = 174
+export const SLASH_STREAK_COUNT = 12
+export const SLASH_STREAK_COLS = 12
+
+// Кровотечение — капли на цели, ЛУП (крутится, пока идёт эффект). Лист
+// 1280×320 (сверено по IHDR), ОДНОРЯДНЫЙ: высота листа равна высоте кадра,
+// 1280/8 = 160 без остатка. COLS=8 меньше дефолтных 12, поэтому пятый
+// аргумент loadSheetFrames здесь обязателен по существу, а не для порядка.
+export const BLEEDING_LOOP_SRC = `${import.meta.env.BASE_URL}assets/skills/Bleeding_Loop.png`
+export const BLEEDING_LOOP_CELL_W = 160
+export const BLEEDING_LOOP_CELL_H = 320
+export const BLEEDING_LOOP_COUNT = 8
+export const BLEEDING_LOOP_COLS = 8
+
 // Обелиски (карта F)
 export const OBELISK_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Idle.png`
 export const OBELISK_BURNING_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Burning.png`

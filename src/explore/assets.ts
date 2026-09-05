@@ -32,9 +32,13 @@ export type ExploreAssets = {
   bossWaveLeftFrames: Texture[]
   bossWaveRightFrames: Texture[]
   // Аура лечения (скилл heal) — кадры загружены, механики heal ещё нет
-  // (см. explore/entities/skills.ts). Единственный подключённый лист из
-  // восьми в public/assets/skills.
+  // (см. explore/entities/skills.ts).
   healAura: Texture[]
+  // Скилл slash: дуга взмаха (разовая) и петля кровотечения на цели.
+  // Кадры загружены, механики slash ещё нет — исходник для неё выписан в
+  // CLAUDE.md (раздел Skills, блок Slash, восстановлен из истории git).
+  slashStreak: Texture[]
+  bleedingLoop: Texture[]
   rewardIcons: Record<RewardKind, Texture>
 }
 
@@ -240,6 +244,17 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
   const healAuraFrames = await loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS)
   if (isCancelled()) return null
 
+  // Slash: дуга взмаха + петля кровотечения. Механики скилла ещё нет, грузим
+  // только кадры — по тому же правилу, что и Heal_Aura выше: БЕЗ try/catch,
+  // чтобы 404 всплыл наверх экраном ошибки (setup().catch), а не подменился
+  // пустым массивом кадров, из-за которого эффект молча не нарисуется.
+  // Размеры клеток сверены по IHDR: 1920/12 и 1280/8 делятся нацело, высота
+  // листа у обоих равна высоте кадра (один ряд). COLS передан явно у обоих.
+  const slashStreakFrames = await loadSheetFrames(C.SLASH_STREAK_SRC, C.SLASH_STREAK_CELL_W, C.SLASH_STREAK_CELL_H, C.SLASH_STREAK_COUNT, C.SLASH_STREAK_COLS)
+  if (isCancelled()) return null
+  const bleedingLoopFrames = await loadSheetFrames(C.BLEEDING_LOOP_SRC, C.BLEEDING_LOOP_CELL_W, C.BLEEDING_LOOP_CELL_H, C.BLEEDING_LOOP_COUNT, C.BLEEDING_LOOP_COLS)
+  if (isCancelled()) return null
+
   // Карта листов по BossAnimKind — используется ТОЛЬКО playBossAnim в setup().
   const bossFramesByKind: Record<BossAnimKind, Texture[]> = {
     idle: bossIdleFrames,
@@ -295,6 +310,8 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     bossWaveLeftFrames,
     bossWaveRightFrames,
     healAura: healAuraFrames,
+    slashStreak: slashStreakFrames,
+    bleedingLoop: bleedingLoopFrames,
     rewardIcons: rewardIconTextures,
   }
 }
