@@ -86,6 +86,18 @@ type ExploreProps = {
   // выше. Не задан → 0 (см. armorRef ниже, как characterLevelRef откатывается
   // на C.PLAYER_LEVEL_FALLBACK при отсутствующем level).
   armor?: number
+  // Экипированные скиллы (App.tsx: player.equippedSkills — приходят с сервера,
+  // /auth/login -> character.equippedSkills, максимум 2, см. handleSkillToggle).
+  // Массив КОРОЧЕ двух (или пустой) — легитимно: игрок волен экипировать 0, 1
+  // или 2 скилла, недостающий слот показывается как пустой.
+  //
+  // Проп НЕ ЗАДАН — это НЕ то же самое, что "скиллов нет": значит профиль ещё
+  // не загрузился (App.tsx: player === null), и что экипировано — неизвестно.
+  // Молча свести это к [] запрещено (см. CLAUDE.md, Design Decisions — тихие
+  // фолбэки), поэтому ниже случай разведён явно (equippedSkillsKnown), и кнопка
+  // скилла в таком состоянии показывает "?" вместо значка, а не притворяется
+  // пустым слотом. В отличие от level/armor выше, тихого отката здесь НЕТ.
+  equippedSkills?: string[]
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -527,7 +539,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, equippedSkills }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -921,6 +933,26 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   const skill1PressedRef = useRef(false)
   const skill2PressedRef = useRef(false)
 
+  // Что реально экипировано (проп из App.tsx, см. ExploreProps выше). ДВА
+  // разных состояния, которые нельзя схлопывать в одно:
+  //   equippedSkillsKnown === false — профиль не загружен, данных нет вообще;
+  //   equippedSkillsKnown === true + null в слоте — слот честно пуст.
+  // Второе нормально и просто рисуется приглушённой кнопкой, первое — ошибка,
+  // и она обязана быть видна (см. updateSkillButtons ниже).
+  const equippedSkillsKnown = equippedSkills !== undefined
+  const equippedSlots: [string | null, string | null] = [
+    equippedSkills?.[0] ?? null,
+    equippedSkills?.[1] ?? null,
+  ]
+  // DOM-узлы кнопок ⚡/🔥 (создаются императивно в fan-блоке TouchControls, не
+  // JSX) — нужны здесь по образцу potionBtnRef ниже, чтобы гасить/зажигать
+  // кнопку без React-состояния.
+  const skill1BtnRef = useRef<HTMLButtonElement | null>(null)
+  const skill2BtnRef = useRef<HTMLButtonElement | null>(null)
+  // Ошибка "данных нет" пишется в консоль ОДИН раз за монтирование, а не на
+  // каждый ре-рендер (их много: obeliskHud тикает раз в секунду и т.п.).
+  const equippedUnknownLoggedRef = useRef(false)
+
   // Панель Смуглера (под-шаг): dodge рядом с живым смуглером открывает панель
   // вместо обычного dodge — пока флаг + console.log, самого окна ещё нет.
   const smugglerPanelOpenRef = useRef(false)
@@ -954,6 +986,32 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     if (!btn) return
     btn.textContent = `🧪 ×${potionChargesRef.current}`
     btn.style.opacity = potionChargesRef.current > 0 ? '1' : '0.5'
+  }
+
+  // Вид кнопок ⚡/🔥 — тот же приём, что updatePotionButton выше (DOM-ref;
+  // cssText в TouchControls стирает opacity при каждом ре-рендере, поэтому
+  // вызывается сразу после создания узлов). Механики скиллов здесь НЕТ —
+  // только индикация того, что лежит в слоте:
+  //   слот занят  -> полная яркость, значок как есть (⚡/🔥);
+  //   слот пуст   -> приглушено (как зелье на нуле зарядов);
+  //   данных нет  -> "?" и приглушено, состояние ЯВНО отличимо от пустого
+  //                  слота, плюс ошибка в консоль (см. equippedSkillsKnown).
+  function updateSkillButtons() {
+    const btns = [skill1BtnRef.current, skill2BtnRef.current]
+    if (!equippedSkillsKnown && !equippedUnknownLoggedRef.current) {
+      equippedUnknownLoggedRef.current = true
+      console.error('Explore: проп equippedSkills не задан — что экипировано, неизвестно (профиль ещё не загружен?)')
+    }
+    for (let i = 0; i < btns.length; i++) {
+      const btn = btns[i]
+      if (!btn) continue
+      if (!equippedSkillsKnown) {
+        btn.textContent = '?'
+        btn.style.opacity = '0.5'
+        continue
+      }
+      btn.style.opacity = equippedSlots[i] ? '1' : '0.5'
+    }
   }
 
   // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку
@@ -1416,9 +1474,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         dodgeIframe: dodgeIframeRef,
         skill1Pressed: skill1PressedRef,
         skill2Pressed: skill2PressedRef,
-        // Заглушка: Explore не получает equippedSkills пропом (источника
-        // данных пока нет, см. skills.ts) — оба слота пустые.
-        equipped: [null, null],
+        // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
+        // честно пустой слот; случай "данных нет вообще" отдельно виден на
+        // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
+        // модуль это значение пока не читает.
+        equipped: equippedSlots,
       })
 
       // AI обычного врага (см. explore/entities/enemy.ts) — создаётся тем же
@@ -3357,6 +3417,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             skill2PressedRef={skill2PressedRef}
             potionBtnRef={potionBtnRef}
             updatePotionButton={updatePotionButton}
+            skill1BtnRef={skill1BtnRef}
+            skill2BtnRef={skill2BtnRef}
+            updateSkillButtons={updateSkillButtons}
           />
         </>
       )}

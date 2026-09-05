@@ -49,10 +49,19 @@ export type SkillsDeps = {
   skill1Pressed: MutableRefObject<boolean>
   skill2Pressed: MutableRefObject<boolean>
 
-  // Какой SkillId висит на кнопке 1/2 — источника данных пока нет: Explore
-  // не получает equippedSkills пропом (в отличие от Battle.tsx) — это часть
-  // серверной интеграции (см. CLAUDE.md, Next Steps). Заглушка до тех пор.
-  equipped: [SkillId | null, SkillId | null]
+  // Что висит на кнопке 1/2 — реальные id из App.tsx (player.equippedSkills,
+  // приходят с сервера: /auth/login -> character.equippedSkills, максимум 2,
+  // см. handleSkillToggle). null в слоте — ЛЕГИТИМНОЕ состояние: игрок волен
+  // экипировать 0, 1 или 2 скилла.
+  //
+  // Тип элемента — string, а НЕ SkillId, намеренно: в реальных данных бывает
+  // 'heal' (см. HERO_SKILL_NAMES в App.tsx — там 5 скиллов), а SkillId выше
+  // знает только 4. Сузить string->SkillId здесь означало бы молча свести
+  // 'heal' к null, то есть подменить "экипирован heal" на "слот пуст" — ровно
+  // тот тихий фолбэк, который в проекте запрещён (см. CLAUDE.md, Design
+  // Decisions). Сужение — задача шага, где скиллы будут реализованы: тогда же
+  // решится, входит ли heal в SkillId.
+  equipped: [string | null, string | null]
 }
 
 // Создаётся ОДИН раз в setup() (после того как определены worldContainer/

@@ -13,6 +13,14 @@ interface TouchControlsProps {
   // создания DOM-узла кнопки зелья (см. ref-колбэк ниже), чтобы подпись не
   // была пустой до первого срабатывания тикера в Explore.tsx.
   updatePotionButton: () => void
+  // DOM-узлы кнопок ⚡/🔥 — по образцу potionBtnRef выше: Explore гасит кнопку
+  // пустого слота через style.opacity, без React-состояния.
+  skill1BtnRef: MutableRefObject<HTMLButtonElement | null>
+  skill2BtnRef: MutableRefObject<HTMLButtonElement | null>
+  // Ставит кнопкам скиллов opacity (и значок "?", если данных нет) — по той же
+  // причине, что updatePotionButton: cssText в ref-колбэке ниже стирает
+  // opacity при каждом ре-рендере, вид переустанавливается сразу после.
+  updateSkillButtons: () => void
 }
 
 export default function TouchControls({
@@ -25,6 +33,9 @@ export default function TouchControls({
   skill2PressedRef,
   potionBtnRef,
   updatePotionButton,
+  skill1BtnRef,
+  skill2BtnRef,
+  updateSkillButtons,
 }: TouchControlsProps) {
   return (
     <>
@@ -233,11 +244,16 @@ export default function TouchControls({
             const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
             if (dodgeEl) bindTap(dodgeEl, () => { dodgePressedRef.current = true })
 
-            const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLElement
+            const skill1El = container.querySelector('[data-btn="skill1"]') as HTMLButtonElement | null
             if (skill1El) bindTap(skill1El, () => { skill1PressedRef.current = true })
+            skill1BtnRef.current = skill1El
 
-            const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLElement
+            const skill2El = container.querySelector('[data-btn="skill2"]') as HTMLButtonElement | null
             if (skill2El) bindTap(skill2El, () => { skill2PressedRef.current = true })
+            skill2BtnRef.current = skill2El
+            // Строго ПОСЛЕ cssText в fan-блоке выше (он стирает opacity) — тот
+            // же порядок, что у potionBtnRef/updatePotionButton.
+            updateSkillButtons()
 
             bindTap(pot, () => { drinkPressedRef.current = true })
           }}
