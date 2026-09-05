@@ -803,6 +803,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Стабильная ссылка на killPlayer (см. задачу "обелиск перестал убивать") —
   // тот же приём, что у takeDamageRef выше, для того же ticker-кода.
   const killPlayerRef = useRef<() => void>(() => {})
+  // Стабильная ссылка на healPlayer — тот же приём и та же причина, что у
+  // takeDamageRef выше: система скиллов собирает deps ОДИН раз в setup(), а
+  // звать обязана актуальную версию функции (см. createSkillsSystem ниже).
+  const healPlayerRef = useRef<(amount: number) => number>(() => 0)
+  // Кадры ауры лечения. Ref, а не плоское значение: createSkillsSystem
+  // вызывается в setup() РАНЬШЕ, чем резолвится loadExploreAssets() — на
+  // момент сборки deps кадров ещё нет. Тот же приём, что beastFramesRef.
+  const healAuraFramesRef = useRef<Texture[] | null>(null)
   // Готовый вызов "нанести урон шипов" с уже посчитанной дозой (maxHp * ratio).
   // Обновляется тем же эффектом, что и takeDamageRef — так основной ticker-эффект
   // (mount-once, deps []) не должен напрямую читать maxHp из тела компонента.
@@ -1090,6 +1098,31 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     }
   }
 
+  // Единая точка "игрок лечится" — зеркало takeDamage выше. Через неё идёт
+  // ВЕСЬ хил: зелье (кадр глотка, см. ticker) и скилл heal
+  // (explore/entities/skills.ts). Клэмп по maxHp, округление и учёт реально
+  // долитого в healedAmountRef живут ЗДЕСЬ и только здесь — вызывающий
+  // передаёт сырую заявку (напр. maxHp * FRAC) и не дублирует эту арифметику.
+  //
+  // Возвращает РЕАЛЬНО долитое HP (0, если уже полное) — по образцу
+  // actualDamage в takeDamage: в healedAmountRef должно попадать фактическое
+  // лечение, а не номинал (иначе ловкость росла бы от хила, которого не было).
+  //
+  // Округление ВНИЗ (см. задачу "HP должно быть всегда целым") — не round/ceil:
+  // округление никогда не должно добавлять игроку HP сверх честной доли.
+  function healPlayer(amount: number): number {
+    // Мёртвый герой не лечится ни зельем, ни скиллом. У зелья это и так
+    // недостижимо (ветка питья ниже death в приоритете анимаций), у скилла —
+    // достижимо: кнопки живут до экрана итогов.
+    if (deathRef.current) return 0
+    const hpBeforeHeal = hpRef.current
+    hpRef.current = Math.min(maxHp, hpRef.current + Math.floor(amount))
+    const healed = hpRef.current - hpBeforeHeal
+    healedAmountRef.current += healed
+    updateHpBar()
+    return healed
+  }
+
   // Гарантированная смерть, В ОБХОД takeDamage/брони (см. задачу "обелиск
   // перестал убивать") — единственный сейчас источник: провал таймера
   // обелиска (см. вызов ниже). Это НЕ боевой урон, а скриптовая смерть по
@@ -1110,6 +1143,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   useEffect(() => {
     takeDamageRef.current = takeDamage
     killPlayerRef.current = killPlayer
+    healPlayerRef.current = healPlayer
     applySpikeDamageRef.current = () => takeDamage(maxHp * C.SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     attackDamageRef.current = attackDamage
@@ -1474,6 +1508,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         dodgeIframe: dodgeIframeRef,
         skill1Pressed: skill1PressedRef,
         skill2Pressed: skill2PressedRef,
+        // Обёртка над healPlayerRef, НЕ healPlayer напрямую — та же причина,
+        // что у takeDamage выше (deps собираются один раз, реф обновляется
+        // каждый рендер).
+        dead: deathRef,
+        healPlayer: (amount: number) => healPlayerRef.current(amount),
+        maxHp,
+        healAuraFrames: healAuraFramesRef,
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на
         // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
@@ -1534,6 +1575,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       const deathFrames = assets.hero.death
 
       beastFramesRef.current = assets.beast
+      // Аура лечения — в ref, откуда её читает система скиллов (создана выше
+      // по файлу, до загрузки ассетов; см. healAuraFramesRef).
+      healAuraFramesRef.current = assets.healAura
 
       const chestFrames = assets.chest
       const chestTrapFrames = assets.chestTrap
@@ -3067,15 +3111,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           // и заряд/хил/кулдаун не применятся — как и требовалось.
           if (!potionHealedThisDrinkRef.current && hero.currentFrame >= C.POTION_GULP_FRAME) {
             potionHealedThisDrinkRef.current = true
-            const hpBeforeHeal = hpRef.current
-            // Округление ВНИЗ здесь же, в момент вычисления хила (см. задачу
-            // "HP должно быть всегда целым") — не round/ceil: округление
-            // никогда не должно добавлять игроку HP сверх честных 25% maxHp.
-            hpRef.current = Math.min(maxHp, hpRef.current + Math.floor(maxHp * C.POTION_HEAL_FRAC))
-            // Реально долитое, не полный потенциал зелья — тот же приём, что
-            // у damageTakenRef/attackDamageDealtRef (клэмп у края, не заявка).
-            healedAmountRef.current += hpRef.current - hpBeforeHeal
-            updateHpBar()
+            // Через healPlayer — ОБЩАЯ точка лечения со скиллом heal (см.
+            // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
+            // долитого в healedAmountRef живут там, здесь не дублируются.
+            healPlayer(maxHp * C.POTION_HEAL_FRAC)
             potionChargesRef.current -= 1
             potionCdRef.current = C.POTION_COOLDOWN
             updatePotionButton()

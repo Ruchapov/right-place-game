@@ -433,6 +433,18 @@ export const HEAL_AURA_CELL_W = 160
 export const HEAL_AURA_CELL_H = 192
 export const HEAL_AURA_COUNT = 14
 export const HEAL_AURA_COLS = 14
+// Размер ОТРИСОВКИ ауры в мире — НЕ размер кадра (160×192 выше): Pixi рисует
+// текстуру в любом размере. Подобрано вживую временным тюнером (удалён).
+// Аспект 150/168 = 0.89 против 0.83 у кадра — аура НЕМНОГО шире исходной
+// пропорции, это осознанный подбор по месту, а не ошибка.
+export const HEAL_AURA_DRAW_W = 150
+export const HEAL_AURA_DRAW_H = 168
+// Смещение ауры от точки привязки героя (центр по X, низ хитбокса по Y).
+// Подобрано тем же тюнером: по X ровно по центру, по Y +25 — аура садится
+// ниже ног, иначе висит слишком высоко над героем. См. positionHealAura.
+export const HEAL_AURA_OFFSET_X = 0
+export const HEAL_AURA_OFFSET_Y = 25
+export const HEAL_AURA_ANIM_SPEED = 0.4 // подобрано тюнером: 14 кадров ≈ 0.58с при 60fps
 
 // Обелиски (карта F)
 export const OBELISK_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Idle.png`
@@ -585,6 +597,22 @@ export const ARMOR_MAX_REDUCTION = 0.5
 export const POTION_HEAL_FRAC = 0.25 // лечит 25% maxHp
 export const POTION_COOLDOWN = 2.0 // секунды, тикает как ATTACK_COOLDOWN
 export const POTION_GULP_FRAME = 6 // кадр глотка (0-based) в drink.png
+
+// Скилл heal (см. explore/entities/skills.ts). Кулдаун 5с, зарядов НЕТ —
+// ограничивает только он.
+//
+// Хил идёт ИМПУЛЬСАМИ: по одному в начале каждого прохода анимации ауры, а не
+// разом при нажатии. HEAL_PULSE_COUNT — это ОДНО число и на импульсы, и на
+// проходы ауры (не два независимых параметра). Суммарный процент нигде не
+// хардкодится, он получается умножением: 0.05 × 2 = 10% maxHp — тот же
+// баланс, что был у heal в удалённом Battle.tsx. Класс, дающий 3 импульса,
+// автоматически даст 15%.
+//
+// Кулдаун в МИЛЛИСЕКУНДАХ, как PLAYER_DODGE_COOLDOWN_MS ниже, а НЕ в
+// секундах, как POTION_COOLDOWN выше: skills.update() получает ticker.deltaMS.
+export const HEAL_PULSE_FRAC = 0.05 // доля maxHp за ОДИН импульс
+export const HEAL_PULSE_COUNT = 2 // импульсов за применение = проходов анимации ауры
+export const HEAL_COOLDOWN_MS = 5000
 
 // Атака игрока — изначально те же ПРАВИЛА И ЧИСЛА, что в Battle.tsx (общая
 // ATTACK_RANGE=70 на игрока и врага), позже РАЗДЕЛЕНА на два независимых
