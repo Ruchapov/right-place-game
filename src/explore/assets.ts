@@ -31,6 +31,10 @@ export type ExploreAssets = {
   bossSpikeImpactFrames: Texture[]
   bossWaveLeftFrames: Texture[]
   bossWaveRightFrames: Texture[]
+  // Аура лечения (скилл heal) — кадры загружены, механики heal ещё нет
+  // (см. explore/entities/skills.ts). Единственный подключённый лист из
+  // восьми в public/assets/skills.
+  healAura: Texture[]
   rewardIcons: Record<RewardKind, Texture>
 }
 
@@ -220,6 +224,22 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
   }
   if (isCancelled()) return null
 
+  // Аура лечения (скилл heal) — ПОДГОТОВКА: кадры грузятся, сама механика
+  // heal ещё не написана (см. explore/entities/skills.ts). Остальные 7 листов
+  // скиллов на диске есть, но здесь НЕ грузятся — вместе с их механикой.
+  //
+  // БЕЗ try/catch, намеренно — в отличие от шипа/волны босса выше: там сбой
+  // загрузки осознанно проглатывается (босс просто не создаёт снарядов), а
+  // здесь пустой массив кадров был бы тихим фолбэком — аура молча не
+  // нарисовалась бы, и причину пришлось бы искать глазами. Assets.load
+  // реджектит промис на 404, ошибка уходит наверх в setup().catch() и
+  // показывает экран ошибки.
+  //
+  // HEAL_AURA_COLS=14 обязателен (дефолт loadSheetFrames — 12), почему —
+  // см. комментарий у констант в constants.ts.
+  const healAuraFrames = await loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS)
+  if (isCancelled()) return null
+
   // Карта листов по BossAnimKind — используется ТОЛЬКО playBossAnim в setup().
   const bossFramesByKind: Record<BossAnimKind, Texture[]> = {
     idle: bossIdleFrames,
@@ -274,6 +294,7 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     bossSpikeImpactFrames,
     bossWaveLeftFrames,
     bossWaveRightFrames,
+    healAura: healAuraFrames,
     rewardIcons: rewardIconTextures,
   }
 }

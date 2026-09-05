@@ -419,6 +419,21 @@ export const SMUGGLER_TURN_RANGE = TILE_SIZE * 4
 // подберём при желании позже.
 export const SMUGGLER_INTERACT_RANGE = TILE_SIZE * 2
 
+// Скиллы (VFX) — public/assets/skills. Грузится ПОКА только Heal_Aura
+// (подготовка к реализации heal, см. задачу); остальные 7 листов на диске
+// есть, но не подключаются — вместе с их механикой.
+//
+// Лист 2240×192 (сверено по IHDR), ОДНОРЯДНЫЙ: кадр 160×192, 14 кадров в
+// один ряд. HEAL_AURA_COLS=14 ОБЯЗАТЕЛЕН — дефолт loadSheetFrames равен 12,
+// и кадры 12/13 ушли бы во "второй ряд", которого в картинке нет: вышли бы
+// пустые текстуры БЕЗ единой ошибки, баг видно только глазами. Та же грабля,
+// что уже ловили на сундуке/смуглере/обелиске.
+export const HEAL_AURA_SRC = `${import.meta.env.BASE_URL}assets/skills/Heal_Aura.png`
+export const HEAL_AURA_CELL_W = 160
+export const HEAL_AURA_CELL_H = 192
+export const HEAL_AURA_COUNT = 14
+export const HEAL_AURA_COLS = 14
+
 // Обелиски (карта F)
 export const OBELISK_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Idle.png`
 export const OBELISK_BURNING_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Burning.png`

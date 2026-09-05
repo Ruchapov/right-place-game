@@ -3,15 +3,18 @@ import type { Container } from 'pixi.js'
 import type { Grid } from '../types'
 import type { PlayerPhysics, Enemy, Boss } from '../types'
 
-// Скиллы игрока (fireball/iceball/slash/dash) — модуль подключён к игровому
-// циклу ПУСТЫМ, до реализации самих скиллов (см. задачу). Арт уже лежит в
-// public/assets/skills, но набор файлов на диске не совпадает с тем, что
-// описано в CLAUDE.md, и число кадров/колонок по одним заголовкам PNG не
-// вывести — текстуры сюда НЕ подключаем, пока эти числа не подтверждены.
+// Скиллы игрока (heal/fireball/iceball/slash/dash) — модуль подключён к
+// игровому циклу ПУСТЫМ, до реализации самих скиллов (см. задачу).
 // Интерфейс (SkillsDeps/createSkillsSystem) спроектирован под будущую
 // реализацию заранее, чтобы точку подключения в Explore.tsx не пришлось
 // переделывать, когда скиллы появятся.
-export type SkillId = 'fireball' | 'iceball' | 'slash' | 'dash'
+//
+// Арт всех пяти скиллов лежит в public/assets/skills — 8 листов (снаряд +
+// импакт у fireball и iceball, аура heal, взмах slash, капли Bleeding_Loop,
+// Dash_Strike), размеры сверены по заголовкам PNG. Грузится ПОКА только
+// Heal_Aura (см. loadExploreAssets в ../assets.ts, HEAL_AURA_* в
+// ../constants.ts) — остальные подключим вместе с их механикой.
+export type SkillId = 'heal' | 'fireball' | 'iceball' | 'slash' | 'dash'
 
 export type SkillsDeps = {
   // Герой — phys/getPlayerCombatBox читаются, не пересоздаются: phys это
@@ -54,13 +57,13 @@ export type SkillsDeps = {
   // см. handleSkillToggle). null в слоте — ЛЕГИТИМНОЕ состояние: игрок волен
   // экипировать 0, 1 или 2 скилла.
   //
-  // Тип элемента — string, а НЕ SkillId, намеренно: в реальных данных бывает
-  // 'heal' (см. HERO_SKILL_NAMES в App.tsx — там 5 скиллов), а SkillId выше
-  // знает только 4. Сузить string->SkillId здесь означало бы молча свести
-  // 'heal' к null, то есть подменить "экипирован heal" на "слот пуст" — ровно
-  // тот тихий фолбэк, который в проекте запрещён (см. CLAUDE.md, Design
-  // Decisions). Сужение — задача шага, где скиллы будут реализованы: тогда же
-  // решится, входит ли heal в SkillId.
+  // Тип элемента — string, а НЕ SkillId, хотя SkillId выше теперь покрывает
+  // все пять реальных id. Сужение отложено НАМЕРЕННО: сверять входящую строку
+  // с SkillId осмысленно только когда реализованы все пять. Сделай это
+  // сейчас — и четыре ещё не реализованных скилла пришлось бы сводить к null,
+  // то есть показывать "слот пуст" там, где игрок что-то экипировал; это
+  // тихий фолбэк, в проекте запрещён (см. CLAUDE.md, Design Decisions).
+  // Сузим вместе с реализацией последнего из пяти.
   equipped: [string | null, string | null]
 }
 
