@@ -52,6 +52,18 @@ export type SkillsDeps = {
   // сам вернёт 0, но по нулю НЕЛЬЗЯ отличить смерть от "HP уже полное" —
   // второе нормальный исход и ауру гасить не должно.
   dead: MutableRefObject<boolean>
+  // Урон по врагу/боссу — ОБЩАЯ точка с обычной атакой: те же closure-функции
+  // из setup() в Explore.tsx, которые зовёт applyAttackHit (не копия логики).
+  // Возвращают "цель умерла" — смерть/HP-бар/анимация трупа уже сделаны
+  // внутри. Хитстан и прерывание замаха туда НЕ входят намеренно: они
+  // относятся к удару мечом, а периодический урон (кровотечение) не должен
+  // станить цель каждым тиком.
+  damageEnemy: (enemy: Enemy, amount: number, accumulator: MutableRefObject<number>) => boolean
+  damageBoss: (amount: number, accumulator: MutableRefObject<number>) => boolean
+  // Аккумулятор урона СКИЛЛОВ (Explore.tsx: skillDamageDealtRef) — растит
+  // ловкость на сервере, отдельно от attackDamageDealtRef, который растит
+  // силу. Передаётся третьим аргументом в damageEnemy/damageBoss выше.
+  skillDamageDealt: MutableRefObject<number>
 
   // Лечение — ОБЁРТКА над healPlayerRef в Explore.tsx, не сама функция (та же
   // причина, что у takeDamage выше). Единая точка хила на зелье и на скилл

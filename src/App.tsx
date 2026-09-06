@@ -216,7 +216,11 @@ export default function App() {
     if (!initDataRaw) {
       // Вне Telegram (обычный браузер) — заглушка для локальной разработки,
       // на сервер не ходим.
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['heal', 'dash'], potionCharges: 3 })
+      // TEMP_DEV_SKILLS: временный набор скиллов под локальную проверку slash
+      // (было ['heal', 'dash']). Влияет ТОЛЬКО на офлайн-заглушку DevTester —
+      // в Telegram скиллы приходят с сервера и этой строкой не задеваются.
+      // ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['heal', 'slash'], potionCharges: 3 })
       setEnergyBase(MAX_ENERGY)
       setEnergyBaseAt(Date.now())
       return

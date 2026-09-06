@@ -1512,6 +1512,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // что у takeDamage выше (deps собираются один раз, реф обновляется
         // каждый рендер).
         dead: deathRef,
+        // Объявлены НИЖЕ по файлу через `function` (hoisted) — тот же приём,
+        // что уже используют pushPlayerOutX/closeEvent/spawnRewardFloat: на
+        // момент сборки deps ссылка уже существует, вызовы идут позже, из
+        // тикера.
+        damageEnemy,
+        damageBoss,
+        skillDamageDealt: skillDamageDealtRef,
         healPlayer: (amount: number) => healPlayerRef.current(amount),
         maxHp,
         healAuraFrames: healAuraFramesRef,
@@ -2268,6 +2275,83 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // attackHitboxRef, "один удар = один засчёт" через attackSwingIdRef/
       // lastHitSwingId, урон, добивание) — БЕЗ ИЗМЕНЕНИЙ, только вынесена из
       // общего цикла врагов в свою функцию с собственным for.
+      // Нанесение урона по врагу/боссу — ВЫНЕСЕНО из applyAttackHit, чтобы
+      // ту же арифметику не пришлось писать третий раз, когда урон начнут
+      // наносить скиллы (см. explore/entities/skills.ts). Чистый перенос:
+      // числа, порядок действий и обработка смерти — ровно как были инлайн.
+      //
+      // ГДЕ РЕЖЕТСЯ ШОВ: внутрь попадает ТОЛЬКО урон, смерть и перерисовка
+      // полосы HP. Poise/hurtTimer/stunCount/poiseImmuneTimer, прерывание
+      // замаха и дедуп взмаха (lastHitSwingId) ОСТАЛИСЬ в applyAttackHit —
+      // это реакция на КОНКРЕТНЫЙ удар мечом. Урон от кровотечения пойдёт
+      // через эти же функции раз в секунду; окажись хитстан внутри —
+      // кровоточащий враг попал бы в вечный стан-лок.
+      //
+      // accumulator — ПАРАМЕТР, а не захардкоженный ref: обычная атака
+      // передаёт attackDamageDealtRef (растит силу), скиллы будут передавать
+      // skillDamageDealtRef (растит ловкость). Возвращает "умер ли" —
+      // вызывающий сам решает, что делать дальше.
+      function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }): boolean {
+        // Фактически снятое, не заявленный урон — тот же приём, что в
+        // takeDamage: добивающий удар не должен раздувать счётчик сверх
+        // реального остатка HP врага.
+        accumulator.current += Math.min(amount, enemy.hp)
+        enemy.hp = Math.max(0, enemy.hp - amount)
+        if (enemy.hp <= 0) {
+          // Смерть — высший приоритет, перебивает hurt/attack/windup
+          // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
+          // основной цикл врагов (см. ticker ниже) — ждём, пока death
+          // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
+          enemy.dead = true
+          redrawEnemyHpBar(enemy) // пустая полоса
+          const beastFrames = beastFramesRef.current
+          if (beastFrames) {
+            playSpriteAnim(enemy.sprite, beastFrames.death, C.BEAST_DEATH_ANIM_SPEED, false)
+          }
+          enemy.deathHoldTimer = 0
+          return true
+        }
+        redrawEnemyHpBar(enemy)
+        return false
+      }
+
+      // Босс — ОТДЕЛЬНОЙ функцией, а не общей с врагом: обработка смерти у них
+      // разная (у босса HP-бар скрывается целиком, а не рисуется пустым; поза
+      // и facing фиксируются навсегда; труп остаётся до конца забега, без
+      // despawn/DEATH_HOLD_MS). Цель не параметр — босс в забеге один.
+      function damageBoss(amount: number, accumulator: { current: number }): boolean {
+        const boss = bossRef.current
+        if (!boss) return false
+        accumulator.current += Math.min(amount, boss.hp)
+        boss.hp = Math.max(0, boss.hp - amount)
+        if (boss.hp <= 0) {
+          // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
+          // walk > idle, ничем не прерывается: boss.dead гейтит ВЕСЬ
+          // тикер (физика/AI/push-out/визуал, см. там) — мёртвый босс
+          // дальше не двигается, не разворачивается, не атакует и не
+          // получает урон повторно (гейт !boss.dead у вызывающего). HP-бар
+          // СКРЫВАЕТСЯ (не просто пустая полоса).
+          // Death запускается ЗДЕСЬ один раз; applyBossLayout+флип
+          // фиксируют финальные позу/facing НАВСЕГДА (дальше тикер их
+          // не трогает, физика для мёртвого босса отключена) — само
+          // "падение" зашито в кадры Boss_Death (46, разовая,
+          // BOSS_ANIM_LOOP.death=false) — PixiJS AnimatedSprite сам
+          // держит последний кадр без loop, ничего досчитывать не надо.
+          // Труп ОСТАЁТСЯ до конца забега (в отличие от зверя —
+          // никакого despawn/DEATH_HOLD_MS). Награда/закрытие события —
+          // НЕ здесь, это фаза 5 (см. задачу, п.6).
+          boss.dead = true
+          boss.hpBarBg.visible = false
+          boss.hpBarFill.visible = false
+          playBossAnim('death')
+          applyBossLayout(boss)
+          boss.sprite.scale.x = boss.facing === -1 ? Math.abs(boss.sprite.scale.x) : -Math.abs(boss.sprite.scale.x)
+          return true
+        }
+        redrawBossHpBar(boss)
+        return false
+      }
+
       function applyAttackHit() {
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
@@ -2286,26 +2370,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               hb.y + hb.height > enemy.y
             if (overlap) {
               enemy.lastHitSwingId = attackSwingIdRef.current
-              // Фактически снятое, не заявленный урон удара — тот же приём,
-              // что в takeDamage (см. attackDamageDealtRef): добивающий удар
-              // не должен раздувать счётчик сверх реального остатка HP врага.
-              attackDamageDealtRef.current += Math.min(attackDamageRef.current, enemy.hp)
-              enemy.hp = Math.max(0, enemy.hp - attackDamageRef.current)
-              if (enemy.hp <= 0) {
-                // Смерть — высший приоритет, перебивает hurt/attack/windup
-                // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
-                // основной цикл врагов (см. ticker ниже) — ждём, пока death
-                // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
-                enemy.dead = true
-                redrawEnemyHpBar(enemy) // пустая полоса
-                const beastFrames = beastFramesRef.current
-                if (beastFrames) {
-                  playSpriteAnim(enemy.sprite, beastFrames.death, C.BEAST_DEATH_ANIM_SPEED, false)
-                }
-                enemy.deathHoldTimer = 0
-                continue
-              }
-              redrawEnemyHpBar(enemy)
+              // Урон/смерть/перерисовка полосы — в damageEnemy выше (общая
+              // точка с будущим уроном скиллов). Здесь остаётся всё, что
+              // относится ИМЕННО к удару мечом: дедуп взмаха строкой выше и
+              // хитстан ниже. Смерть — тот же continue, что был инлайн.
+              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef)) continue
               // Хитстан — та же точка, где уменьшается hp. Не трогаем на
               // смертельном ударе (continue выше уже ушёл из итерации, см.
               // enemy.dead-ветку) — hurt никогда не запускается поверх death.
@@ -2366,34 +2435,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               hb.y + hb.height > boss.y
             if (overlap) {
               boss.lastHitSwingId = attackSwingIdRef.current
-              // Фактически снятое, не заявленный урон удара — см. тот же
-              // приём в ветке обычного врага выше / takeDamage.
-              attackDamageDealtRef.current += Math.min(attackDamageRef.current, boss.hp)
-              boss.hp = Math.max(0, boss.hp - attackDamageRef.current)
-              if (boss.hp <= 0) {
-                // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
-                // walk > idle, ничем не прерывается: boss.dead гейтит ВЕСЬ
-                // тикер (физика/AI/push-out/визуал, см. там) — мёртвый босс
-                // дальше не двигается, не разворачивается, не атакует и не
-                // получает урон повторно (гейт !boss.dead в самом начале
-                // этого блока). HP-бар СКРЫВАЕТСЯ (не просто пустая полоса).
-                // Death запускается ЗДЕСЬ один раз; applyBossLayout+флип
-                // фиксируют финальные позу/facing НАВСЕГДА (дальше тикер их
-                // не трогает, физика для мёртвого босса отключена) — само
-                // "падение" зашито в кадры Boss_Death (46, разовая,
-                // BOSS_ANIM_LOOP.death=false) — PixiJS AnimatedSprite сам
-                // держит последний кадр без loop, ничего досчитывать не надо.
-                // Труп ОСТАЁТСЯ до конца забега (в отличие от зверя —
-                // никакого despawn/DEATH_HOLD_MS). Награда/закрытие события —
-                // НЕ здесь, это фаза 5 (см. задачу, п.6).
-                boss.dead = true
-                boss.hpBarBg.visible = false
-                boss.hpBarFill.visible = false
-                playBossAnim('death')
-                applyBossLayout(boss)
-                boss.sprite.scale.x = boss.facing === -1 ? Math.abs(boss.sprite.scale.x) : -Math.abs(boss.sprite.scale.x)
-              } else {
-                redrawBossHpBar(boss)
+              // Урон/смерть/перерисовка полосы — в damageBoss выше (общая
+              // точка с будущим уроном скиллов). Здесь остаётся то, что
+              // относится ИМЕННО к удару мечом: дедуп взмаха строкой выше,
+              // переход стадии и оба слоя poise ниже. Ветка ниже — бывшая
+              // else-ветка "не смертельный удар", 1:1.
+              if (!damageBoss(attackDamageRef.current, attackDamageDealtRef)) {
                 // Стадия 2 — переход СЧИТАЕТСЯ один раз, на первом пересечении
                 // порога ВНИЗ (гейт stage===1), не каждый кадр, что дальше hp
                 // будет падать. САМ переход не выставляет и не продлевает
