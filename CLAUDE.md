@@ -11,7 +11,7 @@
 | [`docs/explore-engine.md`](docs/explore-engine.md) | 701 | физика, коллизия, камера, AI зверя и босса, хитбоксы, HUD-плита, управление |
 | [`docs/explore-features.md`](docs/explore-features.md) | 175 | броня, зелье, сундук, reward float, формула трофеев |
 | [`docs/entity-modules.md`](docs/entity-modules.md) | 131 | контракт createXSystem, порядок вызовов в тикере, skills/enemy/boss |
-| [`docs/skills.md`](docs/skills.md) | 259 | пять скиллов, восстановленная из git реализация Battle.tsx, арт |
+| [`docs/skills.md`](docs/skills.md) | 367 | пять скиллов, восстановленная из git реализация Battle.tsx, арт |
 | [`docs/server-explore.md`](docs/server-explore.md) | 189 | эндпоинты забега, розыгрыш событий на сервере, экраны итогов |
 | [`docs/maps.md`](docs/maps.md) | 250 | шесть карт A–F, слот-файлы, декор, темы, тайник D, обелиски F |
 | [`docs/items.md`](docs/items.md) | 295 | каталог 36 предметов, тиры, слоты, инвентарь, дроп (спроектирован, не реализован) |
