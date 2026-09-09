@@ -228,6 +228,14 @@ export function createBossSystem(deps: BossDeps) {
       hurtTimer: 0,
       stunCount: 0,
       poiseImmuneTimer: 0,
+      // Память о цели пуста — как у зверя (см. BOSS_AGGRO_MEMORY_MS).
+      aggroMemoryTimer: 0,
+      // Расследовать нечего: боссу ещё не наносили урон (см. INVESTIGATE_MS).
+      investigateX: null,
+      investigateTimer: 0,
+      investigateLookTimer: 0,
+      // Не заморожен (см. ICEBALL_STUN_MS).
+      stunTimer: 0,
       dead: false,
       deathHoldTimer: 0,
       stage: 1,
@@ -260,6 +268,19 @@ export function createBossSystem(deps: BossDeps) {
   // dt — кадро-масштабированный (ticker.deltaTime, как у phys игрока) — для
   // движения; deltaMS — реальные миллисекунды (ticker.deltaMS) — для ВСЕХ
   // таймеров. Тот же контракт, что у enemy.ts.
+  // Тело босса как мягкая стена по X — ОДНА точка на ДВА вызова, ровно как у
+  // зверя (см. pushPlayerOutOfEnemy в enemy.ts): обычный кадр (после движения)
+  // и кадр под СТАНОМ, где заслон делает return раньше, а тело обязано
+  // остаться физическим. Через deps.pushPlayerOutX, то есть через
+  // pushPlayerOutXUnlessDashing — рывок сквозь босса проходит и под станом
+  // тоже, обычная ходьба упирается.
+  function pushPlayerOutOfBoss(boss: Boss) {
+    deps.pushPlayerOutX(
+      { x: boss.x, y: boss.y, width: C.BOSS_WIDTH, height: C.BOSS_HEIGHT },
+      deps.getPlayerCombatBox(),
+    )
+  }
+
   function updateAI(dt: number, deltaMS: number): void {
     // Босс карты C (ФАЗА 2, шаги 4-5, см. задачу) — передвижение к
     // герою + ближний бой (2 атаки, см. visual-sync ниже): агро
@@ -282,6 +303,30 @@ export function createBossSystem(deps: BossDeps) {
       // сквозь труп, тело не перегораживает арену. В отличие от зверя
       // (despawn через DEATH_HOLD_MS) — труп ОСТАЁТСЯ до конца забега.
       if (!boss.dead) {
+        // СТАН от iceball — ТОТ ЖЕ заслон, что у зверя (см. enemy.ts, там же
+        // подробности): пауза всего обновления, спрайт замирает на текущем
+        // кадре, таймер тикает безусловно. Босс станится наравне с обычным
+        // врагом, отдельных правил у него нет.
+        // return, а не continue: босс в забеге один, цикла тут нет, и ниже в
+        // updateAI ничего, кроме его же обработки, не осталось.
+        // Накопительный стан-резист (СЛОЙ 2) — тикает вниз КАЖДЫЙ кадр, в том
+        // числе под станом. Вынесен до заслона по той же причине, что у зверя
+        // (см. enemy.ts): иначе стан продлевал бы иммунитет к прерыванию на
+        // свою длительность. hurtTimer/hitFlashTimer намеренно оставлены под
+        // заслоном — их доигрывание после разморозки осознанно.
+        boss.poiseImmuneTimer = Math.max(0, boss.poiseImmuneTimer - deltaMS)
+
+        const wasStunned = boss.stunTimer > 0
+        boss.stunTimer = Math.max(0, boss.stunTimer - deltaMS)
+        if (boss.stunTimer > 0) {
+          if (boss.sprite.playing) boss.sprite.stop()
+          // Тело остаётся ФИЗИЧЕСКИМ (см. pushPlayerOutOfBoss выше): заслон
+          // пропускает решения и движение, а не столкновение с телом.
+          pushPlayerOutOfBoss(boss)
+          return
+        }
+        if (wasStunned && !boss.sprite.playing) boss.sprite.play()
+
         boss.vy = Math.min(boss.vy + C.GRAVITY * dt, C.MAX_FALL)
         const prevBossFootY = boss.y + C.BOSS_HEIGHT
         boss.y += boss.vy * dt
@@ -292,28 +337,72 @@ export function createBossSystem(deps: BossDeps) {
           boss.vy = 0
         }
 
+        // Дистанция и условие агро считаются ДО гейта AI ниже — по образцу
+        // зверя и по той же причине (см. память о цели двумя абзацами ниже).
+        // Значения те же, что раньше считались внутри гейта: физика босса уже
+        // отработала выше, позиция игрока за кадр не меняется.
+        const playerCombatBox = deps.getPlayerCombatBox()
+        const bossCenterX = boss.x + C.BOSS_WIDTH / 2
+        const dx = (playerCombatBox.x + playerCombatBox.w / 2) - bossCenterX
+        const dist = Math.abs(dx)
+
+        // sameFloor — ТА ЖЕ проверка, что у зверя (по ногам, не по
+        // верхней точке — рост игрока и босса разный), включая
+        // SAME_FLOOR_TOLERANCE_TILES вместо узкой FLOOR_Y_TOLERANCE.
+        // Порог остался строгим: прыжок героя он по-прежнему не перекрывает
+        // (апекс 213px против 160px), это закрывает память ниже.
+        const bossFeetYNow = boss.y + C.BOSS_HEIGHT
+        const playerFeetYNow = deps.phys.y + C.PLAYER_HEIGHT
+        const sameFloor = Math.abs(playerFeetYNow - bossFeetYNow) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
+        const aggroConditionNow = dist <= C.BOSS_AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
+
+        // Память о цели (см. BOSS_AGGRO_MEMORY_MS), устройство как у зверя.
+        // ⚠️ И расчёт условия, и декремент вынесены ДО гейта
+        // hurtTimer/анимаций атак НАМЕРЕННО. Раньше агро вообще не
+        // пересчитывалось, пока играет любая атака; поставь память туда же —
+        // она бы не истекала всю атаку и, что хуже, не взводилась бы, пока
+        // босс бьёт стоящего перед ним героя. Здесь оба случая честные:
+        // условие проверяется каждый кадр, память течёт каждый кадр.
+        // Мёртвый босс сюда не заходит вообще (гейт !boss.dead выше) — у
+        // трупа памяти о цели нет по смыслу.
+        if (aggroConditionNow) {
+          boss.aggroMemoryTimer = C.BOSS_AGGRO_MEMORY_MS
+        } else {
+          boss.aggroMemoryTimer = Math.max(0, boss.aggroMemoryTimer - deltaMS)
+        }
+        // Дальше по AI "агрён" — ИМЕННО память: кадр, где условие уже не
+        // выполняется (герой в прыжке), но цель ещё не забыта, сюда входит.
+        // Ветка потери цели (boss.moving = false) не менялась — просто
+        // наступает на BOSS_AGGRO_MEMORY_MS позже.
+        const aggroed = boss.aggroMemoryTimer > 0
+
+        // Таймеры расследования (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS) —
+        // здесь же, ДО гейта hurtTimer/анимаций атак, ровно по той же
+        // причине, что и память агро: во время атаки и хитстана время обязано
+        // течь. Устройство один в один как у зверя (см. enemy.ts).
+        if (aggroed) {
+          // Приоритет обычного агро: цель видно (или помним) — расследовать
+          // нечего.
+          boss.investigateTimer = 0
+          boss.investigateLookTimer = 0
+          boss.investigateX = null
+        } else if (boss.investigateTimer > 0) {
+          boss.investigateTimer = Math.max(0, boss.investigateTimer - deltaMS)
+          if (boss.investigateTimer === 0) boss.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+        } else if (boss.investigateLookTimer > 0) {
+          boss.investigateLookTimer = Math.max(0, boss.investigateLookTimer - deltaMS)
+          if (boss.investigateLookTimer === 0) boss.investigateX = null
+        }
+
         // Хитстан (hurt) полностью замораживает AI-ветку — та же логика,
         // что у enemy.hurtTimer<=0 гейт выше (не двигается, не
         // разворачивается, пока не истечёт boss.hurtTimer).
         // !attackAnimPlaying/!rangedAnimPlaying — во время атаки ИЛИ
-        // броска босс не двигается и не пересчитывает агро/движение
+        // броска босс не двигается и не принимает решений по движению
         // (см. задачу, п.4: "во время анимации броска босс неподвижен");
         // сами они обрабатываются ниже, отдельной веткой visual-sync.
+        // Агро и его память под этот гейт БОЛЬШЕ НЕ попадают, см. выше.
         if (boss.hurtTimer <= 0 && !boss.attackAnimPlaying && !boss.rangedAnimPlaying && !boss.stompAnimPlaying) {
-          const playerCombatBox = deps.getPlayerCombatBox()
-          const bossCenterX = boss.x + C.BOSS_WIDTH / 2
-          const dx = (playerCombatBox.x + playerCombatBox.w / 2) - bossCenterX
-          const dist = Math.abs(dx)
-
-          // sameFloor — ТА ЖЕ проверка, что у зверя (по ногам, не по
-          // верхней точке — рост игрока и босса разный), включая
-          // SAME_FLOOR_TOLERANCE_TILES вместо узкой FLOOR_Y_TOLERANCE —
-          // иначе прыжок героя формально снимал агро (см. задачу).
-          const bossFeetYNow = boss.y + C.BOSS_HEIGHT
-          const playerFeetYNow = deps.phys.y + C.PLAYER_HEIGHT
-          const sameFloor = Math.abs(playerFeetYNow - bossFeetYNow) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-          const aggroed = dist <= C.BOSS_AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
-
           // Ranged (ФАЗА 3, см. задачу, п.3/4) — "наступает волнами":
           // проверяется ПЕРЕД обычным сближением/melee ниже. Пока герой
           // дальше BOSS_RANGED_MIN_TILES И кулдаун броска истёк — босс
@@ -366,7 +455,53 @@ export function createBossSystem(deps: BossDeps) {
                   boss.x = clamp(nextX, 0, worldWidthPx - C.BOSS_WIDTH)
                 }
               }
+            } else if (boss.investigateTimer > 0 && boss.investigateX !== null) {
+              // РАССЛЕДОВАНИЕ, фаза ходьбы (см. INVESTIGATE_MS) — идём к точке
+              // источника урона скоростью погони (BOSS_MOVE_SPEED, своей у
+              // расследования нет). Стена и край площадки — ТЕ ЖЕ проверки,
+              // что в погоне выше (isSolid ×3 + cellFootBlockTop), новой
+              // геометрии не заводим.
+              // boss.moving — чтобы играла walk-анимация (см. visual-sync
+              // ниже, playBossAnim(boss.moving ? 'walk' : 'idle')).
+              const targetX = boss.investigateX
+              const centerXNow = boss.x + C.BOSS_WIDTH / 2
+              const toTarget = targetX - centerXNow
+              const dirInv = Math.sign(toTarget)
+              const step = C.BOSS_MOVE_SPEED * dt
+              if (dirInv !== 0) boss.facing = dirInv as 1 | -1
+              if (dirInv === 0 || Math.abs(toTarget) <= step) {
+                // Дошёл — шаг не делаем, чтобы не проскочить точку.
+                boss.moving = false
+                boss.investigateTimer = 0
+                boss.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+              } else {
+                const nextX = boss.x + dirInv * step
+                const leadingX = dirInv > 0 ? nextX + C.BOSS_WIDTH : nextX
+                const hitWall =
+                  isSolid(deps.grid, C.TILE_SIZE, leadingX, boss.y + 1) ||
+                  isSolid(deps.grid, C.TILE_SIZE, leadingX, boss.y + C.BOSS_HEIGHT / 2) ||
+                  isSolid(deps.grid, C.TILE_SIZE, leadingX, boss.y + C.BOSS_HEIGHT - 1)
+                const footCx = Math.floor(leadingX / C.TILE_SIZE)
+                const footCy = Math.floor((boss.y + C.BOSS_HEIGHT) / C.TILE_SIZE)
+                const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+                if (hitWall || noFloorAhead) {
+                  // Дальше хода нет — точка недостижима, не топчемся у края.
+                  boss.moving = false
+                  boss.investigateTimer = 0
+                  boss.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+                } else {
+                  boss.moving = true
+                  boss.x = clamp(nextX, 0, worldWidthPx - C.BOSS_WIDTH)
+                }
+              }
+            } else if (boss.investigateLookTimer > 0 && boss.investigateX !== null) {
+              // РАССЛЕДОВАНИЕ, фаза паузы — стоит лицом к точке, x не трогаем.
+              boss.moving = false
+              const dirLook = Math.sign(boss.investigateX - (boss.x + C.BOSS_WIDTH / 2))
+              if (dirLook !== 0) boss.facing = dirLook as 1 | -1
             } else {
+              // Ни цели, ни расследования — босс просто стоит (патруля у него
+              // нет, поведение прежнее).
               boss.moving = false
             }
 
@@ -534,16 +669,12 @@ export function createBossSystem(deps: BossDeps) {
         // на спрайте, пока активна.
         boss.hitFlashTimer = Math.max(0, boss.hitFlashTimer - deltaMS)
         boss.sprite.tint = boss.hitFlashTimer > 0 ? 0xe0353b : 0xffffff
-        // Накопительный стан-резист (СЛОЙ 2, см. задачу) — тикает вниз
-        // каждый кадр, как у зверя (STUN_LIMIT/POISE_IMMUNE_MS там,
-        // BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS здесь).
-        boss.poiseImmuneTimer = Math.max(0, boss.poiseImmuneTimer - deltaMS)
 
         // Push-out — ПОСЛЕ движения (boss.x этого кадра уже финален), как
         // у зверя (см. его pushPlayerOutX ниже по коду выше в enemy-цикле).
         // ТОЛЬКО пока жив (см. задачу, п.3) — мёртвый босс не толкает
         // героя, тело проходимо.
-        deps.pushPlayerOutX({ x: boss.x, y: boss.y, width: C.BOSS_WIDTH, height: C.BOSS_HEIGHT }, deps.getPlayerCombatBox())
+        pushPlayerOutOfBoss(boss)
 
         deps.applyBossLayout(boss)
         // Флип — ПОСЛЕ applyBossLayout: тот каждый тик ставит scale.set(...)

@@ -13,6 +13,13 @@ export type ExploreAssets = {
     drink: Texture[]
     hurt: Texture[]
     death: Texture[]
+    // Каст (поднятие руки → удержание → опускание) — анимация под fireball.
+    cast: Texture[]
+    // Скилл dash — ЭТАП 1, только визуал. Лежит в hero, а НЕ рядом с
+    // healAura/slashStreak ниже, хотя файл и живёт в assets/skills: dash
+    // проигрывается подменой текстур на спрайте ГЕРОЯ, это его анимация,
+    // а не VFX-оверлей поверх него.
+    dash: Texture[]
   }
   beast: {
     idle: Texture[]
@@ -34,11 +41,18 @@ export type ExploreAssets = {
   // Аура лечения (скилл heal) — кадры загружены, механики heal ещё нет
   // (см. explore/entities/skills.ts).
   healAura: Texture[]
-  // Скилл slash: дуга взмаха (разовая) и петля кровотечения на цели.
-  // Кадры загружены, механики slash ещё нет — исходник для неё выписан в
-  // CLAUDE.md (раздел Skills, блок Slash, восстановлен из истории git).
+  // Скилл slash: дуга взмаха (разовая). Петля кровотечения (Bleeding_Loop)
+  // НЕ грузится — визуал кровотечения убран намеренно, см. updateBleeds в
+  // explore/entities/skills.ts. Сам файл на диске остался.
   slashStreak: Texture[]
-  bleedingLoop: Texture[]
+  // Скилл fireball: летящий снаряд (лупится) и разовая вспышка на месте его
+  // смерти — от попадания в цель или в геометрию.
+  fireballProjectile: Texture[]
+  fireballImpact: Texture[]
+  // Скилл iceball — тот же снаряд на своих текстурах (см. ProjectileSpec в
+  // entities/skills.ts): пара листов той же формы, что у fireball.
+  iceballProjectile: Texture[]
+  iceballImpact: Texture[]
   rewardIcons: Record<RewardKind, Texture>
 }
 
@@ -52,6 +66,46 @@ export type ExploreAssets = {
 // Фон карты (bgFar/bgMid) СОЗНАТЕЛЬНО не входит сюда — он грузится в setup()
 // раньше и отдельно, чтобы карта и фон появлялись на экране быстро, не
 // дожидаясь всех остальных (более тяжёлых) листов.
+// Сверка нарезанного листа с ожидаемым размером — ГРОМКАЯ. loadSheetFrames
+// размер файла НЕ проверяет: он честно нарежет count прямоугольников по тем
+// же координатам из файла любого размера и вернёт пустые/сдвинутые кадры —
+// снаружи это выглядит как "скилл не сработал", и причину пришлось бы искать
+// глазами. Брошенная отсюда ошибка уходит наверх в setup().catch() и
+// показывает экран ошибки (см. setSetupError в Explore.tsx).
+//
+// rows — число РЯДОВ клеток на листе (по умолчанию 1, однорядный лист).
+// Многорядные листы героя (12 колонок × 2 ряда) проходят через эту же
+// проверку, просто с rows=2.
+function assertSheetSize(
+  fileName: string,
+  frames: Texture[],
+  cellW: number,
+  cellH: number,
+  count: number,
+  cols: number,
+  rows = 1,
+): void {
+  if (frames.length !== count) {
+    throw new Error(`${fileName}: ожидалось ${count} кадров, нарезано ${frames.length}`)
+  }
+  // Кадры не помещаются в сетку — нарезка полезет за пределы листа и вернёт
+  // пустые клетки. Проверяется ОТДЕЛЬНО от размера: сетка бывает верной, а
+  // count больше, чем в неё влезает.
+  if (count > cols * rows) {
+    throw new Error(
+      `${fileName}: ${count} кадров не помещаются в сетку ${cols}×${rows} (${cols * rows} клеток)`,
+    )
+  }
+  const sheet = frames[0].source
+  if (sheet.width !== cellW * cols || sheet.height !== cellH * rows) {
+    throw new Error(
+      `${fileName}: ожидался лист ${cellW * cols}×${cellH * rows} ` +
+        `(клетка ${cellW}×${cellH}, сетка ${cols}×${rows}), ` +
+        `а пришёл ${sheet.width}×${sheet.height} — нарезка на кадры неверна`,
+    )
+  }
+}
+
 export async function loadExploreAssets(isCancelled: () => boolean): Promise<ExploreAssets | null> {
   // Визуал героя — AnimatedSprite поверх хитбокса. Только idle в этом
   // шаге (run/attack/jump/hurt/death — отдельно). Кадры режутся из
@@ -101,6 +155,26 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     // Тот же случай, что и выше — ещё один await, ещё одна проверка.
     return null
   }
+  // Каст — та же клетка и та же раскладка, что у остальных листов героя,
+  // поэтому cols НЕ передаётся: дефолт loadSheetFrames равен 12 и здесь верен.
+  // Лист перерисован (HERO_CAST_SRC теперь cast_v2.png) — сетка у новой
+  // версии та же (394×296, 12×2, 24 кадра, лист 4728×592), поэтому числа
+  // проверки ниже не менялись, сменилось только имя файла в сообщении.
+  const castFrames = await loadSheetFrames(C.HERO_CAST_SRC, C.HERO_CELL_W, C.HERO_CELL_H, C.HERO_CAST_COUNT)
+  if (isCancelled()) {
+    // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+    return null
+  }
+  assertSheetSize('cast_v2.png', castFrames, C.HERO_CELL_W, C.HERO_CELL_H, C.HERO_CAST_COUNT, 12, C.HERO_CAST_ROWS)
+  // Dash — анимация героя на СВОЁМ листе: клетка 240×128, 11 кадров в один
+  // ряд, файл лежит в assets/skills (см. DASH_* в constants.ts). COLS
+  // передаётся ЯВНО: дефолт loadSheetFrames — 12, и на нём кадры съехали бы.
+  const dashFrames = await loadSheetFrames(C.DASH_SRC, C.DASH_CELL_W, C.DASH_CELL_H, C.DASH_COUNT, C.DASH_COLS)
+  if (isCancelled()) {
+    // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+    return null
+  }
+  assertSheetSize('Dash_Strike.png', dashFrames, C.DASH_CELL_W, C.DASH_CELL_H, C.DASH_COUNT, C.DASH_COLS)
 
   // Кадры зверя — тот же loadSheetFrames, 12 колонок в ряд, грузятся ОДИН
   // раз (не на каждого врага кластера). Все 5 листов пересобраны в единую
@@ -244,16 +318,68 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
   const healAuraFrames = await loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS)
   if (isCancelled()) return null
 
-  // Slash: дуга взмаха + петля кровотечения. Механики скилла ещё нет, грузим
-  // только кадры — по тому же правилу, что и Heal_Aura выше: БЕЗ try/catch,
-  // чтобы 404 всплыл наверх экраном ошибки (setup().catch), а не подменился
-  // пустым массивом кадров, из-за которого эффект молча не нарисуется.
-  // Размеры клеток сверены по IHDR: 1920/12 и 1280/8 делятся нацело, высота
-  // листа у обоих равна высоте кадра (один ряд). COLS передан явно у обоих.
+  // Slash — дуга взмаха. БЕЗ try/catch, по тому же правилу, что и Heal_Aura
+  // выше: 404 должен всплыть наверх экраном ошибки (setup().catch), а не
+  // подмениться пустым массивом кадров, из-за которого эффект молча не
+  // нарисуется. Размер клетки сверен по IHDR: 1920/12 = 160 нацело, высота
+  // листа равна высоте кадра (один ряд). COLS передан явно.
+  // Bleeding_Loop.png здесь НЕ грузится: визуал кровотечения убран (см.
+  // updateBleeds в explore/entities/skills.ts), файл на диске оставлен.
   const slashStreakFrames = await loadSheetFrames(C.SLASH_STREAK_SRC, C.SLASH_STREAK_CELL_W, C.SLASH_STREAK_CELL_H, C.SLASH_STREAK_COUNT, C.SLASH_STREAK_COLS)
   if (isCancelled()) return null
-  const bleedingLoopFrames = await loadSheetFrames(C.BLEEDING_LOOP_SRC, C.BLEEDING_LOOP_CELL_W, C.BLEEDING_LOOP_CELL_H, C.BLEEDING_LOOP_COUNT, C.BLEEDING_LOOP_COLS)
+
+  // Fireball — снаряд и импакт. БЕЗ try/catch, по тому же правилу, что и два
+  // листа выше: 404 должен всплыть экраном ошибки, а не подмениться пустым
+  // массивом кадров. COLS передаётся ЯВНО у обоих — у снаряда их 10, и на
+  // дефолтных 12 нарезка съехала бы молча.
+  const fireballProjectileFrames = await loadSheetFrames(
+    C.FIREBALL_PROJECTILE_SRC, C.FIREBALL_PROJECTILE_CELL_W, C.FIREBALL_PROJECTILE_CELL_H,
+    C.FIREBALL_PROJECTILE_COUNT, C.FIREBALL_PROJECTILE_COLS,
+  )
   if (isCancelled()) return null
+  assertSheetSize(
+    'Fireball_Projectile.png', fireballProjectileFrames,
+    C.FIREBALL_PROJECTILE_CELL_W, C.FIREBALL_PROJECTILE_CELL_H,
+    C.FIREBALL_PROJECTILE_COUNT, C.FIREBALL_PROJECTILE_COLS,
+  )
+
+  const fireballImpactFrames = await loadSheetFrames(
+    C.FIREBALL_IMPACT_SRC, C.FIREBALL_IMPACT_CELL_W, C.FIREBALL_IMPACT_CELL_H,
+    C.FIREBALL_IMPACT_COUNT, C.FIREBALL_IMPACT_COLS,
+  )
+  if (isCancelled()) return null
+  assertSheetSize(
+    'Fireball_Impact.png', fireballImpactFrames,
+    C.FIREBALL_IMPACT_CELL_W, C.FIREBALL_IMPACT_CELL_H,
+    C.FIREBALL_IMPACT_COUNT, C.FIREBALL_IMPACT_COLS,
+  )
+
+  // Iceball — те же два листа своей стихии. БЕЗ try/catch и с теми же
+  // громкими assertSheetSize, что у fireball выше: 404 или несовпавший размер
+  // должны всплыть экраном ошибки, а не пустым/сдвинутым набором кадров.
+  // COLS у обоих передаётся ЯВНО по той же причине — у снаряда их 10, дефолт
+  // loadSheetFrames равен 12, и нарезка съехала бы молча.
+  const iceballProjectileFrames = await loadSheetFrames(
+    C.ICEBALL_PROJECTILE_SRC, C.ICEBALL_PROJECTILE_CELL_W, C.ICEBALL_PROJECTILE_CELL_H,
+    C.ICEBALL_PROJECTILE_COUNT, C.ICEBALL_PROJECTILE_COLS,
+  )
+  if (isCancelled()) return null
+  assertSheetSize(
+    'IceBall_Projectile.png', iceballProjectileFrames,
+    C.ICEBALL_PROJECTILE_CELL_W, C.ICEBALL_PROJECTILE_CELL_H,
+    C.ICEBALL_PROJECTILE_COUNT, C.ICEBALL_PROJECTILE_COLS,
+  )
+
+  const iceballImpactFrames = await loadSheetFrames(
+    C.ICEBALL_IMPACT_SRC, C.ICEBALL_IMPACT_CELL_W, C.ICEBALL_IMPACT_CELL_H,
+    C.ICEBALL_IMPACT_COUNT, C.ICEBALL_IMPACT_COLS,
+  )
+  if (isCancelled()) return null
+  assertSheetSize(
+    'IceBall_Impact.png', iceballImpactFrames,
+    C.ICEBALL_IMPACT_CELL_W, C.ICEBALL_IMPACT_CELL_H,
+    C.ICEBALL_IMPACT_COUNT, C.ICEBALL_IMPACT_COLS,
+  )
 
   // Карта листов по BossAnimKind — используется ТОЛЬКО playBossAnim в setup().
   const bossFramesByKind: Record<BossAnimKind, Texture[]> = {
@@ -291,6 +417,8 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
       drink: drinkFrames,
       hurt: hurtFrames,
       death: deathFrames,
+      cast: castFrames,
+      dash: dashFrames,
     },
     beast: {
       idle: beastIdleFrames,
@@ -311,7 +439,10 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     bossWaveRightFrames,
     healAura: healAuraFrames,
     slashStreak: slashStreakFrames,
-    bleedingLoop: bleedingLoopFrames,
+    fireballProjectile: fireballProjectileFrames,
+    fireballImpact: fireballImpactFrames,
+    iceballProjectile: iceballProjectileFrames,
+    iceballImpact: iceballImpactFrames,
     rewardIcons: rewardIconTextures,
   }
 }

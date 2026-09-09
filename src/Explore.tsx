@@ -811,6 +811,16 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // вызывается в setup() РАНЬШЕ, чем резолвится loadExploreAssets() — на
   // момент сборки deps кадров ещё нет. Тот же приём, что beastFramesRef.
   const healAuraFramesRef = useRef<Texture[] | null>(null)
+  // Кадры VFX скилла slash — те же рефы и по той же причине, что healAuraFramesRef.
+  const slashStreakFramesRef = useRef<Texture[] | null>(null)
+  // Кадры fireball (снаряд и вспышка) — те же рефы и по той же причине.
+  const fireballProjectileFramesRef = useRef<Texture[] | null>(null)
+  const fireballImpactFramesRef = useRef<Texture[] | null>(null)
+  // Iceball — те же два листа своей стихии (снаряд у обоих скиллов общий,
+  // см. ProjectileSpec в explore/entities/skills.ts).
+  const iceballProjectileFramesRef = useRef<Texture[] | null>(null)
+  const iceballImpactFramesRef = useRef<Texture[] | null>(null)
+
   // Готовый вызов "нанести урон шипов" с уже посчитанной дозой (maxHp * ratio).
   // Обновляется тем же эффектом, что и takeDamageRef — так основной ticker-эффект
   // (mount-once, deps []) не должен напрямую читать maxHp из тела компонента.
@@ -847,6 +857,31 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // если игрок зажал движение в другую сторону (визуально странно иначе,
   // хитбокс всё равно снят по facing на старте).
   const attackFacingRef = useRef<1 | -1>(1)
+
+  // Анимация dash (скилл) — ЭТАП 1: ТОЛЬКО визуал. Движения, урона,
+  // неуязвимости и кулдауна у dash сейчас НЕТ (см. задачу): герой стоит на
+  // месте и проигрывает 11 кадров Dash_Strike подменой текстур на СВОЁМ
+  // спрайте (dash — анимация героя, а не VFX-оверлей поверх). Управление при
+  // этом не блокируется: движение/прыжок/атака работают как обычно и просто
+  // перебивают dash по приоритету веток анимации.
+  const dashingRef = useRef(false)
+
+  // Анимация каста (поднятие руки → удержание → опускание) под скилл fireball.
+  // Устроена по образцу атаки: своя ветка в тикере, снаряд рождается на КАДРЕ
+  // (CAST_SPAWN_FRAME), а не по нажатию, и ровно один раз за прогон —
+  // castSpawnDoneRef, полный двойник attackHitDoneRef.
+  const castingRef = useRef(false)
+  const castSpawnDoneRef = useRef(false)
+  // Facing на МОМЕНТ старта каста — во время анимации флип не меняется, даже
+  // если игрок зажал движение в другую сторону (тот же приём и та же причина,
+  // что у attackFacingRef выше; направление снаряда снимается тем же кадром,
+  // см. fireballCastFacing в skills.ts).
+  const castFacingRef = useRef<1 | -1>(1)
+  // x героя в момент старта рывка — от неё отсчитывается пройденный путь,
+  // чтобы рывок остановился ровно на DASH_DISTANCE (см. ветку dash в тикере).
+  // Отсчёт именно от точки старта, а не «сколько осталось»: упёршись в стену,
+  // герой просто не доедет, и потолок пути этого не заметит.
+  const dashStartXRef = useRef(0)
 
   // Питьё зелья (ТОЛЬКО визуал — см. задачу: без хила/зарядов/кулдауна, это
   // отдельный будущий шаг). drinkPressedRef — флаг тапа по 🧪/KeyH, читается
@@ -1031,6 +1066,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     hurtTimerRef.current = C.HURT_MS
     attackingRef.current = false // обрываем замах (хитстан)
     attackHitDoneRef.current = false
+    dashingRef.current = false // обрываем dash (хитстан главнее)
+    castingRef.current = false // и каст — снаряд не вылетит, если не дошли до кадра вылета
     drinkingRef.current = false // обрываем питьё (хитстан главнее)
     landTimerRef.current = 0 // hurt важнее land
   }
@@ -1044,6 +1081,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     deathRef.current = true
     deathHoldRef.current = 0
     attackingRef.current = false
+    dashingRef.current = false // обрываем dash (смерть главнее)
+    castingRef.current = false // и каст (смерть главнее)
     drinkingRef.current = false // обрываем питьё (смерть главнее)
     hurtTimerRef.current = 0
     landTimerRef.current = 0
@@ -1068,6 +1107,16 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // функцию, так что перехват здесь один на все источники. HP/hurt/death
     // тоже не трогаем — раз урона не было, реагировать не на что.
     if (invincible) return
+    // Неуязвимость на время рывка — та же точка перехвата, что у
+    // debug-бессмертия выше, но ОТДЕЛЬНЫЙ признак: invincible это тестовый
+    // тумблер (см. SettingsPanel), смешивать его с боевой механикой нельзя —
+    // сняли тумблер, и вместе с ним пропали бы i-frames рывка.
+    // Уязвимость возвращается САМА, как только снимут dashingRef: и по концу
+    // анимации, и при обрыве прыжком/хитстаном/смертью — отдельного сброса
+    // не нужно, признак ровно один.
+    // Скриптовая смерть обелиска сюда НЕ приходит (killPlayer обнуляет hp
+    // напрямую, минуя эту функцию) — рывок от неё не спасает, и не должен.
+    if (dashingRef.current) return
     // Округление ЗДЕСЬ, в единой точке применения урона — не при отображении
     // (см. задачу "HP должно быть всегда целым"): любой источник урона
     // (шипы/мимик — доли maxHp, враг/босс — масштаб по уровню) проходит
@@ -1518,7 +1567,25 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // тикера.
         damageEnemy,
         damageBoss,
+        applyEnemyHitReaction,
+        applyBossHitReaction,
         skillDamageDealt: skillDamageDealtRef,
+        // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
+        startPlayerAttack,
+        // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
+        startPlayerDash,
+        // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
+        startPlayerCast,
+        casting: castingRef,
+        // Тот же реф, что гейтит анимацию/неуязвимость/проход сквозь тела —
+        // система скиллов по нему считает урон рывка (см. applyDashHits).
+        dashing: dashingRef,
+        attacking: attackingRef,
+        slashStreakFrames: slashStreakFramesRef,
+        fireballProjectileFrames: fireballProjectileFramesRef,
+        fireballImpactFrames: fireballImpactFramesRef,
+        iceballProjectileFrames: iceballProjectileFramesRef,
+        iceballImpactFrames: iceballImpactFramesRef,
         healPlayer: (amount: number) => healPlayerRef.current(amount),
         maxHp,
         healAuraFrames: healAuraFramesRef,
@@ -1540,7 +1607,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       enemySystem = createEnemySystem({
         phys,
         getPlayerCombatBox,
-        pushPlayerOutX,
+        // Не сама pushPlayerOutX — обёртка, пропускающая героя сквозь тело
+        // на время рывка (см. её объявление ниже по setup).
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
         playSpriteAnim,
         findGroundSurfaceY,
         spawnRewardFloat,
@@ -1580,11 +1649,18 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       const drinkFrames = assets.hero.drink
       const hurtFrames = assets.hero.hurt
       const deathFrames = assets.hero.death
+      const castFrames = assets.hero.cast
+      const dashFrames = assets.hero.dash
 
       beastFramesRef.current = assets.beast
       // Аура лечения — в ref, откуда её читает система скиллов (создана выше
       // по файлу, до загрузки ассетов; см. healAuraFramesRef).
       healAuraFramesRef.current = assets.healAura
+      slashStreakFramesRef.current = assets.slashStreak
+      fireballProjectileFramesRef.current = assets.fireballProjectile
+      fireballImpactFramesRef.current = assets.fireballImpact
+      iceballProjectileFramesRef.current = assets.iceballProjectile
+      iceballImpactFramesRef.current = assets.iceballImpact
 
       const chestFrames = assets.chest
       const chestTrapFrames = assets.chestTrap
@@ -1711,9 +1787,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       function playSpriteAnim(sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) {
         if (sprite.textures === frames) {
           // Тот же набор кадров (напр. walk и в патруле, и в погоне) — не
-          // рестартить анимацию, но скорость обязана следовать за aggroed
-          // на лету, иначе застревает на значении последней СМЕНЫ кадров
-          // (idle→walk/hurt→walk), а не текущего состояния (см. баг).
+          // рестартить анимацию, но скорость обязана следовать за ТЕКУЩИМ
+          // темпом на лету, иначе застревает на значении последней СМЕНЫ
+          // кадров (idle→walk/hurt→walk), а не текущего состояния (см. баг).
+          // Именно на это опирается выбор темпа ходьбы зверя по длине шага
+          // за кадр (см. enemy.ts): переключение погоня↔расследование↔патруль
+          // происходит без смены набора кадров.
           if (sprite.animationSpeed !== speed) sprite.animationSpeed = speed
           return
         }
@@ -1854,7 +1933,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       bossSystem = createBossSystem({
         phys,
         getPlayerCombatBox,
-        pushPlayerOutX,
+        // Та же обёртка, что и у врага выше — рывок проходит сквозь босса.
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
         playBossAnim,
         applyBossLayout,
         spawnRewardFloat,
@@ -2197,6 +2277,21 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         phys.vx = 0
       }
 
+      // То же выталкивание, но НЕ во время рывка: dash проходит сквозь тела.
+      // Передаётся депами В enemy.ts и boss.ts — и только им. Сундук и
+      // обелиск толкаются НЕПОСРЕДСТВЕННО pushPlayerOutX (см. вызовы ниже по
+      // тикеру) и остаются стенами всегда: сквозь врагов рывок проходит,
+      // сквозь мебель — нет. Геометрия карты (стены/платформы/края) здесь ни
+      // при чём вообще — она живёт в общем блоке движения и рывком не
+      // отключается ничем.
+      function pushPlayerOutXUnlessDashing(
+        body: { x: number; y: number; width: number; height: number },
+        playerCombatBox: { x: number; y: number; w: number; h: number },
+      ) {
+        if (dashingRef.current) return
+        pushPlayerOutX(body, playerCombatBox)
+      }
+
       // Камера: центрируем игрока на экране, зажимая по границам карты.
       const worldWidth = grid[0].length * C.TILE_SIZE * worldContainer.scale.x
       const worldHeight = grid.length * C.TILE_SIZE * worldContainer.scale.y
@@ -2275,6 +2370,102 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // attackHitboxRef, "один удар = один засчёт" через attackSwingIdRef/
       // lastHitSwingId, урон, добивание) — БЕЗ ИЗМЕНЕНИЙ, только вынесена из
       // общего цикла врагов в свою функцию с собственным for.
+      // Старт замаха игрока — ВЫНЕСЕНО из обработчика attackPressedRef в
+      // тикере, чтобы skills.ts мог запустить ТУ ЖЕ ветку анимации, а не
+      // писать вторую копию: slash использует анимацию обычной атаки
+      // (см. explore/entities/skills.ts). Чистый перенос — гейты, порядок
+      // присвоений и числа ровно как были инлайн.
+      //
+      // Возвращает, начался ли замах: false, если герой мёртв/в хитстане/пьёт,
+      // либо атака на кулдауне или уже идёт. Вызывающий сам решает, что
+      // делать с отказом (кнопка ⚔ — молча ничего, slash — не тратит свой
+      // кулдаун).
+      function startPlayerAttack(): boolean {
+        // Смерть ИЛИ хитстан ИЛИ питьё зелья: во время них атаковать нельзя.
+        // Смерть проверяется первой и НИКОГДА не сбрасывается — мёртвый
+        // герой не переигрывает атаку и не перебивает deathFrames текстурами.
+        if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
+        if (attackCooldownRef.current > 0 || attackingRef.current) return false
+        // Каст занимает того же героя и тот же спрайт — обычная атака во
+        // время каста не начинается (см. задачу).
+        if (castingRef.current) return false
+        // Замах ПРЕРЫВАЕТ dash: две анимации на одном спрайте не живут, а
+        // блокировать атаку на время dash нельзя — управление во время dash
+        // не блокируется (см. dashingRef). Обратной симметрии нет намеренно:
+        // startPlayerDash ниже во время замаха отказывает, чтобы dash не
+        // съедал уже начатый удар вместе с его уроном.
+        dashingRef.current = false
+        attackCooldownRef.current = C.ATTACK_COOLDOWN
+        attackActiveRef.current = true
+        attackActiveTimerRef.current = C.ATTACK_ACTIVE_MS
+        attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
+        attackingRef.current = true
+        attackHitDoneRef.current = false
+        attackFacingRef.current = facingRef.current // facing зафиксирован на старте замаха
+        // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
+        // направлению взгляда (facingRef), высотой в его рост. Считается
+        // один раз на старте удара (снимок, как мгновенная проверка
+        // дистанции в Battle.tsx), а не каждый кадр активности.
+        attackHitboxRef.current =
+          facingRef.current === 1
+            ? { x: phys.x + C.PLAYER_WIDTH, y: phys.y, width: C.PLAYER_ATTACK_RANGE, height: C.PLAYER_HEIGHT }
+            : { x: phys.x - C.PLAYER_ATTACK_RANGE, y: phys.y, width: C.PLAYER_ATTACK_RANGE, height: C.PLAYER_HEIGHT }
+        // Урон здесь НЕ применяется — applyAttackHit() вызывается из блока
+        // анимации героя в тикере, на кадре удара ATTACK_STRIKE_FRAME.
+        hero.textures = attackFrames
+        hero.loop = false
+        hero.animationSpeed = C.ATTACK_ANIM_SPEED
+        hero.gotoAndPlay(0)
+        return true
+      }
+
+      // Старт анимации dash — по образцу startPlayerAttack выше: та же
+      // hoisted-функция, те же гейты по смерти/хитстану/питью. ЭТАП 1:
+      // ТОЛЬКО подмена текстур на спрайте героя, никакого движения, урона,
+      // неуязвимости и кулдауна (см. задачу и dashingRef). Зовётся из
+      // системы скиллов (explore/entities/skills.ts, deps.startPlayerDash).
+      //
+      // Возвращает, началась ли анимация: false — герой мёртв/в хитстане/
+      // пьёт, dash уже идёт, либо идёт замах (его dash не перебивает —
+      // см. startPlayerAttack выше).
+      function startPlayerDash(): boolean {
+        if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
+        // Только с земли. В воздухе отказ — тем же способом, что и остальные
+        // отказы выше: рывок не должен работать вторым прыжком и вытаскивать
+        // героя по горизонтали над ямой.
+        if (!phys.onGround) return false
+        if (dashingRef.current || attackingRef.current || castingRef.current) return false
+        dashingRef.current = true
+        dashStartXRef.current = phys.x
+        hero.textures = dashFrames
+        hero.loop = false
+        hero.animationSpeed = C.DASH_ANIM_SPEED
+        hero.gotoAndPlay(0)
+        return true
+      }
+
+      // Старт анимации каста — по образцу startPlayerAttack выше: та же
+      // hoisted-функция, те же гейты по смерти/хитстану/питью. Зовётся из
+      // системы скиллов (explore/entities/skills.ts, deps.startPlayerCast).
+      // Ни урона, ни кулдауна у каста нет — он только проигрывает анимацию и
+      // на кадре CAST_SPAWN_FRAME отдаёт скиллам команду выпустить снаряд.
+      //
+      // Возвращает, началась ли анимация: false — герой мёртв/в хитстане/
+      // пьёт, либо каст уже идёт (повторное нажатие fireball), либо идёт
+      // замах или рывок (две анимации на одном спрайте не живут).
+      function startPlayerCast(): boolean {
+        if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
+        if (castingRef.current || attackingRef.current || dashingRef.current) return false
+        castingRef.current = true
+        castSpawnDoneRef.current = false
+        castFacingRef.current = facingRef.current // facing зафиксирован на старте каста
+        hero.textures = castFrames
+        hero.loop = false
+        hero.animationSpeed = C.CAST_ANIM_SPEED
+        hero.gotoAndPlay(0)
+        return true
+      }
+
       // Нанесение урона по врагу/боссу — ВЫНЕСЕНО из applyAttackHit, чтобы
       // ту же арифметику не пришлось писать третий раз, когда урон начнут
       // наносить скиллы (см. explore/entities/skills.ts). Чистый перенос:
@@ -2291,12 +2482,27 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // передаёт attackDamageDealtRef (растит силу), скиллы будут передавать
       // skillDamageDealtRef (растит ловкость). Возвращает "умер ли" —
       // вызывающий сам решает, что делать дальше.
-      function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }): boolean {
+      // sourceX — X ИСТОЧНИКА урона в мировых координатах (центр игрока для
+      // меча/рывка/тика кровотечения, точка взрыва для fireball). Параметр
+      // ОБЯЗАТЕЛЬНЫЙ, без значения по умолчанию: подставить сюда молчаливую
+      // заглушку (позицию цели, ноль) значило бы отправить врага расследовать
+      // не туда, и заметить это в игре было бы почти нельзя.
+      function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number): boolean {
         // Фактически снятое, не заявленный урон — тот же приём, что в
         // takeDamage: добивающий удар не должен раздувать счётчик сверх
         // реального остатка HP врага.
         accumulator.current += Math.min(amount, enemy.hp)
         enemy.hp = Math.max(0, enemy.hp - amount)
+        // Расследование (см. INVESTIGATE_MS): запоминаем, ОТКУДА прилетело, и
+        // включаем режим. Здесь — потому что это единственная общая точка
+        // списания HP: так реагируют ВСЕ источники (меч, кровотечение, взрыв
+        // fireball, рывок dash), а не только те, что позвали бы отдельную
+        // функцию. Приоритет обычного агро разруливает сам AI (enemy.ts):
+        // пока цель видно или помним, это состояние сбрасывается каждый кадр.
+        // Мёртвому врагу поля уже безразличны — ветку смерти ниже не гейтим.
+        enemy.investigateX = sourceX
+        enemy.investigateTimer = C.INVESTIGATE_MS
+        enemy.investigateLookTimer = 0
         if (enemy.hp <= 0) {
           // Смерть — высший приоритет, перебивает hurt/attack/windup
           // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
@@ -2319,11 +2525,30 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // разная (у босса HP-бар скрывается целиком, а не рисуется пустым; поза
       // и facing фиксируются навсегда; труп остаётся до конца забега, без
       // despawn/DEATH_HOLD_MS). Цель не параметр — босс в забеге один.
-      function damageBoss(amount: number, accumulator: { current: number }): boolean {
+      // sourceX — то же, что у damageEnemy выше (X источника урона).
+      function damageBoss(amount: number, accumulator: { current: number }, sourceX: number): boolean {
         const boss = bossRef.current
         if (!boss) return false
         accumulator.current += Math.min(amount, boss.hp)
         boss.hp = Math.max(0, boss.hp - amount)
+        // Расследование — та же роль и та же причина, что у damageEnemy выше.
+        boss.investigateX = sourceX
+        boss.investigateTimer = C.INVESTIGATE_MS
+        boss.investigateLookTimer = 0
+        // Стадия 2 — СРАЗУ за списанием HP, в общей точке урона. Раньше гейт
+        // стоял СНАРУЖИ, у вызывающего-меча (applyAttackHit), и три скилловых
+        // пути (кровотечение slash, взрыв fireball, рывок dash) зовут
+        // damageBoss напрямую — HP падало ниже порога, а стадия ждала
+        // следующего удара мечом. Здесь его проходит ЛЮБОЙ урон.
+        // stage === 1 — гейт "первого пересечения ВНИЗ": hp падает и дальше,
+        // без него переход пересчитывался бы на каждом ударе.
+        // Смертельный удар НЕ исключается намеренно (условие ниже истинно и
+        // при hp === 0): гейт не должен зависеть от исхода удара — одно
+        // правило вместо двух. На поведение это не влияет — boss.dead гейтит
+        // весь тикер, а stage читают только решения об атаке в boss.ts.
+        if (boss.stage === 1 && boss.hp <= boss.maxHp * C.BOSS_STAGE2_HP_RATIO) {
+          boss.stage = 2
+        }
         if (boss.hp <= 0) {
           // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
           // walk > idle, ничем не прерывается: boss.dead гейтит ВЕСЬ
@@ -2352,6 +2577,101 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         return false
       }
 
+      // Реакция цели на РАЗОВОЕ попадание (встряска) — вынесена из
+      // applyAttackHit БЕЗ изменений логики и порогов, чтобы её мог позвать не
+      // только удар мечом, но и разовые попадания скиллов (взрыв fireball,
+      // рывок dash — см. SkillsDeps). Отдельно на зверя и на босса: правила у
+      // них разные (у зверя прерывание замаха и POISE_POINT, у босса вспышка
+      // и два слоя), общей функции с ветвлением по типу цели тут не выйдет.
+      //
+      // ⚠️ Зовётся ТОЛЬКО на НЕ смертельном попадании — hurt никогда не
+      // запускается поверх death. Проверку исхода делает вызывающий (у меча
+      // это continue/if по возврату damageEnemy/damageBoss, у скиллов — тот же
+      // возврат), а не эти функции: они про реакцию, а не про урон.
+      // Периодический урон (тик кровотечения slash) их НЕ зовёт намеренно —
+      // тик идёт раз в секунду пять секунд подряд и держал бы цель в стан-локе.
+      function applyEnemyHitReaction(enemy: Enemy) {
+        // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
+        // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
+        // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
+        // прерывает — windingUp/windupTimer/attackAnimPlaying НЕ трогаем
+        // вообще, удар доигрывает до strike-кадра и наносит урон как
+        // обычно (см. приоритет анимаций в ticker'е — раз hurtTimer не
+        // выставлен, attack-ветка продолжает идти без изменений). Иначе
+        // (не в замахе, ИЛИ рано в замахе) — прерываем как раньше.
+        //
+        // Накопительный стан-резист (STUN_LIMIT/POISE_IMMUNE_MS) —
+        // гарантия прорыва, даже если игрок ритмично сбивает КАЖДЫЙ
+        // замах в ранней фазе (poiseImmuneTimer>0 перекрывает проверку
+        // POISE_POINT точно так же, как поздняя фаза — ветка COMMIT).
+        const wasWindingUp = enemy.windingUp
+        const windupProgress = wasWindingUp ? enemy.windupTimer / C.WINDUP_MS : 0
+        const poiseImmune = enemy.poiseImmuneTimer > 0
+        if (!wasWindingUp || (windupProgress < C.POISE_POINT && !poiseImmune)) {
+          if (wasWindingUp) {
+            enemy.stunCount += 1
+            if (enemy.stunCount >= C.STUN_LIMIT) {
+              enemy.poiseImmuneTimer = C.POISE_IMMUNE_MS
+              enemy.stunCount = 0
+            }
+          }
+          enemy.hurtTimer = C.ENEMY_HURT_MS
+          enemy.windingUp = false
+          enemy.windupTimer = 0
+          enemy.attackAnimPlaying = false
+        }
+        // else: поздняя фаза ИЛИ иммунитет — замах не прерываем, зверь
+        // просто дожимает удар до strike-кадра как обычно, без подсветки.
+      }
+
+      function applyBossHitReaction(boss: Boss) {
+        if (boss.attackAnimPlaying || boss.rangedAnimPlaying) {
+          // СЛОЙ 1 (главный, см. задачу) — во время атаки ИЛИ броска
+          // Hurt НЕ проигрывается ВООБЩЕ, ни на каком кадре, независимо
+          // от poise: attackAnimPlaying/attackKind/attackHitApplied и
+          // rangedAnimPlaying/rangedThrowApplied НЕ трогаем — действие
+          // доигрывает до конца как обычно. Урон уже применён вызывающим
+          // (hp/HP-бар). Обратная связь без хитстана — короткая
+          // вспышка (см. ticker).
+          boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
+        } else {
+          // СЛОЙ 2 (починка стан-лока, см. задачу) — СВОИМИ
+          // константами BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS, но
+          // структурой приведено к логике зверя (см. applyEnemyHitReaction
+          // выше): там stunCount растёт
+          // ТОЛЬКО когда попадание сбивает УЖЕ идущее состояние
+          // (wasWindingUp), а не от любого удара — у босса нет фазы
+          // замаха, поэтому эквивалент "уже идущего состояния,
+          // которое сбивают" — это Hurt, который прямо сейчас играет
+          // (boss.hurtTimer > 0).
+          const poiseImmune = boss.poiseImmuneTimer > 0
+          const alreadyHurt = boss.hurtTimer > 0
+          if (poiseImmune) {
+            // Иммунитет — Hurt не входит вообще, только вспышка (тот
+            // же принцип, что и раньше).
+            boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
+          } else if (alreadyHurt) {
+            // Попадание "в разгар" уже идущего Hurt (см. задачу, п.1) —
+            // урон уже применён вызывающим, добавляем вспышку, но hurtTimer
+            // НЕ трогаем (не продлеваем и не перезапускаем анимацию).
+            // Именно это попадание "сбивает уже идущий Hurt-цикл" —
+            // аналог wasWindingUp у зверя, поэтому здесь (и только
+            // здесь) растёт stunCount (см. задачу, п.2).
+            boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
+            boss.stunCount += 1
+            if (boss.stunCount >= C.BOSS_STUN_LIMIT) {
+              boss.poiseImmuneTimer = C.BOSS_POISE_IMMUNE_MS
+              boss.stunCount = 0
+            }
+          } else {
+            // Свежий хит: босс НЕ атаковал, Hurt ещё НЕ шёл, иммунитета
+            // нет — обычный запуск хитстана. stunCount НЕ растёт (как
+            // у зверя в ветке !wasWindingUp) — это не "сбитое" состояние.
+            boss.hurtTimer = C.BOSS_HURT_MS
+          }
+        }
+      }
+
       function applyAttackHit() {
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
@@ -2371,45 +2691,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             if (overlap) {
               enemy.lastHitSwingId = attackSwingIdRef.current
               // Урон/смерть/перерисовка полосы — в damageEnemy выше (общая
-              // точка с будущим уроном скиллов). Здесь остаётся всё, что
-              // относится ИМЕННО к удару мечом: дедуп взмаха строкой выше и
-              // хитстан ниже. Смерть — тот же continue, что был инлайн.
-              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef)) continue
-              // Хитстан — та же точка, где уменьшается hp. Не трогаем на
-              // смертельном ударе (continue выше уже ушёл из итерации, см.
-              // enemy.dead-ветку) — hurt никогда не запускается поверх death.
-              //
-              // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
-              // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
-              // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
-              // прерывает — windingUp/windupTimer/attackAnimPlaying НЕ трогаем
-              // вообще, удар доигрывает до strike-кадра и наносит урон как
-              // обычно (см. приоритет анимаций в ticker'е — раз hurtTimer не
-              // выставлен, attack-ветка продолжает идти без изменений). Иначе
-              // (не в замахе, ИЛИ рано в замахе) — прерываем как раньше.
-              //
-              // Накопительный стан-резист (STUN_LIMIT/POISE_IMMUNE_MS) —
-              // гарантия прорыва, даже если игрок ритмично сбивает КАЖДЫЙ
-              // замах в ранней фазе (poiseImmuneTimer>0 перекрывает проверку
-              // POISE_POINT точно так же, как поздняя фаза — ветка COMMIT).
-              const wasWindingUp = enemy.windingUp
-              const windupProgress = wasWindingUp ? enemy.windupTimer / C.WINDUP_MS : 0
-              const poiseImmune = enemy.poiseImmuneTimer > 0
-              if (!wasWindingUp || (windupProgress < C.POISE_POINT && !poiseImmune)) {
-                if (wasWindingUp) {
-                  enemy.stunCount += 1
-                  if (enemy.stunCount >= C.STUN_LIMIT) {
-                    enemy.poiseImmuneTimer = C.POISE_IMMUNE_MS
-                    enemy.stunCount = 0
-                  }
-                }
-                enemy.hurtTimer = C.ENEMY_HURT_MS
-                enemy.windingUp = false
-                enemy.windupTimer = 0
-                enemy.attackAnimPlaying = false
-              }
-              // else: поздняя фаза ИЛИ иммунитет — замах не прерываем, зверь
-              // просто дожимает удар до strike-кадра как обычно, без подсветки.
+              // точка с уроном скиллов), встряска — в applyEnemyHitReaction
+              // (её же зовут разовые попадания fireball/dash). ИМЕННО к удару
+              // мечом здесь относится только дедуп взмаха строкой выше.
+              // Смерть — тот же continue, что был инлайн: на смертельном
+              // ударе встряски нет, hurt не идёт поверх death.
+              // Источник — сам игрок: центр его хитбокса на момент удара.
+              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)) continue
+              applyEnemyHitReaction(enemy)
             }
           }
         }
@@ -2435,71 +2724,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               hb.y + hb.height > boss.y
             if (overlap) {
               boss.lastHitSwingId = attackSwingIdRef.current
-              // Урон/смерть/перерисовка полосы — в damageBoss выше (общая
-              // точка с будущим уроном скиллов). Здесь остаётся то, что
-              // относится ИМЕННО к удару мечом: дедуп взмаха строкой выше,
-              // переход стадии и оба слоя poise ниже. Ветка ниже — бывшая
-              // else-ветка "не смертельный удар", 1:1.
-              if (!damageBoss(attackDamageRef.current, attackDamageDealtRef)) {
-                // Стадия 2 — переход СЧИТАЕТСЯ один раз, на первом пересечении
-                // порога ВНИЗ (гейт stage===1), не каждый кадр, что дальше hp
-                // будет падать. САМ переход не выставляет и не продлевает
-                // никаких таймеров (hurtTimer/poiseImmuneTimer/hitFlashTimer)
-                // — это только boss.stage/console.log, см. задачу ("Разведи
-                // 'получил урон' и 'не может действовать'"). Пауза, которая
-                // раньше была заметна сразу после перехода — не следствие
-                // самого перехода, а совпадение: удар, снёсший HP за порог,
-                // это ОБЫЧНЫЙ удар и проходит через слои 1/2 ниже наравне со
-                // всеми остальными.
-                if (boss.stage === 1 && boss.hp <= boss.maxHp * C.BOSS_STAGE2_HP_RATIO) {
-                  boss.stage = 2
-                }
-
-                if (boss.attackAnimPlaying || boss.rangedAnimPlaying) {
-                  // СЛОЙ 1 (главный, см. задачу) — во время атаки ИЛИ броска
-                  // Hurt НЕ проигрывается ВООБЩЕ, ни на каком кадре, независимо
-                  // от poise: attackAnimPlaying/attackKind/attackHitApplied и
-                  // rangedAnimPlaying/rangedThrowApplied НЕ трогаем — действие
-                  // доигрывает до конца как обычно. Урон уже применён выше
-                  // (hp/HP-бар). Обратная связь без хитстана — короткая
-                  // вспышка (см. ticker).
-                  boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
-                } else {
-                  // СЛОЙ 2 (починка стан-лока, см. задачу) — СВОИМИ
-                  // константами BOSS_STUN_LIMIT/BOSS_POISE_IMMUNE_MS, но
-                  // структурой приведено к логике зверя (строки применения
-                  // POISE_POINT/STUN_LIMIT у enemy выше): там stunCount растёт
-                  // ТОЛЬКО когда попадание сбивает УЖЕ идущее состояние
-                  // (wasWindingUp), а не от любого удара — у босса нет фазы
-                  // замаха, поэтому эквивалент "уже идущего состояния,
-                  // которое сбивают" — это Hurt, который прямо сейчас играет
-                  // (boss.hurtTimer > 0).
-                  const poiseImmune = boss.poiseImmuneTimer > 0
-                  const alreadyHurt = boss.hurtTimer > 0
-                  if (poiseImmune) {
-                    // Иммунитет — Hurt не входит вообще, только вспышка (тот
-                    // же принцип, что и раньше).
-                    boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
-                  } else if (alreadyHurt) {
-                    // Попадание "в разгар" уже идущего Hurt (см. задачу, п.1) —
-                    // урон уже применён выше, добавляем вспышку, но hurtTimer
-                    // НЕ трогаем (не продлеваем и не перезапускаем анимацию).
-                    // Именно это попадание "сбивает уже идущий Hurt-цикл" —
-                    // аналог wasWindingUp у зверя, поэтому здесь (и только
-                    // здесь) растёт stunCount (см. задачу, п.2).
-                    boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
-                    boss.stunCount += 1
-                    if (boss.stunCount >= C.BOSS_STUN_LIMIT) {
-                      boss.poiseImmuneTimer = C.BOSS_POISE_IMMUNE_MS
-                      boss.stunCount = 0
-                    }
-                  } else {
-                    // Свежий хит: босс НЕ атаковал, Hurt ещё НЕ шёл, иммунитета
-                    // нет — обычный запуск хитстана. stunCount НЕ растёт (как
-                    // у зверя в ветке !wasWindingUp) — это не "сбитое" состояние.
-                    boss.hurtTimer = C.BOSS_HURT_MS
-                  }
-                }
+              // Урон/смерть/перерисовка полосы/переход стадии — в damageBoss
+              // выше, встряска (оба слоя poise) — в applyBossHitReaction, её
+              // же зовут разовые попадания fireball/dash. ИМЕННО к удару мечом
+              // здесь относится только дедуп взмаха строкой выше.
+              // Гейт по возврату — прежний: на смертельном попадании встряски
+              // нет, hurt не идёт поверх death.
+              if (!damageBoss(attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)) {
+                applyBossHitReaction(boss)
               }
             }
           }
@@ -2651,14 +2883,68 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           }
         }
 
-        // Горизонтальное движение — во время питья зелья (drinkingRef) ИЛИ
-        // после смерти (deathRef) герой закоренён: ввод движения игнорируется
-        // целиком, ноги на месте. deathRef никогда не сбрасывается — этот
-        // гейт держит мёртвого героя неподвижным до конца забега.
-        const heroLocked = drinkingRef.current || deathRef.current
+        // Горизонтальное движение — во время питья зелья (drinkingRef), каста
+        // (castingRef) ИЛИ после смерти (deathRef) герой закоренён: ввод
+        // движения игнорируется целиком, ноги на месте. deathRef никогда не
+        // сбрасывается — этот гейт держит мёртвого героя неподвижным до конца
+        // забега.
+        //
+        // Каст добавлен сюда по той же причине, по которой рывок ниже
+        // перебивает dirRef: поза выпада не должна ездить по карте. Механизм
+        // тот же, отличается только требуемая скорость — рывку нужна СВОЯ
+        // (facing × дистанция/длительность), касту НОЛЬ, а ноль здесь уже
+        // умеет heroLocked.
+        // Заодно это замораживает facing (см. ниже, тот же гейт): снаряд
+        // вылетает по facing на кадре CAST_SPAWN_FRAME, и разворот посреди
+        // анимации отправил бы шар не туда, куда игрок целился.
+        // Снятие блокировки отдельного кода НЕ требует: hurt/смерть/прыжок
+        // уже сбрасывают castingRef (triggerHurt/triggerDeath и ветка
+        // "не на земле" в блоке анимаций), и со следующего кадра герой снова
+        // управляем — ждать конца анимации не нужно.
+        // ⚠️ У прыжка это стоит РОВНО НА КАДР позже: блок прыжка и блок
+        // анимаций идут ниже по тикеру, чем этот расчёт, поэтому на самом
+        // кадре нажатия горизонталь ещё нулевая (сам прыжок при этом
+        // происходит — он гейтится своими условиями, не heroLocked). Ровно то
+        // же свойство у уже существующих обрывов замаха и рывка прыжком —
+        // отдельного случая каст здесь не создаёт.
+        const heroLocked = drinkingRef.current || castingRef.current || deathRef.current
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED
+        // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
+        // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
+        // столкновений, тот же clamp по краям карты. Своей геометрии у dash
+        // нет намеренно — иначе стены и границы карты пришлось бы
+        // поддерживать в двух местах, и они разъехались бы. Вертикаль
+        // (vy/гравитация/прыжок) рывком не трогается вообще.
+        //
+        // Ввод влево/вправо на время рывка не участвует: dirRef здесь перебит,
+        // facing ниже заморожен — сбить траекторию кнопками нельзя.
+        //
+        // Скорость РАВНОМЕРНАЯ и выведена из длительности анимации, а не
+        // задана своим числом: анимация доигрывает до последнего кадра за
+        // (кадров-1)/animSpeed кадров тикера, на этот путь и делится
+        // дистанция. Значит к последнему кадру пройдено ровно DASH_DISTANCE,
+        // и правка любого из двух чисел не рассинхронизирует их.
+        if (dashingRef.current && !heroLocked) {
+          const dashTicks = (dashFrames.length - 1) / C.DASH_ANIM_SPEED
+          phys.vx = facingRef.current * (C.DASH_DISTANCE / dashTicks)
+        }
         phys.x += phys.vx * dt
-        if (!heroLocked && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
+        if (dashingRef.current && !heroLocked) {
+          // Ровно DASH_DISTANCE и ни пикселем больше. Время дискретно —
+          // последний тик почти всегда перелетает цель, поэтому дистанция
+          // это ПОТОЛОК пути, а не то, к чему движение придёт само.
+          // Потолок стоит ДО проверки столкновений ниже: уперевшись в стену
+          // или в край карты, герой не доедет — путь окажется короче, и этот
+          // потолок такой рывок не трогает (назад никого не возвращает).
+          const dashTravelled = (phys.x - dashStartXRef.current) * facingRef.current
+          if (dashTravelled > C.DASH_DISTANCE) {
+            phys.x = dashStartXRef.current + facingRef.current * C.DASH_DISTANCE
+          }
+        }
+        // Facing на время рывка ЗАМОРОЖЕН: он задаёт и направление движения
+        // выше, и зеркало спрайта — развернись герой посреди рывка, он поехал
+        // бы в одну сторону, а смотрел в другую.
+        if (!heroLocked && !dashingRef.current && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
 
         if (phys.vx > 0) {
           const px = phys.x + C.PLAYER_WIDTH - 1
@@ -2833,34 +3119,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
 
         if (attackPressedRef.current) {
           attackPressedRef.current = false
-          // Смерть ИЛИ хитстан ИЛИ питьё зелья: во время них атаковать нельзя.
-          // Смерть проверяется первой и НИКОГДА не сбрасывается — мёртвый
-          // герой не переигрывает атаку и не перебивает deathFrames текстурами.
-          if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) {
-            // no-op — нажатие проигнорировано
-          } else if (attackCooldownRef.current <= 0 && !attackingRef.current) {
-            attackCooldownRef.current = C.ATTACK_COOLDOWN
-            attackActiveRef.current = true
-            attackActiveTimerRef.current = C.ATTACK_ACTIVE_MS
-            attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
-            attackingRef.current = true
-            attackHitDoneRef.current = false
-            attackFacingRef.current = facingRef.current // facing зафиксирован на старте замаха
-            // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
-            // направлению взгляда (facingRef), высотой в его рост. Считается
-            // один раз на старте удара (снимок, как мгновенная проверка
-            // дистанции в Battle.tsx), а не каждый кадр активности.
-            attackHitboxRef.current =
-              facingRef.current === 1
-                ? { x: phys.x + C.PLAYER_WIDTH, y: phys.y, width: C.PLAYER_ATTACK_RANGE, height: C.PLAYER_HEIGHT }
-                : { x: phys.x - C.PLAYER_ATTACK_RANGE, y: phys.y, width: C.PLAYER_ATTACK_RANGE, height: C.PLAYER_HEIGHT }
-            // Урон здесь больше НЕ применяется — applyAttackHit() вызывается
-            // из блока анимации героя в тикере, на кадре удара ATTACK_STRIKE_FRAME.
-            hero.textures = attackFrames
-            hero.loop = false
-            hero.animationSpeed = C.ATTACK_ANIM_SPEED
-            hero.gotoAndPlay(0)
-          }
+          // Гейты и сам старт замаха — в startPlayerAttack выше (общая точка
+          // со скиллом slash, который использует ту же анимацию). Результат
+          // здесь не нужен: нажатие в неподходящий момент — тихий no-op,
+          // ровно как было инлайн.
+          startPlayerAttack()
         }
 
         if (attackActiveRef.current) {
@@ -3140,6 +3403,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           hero.anchor.set(0.5, rising ? C.RISE_ANCHOR_Y : C.FALL_ANCHOR_Y)
           landTimerRef.current = 0
           attackingRef.current = false // прыжок отменяет замах
+          dashingRef.current = false // и dash тоже — он проигрывается только на земле
+          castingRef.current = false // и каст: прыжок его обрывает, как и замах
           hurtTimerRef.current = 0 // в воздухе — прыжок, hurt не тянем на землю
         } else if (hurtTimerRef.current > 0) {
           hurtTimerRef.current = Math.max(0, hurtTimerRef.current - ticker.deltaMS)
@@ -3176,12 +3441,61 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         } else if (attackingRef.current) {
           if (!attackHitDoneRef.current && hero.currentFrame >= C.ATTACK_STRIKE_FRAME) {
             applyAttackHit()
+            // Скиллы, использующие анимацию обычной атаки (сейчас — slash),
+            // срабатывают ЗДЕСЬ ЖЕ: на кадре удара, под тем же дедупом
+            // attackHitDoneRef. На обычном взмахе это no-op (см. skills.ts,
+            // onAttackStrike). applyAttackHit не тронута.
+            skills!.onAttackStrike()
             attackHitDoneRef.current = true
           }
           if (hero.currentFrame >= attackFrames.length - 1 || !hero.playing) {
             attackingRef.current = false // доиграла — idle/run подхватит со следующего тика
           }
           hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+        } else if (castingRef.current) {
+          // Полный двойник ветки атаки выше, только вместо урона — команда
+          // скиллам выпустить снаряд, и вместо ATTACK_STRIKE_FRAME свой
+          // CAST_SPAWN_FRAME. Дедуп тот же: castSpawnDoneRef, поэтому за один
+          // прогон анимации снаряд рождается ровно один раз.
+          //
+          // Оборвали каст ДО этого кадра (прыжок/хитстан/смерть — все три
+          // сбрасывают castingRef) — сюда просто не зайдём, снаряда не будет.
+          // Уже вылетевший снаряд живёт своей жизнью: он в списке
+          // projectiles системы скиллов и на анимацию героя больше не смотрит.
+          if (!castSpawnDoneRef.current && hero.currentFrame >= C.CAST_SPAWN_FRAME) {
+            castSpawnDoneRef.current = true
+            skills!.onCastSpawnFrame()
+          }
+          if (hero.currentFrame >= castFrames.length - 1 || !hero.playing) {
+            castingRef.current = false // доиграла — idle/run подхватит со следующего тика
+          }
+          hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+        } else if (dashingRef.current) {
+          // Якорь и смещение ставятся ЗДЕСЬ и КАЖДЫЙ кадр — тем же
+          // механизмом, что у ветки прыжка выше (RISE_ANCHOR_Y/FALL_ANCHOR_Y):
+          // у листа dash своя клетка (240×128 против 394×296 у остальных
+          // листов героя), и «липкие» значения уехали бы в следующую
+          // анимацию, оборвись dash прыжком/хитстаном/смертью/замахом.
+          // Масштаб — там же, где флип (см. heroScaleMag ниже): та строка и
+          // так трогает scale каждый кадр во всех ветках. Скорость анимации,
+          // наоборот, ставится ОДИН раз в startPlayerDash — как у атаки,
+          // hurt и смерти.
+          //
+          // Горизонтальное смещение героя за рывок задаётся НЕ здесь, а
+          // общим блоком движения выше (phys.vx), урон — системой скиллов
+          // (applyDashHits): эта ветка отвечает только за позу.
+          hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+          // Смещение — поверх позиции, посчитанной блоком выше (ноги на
+          // поверхности тайла). По X зеркалится по facing, по Y нет — тот же
+          // приём, что у SLASH_STREAK_OFFSET_*.
+          hero.x += facingRef.current * C.DASH_OFFSET_X
+          hero.y += C.DASH_OFFSET_Y
+          // Доиграла (тот же способ определения конца, что у атаки и питья:
+          // конец текстур ЛИБО спрайт сам остановился) — сбрасываем, и со
+          // следующего тика ветка idle/run подхватывает обычные кадры героя.
+          if (hero.currentFrame >= dashFrames.length - 1 || !hero.playing) {
+            dashingRef.current = false
+          }
         } else if (landTimerRef.current > 0 && dirRef.current === 0) {
           landTimerRef.current = Math.max(0, landTimerRef.current - ticker.deltaMS)
           hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
@@ -3205,8 +3519,27 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // работает во всех ветках, применяется всегда. Во время атаки — facing
         // ЗАФИКСИРОВАН на attackFacingRef (снят на старте замаха), не следует
         // за вводом до конца анимации.
-        const heroFlipDir = attackingRef.current ? attackFacingRef.current : facingRef.current
-        hero.scale.x = heroFlipDir === 1 ? Math.abs(hero.scale.x) : -Math.abs(hero.scale.x)
+        // Во время атаки facing зафиксирован на attackFacingRef, во время
+        // каста — на castFacingRef (обе анимации не должны разворачиваться
+        // посреди прогона); в остальных ветках следует за вводом.
+        const heroFlipDir = attackingRef.current
+          ? attackFacingRef.current
+          : castingRef.current
+            ? castFacingRef.current
+            : facingRef.current
+        // Масштаб — тоже КАЖДЫЙ кадр, а не один раз при создании спрайта: у
+        // листа dash своя клетка (240×128), и общий множитель героя
+        // (HERO_DRAW_H / 296) нарисовал бы его высотой ~61px вместо ~116.
+        // Признак — ЛИСТ, который сейчас на спрайте (hero.textures), а не
+        // dashingRef: на последнем кадре dash флаг уже снят веткой выше, а
+        // кадр ещё показывается, и по флагу он мигнул бы не в том масштабе.
+        // Тот же способ сравнения листов, что у веток hurt/land выше.
+        const heroScaleMag =
+          hero.textures === dashFrames
+            ? C.DASH_DRAW_H / dashFrames[0].height
+            : C.HERO_DRAW_H / idleFrames[0].height
+        hero.scale.y = heroScaleMag
+        hero.scale.x = heroFlipDir === 1 ? heroScaleMag : -heroScaleMag
 
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
         // независимая от игровой логики анимация, реальное время

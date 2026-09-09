@@ -161,6 +161,15 @@ export function createEnemySystem(deps: EnemyDeps) {
       hurtTimer: 0,
       stunCount: 0,
       poiseImmuneTimer: 0,
+      // Память о цели пуста: заспавненный враг никого не преследует, пока
+      // условие агро не выполнится в первый раз (см. AGGRO_MEMORY_MS).
+      aggroMemoryTimer: 0,
+      // Расследовать нечего: врагу ещё не наносили урон (см. INVESTIGATE_MS).
+      investigateX: null,
+      investigateTimer: 0,
+      investigateLookTimer: 0,
+      // Не заморожен (см. ICEBALL_STUN_MS).
+      stunTimer: 0,
       dead: false,
       deathHoldTimer: 0,
       trophyReward,
@@ -177,6 +186,26 @@ export function createEnemySystem(deps: EnemyDeps) {
   // таймеров (attackTimer/windupTimer/hurtTimer/poiseImmuneTimer/
   // deathHoldTimer). В отличие от skills.ts (там один dt в мс) — врагу
   // нужны оба масштаба одновременно, как и в исходном коде тикера.
+  // Тело врага как мягкая стена по X — ОДНА точка на ДВА вызова: обычный
+  // кадр (после того как AI применил движение, см. ниже по циклу) и кадр под
+  // СТАНОМ (заслон делает continue раньше, а тело обязано остаться
+  // физическим — иначе сквозь замороженного врага игрок проходит насквозь).
+  // Идёт через deps.pushPlayerOutX, а это pushPlayerOutXUnlessDashing из
+  // Explore.tsx: рывок по-прежнему проходит сквозь тела, и стан этого не
+  // меняет ни в одну сторону — под станом рывок проходит, ходьба упирается.
+  // playerCombatBox параметром, а не через deps.getPlayerCombatBox() внутри:
+  // в обычном кадре бокс уже посчитан выше по итерации, и пересчёт был бы
+  // лишним (значение то же — phys.x до этой точки в итерации не менялся).
+  function pushPlayerOutOfEnemy(
+    enemy: Enemy,
+    playerCombatBox: { x: number; y: number; w: number; h: number },
+  ) {
+    deps.pushPlayerOutX(
+      { x: enemy.x, y: enemy.y, width: C.ENEMY_WIDTH, height: C.ENEMY_HEIGHT },
+      playerCombatBox,
+    )
+  }
+
   function update(dt: number, deltaMS: number): void {
     // Враги (Шаг 2-3: СПИСОК — кластер из 3, может быть несколько
     // enemy-событий за забег). Каждый враг обрабатывается НЕЗАВИСИМО:
@@ -229,6 +258,52 @@ export function createEnemySystem(deps: EnemyDeps) {
           }
         }
         continue
+      }
+
+      // СТАН от iceball (см. ICEBALL_STUN_MS) — ЗАСЛОН в начале обновления
+      // сущности: пока таймер >0, ниже не выполняется НИЧЕГО — ни AI, ни
+      // движение, ни физика, ни продвижение кадров анимации. Это ПАУЗА, а не
+      // отмена: спрайт замирает на текущем кадре, состояние (замах, windup,
+      // память агро, расследование, хитстан) остаётся ровно таким, каким его
+      // застало, и после стана продолжается с того же места. Замах,
+      // прерванный станом, доигрывается и бьёт — даже если игрок успел
+      // отойти. Это осознанное решение, а не недоделка.
+      //
+      // Таймер тикает БЕЗУСЛОВНО, до всех гейтов (как aggroMemoryTimer и
+      // таймеры расследования) — иначе стан не истекал бы, например, в
+      // хитстане. Мёртвый враг сюда не доходит (continue выше): смерть
+      // главнее стана, замораживать death-анимацию нельзя.
+      //
+      // sprite.stop() обязателен: AnimatedSprite крутит кадры сам, от общего
+      // тикера Pixi (autoUpdate), и без остановки картинка продолжала бы
+      // играть на замершем теле. play() на выходе — там же, ниже.
+      // Накопительный стан-резист (см. STUN_LIMIT/POISE_IMMUNE_MS) — тикает
+      // вниз КАЖДЫЙ кадр, в том числе под станом и независимо от того,
+      // загрузились ли кадры зверя. Стоит ЗДЕСЬ, до заслона, ровно по той же
+      // причине, что и выталкивание ниже: раньше декремент лежал в блоке
+      // визуала, заслон его пропускал, и 2 секунды стана дарили цели 2 лишние
+      // секунды иммунитета к прерыванию — то есть iceball косвенно защищал
+      // цель от хитстана.
+      // ⚠️ hurtTimer и hitFlashTimer намеренно НЕ вынесены: их доигрывание
+      // после разморозки — осознанное поведение (пауза, а не отмена).
+      enemy.poiseImmuneTimer = Math.max(0, enemy.poiseImmuneTimer - deltaMS)
+
+      const wasStunned = enemy.stunTimer > 0
+      enemy.stunTimer = Math.max(0, enemy.stunTimer - deltaMS)
+      if (enemy.stunTimer > 0) {
+        if (enemy.sprite.playing) enemy.sprite.stop()
+        // Тело остаётся ФИЗИЧЕСКИМ: замороженный враг не перестаёт быть
+        // мягкой стеной по X. Заслон пропускает решения и движение, а не
+        // столкновение с телом. Порядок "после движения", важный в обычном
+        // кадре, здесь безразличен — под станом враг не двигается.
+        pushPlayerOutOfEnemy(enemy, deps.getPlayerCombatBox())
+        continue
+      }
+      if (wasStunned && !enemy.sprite.playing) {
+        // Стан только что кончился — возвращаем проигрывание с того кадра,
+        // на котором заморозили (gotoAndPlay здесь был бы отменой: он
+        // отматывает анимацию в начало).
+        enemy.sprite.play()
       }
 
       // Снимок X ДО AI-блока ниже — используется только для определения
@@ -296,7 +371,54 @@ export function createEnemySystem(deps: EnemyDeps) {
       const enemyFeetY = enemy.y + C.ENEMY_HEIGHT
       const playerFeetY = deps.phys.y + C.PLAYER_HEIGHT
       const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-      const aggroed = dist <= C.AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
+      // Условие агро ПРЯМО СЕЙЧАС — по-прежнему пересчитывается каждый кадр и
+      // остаётся строгим (SAME_FLOOR_TOLERANCE_TILES не трогали: он держит
+      // "другой этаж", см. константу).
+      const aggroConditionNow = dist <= C.AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
+      // Память о цели (см. AGGRO_MEMORY_MS): условие выполняется — таймер
+      // взводится в полное значение, перестало — тикает вниз.
+      //
+      // ⚠️ Декремент стоит ЗДЕСЬ, ДО гейтов hurtTimer/windingUp ниже, и это
+      // не стилистика: остальные таймеры зверя (attackTimer/windupTimer)
+      // тикают ВНУТРИ этих гейтов, и память, поставленная туда же, замирала
+      // бы в хитстане и в замахе — то есть ровно тогда, когда игрок
+      // отрывается, она бы не истекала. Единственное, что выше по коду
+      // прерывает путь сюда, — мёртвый враг (continue), у него памяти о цели
+      // нет по смыслу.
+      if (aggroConditionNow) {
+        enemy.aggroMemoryTimer = C.AGGRO_MEMORY_MS
+      } else {
+        enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
+      }
+      // Дальше по AI слово "агрён" означает ИМЕННО память: сюда попадает и
+      // кадр, где условие уже не выполняется (герой в прыжке над врагом), но
+      // цель ещё не забыта. Ветка потери цели (патруль) не менялась — она
+      // просто наступает на AGGRO_MEMORY_MS позже.
+      const aggroed = enemy.aggroMemoryTimer > 0
+
+      // Таймеры расследования (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS) — тут
+      // же, ДО гейтов hurtTimer/windingUp, по той же причине, что и память
+      // агро: в хитстане и в замахе они обязаны продолжать течь, иначе враг
+      // застревал бы в расследовании ровно тогда, когда его бьют.
+      // Сама ходьба к точке — ниже, в AI-ветке (её хитстан замораживает, как
+      // и любое другое движение), здесь только время.
+      if (aggroed) {
+        // Приоритет обычного агро: цель видно (или помним) — расследовать
+        // нечего, состояние сбрасывается целиком.
+        enemy.investigateTimer = 0
+        enemy.investigateLookTimer = 0
+        enemy.investigateX = null
+      } else if (enemy.investigateTimer > 0) {
+        enemy.investigateTimer = Math.max(0, enemy.investigateTimer - deltaMS)
+        // Время вышло — не дошёл, но дальше не идёт: пауза "осмотреться".
+        // Тот же переход делает и ветка ходьбы ниже, когда враг дошёл до
+        // точки/упёрся в стену/встал у края.
+        if (enemy.investigateTimer === 0) enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+      } else if (enemy.investigateLookTimer > 0) {
+        enemy.investigateLookTimer = Math.max(0, enemy.investigateLookTimer - deltaMS)
+        // Осмотрелся — точка больше не нужна, дальше обычный патруль.
+        if (enemy.investigateLookTimer === 0) enemy.investigateX = null
+      }
 
       // Хитстан (hurt) полностью замораживает эту AI-ветку — не двигается,
       // не начинает новый windup/атаку, пока не истечёт enemy.hurtTimer
@@ -331,6 +453,53 @@ export function createEnemySystem(deps: EnemyDeps) {
               const dir = Math.sign(dx)
               if (dir !== 0) enemy.facing = dir as 1 | -1
             }
+          } else if (enemy.investigateTimer > 0 && enemy.investigateX !== null) {
+            // РАССЛЕДОВАНИЕ, фаза ходьбы (см. INVESTIGATE_MS): идём к точке,
+            // откуда прилетело, СКОРОСТЬЮ ПОГОНИ (ENEMY_CHASE_SPEED) — это
+            // реакция на удар, а не прогулка. Точка — X источника урона,
+            // записан в damageEnemy (Explore.tsx).
+            //
+            // Стена и край платформы проверяются ТЕМИ ЖЕ функциями и в том же
+            // виде, что в патруле ниже (isSolid ×3 + cellFootBlockTop) —
+            // своей геометрии не заводим. Отличие от патруля одно: упёршись,
+            // враг не разворачивается, а заканчивает расследование.
+            const targetX = enemy.investigateX
+            const centerX = enemy.x + C.ENEMY_WIDTH / 2
+            const toTarget = targetX - centerX
+            const dir = Math.sign(toTarget)
+            const step = C.ENEMY_CHASE_SPEED * dt
+            if (dir !== 0) enemy.facing = dir as 1 | -1
+            if (dir === 0 || Math.abs(toTarget) <= step) {
+              // Дошёл: шаг НЕ делаем (иначе проскочили бы точку и поехали
+              // обратно) — сразу в паузу "осмотреться".
+              enemy.investigateTimer = 0
+              enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+            } else {
+              const nextX = enemy.x + dir * step
+              const leadingX = dir > 0 ? nextX + C.ENEMY_WIDTH : nextX
+              const hitWall =
+                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
+                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT / 2) ||
+                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1)
+              const footCx = Math.floor(leadingX / C.TILE_SIZE)
+              const footCy = Math.floor((enemy.y + C.ENEMY_HEIGHT) / C.TILE_SIZE)
+              const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+              if (hitWall || noFloorAhead) {
+                // Дальше хода нет — точка недостижима (стреляли с другого
+                // этажа/через пропасть). Не топчемся у препятствия: тот же
+                // переход в паузу, что и по приходу.
+                enemy.investigateTimer = 0
+                enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
+              } else {
+                enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
+              }
+            }
+          } else if (enemy.investigateLookTimer > 0 && enemy.investigateX !== null) {
+            // РАССЛЕДОВАНИЕ, фаза паузы (см. INVESTIGATE_LOOK_MS): стоит на
+            // месте лицом к точке. enemy.x не трогаем вообще — время тикает
+            // в безусловном блоке выше, отсюда только разворот.
+            const dir = Math.sign(enemy.investigateX - (enemy.x + C.ENEMY_WIDTH / 2))
+            if (dir !== 0) enemy.facing = dir as 1 | -1
           } else {
             // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
             // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
@@ -394,7 +563,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       // continue в самом начале итерации цикла, выше по коду. Сама
       // геометрия/гейты (verticalReach, PUSH_TOP_MARGIN) вынесены в
       // pushPlayerOutX — общий помощник, им же толкается сундук ниже.
-      deps.pushPlayerOutX({ x: enemy.x, y: enemy.y, width: C.ENEMY_WIDTH, height: C.ENEMY_HEIGHT }, playerCombatBox)
+      pushPlayerOutOfEnemy(enemy, playerCombatBox)
 
       // Синк визуала с логической позицией — теперь и по Y тоже (раньше
       // враг не двигался по вертикали вообще, синкали только X; с
@@ -427,9 +596,9 @@ export function createEnemySystem(deps: EnemyDeps) {
       //
       // idle/walk — по факту движения по X в этом кадре (prevEnemyX,
       // снятый ДО AI-блока выше): двигался — walk, стоял (включая паузу
-      // windingUp перед ударом) — idle. Скорость walk — по aggroed (уже
-      // вычислен AI-блоком выше, отдельно решение не дублируем): в погоне
-      // быстрее, в патруле спокойнее.
+      // windingUp перед ударом И паузу "осмотреться" в расследовании) — idle.
+      // Скорость walk — тоже ПО ФАКТУ, из длины шага за кадр (см. ниже), а не
+      // по aggroed: режимов движения три, а признак агро знает два.
       //
       // Флип — по enemy.facing (тот же источник, что и для rect.scale.x
       // выше, и для самого перемещения в AI-блоке), применяется ВСЕГДА,
@@ -487,16 +656,27 @@ export function createEnemySystem(deps: EnemyDeps) {
           } else {
             const enemyMoving = enemy.x !== prevEnemyX
             if (enemyMoving) {
-              deps.playSpriteAnim(enemy.sprite, beastFrames.walk, aggroed ? C.WALK_ANIM_CHASE : C.WALK_ANIM_PATROL, true)
+              // Скорость анимации — по ФАКТИЧЕСКОМУ шагу за этот кадр, а не по
+              // aggroed. Режимов движения стало три (погоня, ходьба
+              // расследования, патруль), а признак агро различает два: в
+              // расследовании враг едет скоростью погони (ENEMY_CHASE_SPEED),
+              // но aggroed там ложно — ноги играли патрульный темп и не
+              // поспевали за телом.
+              // Шаг за кадр — это ровно скорость ветки, умноженная на dt
+              // (enemy.x = x + dir * СКОРОСТЬ * dt в каждой из трёх), поэтому
+              // сравнение с серединой между двумя скоростями восстанавливает,
+              // какая из них была использована, без третьей константы и без
+              // нового поля. Любой будущий режим движения получит верный темп
+              // сам, если поедет одной из этих двух скоростей.
+              const movedPx = Math.abs(enemy.x - prevEnemyX)
+              const chasePace = movedPx > ((C.ENEMY_PATROL_SPEED + C.ENEMY_CHASE_SPEED) / 2) * dt
+              deps.playSpriteAnim(enemy.sprite, beastFrames.walk, chasePace ? C.WALK_ANIM_CHASE : C.WALK_ANIM_PATROL, true)
             } else {
               deps.playSpriteAnim(enemy.sprite, beastFrames.idle, C.BEAST_IDLE_ANIM_SPEED, true)
             }
           }
         }
         enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
-        // Накопительный стан-резист (см. STUN_LIMIT/POISE_IMMUNE_MS) —
-        // иммунитет тикает вниз каждый кадр независимо от анимации.
-        enemy.poiseImmuneTimer = Math.max(0, enemy.poiseImmuneTimer - deltaMS)
       }
       // Y отрисовки — поверхность тайла под ногами (findGroundSurfaceY),
       // а НЕ низ хитбокса; низ хитбокса — только запасной вариант, когда
