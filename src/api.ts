@@ -13,7 +13,9 @@ export type LoginResponse = {
     luck: number
     trophies: number
     equippedSkills: string[]
-    potionCharges: number
+    // Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). Заменил
+    // прежний скалярный potionCharges.
+    potions: number[]
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -56,7 +58,10 @@ export type StartExploreResult = {
   events: StartExploreEvent[]
   maxHp: number
   level: number
-  potions: number
+  // Снимок склада ПО ТИРАМ на старт забега (индекс = тир-1) и лимит глотков
+  // за забег (MAX_SIPS_PER_RUN, но не больше суммы запаса).
+  potions: number[]
+  sips: number
   armor: number
 }
 
@@ -114,10 +119,10 @@ export type RunResultSummary = {
   endurance: number
   agility: number
   level: number
-  // Остаток зарядов зелий ПОСЛЕ списания выпитого за забег — абсолютное
-  // значение из БД, как trophies/strength выше (App.tsx мержит его в player,
-  // иначе на "Персонаже" висело бы число до списания).
-  potionCharges: number
+  // Склад зелий ПО ТИРАМ после списания выпитого за забег (индекс = тир-1) —
+  // абсолютные значения из БД, как trophies/strength выше (App.tsx мержит их
+  // в player, иначе в магазине висел бы запас до списания).
+  potions: number[]
   // Уровни НЕ от статов (сейчас только убийство босса, +1) — level выше УЖЕ
   // включает этот бонус (calculateLevel на сервере складывает их), это поле
   // отдельно на будущее/аналитику, само по себе не источник истины.
@@ -179,12 +184,13 @@ export async function finishRunExplore(
   skillDamageDealt?: number,
   healedAmount?: number,
   damageTaken?: number,
-  // Сколько зелий реально выпито за забег (Explore.tsx: potionsDrunkRef —
-  // считается по факту списания заряда на кадре глотка). Сервер вычитает из
-  // Character.potionCharges, обрезая по выданному на забег (currentRun.potions).
-  potionsDrunk?: number,
+  // Сколько зелий КАЖДОГО ТИРА реально выпито за забег (Explore.tsx:
+  // potionsDrunkByTierRef — считается по факту списания на кадре глотка),
+  // индекс = тир-1. Сервер клэмпит по каждому тиру отдельно (по выданному на
+  // забег) и по сумме глотков, затем вычитает из колонок potionT1..T5.
+  potionsDrunkByTier?: number[],
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunk })
+  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier })
   let attempt = 0
   while (true) {
     const result = await attemptFinishExplore(token, body)
@@ -212,15 +218,20 @@ export async function saveEquippedSkills(token: string, skills: string[]): Promi
 
 export type BuyPotionResult = {
   gold: number
-  potionCharges: number
+  // Склад по тирам ПОСЛЕ покупки (индекс = тир-1) — абсолютный, как gold.
+  potions: number[]
 }
 
-export async function buyPotion(token: string): Promise<BuyPotionResult> {
+// tier — номер тира 1..5 (см. src/potions.ts). Цену и уровень открытия сервер
+// берёт из СВОЕЙ копии каталога, клиент называет только тир.
+export async function buyPotion(token: string, tier: number): Promise<BuyPotionResult> {
   const response = await fetch(`${SERVER_URL}/character/buy-potion`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({ tier }),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))

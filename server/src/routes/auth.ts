@@ -116,10 +116,10 @@ export async function authRoutes(server: FastifyInstance) {
         agility: char.agility,
         level: calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels),
         // Зелья брошенного забега НЕ списываются: клиент закрылся, не сообщив,
-        // сколько выпил, а выдумывать число нельзя. Отдаём текущий остаток как
-        // есть, тем же приёмом, что статы выше. Известная открытая дыра —
-        // закрыть приложение выгоднее, чем умереть, именно по зельям.
-        potionCharges: char.potionCharges,
+        // сколько выпил, а выдумывать число нельзя. Отдаём текущий склад по
+        // тирам как есть, тем же приёмом, что статы выше. Известная открытая
+        // дыра — закрыть приложение выгоднее, чем умереть, именно по зельям.
+        potions: [char.potionT1, char.potionT2, char.potionT3, char.potionT4, char.potionT5],
         bonusLevels: char.bonusLevels, // не менялся — брошенный забег бонус не даёт
       }
     }
@@ -137,7 +137,17 @@ export async function authRoutes(server: FastifyInstance) {
         firstName: user.firstName,
         username: user.username,
       },
-      character: { ...char, level, energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate), equippedSkills: char.equippedSkills, potionCharges: char.potionCharges },
+      // potions — склад по тирам одним массивом (индекс = тир-1) вместо прежнего
+      // скалярного potionCharges. `...char` ниже всё ещё несёт саму колонку
+      // potionCharges: она жива в БД до миграции _potion_charges_drop, но
+      // клиентом уже не читается.
+      character: {
+        ...char,
+        level,
+        energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate),
+        equippedSkills: char.equippedSkills,
+        potions: [char.potionT1, char.potionT2, char.potionT3, char.potionT4, char.potionT5],
+      },
       ...(interruptedRun ? { interruptedRun } : {}),
     })
   })

@@ -34,6 +34,7 @@ import {
   sweepFootBlock,
 } from './explore/collision'
 import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from './explore/mapEvents'
+import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier } from './potions'
 import { clamp, pickRandom } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 import { loadExploreAssets } from './explore/assets'
@@ -632,12 +633,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Реально восстановленное зельем HP (клэмп к maxHp — см. место применения
   // хила ниже), НЕ полный потенциал зелья.
   const healedAmountRef = useRef(0)
-  // Сколько зелий РЕАЛЬНО выпито за забег — считается по факту списания
-  // заряда (кадр глотка), а не по нажатиям кнопки: питьё, оборванное
-  // hurt/death до POTION_GULP_FRAME, заряд не тратит и сюда не попадает.
-  // Уходит в /run/finish-explore, сервер вычитает из Character.potionCharges
-  // (клэмп по выданному на забег — currentRun.potions, клиенту не верим).
-  const potionsDrunkRef = useRef(0)
+  // Сколько зелий КАЖДОГО ТИРА реально выпито за забег (индекс = тир-1) —
+  // считается по факту списания на кадре глотка, а не по нажатиям кнопки:
+  // питьё, оборванное hurt/death до POTION_GULP_FRAME, заряд не тратит и сюда
+  // не попадает. Уходит в /run/finish-explore, где сервер клэмпит по каждому
+  // тиру отдельно (по выданному на забег) и по сумме глотков — клиенту не
+  // верим ни в общем числе, ни в раскладке по тирам.
+  const potionsDrunkByTierRef = useRef<number[]>(emptyPotionStock())
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
@@ -710,10 +712,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       endurance: endurance ?? 0,
       agility: 0,
       level: characterLevel,
-      // Остаток зарядов — единственное из абсолютных полей, которое клиент
+      // Склад по тирам — единственное из абсолютных полей, которое клиент
       // знает точно (ref живого забега). Всё равно заглушка в том же смысле,
       // что и соседи: player обновляется только настоящим ответом сервера.
-      potionCharges: potionChargesRef.current,
+      potions: [...potionStockRef.current],
       // bonusLevels клиенту вообще не известен (нет такого пропа у Explore) —
       // заглушка 0, тем же приёмом, что и остальные поля выше.
       bonusLevels: 0,
@@ -770,7 +772,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealtRef.current,
       healedAmountRef.current,
       damageTakenRef.current,
-      potionsDrunkRef.current,
+      potionsDrunkByTierRef.current,
     )
       .then((result) => {
         setRunResult(result)
@@ -901,15 +903,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // dodge игнорируются), ветка приоритета между hurt и attack.
   const drinkPressedRef = useRef(false)
   const drinkingRef = useRef(false)
-  // Игровая логика зелья (заряды/кулдаун в забеге — локальные, currentRun на
-  // сервере ими не двигается: списание в БД — отдельный будущий шаг).
-  // 0 — НЕ игровое значение и на экран не попадает: реальный запас ставится в
-  // setup() из ответа /run/start-explore (в офлайне — OFFLINE_POTIONS_FALLBACK)
-  // ДО того, как кнопка 🧪 вообще появится в дереве (она под гейтом ready, а
-  // setReady(true) стоит в самом конце setup()). Ноль здесь именно чтобы
-  // случайная утечка стартового значения в UI была ЗАМЕТНА ("×0", кнопка
-  // погашена), а не выглядела правдоподобной тройкой.
-  const potionChargesRef = useRef(0)
+  // Склад зелий ПО ТИРАМ на этот забег (индекс = тир-1) и остаток глотков.
+  // Пустой массив/ноль — НЕ игровые значения и на экран не попадают: реальные
+  // ставятся в setup() из ответа /run/start-explore (в офлайне —
+  // OFFLINE_POTION_STOCK) ДО того, как кнопка зелья вообще появится в дереве
+  // (она под гейтом ready, а setReady(true) стоит в самом конце setup()).
+  // Пусто здесь именно чтобы случайная утечка стартового значения в UI была
+  // ЗАМЕТНА (кнопка погашена, "×0"), а не выглядела правдоподобным запасом.
+  const potionStockRef = useRef<number[]>(emptyPotionStock())
+  // Сколько глотков ещё разрешено за этот забег. Отдельно от склада: лимит
+  // MAX_SIPS_PER_RUN общий на все тиры, и «есть что пить» ≠ «можно пить».
+  const potionSipsLeftRef = useRef(0)
   const potionCdRef = useRef(0) // остаток кулдауна, секунды — тикает как attackCooldownRef
   const potionHealedThisDrinkRef = useRef(false) // хил текущего питья уже применён?
   // DOM-узел кнопки 🧪 (создаётся императивно в fan-блоке ниже, не JSX) — нужен
@@ -1042,11 +1046,22 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Подпись кнопки 🧪 — тот же приём, что updateHpBar (DOM-ref, обновляется
   // ТОЛЬКО при реальном изменении значения — на старте и когда заряд
   // списывается на кадре глотка, не каждый кадр из ticker'а).
+  // Подпись и ИКОНКА кнопки зелья. Иконка — тир, который выпьется СЛЕДУЮЩИМ
+  // (старший доступный), поэтому меняется по ходу забега сама. Фоном, а не
+  // <img>: textContent затирает детей, а background-image с числом поверх
+  // уживается. cssText в TouchControls переписывается при каждом ре-рендере и
+  // стирает и фон, и opacity — восстанавливает их вызов этой функции сразу
+  // следом (там же, где раньше восстанавливалась одна opacity).
+  // Число на кнопке — ОСТАВШИЕСЯ ГЛОТКИ, а не общий склад: это то, что игрок
+  // реально может сделать в этом забеге.
   function updatePotionButton() {
     const btn = potionBtnRef.current
     if (!btn) return
-    btn.textContent = `🧪 ×${potionChargesRef.current}`
-    btn.style.opacity = potionChargesRef.current > 0 ? '1' : '0.5'
+    const tier = highestAvailableTier(potionStockRef.current)
+    const usable = tier !== null && potionSipsLeftRef.current > 0
+    btn.textContent = `×${potionSipsLeftRef.current}`
+    btn.style.backgroundImage = tier === null ? 'none' : `url(${C.POTION_ICON_SRC[tier - 1]})`
+    btn.style.opacity = usable ? '1' : '0.5'
   }
 
   // Вид кнопок ⚡/🔥 — тот же приём, что updatePotionButton выше (DOM-ref;
@@ -1369,17 +1384,34 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // заново не сработает. На первом забеге вызов безвреден — кнопки ещё
       // нет, функция выходит по `if (!btn) return`.
       if (startExploreResult) {
-        if (typeof startExploreResult.potions !== 'number' || !Number.isFinite(startExploreResult.potions)) {
+        const stock = startExploreResult.potions
+        const okStock =
+          Array.isArray(stock) &&
+          stock.length === POTION_TIER_COUNT &&
+          stock.every((n) => typeof n === 'number' && Number.isFinite(n))
+        if (!okStock) {
           throw new Error(
-            'Сервер не прислал запас зелий (поле potions в ответе /run/start-explore). ' +
-            'Забег не начат — играть с выдуманным числом зарядов нельзя.',
+            'Сервер не прислал запас зелий по тирам (поле potions в ответе /run/start-explore ' +
+            `должно быть массивом из ${POTION_TIER_COUNT} чисел). Забег не начат — ` +
+            'играть с выдуманным запасом нельзя.',
           )
         }
-        potionChargesRef.current = startExploreResult.potions
+        if (typeof startExploreResult.sips !== 'number' || !Number.isFinite(startExploreResult.sips)) {
+          throw new Error(
+            'Сервер не прислал лимит глотков (поле sips в ответе /run/start-explore). ' +
+            'Забег не начат — выдумывать, сколько раз можно выпить, нельзя.',
+          )
+        }
+        potionStockRef.current = [...stock]
+        potionSipsLeftRef.current = startExploreResult.sips
       } else {
         // Офлайн-отладка без token — та же ветка, что включает оранжевую
-        // плашку ниже (setLocalEventFallback), и плашка называет это число.
-        potionChargesRef.current = C.OFFLINE_POTIONS_FALLBACK
+        // плашку ниже (setLocalEventFallback), и плашка называет этот запас.
+        potionStockRef.current = [...C.OFFLINE_POTION_STOCK]
+        potionSipsLeftRef.current = Math.min(
+          MAX_SIPS_PER_RUN,
+          C.OFFLINE_POTION_STOCK.reduce((sum, n) => sum + n, 0),
+        )
       }
       updatePotionButton()
 
@@ -1865,7 +1897,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
-      potionsDrunkRef.current = 0 // сброс на случай повторного запуска setup()
+      potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
       setRunResult(null) // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
@@ -3201,7 +3233,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             !deathRef.current &&
             phys.onGround &&
             !drinkingRef.current &&
-            potionChargesRef.current > 0 &&
+            // Два независимых условия: есть ЧТО пить (склад по тирам) и
+            // МОЖНО ли пить (общий лимит глотков за забег).
+            highestAvailableTier(potionStockRef.current) !== null &&
+            potionSipsLeftRef.current > 0 &&
             potionCdRef.current <= 0
           ) {
             drinkingRef.current = true
@@ -3475,14 +3510,28 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           // и заряд/хил/кулдаун не применятся — как и требовалось.
           if (!potionHealedThisDrinkRef.current && hero.currentFrame >= C.POTION_GULP_FRAME) {
             potionHealedThisDrinkRef.current = true
-            // Через healPlayer — ОБЩАЯ точка лечения со скиллом heal (см.
-            // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
-            // долитого в healedAmountRef живут там, здесь не дублируются.
-            healPlayer(maxHp * C.POTION_HEAL_FRAC)
-            potionChargesRef.current -= 1
-            potionsDrunkRef.current += 1
-            potionCdRef.current = C.POTION_COOLDOWN
-            updatePotionButton()
+            // Пьётся всегда СТАРШИЙ доступный тир; кончился — следующий вниз,
+            // прямо внутри забега. Выбор здесь, а не на нажатии: точка списания
+            // одна, и решение о тире обязано жить рядом с ней.
+            const tier = highestAvailableTier(potionStockRef.current)
+            if (tier === null) {
+              // Гейт старта такого не пропускает. Если всё же случилось —
+              // громко в консоль и НЕ лечим: тихо долить «нулевым» зельем
+              // значило бы спрятать баг. Анимация доиграет вхолостую.
+              console.error('Explore: глоток при пустом складе зелий — питьё пропущено')
+            } else {
+              // Сила лечения — СВОЯ у каждого тира (каталог src/potions.ts).
+              // Раньше здесь стояла единственная заглушка POTION_HEAL_FRAC=0.25.
+              // Через healPlayer — ОБЩАЯ точка лечения со скиллом heal (см.
+              // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
+              // долитого в healedAmountRef живут там, здесь не дублируются.
+              healPlayer(maxHp * POTION_TIERS[tier - 1].healFrac)
+              potionStockRef.current[tier - 1] -= 1
+              potionsDrunkByTierRef.current[tier - 1] += 1
+              potionSipsLeftRef.current -= 1
+              potionCdRef.current = C.POTION_COOLDOWN
+              updatePotionButton()
+            }
           }
           // Доиграла (тот же способ определения конца, что у атаки: конец
           // текстур ИЛИ спрайт сам остановился) — сбрасываем и со следующего
@@ -3787,7 +3836,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               whiteSpace: 'nowrap',
             }}
           >
-            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTIONS_FALLBACK} (заглушка)
+            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTION_STOCK.join('/')} по тирам (заглушка)
           </div>
         </div>
       )}

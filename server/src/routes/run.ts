@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
+import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../potions.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -61,13 +62,37 @@ function applyStatGrowth(
   }
 }
 
+// Склад зелий персонажа как массив по тирам (индекс = тир-1) и обратно в поля
+// Prisma. Пять колонок вместо Json — цена за атомарные +1/-1 в общем update;
+// эти две функции держат разложение в ОДНОМ месте, чтобы номера тиров не
+// расползлись строковыми ключами по эндпоинтам.
+type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
+
+function potionStockOf(character: PotionColumns): number[] {
+  return [character.potionT1, character.potionT2, character.potionT3, character.potionT4, character.potionT5]
+}
+
+function potionStockToColumns(stock: number[]): PotionColumns {
+  return {
+    potionT1: stock[0],
+    potionT2: stock[1],
+    potionT3: stock[2],
+    potionT4: stock[3],
+    potionT5: stock[4],
+  }
+}
+
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
 // the tag that identifies this shape in the JSON field.
 // `events` carries the FULL roll (trophyReward/isMimic included) — that part
 // never leaves the server; the client only ever gets the stripped-down
 // version built in /run/start-explore's response.
-type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number }
+// `potions` — снимок склада ПО ТИРАМ на момент старта (длина POTION_TIER_COUNT,
+// индекс = тир-1), `sips` — сколько глотков вообще разрешено за забег
+// (MAX_SIPS_PER_RUN, но не больше суммы запаса). Раньше здесь был один скаляр,
+// который смешивал две разные вещи: сколько есть и сколько можно выпить.
+type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number }
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
 // (App.tsx) still sends an explicit one, still validated below.
@@ -89,10 +114,11 @@ type FinishExploreBody = {
   skillDamageDealt?: number
   healedAmount?: number
   damageTaken?: number
-  // How many potions the client actually drank this run (Explore.tsx counts
-  // them at the gulp frame, not on button press). Never trusted as-is: the
-  // deduction is capped at what THIS run was issued (currentRun.potions).
-  potionsDrunk?: number
+  // How many potions of EACH tier the client drank this run (Explore.tsx counts
+  // them at the gulp frame, not on button press) — index = tier-1. Never
+  // trusted as-is: capped per tier against what THIS run was issued
+  // (currentRun.potions), then capped again against the run's sip allowance.
+  potionsDrunkByTier?: number[]
 }
 // Shared "run result" shape — one results screen for both ways an Explore
 // run can end: the client explicitly finishing it (POST /run/finish-explore)
@@ -132,10 +158,10 @@ export type RunResultSummary = {
   endurance: number
   agility: number
   level: number
-  // Potion charges left AFTER this run's drinks were deducted — absolute, like
-  // trophies/strength above. The client merges it into `player` so the
-  // character screen doesn't keep showing the pre-run count.
-  potionCharges: number
+  // Potion stock per tier left AFTER this run's drinks were deducted (index =
+  // tier-1) — absolute, like trophies/strength above. The client merges it into
+  // `player` so the shop doesn't keep showing the pre-run counts.
+  potions: number[]
   // Уровни, полученные НЕ от статов (сейчас только убийство босса в Explore,
   // +1, см. bossClosed в /run/finish-explore) — level выше УЖЕ включает этот
   // бонус (calculateLevel складывает их), это поле для клиента/аналитики
@@ -181,7 +207,10 @@ export async function runRoutes(server: FastifyInstance) {
 
     const newEnergy = currentEnergy - RUN_COST
     const maxHp = character.endurance * 8
-    const potions = Math.min(character.potionCharges, 3)
+    // Снимок склада ПО ТИРАМ + отдельный лимит глотков. Раньше здесь был один
+    // Math.min(potionCharges, 3), смешивавший «сколько есть» и «сколько можно».
+    const potionStock = potionStockOf(character)
+    const potionSips = Math.min(MAX_SIPS_PER_RUN, potionStock.reduce((sum, n) => sum + n, 0))
 
     const equippedItems = await prisma.inventoryItem.findMany({
       where: { characterId: character.id, equipped: true },
@@ -194,7 +223,7 @@ export async function runRoutes(server: FastifyInstance) {
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
     const events = rollRunEvents(mapFile, characterLevel)
 
-    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions }
+    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips }
 
     await prisma.character.update({
       where: { userId },
@@ -221,7 +250,8 @@ export async function runRoutes(server: FastifyInstance) {
       events: clientEvents,
       maxHp,
       level: characterLevel,
-      potions,
+      potions: potionStock,
+      sips: potionSips,
       armor: totalArmor,
     })
   })
@@ -328,10 +358,17 @@ export async function runRoutes(server: FastifyInstance) {
     // character.endurance*8 заново: доверяем тому же снимку, что и ниже у
     // "зарядов зелья") × (1 + заряды зелий забега × 0.25 — полное лечение
     // каждым зарядом) × запас 1.5.
-    const maxDamageTaken = run.maxHp * (1 + run.potions * 0.25) * 1.5
+    // Раньше здесь стояло `run.potions * 0.25`, где potions был скаляром, а
+    // 0.25 — единственной силой лечения. Теперь глотков ровно run.sips, а
+    // лечить они могут по-разному, поэтому берём МАКСИМУМ по каталогу: потолок
+    // обязан быть не ниже того, что честный игрок реально мог восстановить,
+    // иначе он молча срежет ему рост выносливости.
+    const maxHealFrac = Math.max(...POTION_TIERS.map((t) => t.healFrac))
+    const runSips = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
+    const maxDamageTaken = run.maxHp * (1 + runSips * maxHealFrac) * 1.5
     if (safeDamageTaken > maxDamageTaken) {
       request.log.warn(
-        { userId, damageTaken: safeDamageTaken, maxDamageTaken, runMaxHp: run.maxHp, potions: run.potions },
+        { userId, damageTaken: safeDamageTaken, maxDamageTaken, runMaxHp: run.maxHp, sips: runSips },
         'finish-explore: damageTaken exceeded cap, clamped',
       )
     }
@@ -347,22 +384,51 @@ export async function runRoutes(server: FastifyInstance) {
     // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
     const newBonusLevels = character.bonusLevels + (bossClosed ? 1 : 0)
 
-    // Списание выпитых зелий. Garbage in the field (missing, non-integer,
-    // negative, NaN) is DROPPED to 0 the same way bad closedEvents indices are
-    // filtered out above — never a 400, and never a silent guess either: 0
-    // simply means "nothing to deduct", which is also what an older client
-    // that doesn't send the field yet gets.
-    const rawPotionsDrunk = request.body.potionsDrunk
-    const reportedPotionsDrunk =
-      Number.isInteger(rawPotionsDrunk) && (rawPotionsDrunk as number) >= 0 ? (rawPotionsDrunk as number) : 0
-    // Cap at what THIS run was actually issued — run.potions comes from
-    // currentRun (written by /run/start-explore), not from the request body,
-    // so a client claiming 99 drinks can only ever spend the run's own stock.
-    // Same trust model as the damageTaken anti-cheat cap above.
-    const potionsSpent = Math.min(reportedPotionsDrunk, run.potions)
-    // Never negative even if the stock moved underneath us between start and
-    // finish (e.g. a purchase mid-run).
-    const newPotionCharges = Math.max(0, character.potionCharges - potionsSpent)
+    // --- Списание выпитых зелий, по тирам ---
+    // Ступень 1: разбор поля. Мусор (нет поля, не массив, не целое, отрицательное,
+    // NaN) обнуляется поэлементно — тем же приёмом, что кривые индексы
+    // closedEvents выше: не 400, но и не молчаливая догадка. Ноль значит
+    // «списывать нечего», он же достаётся старому клиенту, который поля не шлёт.
+    const rawDrunk = request.body.potionsDrunkByTier
+    const reportedDrunk: number[] = new Array(POTION_TIER_COUNT).fill(0)
+    if (Array.isArray(rawDrunk)) {
+      for (let i = 0; i < POTION_TIER_COUNT; i++) {
+        const v = rawDrunk[i]
+        if (Number.isInteger(v) && (v as number) >= 0) reportedDrunk[i] = v as number
+      }
+    }
+
+    // Ступень 2: потолок ПО КАЖДОМУ ТИРУ отдельно — run.potions это снимок из
+    // currentRun, а не из тела запроса. Именно эта ступень не даёт списать
+    // выпитое дорогое как дешёвое: заявить T5 больше, чем на этот забег было
+    // выдано T5, невозможно. Тот же уровень доверия клиенту, что у потолка
+    // урона выше.
+    const runStock = Array.isArray(run.potions) ? run.potions : []
+    const potionsSpent = reportedDrunk.map((n, i) => Math.min(n, runStock[i] ?? 0))
+
+    // Ступень 3: потолок по СУММЕ — за забег разрешено не больше run.sips
+    // глотков независимо от тиров. Излишек срезаем с МЛАДШИХ тиров вверх
+    // (строгая сторона: дорогие списания сохраняются). Сюда попадаем только
+    // если клиент врёт или ошибся в счёте — обе ситуации не должны
+    // оборачиваться подарком.
+    const sipsAllowed = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
+    let overflow = potionsSpent.reduce((sum, n) => sum + n, 0) - sipsAllowed
+    for (let i = 0; i < POTION_TIER_COUNT && overflow > 0; i++) {
+      const cut = Math.min(potionsSpent[i], overflow)
+      potionsSpent[i] -= cut
+      overflow -= cut
+    }
+    if (reportedDrunk.some((n, i) => n !== potionsSpent[i])) {
+      request.log.warn(
+        { userId, reportedDrunk, potionsSpent, runStock, sipsAllowed },
+        'finish-explore: potionsDrunkByTier exceeded per-tier or sip cap, clamped',
+      )
+    }
+
+    // Никогда не в минус, даже если склад сдвинулся между стартом и финишем
+    // (например, покупка посреди забега).
+    const characterStock = potionStockOf(character)
+    const newPotionStock = characterStock.map((n, i) => Math.max(0, n - potionsSpent[i]))
 
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, clampedAttackDamageDealt,
@@ -387,9 +453,9 @@ export async function runRoutes(server: FastifyInstance) {
         level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
         // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
         // не должна становиться способом сэкономить склад (та же логика, что у
-        // роста статов выше). Обнуление трофеев рядом на это поле не влияет —
+        // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
         // разные колонки, один атомарный update.
-        potionCharges: newPotionCharges,
+        ...potionStockToColumns(newPotionStock),
         currentRun: Prisma.DbNull,
       },
     })
@@ -412,7 +478,7 @@ export async function runRoutes(server: FastifyInstance) {
       endurance: growth.endurance,
       agility: growth.agility,
       level: growth.level,
-      potionCharges: newPotionCharges,
+      potions: newPotionStock,
       bonusLevels: newBonusLevels,
     }
     return reply.send(result)
@@ -438,27 +504,46 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({ equippedSkills: skills })
   })
 
-  server.post('/character/buy-potion', async (request, reply) => {
+  // Покупка ОДНОГО зелья указанного тира. Цена и уровень открытия берутся из
+  // каталога (src/potions.ts, копия server/src/potions.ts), НЕ из тела запроса:
+  // клиент называет только тир. Раньше эндпоинт параметров не принимал вовсе и
+  // продавал одно абстрактное зелье за захардкоженные 20 золота.
+  server.post<{ Body: { tier?: number } }>('/character/buy-potion', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    const POTION_COST = 20
-    if (character.gold < POTION_COST) {
-      return reply.status(400).send({ error: 'Not enough gold' })
+    const rawTier = request.body?.tier
+    const tierSpec = Number.isInteger(rawTier) ? potionTierByNumber(rawTier as number) : null
+    if (tierSpec === null) {
+      return reply.status(400).send({ error: 'Unknown potion tier' })
     }
+
+    // Уровень открытия — та же чистая функция от статов, что и везде в файле
+    // (колонка Character.level её НЕ источник, только снимок).
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+    if (characterLevel < tierSpec.levelRequired) {
+      return reply.status(400).send({ error: 'Tier not unlocked', levelRequired: tierSpec.levelRequired })
+    }
+
+    if (character.gold < tierSpec.price) {
+      return reply.status(400).send({ error: 'Not enough gold', price: tierSpec.price })
+    }
+
+    const stock = potionStockOf(character)
+    stock[tierSpec.tier - 1] += 1
 
     const updated = await prisma.character.update({
       where: { userId },
       data: {
-        gold: character.gold - POTION_COST,
-        potionCharges: character.potionCharges + 1,
+        gold: character.gold - tierSpec.price,
+        ...potionStockToColumns(stock),
       },
     })
 
-    return reply.send({ gold: updated.gold, potionCharges: updated.potionCharges })
+    return reply.send({ gold: updated.gold, potions: potionStockOf(updated) })
   })
 
   server.get('/character/inventory', async (request, reply) => {

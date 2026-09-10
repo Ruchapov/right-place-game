@@ -1,6 +1,7 @@
 // Константы верхнего уровня, вынесенные из Explore.tsx (механический перенос).
 import type { BackdropPreset } from '../mapRenderer'
 import type { BossAnimKind, RewardKind, EventKind } from './types'
+import { POTION_TIERS } from '../potions'
 
 export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
@@ -912,16 +913,27 @@ export const ARMOR_MAX_REDUCTION = 0.5
 // Зелье (Explore офлайн — заряды/кулдаун ТОЛЬКО локальные, currentRun/сервер
 // не трогаем). Хил применяется один раз за питьё — на кадре глотка анимации
 // (POTION_GULP_FRAME из 14 кадров drink.png), не на нажатии кнопки.
-export const POTION_HEAL_FRAC = 0.25 // лечит 25% maxHp
+// Сила лечения БОЛЬШЕ НЕ ЗДЕСЬ: она своя у каждого тира и живёт в каталоге
+// src/potions.ts (POTION_TIERS[].healFrac). Прежняя POTION_HEAL_FRAC = 0.25
+// была заглушкой на время, пока тиров не существовало, и противоречила
+// витрине магазина, обещавшей 10..30%.
 export const POTION_COOLDOWN = 2.0 // секунды, тикает как ATTACK_COOLDOWN
 export const POTION_GULP_FRAME = 6 // кадр глотка (0-based) в drink.png
+// Пути иконок тиров для кнопки в HUD, по порядку тиров (индекс = тир-1).
+// Строятся из каталога, чтобы имена файлов не разъехались с магазином. Тот же
+// способ (BASE_URL), что у EVENT_ICON_SRC/HP_FRAME_SRC — обязателен, иначе на
+// GitHub Pages с префиксом путь не разрешится.
+export const POTION_ICON_SRC: string[] = POTION_TIERS.map(
+  (t) => `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
+)
 // Запас зелий на забег в ОФЛАЙН-отладке (нет token, DevTester вне Telegram —
-// /run/start-explore не звался, брать число неоткуда). В настоящем забеге НЕ
-// используется никогда: там запас приходит с сервера (StartExploreResult.potions),
-// а если поле не пришло — setup() падает с явной ошибкой, а не подставляет это
-// число. Забег на этой заглушке помечен видимой оранжевой плашкой (см.
-// localEventFallback в Explore.tsx) — тихо подменять запас нельзя.
-export const OFFLINE_POTIONS_FALLBACK = 3
+// /run/start-explore не звался, брать числа неоткуда): по одному зелью трёх
+// младших тиров, чтобы было видно и смену иконки на кнопке, и разную силу
+// лечения. В настоящем забеге НЕ используется никогда: там запас приходит с
+// сервера (StartExploreResult.potions), а если поле не пришло — setup() падает
+// с явной ошибкой, а не подставляет эти числа. Забег на заглушке помечен
+// видимой оранжевой плашкой (см. localEventFallback в Explore.tsx).
+export const OFFLINE_POTION_STOCK: readonly number[] = [1, 1, 1, 0, 0]
 
 // Скилл heal (см. explore/entities/skills.ts). Кулдаун 5с, зарядов НЕТ —
 // ограничивает только он.

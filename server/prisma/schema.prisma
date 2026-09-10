@@ -42,7 +42,27 @@ model Character {
   gold                Int      @default(0)
   trophies            Int      @default(0)
   crystals            Int      @default(0)
+  /// УСТАРЕЛО. Заменено пятью potionT1..potionT5 ниже (миграция
+  /// 20260911120000_potion_tiers_add перелила значение в potionT1). Кодом
+  /// больше НЕ читается и не пишется; колонка ещё жива в БД намеренно —
+  /// удаляется отдельной миграцией _potion_charges_drop СЛЕДУЮЩИМ заходом,
+  /// после того как новый сервер отработает. Уронить её одновременно с
+  /// выкладкой нельзя: Prisma селектит колонки поимённо, и ещё живой старый
+  /// процесс на Render начал бы падать на каждом чтении персонажа, т.е. на
+  /// логине.
   potionCharges       Int      @default(3)
+  // Запас зелий по тирам, по колонке на тир (см. src/potions.ts —
+  // POTION_TIERS, он же источник силы лечения/цены/уровня открытия).
+  // Пять скалярных колонок, а не Json/отдельная таблица: тиров ровно пять и
+  // это фиксировано каталогом, а счётчику нужны атомарные +1/-1 в том же
+  // update, где пишутся золото и трофеи.
+  // potionT1 по умолчанию 3 — сохраняем нынешний онбординг (столько же
+  // давала старая potionCharges), остальные тиры стартуют пустыми.
+  potionT1            Int      @default(3)
+  potionT2            Int      @default(0)
+  potionT3            Int      @default(0)
+  potionT4            Int      @default(0)
+  potionT5            Int      @default(0)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

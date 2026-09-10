@@ -205,6 +205,14 @@ export default function TouchControls({
               width:${POT_R * 2}px; height:${POT_R * 2}px;
               border-radius:50%; border:1px solid #3A3344;
               background:#221E2B; color:#EDE7F2; font-size:11px;
+              /* Статика фона-иконки тира: сам URL ставит updatePotionButton
+                 (меняется по ходу забега — какой тир выпьется следующим).
+                 Здесь только раскладка, чтобы функции оставалось одно
+                 свойство. Число глотков рисуется ТЕКСТОМ поверх фона —
+                 <img> нельзя, textContent затирает детей. */
+              background-repeat:no-repeat; background-position:center;
+              background-size:74%;
+              text-shadow:0 1px 2px rgba(0,0,0,0.9);
               display:flex; align-items:center; justify-content:center;
               touch-action:none; user-select:none; -webkit-user-select:none;
               -webkit-touch-callout:none; pointer-events:all; cursor:pointer;

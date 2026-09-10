@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
 import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { POTION_TIERS } from './potions'
 import Explore from './Explore'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; potionCharges: number }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[] }
 
 const SLOT_LABELS: Record<string, string> = {
   weapon: 'Оружие',
@@ -55,11 +56,6 @@ function SlotIcon({ slot, size = 24, color = '#3A3344' }: { slot: string; size?:
 
 const MAX_ENERGY = 100
 const RUN_COST = 3 // DEV: держать в синхроне с сервером (вернуть 10 перед релизом)
-// Реальная цена ОДНОЙ покупки зелья. Держать в синхроне с POTION_COST в
-// server/src/routes/run.ts — эндпоинт /character/buy-potion цену не сообщает
-// и параметров не принимает. Витринные цены в POTIONS ниже (45/90/160/280) —
-// оформление под будущие тиры, к реальному списанию отношения не имеют.
-const POTION_REAL_COST = 20
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -232,7 +228,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potionCharges: 3 })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0] })
       setEnergyBase(MAX_ENERGY)
       setEnergyBaseAt(Date.now())
       return
@@ -250,7 +246,7 @@ export default function App() {
     const data: LoginResponse = await loginWithTelegram(initDataRaw)
     localStorage.setItem('jwt', data.token)
     setIsTelegramSession(true)
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potionCharges: data.character.potionCharges ?? 3 })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Инвентарь — ЗДЕСЬ ЖЕ, вместе с профилем, а не лениво при первом открытии
@@ -314,7 +310,7 @@ export default function App() {
         endurance: result.endurance,
         agility: result.agility,
         level: result.level,
-        potionCharges: result.potionCharges,
+        potions: result.potions,
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -353,24 +349,32 @@ export default function App() {
     }
   }
 
-  async function handleBuyPotion() {
+  // tier — номер 1..5. Цену и уровень открытия проверяет ещё и сервер по СВОЕЙ
+  // копии каталога: здешние проверки только для UI, доверенного источника из
+  // них не делаем.
+  async function handleBuyPotion(tier: number) {
     const token = localStorage.getItem('jwt')
     if (!token || !player) {
       setShopBuyError('Профиль не загружен — покупка недоступна.')
       return
     }
     if (shopBuyPending) return
-    if (player.gold < POTION_REAL_COST) {
-      setShopBuyError(`Недостаточно золота (нужно ${POTION_REAL_COST}).`)
+    const spec = POTION_TIERS[tier - 1]
+    if (!spec) {
+      setShopBuyError('Неизвестный тир зелья.')
+      return
+    }
+    if (player.gold < spec.price) {
+      setShopBuyError(`Недостаточно золота (нужно ${spec.price}).`)
       return
     }
     setShopBuyPending(true)
     setShopBuyError(null)
     try {
-      const result = await buyPotion(token)
-      // gold/potionCharges — абсолютные значения из БД, поэтому меню
-      // обновляется сразу, без перезахода.
-      setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
+      const result = await buyPotion(token, tier)
+      // gold/potions — абсолютные значения из БД, поэтому меню обновляется
+      // сразу, без перезахода.
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, potions: result.potions } : prev)
     } catch (e) {
       // Молчание здесь уже стоило бы игроку догадок: раньше ошибка уходила
       // ТОЛЬКО в консоль. Console.error оставлен, плюс видимая строка.
@@ -642,15 +646,13 @@ export default function App() {
           })()}
           {activeTab === 'shop' && (() => {
             const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги'] as const
-            const POTIONS: { id: string; name: string; level: number; price: number; power: string; percent: number; desc: string; icon: string }[] = [
-              { id:'muddy',   name:'Мутный отвар',    level:1,  price:20,  power:'немного',      percent:10, desc:'Горькая муть на дне склянки. Затянет царапины, не более.', icon:'potion_1_vial.png' },
-              { id:'herbal',  name:'Травяной настой', level:5,  price:45,  power:'заметно',       percent:15, desc:'Пахнет сухими травами и сырым погребом. Хватит, чтобы отдышаться.', icon:'potion_2_flask.png' },
-              { id:'crimson', name:'Багровое зелье',  level:10, price:90,  power:'средне',        percent:20, desc:'Тягучее и тёплое. Раны затягиваются, пока пьёшь.', icon:'potion_3_bulb.png' },
-              { id:'thick',   name:'Густой эликсир',  level:20, price:160, power:'сильно',        percent:25, desc:'Тяжёлый, как ртуть. Поднимает и переломанного.', icon:'potion_4_jug.png' },
-              { id:'pilgrim', name:'Кровь пилигрима', level:30, price:280, power:'очень сильно',  percent:30, desc:'Говорят, её собирали у тех, кто дошёл. Крепче в этих краях не сыскать.', icon:'potion_5_ampoule.png' },
-            ]
             const playerLevel = player?.level ?? 1
-            const selectedPotion = POTIONS.find(p => p.id === shopSelectedPotion) ?? null
+            // Витрина = каталог (src/potions.ts). Прежний локальный массив
+            // POTIONS удалён: проценты/цены/уровни жили в трёх местах и уже
+            // противоречили друг другу. shopSelectedPotion теперь хранит НОМЕР
+            // ТИРА строкой, id-шников зелий больше нет.
+            const selectedTier = shopSelectedPotion === null ? null : Number(shopSelectedPotion)
+            const selectedPotion = selectedTier === null ? null : (POTION_TIERS[selectedTier - 1] ?? null)
 
             return (
             <div style={{ padding: '0 4px' }}>
@@ -691,29 +693,12 @@ export default function App() {
 
               {/* Витрина */}
               {shopTab === 'Расходники' ? (
-                <>
-                {/* ВРЕМЕННАЯ пометка: тиров зелий в проекте нет — ни в БД, ни в
-                    /character/buy-potion (эндпоинт параметров не принимает и
-                    покупает одно зелье за POTION_REAL_COST). Поэтому все пять
-                    карточек делают одно и то же, а витринные цены/проценты —
-                    оформление. Осознанное упрощение до системы тиров, но игрок
-                    обязан его видеть. Оранжевый #F08A24 — тот же сигнал
-                    "заглушка", что у офлайн-плашки в Explore.tsx. Снять вместе
-                    с появлением тиров. */}
-                <div style={{
-                  margin:'0 8px 8px', padding:'6px 9px', borderRadius:8,
-                  background:'rgba(21,18,24,0.85)', border:'1px solid #F08A24',
-                  color:'#F08A24', fontSize:11, lineHeight:1.35,
-                }}>
-                  ⚠ ВРЕМЕННО: тиров зелий ещё нет. Любая карточка покупает <b>одно обычное
-                  зелье за {POTION_REAL_COST} золота</b> — названия, цены и проценты пока витринные.
-                </div>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
-                  {POTIONS.map(p => {
-                    const unlocked = playerLevel >= p.level
+                  {POTION_TIERS.map(p => {
+                    const unlocked = playerLevel >= p.levelRequired
                     return (
-                      <div key={p.id}
-                        onClick={() => { setShopSelectedPotion(p.id); setShopBuyError(null) }}
+                      <div key={p.tier}
+                        onClick={() => { setShopSelectedPotion(String(p.tier)); setShopBuyError(null) }}
                         style={{
                           boxSizing:'border-box',
                           position:'relative',
@@ -727,7 +712,7 @@ export default function App() {
                         }}>
                         <img
                           src={`${import.meta.env.BASE_URL}assets/icons/${p.icon}`}
-                          alt={p.name}
+                          alt={p.nameRu}
                           style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }}
                         />
                         <div style={{
@@ -737,13 +722,12 @@ export default function App() {
                           fontSize:11, fontFamily:FONT_DISPLAY,
                           color: unlocked ? C.glowCore : C.textDim,
                         }}>
-                          {unlocked ? p.price : `ур. ${p.level}`}
+                          {unlocked ? p.price : `ур. ${p.levelRequired}`}
                         </div>
                       </div>
                     )
                   })}
                 </div>
-                </>
               ) : (
                 <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>скоро</div>
               )}
@@ -773,12 +757,12 @@ export default function App() {
                       }}>
                         <img
                           src={`${import.meta.env.BASE_URL}assets/icons/${selectedPotion.icon}`}
-                          alt={selectedPotion.name}
+                          alt={selectedPotion.nameRu}
                           style={{ width:54, height:54, objectFit:'contain', display:'block' }}
                         />
                       </div>
                       <div>
-                        <div style={{ fontSize:15, color:C.textMain }}>{selectedPotion.name}</div>
+                        <div style={{ fontSize:15, color:C.textMain }}>{selectedPotion.nameRu}</div>
                         {/* ТОТ ЖЕ источник, что у золота в шапке — player,
                             обновляется мержем в handleBuyPotion. Здесь раньше
                             стоял литеральный 0 из визуального каркаса, и он
@@ -786,7 +770,9 @@ export default function App() {
                             потеряли время. Профиль не загружен — так и пишем,
                             нулём не подменяем (см. правило про тихие фолбэки). */}
                         <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
-                          {player === null ? 'у тебя: — (профиль не загружен)' : `у тебя: ${player.potionCharges}`}
+                          {player === null
+                            ? 'у тебя: — (профиль не загружен)'
+                            : `у тебя: ${player.potions[selectedPotion.tier - 1] ?? 0}`}
                         </div>
                       </div>
                     </div>
@@ -797,31 +783,31 @@ export default function App() {
 
                     <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
                       <div style={{ fontSize:12, color:C.textDim }}>Восстанавливает</div>
-                      <div style={{ fontSize:13, color:C.bone }}>{selectedPotion.power} ({selectedPotion.percent}%)</div>
+                      <div style={{ fontSize:13, color:C.bone }}>{Math.round(selectedPotion.healFrac * 100)}% от здоровья</div>
                     </div>
 
-                    {playerLevel >= selectedPotion.level ? (() => {
+                    {playerLevel >= selectedPotion.levelRequired ? (() => {
                       // Явные проверки вместо `player?.gold ?? 0`: нулём
                       // подменять неизвестное золото нельзя — не загруженный
                       // профиль и пустой кошелёк это РАЗНЫЕ состояния, и второе
                       // не должно маскировать первое (см. правило про тихие
                       // фолбэки). Строка нехватки золота выводится СРАЗУ, не
                       // после тапа — тем же приёмом, что notEnoughEnergy ниже.
-                      const canAfford = player !== null && player.gold >= POTION_REAL_COST
+                      const canAfford = player !== null && player.gold >= selectedPotion.price
                       const affordMsg =
-                        player !== null && player.gold < POTION_REAL_COST
-                          ? `Недостаточно золота (нужно ${POTION_REAL_COST}).`
+                        player !== null && player.gold < selectedPotion.price
+                          ? `Недостаточно золота (нужно ${selectedPotion.price}).`
                           : null
                       const msg = shopBuyError ?? affordMsg
                       return (
                       <>
-                      {/* Цена НАСТОЯЩАЯ (POTION_REAL_COST), не витринная
-                          selectedPotion.price: кнопка обязана называть то, что
-                          реально спишется. Расхождение объяснено плашкой над
-                          сеткой. Счётчик количества убран — эндпоинт покупает
-                          ровно одно зелье за вызов, вернуть вместе с тирами. */}
+                      {/* Цена — из каталога, она же применяется сервером: с
+                          появлением тиров витринная и реальная цена наконец
+                          одно и то же число, оранжевая плашка про расхождение
+                          снята. Счётчик количества по-прежнему не нужен —
+                          эндпоинт покупает ровно одно зелье за вызов. */}
                       <div
-                        onClick={handleBuyPotion}
+                        onClick={() => handleBuyPotion(selectedPotion.tier)}
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                           borderRadius:9, padding:11, textAlign:'center',
@@ -830,7 +816,7 @@ export default function App() {
                           opacity: shopBuyPending || !canAfford ? 0.5 : 1,
                           boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
                         }}>
-                        {shopBuyPending ? 'Покупка...' : `Купить за ${POTION_REAL_COST}`}
+                        {shopBuyPending ? 'Покупка...' : `Купить за ${selectedPotion.price}`}
                       </div>
                       {msg && (
                         <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
@@ -846,7 +832,7 @@ export default function App() {
                           borderRadius:9, padding:11, textAlign:'center',
                           color:C.textDim, fontSize:14,
                         }}>
-                        Откроется на {selectedPotion.level} уровне
+                        Откроется на {selectedPotion.levelRequired} уровне
                       </div>
                     )}
                   </div>
@@ -920,17 +906,12 @@ export default function App() {
               { slot:'boots', tier:1, qty:2 },
               { slot:'amulet', tier:1, qty:1 },
             ]
-            const POTION_CATALOG: { id: string; name: string; icon: string; stat: string; desc: string }[] = [
-              { id:'pilgrim', name:'Кровь пилигрима', icon:'potion_5_ampoule.png', stat:'Восстанавливает — очень сильно (30%)', desc:'Говорят, её собирали у тех, кто дошёл. Крепче в этих краях не сыскать.' },
-              { id:'thick',   name:'Густой эликсир',  icon:'potion_4_jug.png',     stat:'Восстанавливает — сильно (25%)',       desc:'Тяжёлый, как ртуть. Поднимает и переломанного.' },
-              { id:'crimson', name:'Багровое зелье',  icon:'potion_3_bulb.png',    stat:'Восстанавливает — средне (20%)',       desc:'Тягучее и тёплое. Раны затягиваются, пока пьёшь.' },
-              { id:'herbal',  name:'Травяной настой', icon:'potion_2_flask.png',   stat:'Восстанавливает — заметно (15%)',      desc:'Пахнет сухими травами и сырым погребом. Хватит, чтобы отдышаться.' },
-              { id:'muddy',   name:'Мутный отвар',    icon:'potion_1_vial.png',    stat:'Восстанавливает — немного (10%)',      desc:'Горькая муть на дне склянки. Затянет царапины, не более.' },
-            ]
-            const TEST_POTIONS: { potionId: string; qty: number }[] = [
-              { potionId:'muddy', qty:4 },
-              { potionId:'crimson', qty:2 },
-            ]
+            // Зелья здесь берутся из ОБЩЕГО каталога (src/potions.ts) и из
+            // РЕАЛЬНОГО склада player.potions — третья копия каталога
+            // (POTION_CATALOG с процентами внутри текста) и фейковый
+            // TEST_POTIONS удалены. Экипировка рядом (TEST_INVENTORY) — всё
+            // ещё заглушка, это отдельная незакрытая задача.
+            const potionStock = player?.potions ?? null
 
             type InvCell = {
               key: string
@@ -950,18 +931,21 @@ export default function App() {
               rank: -it.tier,
               open: { kind:'item', slot: it.slot, tier: it.tier },
             }))
-            const potionCells: InvCell[] = TEST_POTIONS.map(p => {
-              const idx = POTION_CATALOG.findIndex(c => c.id === p.potionId)
-              return {
-                key: `potion-${p.potionId}`,
-                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${POTION_CATALOG[idx].icon}`,
-                alt: POTION_CATALOG[idx].name,
-                qty: p.qty,
+            // Показываем только тиры, которых реально нет-ноль. Профиль не
+            // загружен (potionStock === null) — ячеек зелий нет вовсе, нулём
+            // не подменяем. Порядок — от старшего тира к младшему (rank), как
+            // и было у прежнего списка.
+            const potionCells: InvCell[] = (potionStock === null ? [] : POTION_TIERS)
+              .filter((t) => (potionStock?.[t.tier - 1] ?? 0) > 0)
+              .map((t) => ({
+                key: `potion-${t.tier}`,
+                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
+                alt: t.nameRu,
+                qty: potionStock?.[t.tier - 1] ?? 0,
                 group: SLOT_ORDER.length,
-                rank: idx,
-                open: { kind:'potion', potionId: p.potionId },
-              }
-            })
+                rank: -t.tier,
+                open: { kind:'potion', potionId: String(t.tier) },
+              }))
             const sortedInventory = [...itemCells, ...potionCells].sort((a, b) => a.group - b.group || a.rank - b.rank)
             const TOTAL_CELLS = 30
             const selectedEntry = gearSelectedItem ? (() => {
@@ -975,12 +959,14 @@ export default function App() {
                   iconSrc: `${import.meta.env.BASE_URL}assets/icons/items/${SLOT_CODE[gearSelectedItem.slot]}_t${gearSelectedItem.tier}.png`,
                 }
               }
-              const potion = POTION_CATALOG.find(p => p.id === gearSelectedItem.potionId)!
-              const invRow = TEST_POTIONS.find(p => p.potionId === gearSelectedItem.potionId)
+              const potionTier = Number(gearSelectedItem.potionId)
+              const potion = POTION_TIERS[potionTier - 1]
               return {
                 kind:'potion' as const,
-                name: potion.name, desc: potion.desc, stat: potion.stat,
-                qty: invRow?.qty ?? 0,
+                name: potion.nameRu,
+                desc: potion.desc,
+                stat: `Восстанавливает ${Math.round(potion.healFrac * 100)}% от здоровья`,
+                qty: potionStock?.[potionTier - 1] ?? 0,
                 iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}`,
               }
             })() : null
