@@ -3065,9 +3065,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // Шипы: неуязвимость тикает каждый кадр независимо от касания;
         // урон только когда истекла и хитбокс реально пересекает '^'.
         spikeIframeRef.current = Math.max(0, spikeIframeRef.current - ticker.deltaMS)
+        // Верх ТЕЛА для шипов — замеренная макушка спрайта, не верх бокса
+        // (см. SPIKE_BODY_TOP_GROUND/SPIKE_BODY_TOP_AIR в constants.ts).
+        // Выбор по phys.onGround: в полёте ноги поджаты и фигура рисуется
+        // ниже. НИЗ намеренно остаётся phys.y + PLAYER_HEIGHT — шипы под
+        // ногами ловятся ступнями и их поведение не меняется.
+        const spikeBodyTop =
+          phys.y + (phys.onGround ? C.SPIKE_BODY_TOP_GROUND : C.SPIKE_BODY_TOP_AIR)
+
         if (
           spikeIframeRef.current <= 0 &&
-          isTouchingSpikes(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, phys.y, phys.y + C.PLAYER_HEIGHT)
+          isTouchingSpikes(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, spikeBodyTop, phys.y + C.PLAYER_HEIGHT)
         ) {
           spikeIframeRef.current = C.SPIKE_IFRAME_MS
           applySpikeDamageRef.current()
