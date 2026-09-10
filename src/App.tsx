@@ -55,6 +55,11 @@ function SlotIcon({ slot, size = 24, color = '#3A3344' }: { slot: string; size?:
 
 const MAX_ENERGY = 100
 const RUN_COST = 3 // DEV: держать в синхроне с сервером (вернуть 10 перед релизом)
+// Реальная цена ОДНОЙ покупки зелья. Держать в синхроне с POTION_COST в
+// server/src/routes/run.ts — эндпоинт /character/buy-potion цену не сообщает
+// и параметров не принимает. Витринные цены в POTIONS ниже (45/90/160/280) —
+// оформление под будущие тиры, к реальному списанию отношения не имеют.
+const POTION_REAL_COST = 20
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -155,7 +160,12 @@ export default function App() {
   const [slotFilter, setSlotFilter] = useState<string | null>(null)
   const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги'>('Расходники')
   const [shopSelectedPotion, setShopSelectedPotion] = useState<string | null>(null)
-  const [shopQty, setShopQty] = useState(1)
+  // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
+  // приёмом, что "Недостаточно энергии" под кнопкой забега ниже).
+  const [shopBuyError, setShopBuyError] = useState<string | null>(null)
+  // Запрос покупки в полёте — гасит кнопку от двойного тапа: эндпоинт не
+  // идемпотентный, второй тап купил бы второе зелье.
+  const [shopBuyPending, setShopBuyPending] = useState(false)
   const [gearSelectedItem, setGearSelectedItem] = useState<
     { kind: 'item'; slot: string; tier: number } | { kind: 'potion'; potionId: string } | null
   >(null)
@@ -304,6 +314,7 @@ export default function App() {
         endurance: result.endurance,
         agility: result.agility,
         level: result.level,
+        potionCharges: result.potionCharges,
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -344,23 +355,31 @@ export default function App() {
 
   async function handleBuyPotion() {
     const token = localStorage.getItem('jwt')
-    if (!token || !player) return
-    if (player.gold < 20) return
+    if (!token || !player) {
+      setShopBuyError('Профиль не загружен — покупка недоступна.')
+      return
+    }
+    if (shopBuyPending) return
+    if (player.gold < POTION_REAL_COST) {
+      setShopBuyError(`Недостаточно золота (нужно ${POTION_REAL_COST}).`)
+      return
+    }
+    setShopBuyPending(true)
+    setShopBuyError(null)
     try {
       const result = await buyPotion(token)
-      if (player) {
-        setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
-      } else {
-        requestPlayerRefresh()
-      }
+      // gold/potionCharges — абсолютные значения из БД, поэтому меню
+      // обновляется сразу, без перезахода.
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, potionCharges: result.potionCharges } : prev)
     } catch (e) {
+      // Молчание здесь уже стоило бы игроку догадок: раньше ошибка уходила
+      // ТОЛЬКО в консоль. Console.error оставлен, плюс видимая строка.
       console.error('Buy potion failed', e)
+      setShopBuyError('Не удалось купить — сервер отказал. Попробуй ещё раз.')
+    } finally {
+      setShopBuyPending(false)
     }
   }
-  // Новая витрина "Магазин" пока не вызывает handleBuyPotion (визуальный каркас,
-  // серверная логика подключается отдельно) — ссылка ниже только чтобы TS
-  // (noUnusedLocals) не считал функцию мёртвым кодом.
-  void handleBuyPotion
 
   async function loadInventory() {
     const token = localStorage.getItem('jwt')
@@ -672,12 +691,29 @@ export default function App() {
 
               {/* Витрина */}
               {shopTab === 'Расходники' ? (
+                <>
+                {/* ВРЕМЕННАЯ пометка: тиров зелий в проекте нет — ни в БД, ни в
+                    /character/buy-potion (эндпоинт параметров не принимает и
+                    покупает одно зелье за POTION_REAL_COST). Поэтому все пять
+                    карточек делают одно и то же, а витринные цены/проценты —
+                    оформление. Осознанное упрощение до системы тиров, но игрок
+                    обязан его видеть. Оранжевый #F08A24 — тот же сигнал
+                    "заглушка", что у офлайн-плашки в Explore.tsx. Снять вместе
+                    с появлением тиров. */}
+                <div style={{
+                  margin:'0 8px 8px', padding:'6px 9px', borderRadius:8,
+                  background:'rgba(21,18,24,0.85)', border:'1px solid #F08A24',
+                  color:'#F08A24', fontSize:11, lineHeight:1.35,
+                }}>
+                  ⚠ ВРЕМЕННО: тиров зелий ещё нет. Любая карточка покупает <b>одно обычное
+                  зелье за {POTION_REAL_COST} золота</b> — названия, цены и проценты пока витринные.
+                </div>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
                   {POTIONS.map(p => {
                     const unlocked = playerLevel >= p.level
                     return (
                       <div key={p.id}
-                        onClick={() => { setShopSelectedPotion(p.id); setShopQty(1) }}
+                        onClick={() => { setShopSelectedPotion(p.id); setShopBuyError(null) }}
                         style={{
                           boxSizing:'border-box',
                           position:'relative',
@@ -707,6 +743,7 @@ export default function App() {
                     )
                   })}
                 </div>
+                </>
               ) : (
                 <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>скоро</div>
               )}
@@ -755,43 +792,46 @@ export default function App() {
                       <div style={{ fontSize:13, color:C.bone }}>{selectedPotion.power} ({selectedPotion.percent}%)</div>
                     </div>
 
-                    {playerLevel >= selectedPotion.level && (
-                      <div style={{ display:'flex', gap:8, marginBottom:12 }}>
-                        <div onClick={() => setShopQty(q => Math.max(1, q - 1))}
-                          style={{
-                            width:38, height:38, flexShrink:0, borderRadius:8,
-                            background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                            display:'flex', alignItems:'center', justifyContent:'center',
-                            fontSize:16, color:C.textMain, cursor:'pointer',
-                          }}>−</div>
-                        <div style={{
-                          flex:1, borderRadius:8,
-                          background:C.nicheDeep, boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
-                          display:'flex', alignItems:'center', justifyContent:'center',
-                          fontFamily:FONT_DISPLAY, fontSize:14, color:C.textMain,
-                        }}>{shopQty}</div>
-                        <div onClick={() => setShopQty(q => Math.min(99, q + 1))}
-                          style={{
-                            width:38, height:38, flexShrink:0, borderRadius:8,
-                            background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                            display:'flex', alignItems:'center', justifyContent:'center',
-                            fontSize:16, color:C.textMain, cursor:'pointer',
-                          }}>+</div>
-                      </div>
-                    )}
-
-                    {playerLevel >= selectedPotion.level ? (
+                    {playerLevel >= selectedPotion.level ? (() => {
+                      // Явные проверки вместо `player?.gold ?? 0`: нулём
+                      // подменять неизвестное золото нельзя — не загруженный
+                      // профиль и пустой кошелёк это РАЗНЫЕ состояния, и второе
+                      // не должно маскировать первое (см. правило про тихие
+                      // фолбэки). Строка нехватки золота выводится СРАЗУ, не
+                      // после тапа — тем же приёмом, что notEnoughEnergy ниже.
+                      const canAfford = player !== null && player.gold >= POTION_REAL_COST
+                      const affordMsg =
+                        player !== null && player.gold < POTION_REAL_COST
+                          ? `Недостаточно золота (нужно ${POTION_REAL_COST}).`
+                          : null
+                      const msg = shopBuyError ?? affordMsg
+                      return (
+                      <>
+                      {/* Цена НАСТОЯЩАЯ (POTION_REAL_COST), не витринная
+                          selectedPotion.price: кнопка обязана называть то, что
+                          реально спишется. Расхождение объяснено плашкой над
+                          сеткой. Счётчик количества убран — эндпоинт покупает
+                          ровно одно зелье за вызов, вернуть вместе с тирами. */}
                       <div
-                        onClick={() => {}}
+                        onClick={handleBuyPotion}
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                           borderRadius:9, padding:11, textAlign:'center',
-                          color:C.glowCore, fontSize:14, cursor:'pointer',
+                          color:C.glowCore, fontSize:14,
+                          cursor: shopBuyPending ? 'default' : 'pointer',
+                          opacity: shopBuyPending || !canAfford ? 0.5 : 1,
                           boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
                         }}>
-                        Купить за {selectedPotion.price * shopQty}
+                        {shopBuyPending ? 'Покупка...' : `Купить за ${POTION_REAL_COST}`}
                       </div>
-                    ) : (
+                      {msg && (
+                        <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                          {msg}
+                        </div>
+                      )}
+                      </>
+                      )
+                    })() : (
                       <div
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
