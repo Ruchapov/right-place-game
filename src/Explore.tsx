@@ -632,6 +632,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Реально восстановленное зельем HP (клэмп к maxHp — см. место применения
   // хила ниже), НЕ полный потенциал зелья.
   const healedAmountRef = useRef(0)
+  // Сколько зелий РЕАЛЬНО выпито за забег — считается по факту списания
+  // заряда (кадр глотка), а не по нажатиям кнопки: питьё, оборванное
+  // hurt/death до POTION_GULP_FRAME, заряд не тратит и сюда не попадает.
+  // Уходит в /run/finish-explore, сервер вычитает из Character.potionCharges
+  // (клэмп по выданному на забег — currentRun.potions, клиенту не верим).
+  const potionsDrunkRef = useRef(0)
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
@@ -704,6 +710,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       endurance: endurance ?? 0,
       agility: 0,
       level: characterLevel,
+      // Остаток зарядов — единственное из абсолютных полей, которое клиент
+      // знает точно (ref живого забега). Всё равно заглушка в том же смысле,
+      // что и соседи: player обновляется только настоящим ответом сервера.
+      potionCharges: potionChargesRef.current,
       // bonusLevels клиенту вообще не известен (нет такого пропа у Explore) —
       // заглушка 0, тем же приёмом, что и остальные поля выше.
       bonusLevels: 0,
@@ -760,6 +770,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealtRef.current,
       healedAmountRef.current,
       damageTakenRef.current,
+      potionsDrunkRef.current,
     )
       .then((result) => {
         setRunResult(result)
@@ -890,8 +901,15 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // dodge игнорируются), ветка приоритета между hurt и attack.
   const drinkPressedRef = useRef(false)
   const drinkingRef = useRef(false)
-  // Игровая логика зелья (Explore офлайн — локальные заряды, НЕ currentRun).
-  const potionChargesRef = useRef(3) // локальные заряды, старт 3
+  // Игровая логика зелья (заряды/кулдаун в забеге — локальные, currentRun на
+  // сервере ими не двигается: списание в БД — отдельный будущий шаг).
+  // 0 — НЕ игровое значение и на экран не попадает: реальный запас ставится в
+  // setup() из ответа /run/start-explore (в офлайне — OFFLINE_POTIONS_FALLBACK)
+  // ДО того, как кнопка 🧪 вообще появится в дереве (она под гейтом ready, а
+  // setReady(true) стоит в самом конце setup()). Ноль здесь именно чтобы
+  // случайная утечка стартового значения в UI была ЗАМЕТНА ("×0", кнопка
+  // погашена), а не выглядела правдоподобной тройкой.
+  const potionChargesRef = useRef(0)
   const potionCdRef = useRef(0) // остаток кулдауна, секунды — тикает как attackCooldownRef
   const potionHealedThisDrinkRef = useRef(false) // хил текущего питья уже применён?
   // DOM-узел кнопки 🧪 (создаётся императивно в fan-блоке ниже, не JSX) — нужен
@@ -1339,6 +1357,31 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       if (startExploreResult) {
         console.log('Explore: /run/start-explore ответ сервера', startExploreResult)
       }
+
+      // Запас зелий на забег — ТОЛЬКО из ответа сервера (раньше здесь была
+      // захардкоженная тройка в useRef, и сколько бы игрок ни купил, в забег
+      // попадало 3). Поля нет или оно не число — падаем громко, а не играем с
+      // выдуманным запасом: расхождение с БД молча подставлять нельзя.
+      // Ставится ДО setReady(true) в конце setup(), поэтому кнопка 🧪 при
+      // первом монтировании сразу покажет верное число. updatePotionButton()
+      // ниже нужен для ПОВТОРНОГО запуска setup() (debug-переключатель карт):
+      // ready там остаётся true, кнопка уже смонтирована и её ref-колбэк
+      // заново не сработает. На первом забеге вызов безвреден — кнопки ещё
+      // нет, функция выходит по `if (!btn) return`.
+      if (startExploreResult) {
+        if (typeof startExploreResult.potions !== 'number' || !Number.isFinite(startExploreResult.potions)) {
+          throw new Error(
+            'Сервер не прислал запас зелий (поле potions в ответе /run/start-explore). ' +
+            'Забег не начат — играть с выдуманным числом зарядов нельзя.',
+          )
+        }
+        potionChargesRef.current = startExploreResult.potions
+      } else {
+        // Офлайн-отладка без token — та же ветка, что включает оранжевую
+        // плашку ниже (setLocalEventFallback), и плашка называет это число.
+        potionChargesRef.current = C.OFFLINE_POTIONS_FALLBACK
+      }
+      updatePotionButton()
 
       // Шипы из слотов карты — не весь пул, а HAZARD_SPIKES_PER_RUN случайных
       // точек за забег (меньше пула — берём сколько есть). Вставляем прямо в
@@ -1822,6 +1865,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
+      potionsDrunkRef.current = 0 // сброс на случай повторного запуска setup()
       setRunResult(null) // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
@@ -3436,6 +3480,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             // долитого в healedAmountRef живут там, здесь не дублируются.
             healPlayer(maxHp * C.POTION_HEAL_FRAC)
             potionChargesRef.current -= 1
+            potionsDrunkRef.current += 1
             potionCdRef.current = C.POTION_COOLDOWN
             updatePotionButton()
           }
@@ -3742,7 +3787,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               whiteSpace: 'nowrap',
             }}
           >
-            ⚠ ЗАГЛУШКА — события офлайн, не с сервера
+            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTIONS_FALLBACK} (заглушка)
           </div>
         </div>
       )}

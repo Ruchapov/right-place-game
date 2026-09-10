@@ -915,6 +915,13 @@ export const ARMOR_MAX_REDUCTION = 0.5
 export const POTION_HEAL_FRAC = 0.25 // лечит 25% maxHp
 export const POTION_COOLDOWN = 2.0 // секунды, тикает как ATTACK_COOLDOWN
 export const POTION_GULP_FRAME = 6 // кадр глотка (0-based) в drink.png
+// Запас зелий на забег в ОФЛАЙН-отладке (нет token, DevTester вне Telegram —
+// /run/start-explore не звался, брать число неоткуда). В настоящем забеге НЕ
+// используется никогда: там запас приходит с сервера (StartExploreResult.potions),
+// а если поле не пришло — setup() падает с явной ошибкой, а не подставляет это
+// число. Забег на этой заглушке помечен видимой оранжевой плашкой (см.
+// localEventFallback в Explore.tsx) — тихо подменять запас нельзя.
+export const OFFLINE_POTIONS_FALLBACK = 3
 
 // Скилл heal (см. explore/entities/skills.ts). Кулдаун 5с, зарядов НЕТ —
 // ограничивает только он.

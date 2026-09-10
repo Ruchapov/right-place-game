@@ -89,6 +89,10 @@ type FinishExploreBody = {
   skillDamageDealt?: number
   healedAmount?: number
   damageTaken?: number
+  // How many potions the client actually drank this run (Explore.tsx counts
+  // them at the gulp frame, not on button press). Never trusted as-is: the
+  // deduction is capped at what THIS run was issued (currentRun.potions).
+  potionsDrunk?: number
 }
 // Shared "run result" shape — one results screen for both ways an Explore
 // run can end: the client explicitly finishing it (POST /run/finish-explore)
@@ -128,6 +132,10 @@ export type RunResultSummary = {
   endurance: number
   agility: number
   level: number
+  // Potion charges left AFTER this run's drinks were deducted — absolute, like
+  // trophies/strength above. The client merges it into `player` so the
+  // character screen doesn't keep showing the pre-run count.
+  potionCharges: number
   // Уровни, полученные НЕ от статов (сейчас только убийство босса в Explore,
   // +1, см. bossClosed в /run/finish-explore) — level выше УЖЕ включает этот
   // бонус (calculateLevel складывает их), это поле для клиента/аналитики
@@ -339,6 +347,23 @@ export async function runRoutes(server: FastifyInstance) {
     // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
     const newBonusLevels = character.bonusLevels + (bossClosed ? 1 : 0)
 
+    // Списание выпитых зелий. Garbage in the field (missing, non-integer,
+    // negative, NaN) is DROPPED to 0 the same way bad closedEvents indices are
+    // filtered out above — never a 400, and never a silent guess either: 0
+    // simply means "nothing to deduct", which is also what an older client
+    // that doesn't send the field yet gets.
+    const rawPotionsDrunk = request.body.potionsDrunk
+    const reportedPotionsDrunk =
+      Number.isInteger(rawPotionsDrunk) && (rawPotionsDrunk as number) >= 0 ? (rawPotionsDrunk as number) : 0
+    // Cap at what THIS run was actually issued — run.potions comes from
+    // currentRun (written by /run/start-explore), not from the request body,
+    // so a client claiming 99 drinks can only ever spend the run's own stock.
+    // Same trust model as the damageTaken anti-cheat cap above.
+    const potionsSpent = Math.min(reportedPotionsDrunk, run.potions)
+    // Never negative even if the stock moved underneath us between start and
+    // finish (e.g. a purchase mid-run).
+    const newPotionCharges = Math.max(0, character.potionCharges - potionsSpent)
+
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, clampedAttackDamageDealt,
       character.endurance, character.enduranceProgress, clampedDamageTaken,
@@ -360,6 +385,11 @@ export async function runRoutes(server: FastifyInstance) {
         agilityProgress: growth.agilityProgress,
         bonusLevels: newBonusLevels,
         level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
+        // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
+        // не должна становиться способом сэкономить склад (та же логика, что у
+        // роста статов выше). Обнуление трофеев рядом на это поле не влияет —
+        // разные колонки, один атомарный update.
+        potionCharges: newPotionCharges,
         currentRun: Prisma.DbNull,
       },
     })
@@ -382,6 +412,7 @@ export async function runRoutes(server: FastifyInstance) {
       endurance: growth.endurance,
       agility: growth.agility,
       level: growth.level,
+      potionCharges: newPotionCharges,
       bonusLevels: newBonusLevels,
     }
     return reply.send(result)

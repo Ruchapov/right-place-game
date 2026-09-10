@@ -114,6 +114,10 @@ export type RunResultSummary = {
   endurance: number
   agility: number
   level: number
+  // Остаток зарядов зелий ПОСЛЕ списания выпитого за забег — абсолютное
+  // значение из БД, как trophies/strength выше (App.tsx мержит его в player,
+  // иначе на "Персонаже" висело бы число до списания).
+  potionCharges: number
   // Уровни НЕ от статов (сейчас только убийство босса, +1) — level выше УЖЕ
   // включает этот бонус (calculateLevel на сервере складывает их), это поле
   // отдельно на будущее/аналитику, само по себе не источник истины.
@@ -175,8 +179,12 @@ export async function finishRunExplore(
   skillDamageDealt?: number,
   healedAmount?: number,
   damageTaken?: number,
+  // Сколько зелий реально выпито за забег (Explore.tsx: potionsDrunkRef —
+  // считается по факту списания заряда на кадре глотка). Сервер вычитает из
+  // Character.potionCharges, обрезая по выданному на забег (currentRun.potions).
+  potionsDrunk?: number,
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken })
+  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunk })
   let attempt = 0
   while (true) {
     const result = await attemptFinishExplore(token, body)

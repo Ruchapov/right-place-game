@@ -115,6 +115,11 @@ export async function authRoutes(server: FastifyInstance) {
         endurance: char.endurance,
         agility: char.agility,
         level: calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels),
+        // Зелья брошенного забега НЕ списываются: клиент закрылся, не сообщив,
+        // сколько выпил, а выдумывать число нельзя. Отдаём текущий остаток как
+        // есть, тем же приёмом, что статы выше. Известная открытая дыра —
+        // закрыть приложение выгоднее, чем умереть, именно по зельям.
+        potionCharges: char.potionCharges,
         bonusLevels: char.bonusLevels, // не менялся — брошенный забег бонус не даёт
       }
     }
