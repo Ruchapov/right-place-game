@@ -779,7 +779,15 @@ export default function App() {
                       </div>
                       <div>
                         <div style={{ fontSize:15, color:C.textMain }}>{selectedPotion.name}</div>
-                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>у тебя: 0</div>
+                        {/* ТОТ ЖЕ источник, что у золота в шапке — player,
+                            обновляется мержем в handleBuyPotion. Здесь раньше
+                            стоял литеральный 0 из визуального каркаса, и он
+                            неотличим от честного "зелий нет" — на этом уже
+                            потеряли время. Профиль не загружен — так и пишем,
+                            нулём не подменяем (см. правило про тихие фолбэки). */}
+                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
+                          {player === null ? 'у тебя: — (профиль не загружен)' : `у тебя: ${player.potionCharges}`}
+                        </div>
                       </div>
                     </div>
 
