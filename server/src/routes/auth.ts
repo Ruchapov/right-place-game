@@ -138,9 +138,9 @@ export async function authRoutes(server: FastifyInstance) {
         username: user.username,
       },
       // potions — склад по тирам одним массивом (индекс = тир-1) вместо прежнего
-      // скалярного potionCharges. `...char` ниже всё ещё несёт саму колонку
-      // potionCharges: она жива в БД до миграции _potion_charges_drop, но
-      // клиентом уже не читается.
+      // скалярного potionCharges. Сама колонка удалена из БД миграцией
+      // 20260911130000_potion_charges_drop, так что `...char` её больше не
+      // несёт — данные живут в potionT1..potionT5.
       character: {
         ...char,
         level,
