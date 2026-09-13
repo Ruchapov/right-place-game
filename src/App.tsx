@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, EquipError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS } from './potions'
 import Explore from './Explore'
 import './App.css'
@@ -335,6 +335,9 @@ export default function App() {
   //   'error'   — запрос не удался, inventory НЕ показателен.
   const [inventoryStatus, setInventoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [equipping, setEquipping] = useState(false)
+  // Видимая строка отказа в карточке предмета (тем же приёмом, что
+  // shopBuyError в магазине). Сбрасывается новой попыткой и закрытием карточки.
+  const [gearEquipError, setGearEquipError] = useState<string | null>(null)
   const [showExploreTest, setShowExploreTest] = useState(false)
   // undefined — обычный запуск ("Начать забег"): Explore получает mapFile
   // не заданным и просит карту у сервера сам. Debug-панель карт A-F (и
@@ -572,8 +575,16 @@ export default function App() {
 
   async function handleEquipItem(inventoryItemId: string, equip: boolean) {
     const token = localStorage.getItem('jwt')
-    if (!token) return
+    // Без токена — не молчим: тап по кнопке обязан что-то сказать.
+    if (!token) {
+      setGearEquipError('Снаряжение недоступно — ты вне мира.')
+      return
+    }
+    // Второй тап, пока летит первый запрос, — игнорируем (кнопка и так
+    // погашена, см. разметку карточки).
+    if (equipping) return
     setEquipping(true)
+    setGearEquipError(null)
     try {
       await equipItem(token, inventoryItemId, equip)
       await loadInventory()
@@ -581,7 +592,17 @@ export default function App() {
       // удалено — им никто не пользовался, см. gearSelectedItem).
       setGearSelectedItem(null)
     } catch (e) {
+      // console.error остаётся для консоли, но одного его мало — отказ
+      // обязан быть виден в карточке.
       console.error('Equip item failed', e)
+      // 400 — отказ по существу, у сервера он по-русски ("Недостаточный
+      // уровень"), показываем как есть. Остальное — 401/404 с английским
+      // служебным текстом, 5xx, обрыв сети — игроку общей строкой.
+      setGearEquipError(
+        e instanceof EquipError && e.status === 400 && e.serverError !== null
+          ? e.serverError
+          : `Не удалось ${equip ? 'надеть' : 'снять'} — сервер не ответил или отказал. Попробуй ещё раз.`,
+      )
     } finally {
       setEquipping(false)
     }
@@ -593,9 +614,7 @@ export default function App() {
   // мёртвым.
   void SlotIcon
   void savingSkills
-  void equipping
   void handleSkillToggle
-  void handleEquipItem
 
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
   if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
@@ -1170,8 +1189,11 @@ export default function App() {
                   qty: inventory.filter((i) => i.item.id === inv.item.id).length,
                   iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
                   equipped: inv.equipped,
-                  levelRequired: inv.item.levelRequired as number | null,
-                  inventoryItemId: inv.inventoryItemId as string | null,
+                  // Без расширяющих приведений к "| null": в ветке kind === 'item'
+                  // оба поля обязаны сузиться до числа и строки — карточка
+                  // передаёт их в handleEquipItem и в порог уровня.
+                  levelRequired: inv.item.levelRequired,
+                  inventoryItemId: inv.inventoryItemId,
                 }
               }
               const potionTier = Number(gearSelectedItem.potionId)
@@ -1411,7 +1433,7 @@ export default function App() {
               {/* Карточка предмета */}
               {selectedEntry && (
                 <div
-                  onClick={() => setGearSelectedItem(null)}
+                  onClick={() => { setGearSelectedItem(null); setGearEquipError(null) }}
                   style={{
                     position:'fixed', top:0, left:0, right:0, bottom:0,
                     background:'rgba(0,0,0,0.55)',
@@ -1460,28 +1482,67 @@ export default function App() {
                     </div>
 
                     <div style={{ display:'flex', gap:8 }}>
-                      {selectedEntry.kind === 'item' && (
-                        <div
-                          onClick={() => {}}
-                          style={{
-                            flex:1, background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
-                            borderRadius:9, padding:11, textAlign:'center',
-                            color:C.glowCore, fontSize:14, cursor:'pointer',
-                            boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
-                          }}>
-                          Надеть
-                        </div>
-                      )}
-                      <div
-                        onClick={() => {}}
-                        style={{
-                          flex:1, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                          borderRadius:9, padding:11, textAlign:'center',
-                          color:C.textDim, fontSize:14, cursor:'pointer',
-                        }}>
-                        Продать
+                      {selectedEntry.kind === 'item' && (() => {
+                        const { inventoryItemId, equipped, levelRequired } = selectedEntry
+                        // Снять можно ВСЕГДА: сервер при снятии уровень не
+                        // проверяет, и запирать надетое на теле нельзя. Порог —
+                        // только для "Надеть", и это подсказка, а не защита:
+                        // решает сервер по своим статам, устаревший player.level
+                        // кончится красной строкой ниже. Профиль не загружен
+                        // (player === null) — уровень неизвестен, порог не
+                        // выдумываем и кнопку не прячем: пусть ответит сервер.
+                        if (!equipped && player !== null && player.level < levelRequired) {
+                          return (
+                            <div style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.textDim, fontSize:13,
+                            }}>
+                              Откроется на {levelRequired} уровне
+                            </div>
+                          )
+                        }
+                        return (
+                          <div
+                            onClick={() => { void handleEquipItem(inventoryItemId, !equipped) }}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.glowCore, fontSize:14,
+                              cursor: equipping ? 'default' : 'pointer',
+                              opacity: equipping ? 0.5 : 1,
+                              boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+                            }}>
+                            {equipping
+                              ? (equipped ? 'Снимаю...' : 'Надеваю...')
+                              : (equipped ? 'Снять' : 'Надеть')}
+                          </div>
+                        )
+                      })()}
+                      {/* Продажа не реализована: ни эндпоинта, ни цены продажи у
+                          предметов и зелий нет. Явная заглушка — без onClick и
+                          без cursor:pointer, пунктирная рамка и "скоро", чтобы
+                          тап ничего не обещал. */}
+                      <div style={{
+                        flex:1, boxSizing:'border-box', minHeight:44,
+                        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                        border:`1px dashed ${C.stoneDark}`, borderRadius:9, padding:'6px 11px',
+                        textAlign:'center', color:C.textDim, opacity:0.7,
+                      }}>
+                        <div style={{ fontSize:14 }}>Продать</div>
+                        <div style={{ fontSize:10 }}>скоро</div>
                       </div>
                     </div>
+                    {/* Отказ — видимой строкой под кнопками, не только в консоль. */}
+                    {selectedEntry.kind === 'item' && gearEquipError !== null && (
+                      <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                        {gearEquipError}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

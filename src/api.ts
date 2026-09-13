@@ -275,6 +275,20 @@ export async function fetchInventory(token: string): Promise<InventoryResponse> 
 
 export type EquipResponse = { success: boolean; equippedItemId: string | null; unequippedItemId: string | null }
 
+// Отказ /character/equip с разобранным ответом. Вызывающему мало факта ошибки:
+// текст отказа по существу (400 "Недостаточный уровень") надо показать игроку
+// на экране. message — тот же, что был у простого Error, консоль не меняется.
+export class EquipError extends Error {
+  status: number
+  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
+  serverError: string | null
+  constructor(status: number, serverError: string | null, body: unknown) {
+    super(`Equip item failed: ${status} ${JSON.stringify(body)}`)
+    this.status = status
+    this.serverError = serverError
+  }
+}
+
 export async function equipItem(token: string, inventoryItemId: string, equip: boolean): Promise<EquipResponse> {
   const response = await fetch(`${SERVER_URL}/character/equip`, {
     method: 'POST',
@@ -285,8 +299,12 @@ export async function equipItem(token: string, inventoryItemId: string, equip: b
     body: JSON.stringify({ inventoryItemId, equip }),
   })
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Equip item failed: ${response.status} ${JSON.stringify(err)}`)
+    const err: unknown = await response.json().catch(() => ({}))
+    const serverError =
+      typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
+        ? (err as { error: string }).error
+        : null
+    throw new EquipError(response.status, serverError, err)
   }
   return await response.json() as EquipResponse
 }
