@@ -8,15 +8,11 @@ import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[] }
 
-const SLOT_LABELS: Record<string, string> = {
-  weapon: 'Оружие',
-  armor: 'Броня',
-  helmet: 'Шлем',
-  boots: 'Сапоги',
-  gloves: 'Перчатки',
-  amulet: 'Амулет',
-}
-
+// Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
+// SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
+// он остался без читателей, когда ряд фильтров в "Инвентаре" стал брать
+// подписи отсюда. Порядок здесь — порядок показа и в гнёздах "Персонажа", и в
+// кнопках фильтра, и в сортировке инвентаря (см. SLOT_ORDER ниже).
 const HERO_SLOTS: { slot: string; label: string }[] = [
   { slot: 'weapon', label: 'Оружие' },
   { slot: 'helmet', label: 'Шлем' },
@@ -25,6 +21,147 @@ const HERO_SLOTS: { slot: string; label: string }[] = [
   { slot: 'boots', label: 'Сапоги' },
   { slot: 'amulet', label: 'Амулет' },
 ]
+
+// Порядок слотов для сортировки инвентаря — выводится из HERO_SLOTS, а не
+// перечисляется заново: это был четвёртый по счёту список тех же шести слотов
+// в файле.
+const SLOT_ORDER: string[] = HERO_SLOTS.map((s) => s.slot)
+
+// Вместимость сумки — ПРОЕКТНОЕ число из docs/items.md ("Правило
+// вместимости"): 30 ячеек стартово, расширение за золото в будущем. Сервер его
+// НЕ знает и не проверяет — ни в схеме, ни в одном эндпоинте вместимости нет.
+// Поэтому переполнение (например, после debug-give-all-items: 36 предметов)
+// показывается как есть, красным, а не обрезается до 30. Появится вместимость
+// на сервере — брать оттуда, эту константу удалить.
+const BAG_CAPACITY = 30
+
+// Код слота в именах файлов иконок предметов — assets/icons/items/, 36 файлов
+// wpn_t1…amu_t6.
+const SLOT_CODE: Record<string, string> = {
+  weapon: 'wpn', helmet: 'hlm', armor: 'arm', gloves: 'glv', boots: 'bts', amulet: 'amu',
+}
+
+// Иконка предмета ВЫВОДИТСЯ из слота и тира, а НЕ берётся из item.iconPath,
+// который сервер честно присылает в ответе инвентаря. Это сделано НАМЕРЕННО,
+// не забыто — НЕ "починить" обратно на iconPath:
+//
+//   item.iconPath указывает в assets/equipment/processed/<папка слота>/, где
+//   лежит арт СТАРОГО каталога (10 тиров оружие/броня, 5 тиров у остальных
+//   слотов). Под нынешние 6 тиров он НЕПОЛОН — четырёх файлов физически нет
+//   на диске: amulets/amulet_06.png, boots/boots_06.png, gloves/gloves_06.png,
+//   helmets/helmet_06.png. Предмет 6 тира этих слотов дал бы битую картинку.
+//   Набор assets/icons/items/ полный (все 36) и нарисован как раз под
+//   инвентарь.
+//
+// Развязка — перегенерировать арт под iconPath ЛИБО переписать iconPath в
+// сиде на существующий набор — отдельная задача, она требует правки сида и
+// миграции, то есть серверной стороны. Пока она не сделана, iconPath читать
+// нельзя. Экран "Персонаж" его всё ещё читает и ровно этим уязвим.
+//
+// null — неизвестный слот (в схеме Item.slot это свободная строка, не enum):
+// вызывающий рисует название текстом вместо картинки, а не тянет
+// ".../undefined_t3.png".
+function itemIconSrc(slot: string, tier: number): string | null {
+  const code = SLOT_CODE[slot]
+  if (!code) return null
+  return `${import.meta.env.BASE_URL}assets/icons/items/${code}_t${tier}.png`
+}
+
+// Флейвор-тексты предметов — ЕДИНСТВЕННОЕ, что осталось от клиентской копии
+// каталога (прежний ITEM_CATALOG держал ещё имена и строки статов). Имя
+// теперь приходит с сервера (item.nameRu), числа статов — тоже с сервера (см.
+// itemStatLine ниже), а флейвор держать здесь приходится: колонка
+// Item.description в БД есть, но GET /character/inventory её НЕ отдаёт.
+// Индекс в массиве = тир-1.
+//
+// ⚠️ Тексты обязаны совпадать с Item.description в сиде
+// (server/prisma/seed-items.ts и миграция 20260903120000_reseed_item_catalog)
+// — это копия, и она может разойтись ровно так, как разошлись числа статов
+// (см. itemStatLine). Когда эндпоинт начнёт отдавать description — удалить
+// этот объект целиком, а не пополнять его.
+const ITEM_FLAVOR: Record<string, string[]> = {
+  weapon: [
+    'Им резали хлеб чаще, чем врагов. Держат такой от безысходности.',
+    'Клеймо стёрлось, но балансировка честная. Такими вооружали тех, кого не жалко.',
+    'Узкий, чтобы проходить между рёбер. Дознаватели редко спрашивали дважды.',
+    'Тяжёлый и прямой, без хитростей. Гвардия не отступала, и оружие делали под это.',
+    'На рукояти вырезано имя, но прочесть его уже нельзя. Владелец, похоже, не возражает.',
+    'Оказался там, где нужно, и тогда, когда нужно. Больше о нём сказать нечего.',
+  ],
+  helmet: [
+    'Ведро с прорезью для глаз. Внутри до сих пор пахнет прежним хозяином.',
+    'Вмятина на лбу говорит, что он однажды уже сделал свою работу.',
+    'Прорезь узкая — чтобы видеть допрашиваемого, но не встречаться с ним взглядом.',
+    'Плотно садится, глушит звук. В нём слышно только собственное дыхание.',
+    'Подогнан под чужую голову, но садится как влитой. Лучше об этом не думать.',
+    'Не корона и не шлем. Что-то, что носят, когда больше некому.',
+  ],
+  armor: [
+    'Больше от холода, чем от клинка. Но всё-таки лучше, чем ничего.',
+    'Половина колец перебрана вручную, и не тобой. Кто-то за ней следил.',
+    'Чёрненая сталь, чтобы не бликовать в тёмных комнатах. Практично.',
+    'Цельная, без стыков на груди. Такую не пробьёшь ударом в упор.',
+    'Ни герба, ни клейма — всё сточено начисто. Он не хотел, чтобы его узнали.',
+    'Выдержал то, что не должно было выдержаться. Дальше зависит от тебя.',
+  ],
+  gloves: [
+    'Полосы ткани, намотанные в несколько слоёв. Хотя бы не собьёшь костяшки.',
+    'Грубая кожа, задубевшая от пота. Зато рукоять не проскальзывает.',
+    'Пластины на пальцах сидят плотно, движения не стесняют. Работа тонкая.',
+    'Закрывают кисть целиком, до середины предплечья. Тяжело, но привыкаешь.',
+    'Разношены под чужую руку, но твоей подходят. Совпадение, надо думать.',
+    'Пальцы смыкаются раньше, чем ты решаешь сжать. Так и должно быть.',
+  ],
+  boots: [
+    'Подошва протёрта до дыр. Каждый камень чувствуется как свой.',
+    'Прошагали не одну сотню миль и готовы ещё. Голенище держит лодыжку.',
+    'Мягкая подошва, почти не слышно шагов. Он приходил без предупреждения.',
+    'Окованный носок, укреплённая пятка. В таких стоят насмерть.',
+    'Стёрты неровно, будто он всё время сворачивал куда-то влево.',
+    'Ноги сами выбирают, куда ступить. Спорить с ними себе дороже.',
+  ],
+  amulet: [
+    'Монета с дыркой, на шнурке. Ничего не стоит, но с ней спокойнее.',
+    'Затёртый до гладкости — его держали в кулаке слишком часто.',
+    'Оттиск сбит намеренно, чтобы никто не разобрал, чья она.',
+    'Выдавался за выслугу. Тем, кто дожил до выслуги.',
+    'Пустая оправа — камень выпал давно. Работать почему-то не перестал.',
+    'Смотрит не наружу, а куда-то мимо. Иногда кажется, что он моргнул.',
+  ],
+}
+
+// Строка статов предмета — считается из ЧИСЕЛ СЕРВЕРА, а не берётся готовой
+// строкой из клиентского каталога. Прежний ITEM_CATALOG держал её текстом, и
+// текст УЖЕ разошёлся с базой:
+//   шлем     обещал броню 2/5/8/10/13/15,   в БД 2/3/5/6/7/8
+//   броня            броню 5/10/15/20/25/30, в БД 5/8/12/15/18/21
+//   перчатки         броню 2/5/8/10/13/15,   в БД 2/3/4/6/8/9
+// (оружие, сапоги и амулет совпадали). Броню в бою считает сервер по СВОИМ
+// числам, так что карточка врала игроку на всю разницу.
+//
+// Процент роста стата (сила/выносливость/ловкость) отдельным полем в БД НЕ
+// хранится — по дизайну это tier*5%, выводится из тира на лету (так и
+// записано в комментарии к миграции 20260903120000_reseed_item_catalog).
+function itemStatLine(item: InventoryItem['item']): string {
+  const growth = item.tier * 5
+  // Поля nullable по схеме (damage только у оружия, armor у шлема/брони/
+  // перчаток, и так далее). null там, где для этого слота число обязательно —
+  // испорченная строка каталога, а НЕ ноль: показываем "?", нулём не
+  // подменяем (см. CLAUDE.md, Design Decisions — тихие фолбэки).
+  const n = (v: number | null) => (v === null ? '?' : `+${v}`)
+  switch (item.slot) {
+    case 'weapon': return `Урон ${n(item.damage)} · Рост силы +${growth}%`
+    case 'helmet': return `Броня ${n(item.armor)}`
+    case 'armor': return `Броня ${n(item.armor)} · Рост выносливости +${growth}%`
+    case 'gloves': return `Броня ${n(item.armor)} · Рост ловкости +${growth}%`
+    case 'boots': return `Скорость ${n(item.moveSpeed)}%`
+    case 'amulet': return `Удача ${n(item.luck)}`
+    // Слот не из известных шести — называем его вслух, а не показываем пустую
+    // строку: Item.slot в схеме свободный текст, опечатка в сиде попала бы
+    // сюда молча.
+    default: return `Неизвестный слот "${item.slot}"`
+  }
+}
 
 // ВРЕМЕННО: тестовая панель выбора карты Explore (см. кнопки ниже в JSX).
 const EXPLORE_MAPS: { label: string; file: string }[] = [
@@ -152,8 +289,21 @@ export default function App() {
   const [savingSkills, setSavingSkills] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [gearTab, setGearTab] = useState<'skills' | 'equipment' | 'consumables'>('skills')
+  // Подвкладка "Инвентаря". ДВЕ ветки, обе с настоящим рендером:
+  //   'equipment'   — предметы шести слотов (источник: inventory с сервера)
+  //   'consumables' — всё применяемое (источник: player.potions; позже обереги,
+  //                   карты, книги скиллов — см. consumableSources в разметке)
+  // Это НЕ прежнее трёхзначное состояние с 'skills': скиллы живут на экране
+  // "Персонаж", на этой вкладке их нет.
+  const [gearTab, setGearTab] = useState<'equipment' | 'consumables'>('equipment')
+  // Выбранный пункт фильтра по слоту внутри "Экипировки": null — "Всё".
+  // Ставится тапом по гнезду на экране "Персонаж" (см. ниже), сбрасывается
+  // пунктом "Всё" в выпадающем списке и тапом по "Инвентарь" в навбаре — иначе
+  // фильтр залипал бы до перезапуска приложения.
   const [slotFilter, setSlotFilter] = useState<string | null>(null)
+  // Раскрыт ли выпадающий список фильтра. Чисто вёрсточный флаг: что выбрано,
+  // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
+  const [slotFilterOpen, setSlotFilterOpen] = useState(false)
   const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги'>('Расходники')
   const [shopSelectedPotion, setShopSelectedPotion] = useState<string | null>(null)
   // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
@@ -162,14 +312,28 @@ export default function App() {
   // Запрос покупки в полёте — гасит кнопку от двойного тапа: эндпоинт не
   // идемпотентный, второй тап купил бы второе зелье.
   const [shopBuyPending, setShopBuyPending] = useState(false)
+  // Выбранная ячейка инвентаря. Предмет адресуется inventoryItemId — именно им
+  // оперирует POST /character/equip, и именно он различает два одинаковых
+  // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
+  // slot+tier на это не годилась и досталась от фейкового TEST_INVENTORY.
   const [gearSelectedItem, setGearSelectedItem] = useState<
-    { kind: 'item'; slot: string; tier: number } | { kind: 'potion'; potionId: string } | null
+    { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | null
   >(null)
   const [friendsLinkCopied, setFriendsLinkCopied] = useState(false)
   const [showExploreDebug, setShowExploreDebug] = useState(false)
   const [inventory, setInventory] = useState<InventoryItem[]>([])
-  const [inventoryLoading, setInventoryLoading] = useState(false)
-  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null)
+  // Состояние загрузки инвентаря — ЧЕТЫРЕ явных значения вместо булева
+  // inventoryLoading: пустой массив сам по себе не отличает "предметов нет"
+  // от "запрос упал" и "ответ ещё не пришёл", а оба последних рисовали
+  // правдоподобный ноль брони (см. CLAUDE.md, Design Decisions — тихие
+  // фолбэки запрещены, их надо делать громкими).
+  //   'idle'    — запроса не было вовсе: нет jwt, т.е. офлайн-заглушка
+  //               DevTester вне Telegram (loadInventory выходит на !token).
+  //               Это НЕ ошибка, но и НЕ "инвентарь пуст".
+  //   'loading' — запрос в полёте.
+  //   'ready'   — inventory отражает ответ сервера, числа считать можно.
+  //   'error'   — запрос не удался, inventory НЕ показателен.
+  const [inventoryStatus, setInventoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [equipping, setEquipping] = useState(false)
   const [showExploreTest, setShowExploreTest] = useState(false)
   // undefined — обычный запуск ("Начать забег"): Explore получает mapFile
@@ -274,14 +438,6 @@ export default function App() {
     init()
   }, [])
 
-  useEffect(() => {
-    if (gearTab === 'equipment') loadInventory()
-  }, [gearTab])
-
-  useEffect(() => {
-    if (slotFilter !== null) loadInventory()
-  }, [slotFilter])
-
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
   // Суммарная броня надетых предметов — та же формула, что уже показывает
@@ -289,10 +445,13 @@ export default function App() {
   // сюда же, чтобы прокинуть тем же числом в Explore (см. задача "броня в
   // бою"). inventory грузится СРАЗУ при логине (см. refreshPlayerFromServer
   // выше — там же, где player), не лениво при первом открытии вкладки
-  // "Снаряжение": броня должна быть известна ДО первого удара в забеге, а
-  // не подгружаться посреди боя. useEffect'ы выше (gearTab/slotFilter)
-  // остаются как есть — это refetch при открытии/фильтрации UI инвентаря,
-  // не единственный источник данных.
+  // "Инвентарь": броня должна быть известна ДО первого удара в забеге, а не
+  // подгружаться посреди боя.
+  // Два прежних useEffect'а, дёргавших loadInventory() на открытие вкладки
+  // (gearTab === 'equipment') и на установку slotFilter, УДАЛЕНЫ: данные уже
+  // здесь с логина, а после надевания/снятия их перезапрашивает сама
+  // handleEquipItem. Фильтр по слоту — операция над уже полученным массивом,
+  // сеть для неё не нужна вовсе.
   const totalArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
 
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
@@ -387,16 +546,28 @@ export default function App() {
 
   async function loadInventory() {
     const token = localStorage.getItem('jwt')
-    if (!token) return
-    setInventoryLoading(true)
+    // Токена нет — это офлайн-заглушка DevTester (вне Telegram), а не сбой и
+    // не пустой инвентарь. Помечаем отдельным состоянием, чтобы UI сказал
+    // это словами, а не нулём брони.
+    if (!token) {
+      setInventoryStatus('idle')
+      return
+    }
+    setInventoryStatus('loading')
     try {
       const res = await fetchInventory(token)
       setInventory(res.inventory)
+      setInventoryStatus('ready')
     } catch (e) {
+      // console.error остаётся для консоли, но ОДНОГО его мало: отказ обязан
+      // быть виден на экране (см. ветки inventoryStatus в разметке ниже) —
+      // иначе он неотличим от честного "ничего не надето".
       console.error('Load inventory failed', e)
-    } finally {
-      setInventoryLoading(false)
+      setInventoryStatus('error')
     }
+    // finally нет намеренно: статус выставляют обе ветки сами, и сбрасывать
+    // его в конце нечем — 'ready' и 'error' должны дожить до следующего
+    // запроса, а не до конца этой функции.
   }
 
   async function handleEquipItem(inventoryItemId: string, equip: boolean) {
@@ -406,22 +577,22 @@ export default function App() {
     try {
       await equipItem(token, inventoryItemId, equip)
       await loadInventory()
-      setSelectedItem(null)
+      // Закрываем карточку выбранной ячейки (прежнее состояние selectedItem
+      // удалено — им никто не пользовался, см. gearSelectedItem).
+      setGearSelectedItem(null)
     } catch (e) {
       console.error('Equip item failed', e)
     } finally {
       setEquipping(false)
     }
   }
-  // Новая вкладка "Снаряжение" (activeTab === 'gear') — теперь чистый инвентарь
-  // на хардкоде, без старой экипировки/навыков/серверного equip-флоу. Ссылки
-  // ниже только чтобы TS (noUnusedLocals) не считал этот код мёртвым — он
-  // остаётся в файле на случай возврата серверной логики.
-  void SLOT_LABELS
+  // Вкладка "Инвентарь" (activeTab === 'gear' — id исторический, см. навбар)
+  // работает на РЕАЛЬНОМ inventory с сервера; хардкод TEST_INVENTORY/
+  // ITEM_CATALOG удалён. Ссылки ниже — остатки, которые вкладка пока не
+  // использует: нужны только чтобы TS (noUnusedLocals) не считал этот код
+  // мёртвым.
   void SlotIcon
   void savingSkills
-  void inventoryLoading
-  void selectedItem
   void equipping
   void handleSkillToggle
   void handleEquipItem
@@ -477,13 +648,20 @@ export default function App() {
               heal:'Лечение', dash:'Рывок-удар', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар',
             }
             const heroSkillSlots = [0, 1].map(i => p.equippedSkills[i] ?? null)
-            const charStats = [
+            // Броня и Удача считаются по НАДЕТЫМ предметам, то есть по
+            // inventory — и врут нулём, пока он не загружен (см.
+            // inventoryStatus). Ноль здесь неотличим от честного "ничего не
+            // надето", поэтому вне 'ready' ставим прочерк. Остальные четыре
+            // стата приходят из player и этой оговорки не требуют — player
+            // уже закрыт guard'ом "Данные персонажа недоступны" выше.
+            const equipStatsKnown = inventoryStatus === 'ready'
+            const charStats: { iconSrc: string; value: number | string; label: string }[] = [
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: 15 + Math.floor(p.strength / 2), label:'Урон' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: totalArmor, label:'Броня' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: equipStatsKnown ? totalArmor : '—', label:'Броня' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0), label:'Удача' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown ? inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0) : '—', label:'Удача' },
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
 
@@ -551,6 +729,8 @@ export default function App() {
                     const equippedItem = inventory.find(i => i.equipped && i.item.slot === slot)
                     return (
                       <div key={slot}
+                        // Открываем "Инвентарь" на подвкладке "Экипировка" с уже
+                        // выбранной кнопкой этого слота.
                         onClick={() => { setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot) }}
                         style={{
                           width:'100%', aspectRatio:'1', boxSizing:'border-box',
@@ -581,6 +761,19 @@ export default function App() {
                     )
                   })}
                 </div>
+                {/* Сетка гнёзд читает то же inventory, что и статы выше: не
+                    загрузился — шесть пустых гнёзд молча утверждают "ничего
+                    не надето". Разводим это одной подписью; сами гнёзда не
+                    трогаем. */}
+                {!equipStatsKnown && (
+                  <div style={{ marginTop:6, fontSize:10, color: inventoryStatus === 'error' ? C.danger : C.textDim }}>
+                    {inventoryStatus === 'loading'
+                      ? 'Снаряжение загружается…'
+                      : inventoryStatus === 'error'
+                        ? 'Снаряжение не загрузилось — что надето, неизвестно.'
+                        : 'Снаряжение недоступно — ты вне мира.'}
+                  </div>
+                )}
               </div>
 
               {/* Скиллы */}
@@ -843,131 +1036,159 @@ export default function App() {
             )
           })()}
           {activeTab === 'gear' && (() => {
-            const SLOT_ORDER = ['weapon', 'helmet', 'armor', 'gloves', 'boots', 'amulet']
-            const SLOT_CODE: Record<string, string> = {
-              weapon:'wpn', helmet:'hlm', armor:'arm', gloves:'glv', boots:'bts', amulet:'amu',
-            }
-            type CatalogEntry = { name: string; desc: string; stat: string }
-            const ITEM_CATALOG: Record<string, CatalogEntry[]> = {
-              weapon: [
-                { name:'Ржавый тесак', stat:'Урон +5 · Рост силы +5%', desc:'Им резали хлеб чаще, чем врагов. Держат такой от безысходности.' },
-                { name:'Солдатский меч', stat:'Урон +10 · Рост силы +10%', desc:'Клеймо стёрлось, но балансировка честная. Такими вооружали тех, кого не жалко.' },
-                { name:'Клинок дознавателя', stat:'Урон +15 · Рост силы +15%', desc:'Узкий, чтобы проходить между рёбер. Дознаватели редко спрашивали дважды.' },
-                { name:'Гвардейский палаш', stat:'Урон +20 · Рост силы +20%', desc:'Тяжёлый и прямой, без хитростей. Гвардия не отступала, и оружие делали под это.' },
-                { name:'Меч безымянного', stat:'Урон +25 · Рост силы +25%', desc:'На рукояти вырезано имя, но прочесть его уже нельзя. Владелец, похоже, не возражает.' },
-                { name:'Клинок правого места', stat:'Урон +30 · Рост силы +30%', desc:'Оказался там, где нужно, и тогда, когда нужно. Больше о нём сказать нечего.' },
-              ],
-              helmet: [
-                { name:'Ржавый колпак', stat:'Броня +2', desc:'Ведро с прорезью для глаз. Внутри до сих пор пахнет прежним хозяином.' },
-                { name:'Солдатский шлем', stat:'Броня +5', desc:'Вмятина на лбу говорит, что он однажды уже сделал свою работу.' },
-                { name:'Забрало дознавателя', stat:'Броня +8', desc:'Прорезь узкая — чтобы видеть допрашиваемого, но не встречаться с ним взглядом.' },
-                { name:'Гвардейский армет', stat:'Броня +10', desc:'Плотно садится, глушит звук. В нём слышно только собственное дыхание.' },
-                { name:'Шлем безымянного', stat:'Броня +13', desc:'Подогнан под чужую голову, но садится как влитой. Лучше об этом не думать.' },
-                { name:'Венец правого места', stat:'Броня +15', desc:'Не корона и не шлем. Что-то, что носят, когда больше некому.' },
-              ],
-              armor: [
-                { name:'Драная кожанка', stat:'Броня +5 · Рост выносливости +5%', desc:'Больше от холода, чем от клинка. Но всё-таки лучше, чем ничего.' },
-                { name:'Солдатская кольчуга', stat:'Броня +10 · Рост выносливости +10%', desc:'Половина колец перебрана вручную, и не тобой. Кто-то за ней следил.' },
-                { name:'Панцирь дознавателя', stat:'Броня +15 · Рост выносливости +15%', desc:'Чёрненая сталь, чтобы не бликовать в тёмных комнатах. Практично.' },
-                { name:'Гвардейская кираса', stat:'Броня +20 · Рост выносливости +20%', desc:'Цельная, без стыков на груди. Такую не пробьёшь ударом в упор.' },
-                { name:'Доспех безымянного', stat:'Броня +25 · Рост выносливости +25%', desc:'Ни герба, ни клейма — всё сточено начисто. Он не хотел, чтобы его узнали.' },
-                { name:'Доспех правого места', stat:'Броня +30 · Рост выносливости +30%', desc:'Выдержал то, что не должно было выдержаться. Дальше зависит от тебя.' },
-              ],
-              gloves: [
-                { name:'Обмотки', stat:'Броня +2 · Рост ловкости +5%', desc:'Полосы ткани, намотанные в несколько слоёв. Хотя бы не собьёшь костяшки.' },
-                { name:'Солдатские рукавицы', stat:'Броня +5 · Рост ловкости +10%', desc:'Грубая кожа, задубевшая от пота. Зато рукоять не проскальзывает.' },
-                { name:'Латницы дознавателя', stat:'Броня +8 · Рост ловкости +15%', desc:'Пластины на пальцах сидят плотно, движения не стесняют. Работа тонкая.' },
-                { name:'Гвардейские латницы', stat:'Броня +10 · Рост ловкости +20%', desc:'Закрывают кисть целиком, до середины предплечья. Тяжело, но привыкаешь.' },
-                { name:'Перчатки безымянного', stat:'Броня +13 · Рост ловкости +25%', desc:'Разношены под чужую руку, но твоей подходят. Совпадение, надо думать.' },
-                { name:'Хватка правого места', stat:'Броня +15 · Рост ловкости +30%', desc:'Пальцы смыкаются раньше, чем ты решаешь сжать. Так и должно быть.' },
-              ],
-              boots: [
-                { name:'Стоптанные башмаки', stat:'Скорость +2%', desc:'Подошва протёрта до дыр. Каждый камень чувствуется как свой.' },
-                { name:'Солдатские сапоги', stat:'Скорость +4%', desc:'Прошагали не одну сотню миль и готовы ещё. Голенище держит лодыжку.' },
-                { name:'Поступь дознавателя', stat:'Скорость +6%', desc:'Мягкая подошва, почти не слышно шагов. Он приходил без предупреждения.' },
-                { name:'Гвардейские поножи', stat:'Скорость +8%', desc:'Окованный носок, укреплённая пятка. В таких стоят насмерть.' },
-                { name:'Сапоги безымянного', stat:'Скорость +9%', desc:'Стёрты неровно, будто он всё время сворачивал куда-то влево.' },
-                { name:'Поступь правого места', stat:'Скорость +10%', desc:'Ноги сами выбирают, куда ступить. Спорить с ними себе дороже.' },
-              ],
-              amulet: [
-                { name:'Медный грошик', stat:'Удача +1', desc:'Монета с дыркой, на шнурке. Ничего не стоит, но с ней спокойнее.' },
-                { name:'Солдатский образок', stat:'Удача +2', desc:'Затёртый до гладкости — его держали в кулаке слишком часто.' },
-                { name:'Печать дознавателя', stat:'Удача +3', desc:'Оттиск сбит намеренно, чтобы никто не разобрал, чья она.' },
-                { name:'Гвардейский знак', stat:'Удача +4', desc:'Выдавался за выслугу. Тем, кто дожил до выслуги.' },
-                { name:'Оберег безымянного', stat:'Удача +5', desc:'Пустая оправа — камень выпал давно. Работать почему-то не перестал.' },
-                { name:'Глаз правого места', stat:'Удача +7', desc:'Смотрит не наружу, а куда-то мимо. Иногда кажется, что он моргнул.' },
-              ],
-            }
-            const TEST_INVENTORY: { slot: string; tier: number; qty: number }[] = [
-              { slot:'weapon', tier:3, qty:1 },
-              { slot:'weapon', tier:1, qty:3 },
-              { slot:'helmet', tier:2, qty:1 },
-              { slot:'armor', tier:2, qty:1 },
-              { slot:'boots', tier:1, qty:2 },
-              { slot:'amulet', tier:1, qty:1 },
-            ]
-            // Зелья здесь берутся из ОБЩЕГО каталога (src/potions.ts) и из
-            // РЕАЛЬНОГО склада player.potions — третья копия каталога
-            // (POTION_CATALOG с процентами внутри текста) и фейковый
-            // TEST_POTIONS удалены. Экипировка рядом (TEST_INVENTORY) — всё
-            // ещё заглушка, это отдельная незакрытая задача.
+            // Зелья берутся из ОБЩЕГО каталога (src/potions.ts) и из РЕАЛЬНОГО
+            // склада player.potions. Предметы — из РЕАЛЬНОГО inventory
+            // (GET /character/inventory, грузится при логине): фейковый
+            // TEST_INVENTORY и клиентская копия каталога предметов
+            // (ITEM_CATALOG с именами и строками статов) удалены. Имя, числа
+            // статов и требуемый уровень теперь приходят с сервера, на клиенте
+            // остался только флейвор — см. ITEM_FLAVOR и itemStatLine.
             const potionStock = player?.potions ?? null
 
             type InvCell = {
               key: string
-              iconSrc: string
+              /** null — неизвестный слот, картинки нет (см. itemIconSrc). */
+              iconSrc: string | null
               alt: string
-              qty: number
+              /** Число — у зелий, они реально складываются в один счётчик.
+               *  null — у предметов: стакинга в БД нет, каждый предмет это
+               *  отдельная строка InventoryItem. */
+              qty: number | null
+              equipped: boolean
               group: number
               rank: number
-              open: { kind: 'item'; slot: string; tier: number } | { kind: 'potion'; potionId: string }
+              open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string }
             }
-            const itemCells: InvCell[] = TEST_INVENTORY.map(it => ({
-              key: `item-${it.slot}-${it.tier}`,
-              iconSrc: `${import.meta.env.BASE_URL}assets/icons/items/${SLOT_CODE[it.slot]}_t${it.tier}.png`,
-              alt: ITEM_CATALOG[it.slot][it.tier - 1].name,
-              qty: it.qty,
-              group: SLOT_ORDER.indexOf(it.slot),
-              rank: -it.tier,
-              open: { kind:'item', slot: it.slot, tier: it.tier },
-            }))
-            // Показываем только тиры, которых реально нет-ноль. Профиль не
-            // загружен (potionStock === null) — ячеек зелий нет вовсе, нулём
-            // не подменяем. Порядок — от старшего тира к младшему (rank), как
-            // и было у прежнего списка.
-            const potionCells: InvCell[] = (potionStock === null ? [] : POTION_TIERS)
-              .filter((t) => (potionStock?.[t.tier - 1] ?? 0) > 0)
-              .map((t) => ({
-                key: `potion-${t.tier}`,
-                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
-                alt: t.nameRu,
-                qty: potionStock?.[t.tier - 1] ?? 0,
-                group: SLOT_ORDER.length,
-                rank: -t.tier,
-                open: { kind:'potion', potionId: String(t.tier) },
+            // ОДНА ячейка на ОДНУ строку InventoryItem, без бейджа "xN":
+            // стакинга в БД нет (каждый предмет — своя строка), а
+            // POST /character/equip адресует именно inventoryItemId. Прежний
+            // qty был выдуман вместе с TEST_INVENTORY. Два одинаковых предмета
+            // честно покажутся двумя ячейками.
+            //
+            // Sort стабильный, поэтому одинаковые предметы внутри группы
+            // сохраняют порядок ответа сервера (он отдаёт инвентарь по
+            // acquiredAt).
+            const buildEquipmentCells = (rows: InventoryItem[]): InvCell[] => rows
+              .map((inv) => ({
+                key: inv.inventoryItemId,
+                iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
+                alt: inv.item.nameRu,
+                qty: null,
+                equipped: inv.equipped,
+                group: SLOT_ORDER.indexOf(inv.item.slot),
+                rank: -inv.item.tier,
+                open: { kind: 'item' as const, inventoryItemId: inv.inventoryItemId },
               }))
-            const sortedInventory = [...itemCells, ...potionCells].sort((a, b) => a.group - b.group || a.rank - b.rank)
-            const TOTAL_CELLS = 30
+              .sort((a, b) => a.group - b.group || a.rank - b.rank)
+            // Фильтр по слоту (кнопки над сеткой, либо тап по гнезду на
+            // "Персонаже") — операция над уже полученным массивом, запрос к
+            // серверу для неё не нужен. Фильтруем ИСХОДНЫЕ строки, а не
+            // готовые ячейки: у ячейки слота нет, и добавлять его туда значит
+            // тащить специфику экипировки в общий тип.
+            const equipmentCells = buildEquipmentCells(
+              slotFilter === null ? inventory : inventory.filter((i) => i.item.slot === slotFilter),
+            )
+
+            // Расходники — СПИСОК ИСТОЧНИКОВ, а не один захардкоженный массив
+            // зелий. Новый вид (обереги, карты, книги скиллов) добавляется
+            // НОВЫМ элементом этого массива со своим билдером ячеек — сетка,
+            // подвкладки и раскладка не трогаются.
+            // Предел честно: источник с ДРУГОЙ формой данных всё равно
+            // потребует ветку в union'е InvCell['open'] и в selectedEntry —
+            // карточка обязана знать, что показывает. Без переделки обходится
+            // раскладка, не вся цепочка.
+            // note — почему источник пуст, если пуст не по-настоящему: профиль
+            // не загружен (potionStock === null) это НЕ "зелий нет", и молча
+            // показывать пустоту нельзя (см. правило про тихие фолбэки).
+            // Инвариант: note !== null ⇔ данные источника неизвестны — на него
+            // опирается и счётчик сумки ниже (bagKnown).
+            // takesCell — тратит ли источник ячейки сумки (docs/items.md,
+            // "Правило вместимости"): зелья и дроп улучшений скиллов — нет,
+            // карты — да. Решается ОДИН раз на источник, счётчик в шапке
+            // подхватывает сам.
+            const consumableSources: { key: string; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
+              {
+                key: 'potions',
+                // Зелий копятся десятки — забивать ими сумку и терять их при
+                // переполнении было бы несоразмерным наказанием.
+                takesCell: false,
+                // Показываем только тиры, которых реально не ноль. Порядок —
+                // от старшего тира к младшему (rank), как и было.
+                cells: (potionStock === null ? [] : POTION_TIERS)
+                  .filter((t) => (potionStock?.[t.tier - 1] ?? 0) > 0)
+                  .map((t) => ({
+                    key: `potion-${t.tier}`,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
+                    alt: t.nameRu,
+                    qty: potionStock?.[t.tier - 1] ?? 0,
+                    equipped: false,
+                    group: 0,
+                    rank: -t.tier,
+                    open: { kind: 'potion' as const, potionId: String(t.tier) },
+                  })),
+                note: potionStock === null ? 'Профиль не загружен — склад зелий неизвестен.' : null,
+              },
+            ]
+            const consumableCells: InvCell[] = consumableSources.flatMap((src) => src.cells)
+            const consumableNotes: string[] = consumableSources
+              .map((src) => src.note)
+              .filter((n): n is string => n !== null)
+
+            // Заполненность сумки для счётчика в шапке — свойство СУМКИ, а не
+            // того, что сейчас на экране: не зависит ни от подвкладки, ни от
+            // фильтра. Экипировка: одна строка InventoryItem = одна ячейка
+            // (стакинга нет, см. buildEquipmentCells), но НАДЕТЫЕ НЕ считаются:
+            // по docs/items.md надетое ячейку сумки не тратит. В сетке они при
+            // этом остаются (с рамкой) — иначе снять предмет было бы неоткуда,
+            // поэтому ячеек в сетке может быть больше, чем N, и это не ошибка.
+            // Расходники — только источники с takesCell. Неизвестно хоть что-то
+            // из учитываемого — счётчик не врёт числом, а ставит прочерк.
+            const bagUsed = inventory.filter((i) => !i.equipped).length + consumableSources
+              .filter((src) => src.takesCell)
+              .reduce((sum, src) => sum + src.cells.length, 0)
+            const bagKnown = inventoryStatus === 'ready'
+              && consumableSources.every((src) => !src.takesCell || src.note === null)
+
+            // Что показывает сетка прямо сейчас — зависит от подвкладки.
+            const shownCells = gearTab === 'equipment' ? equipmentCells : consumableCells
             const selectedEntry = gearSelectedItem ? (() => {
               if (gearSelectedItem.kind === 'item') {
-                const catalogItem = ITEM_CATALOG[gearSelectedItem.slot][gearSelectedItem.tier - 1]
-                const invRow = TEST_INVENTORY.find(i => i.slot === gearSelectedItem.slot && i.tier === gearSelectedItem.tier)
+                const inv = inventory.find((i) => i.inventoryItemId === gearSelectedItem.inventoryItemId)
+                // Предмета уже нет в inventory (рефетч после надевания вернул
+                // другой набор) — карточки нет вовсе, вместо пустой с нулями.
+                if (!inv) return null
                 return {
-                  kind:'item' as const,
-                  name: catalogItem.name, desc: catalogItem.desc, stat: catalogItem.stat,
-                  qty: invRow?.qty ?? 0,
-                  iconSrc: `${import.meta.env.BASE_URL}assets/icons/items/${SLOT_CODE[gearSelectedItem.slot]}_t${gearSelectedItem.tier}.png`,
+                  kind: 'item' as const,
+                  name: inv.item.nameRu,
+                  // Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок текста
+                  // просто не рисуется (см. разметку), выдуманной строки здесь
+                  // не появляется.
+                  desc: ITEM_FLAVOR[inv.item.slot]?.[inv.item.tier - 1] ?? null,
+                  stat: itemStatLine(inv.item),
+                  // "у тебя: N" — реальный подсчёт строк того же предмета в
+                  // ответе сервера, а не выдуманный qty.
+                  qty: inventory.filter((i) => i.item.id === inv.item.id).length,
+                  iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
+                  equipped: inv.equipped,
+                  levelRequired: inv.item.levelRequired as number | null,
+                  inventoryItemId: inv.inventoryItemId as string | null,
                 }
               }
               const potionTier = Number(gearSelectedItem.potionId)
               const potion = POTION_TIERS[potionTier - 1]
               return {
-                kind:'potion' as const,
+                kind: 'potion' as const,
                 name: potion.nameRu,
-                desc: potion.desc,
+                desc: potion.desc as string | null,
                 stat: `Восстанавливает ${Math.round(potion.healFrac * 100)}% от здоровья`,
                 qty: potionStock?.[potionTier - 1] ?? 0,
-                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}`,
+                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}` as string | null,
+                // Поля ниже осмысленны только у предметов — у зелья заполнены
+                // нейтрально, чтобы у обеих ветвей была одна форма (кнопка
+                // "Надеть" в разметке всё равно стоит за kind === 'item').
+                equipped: false,
+                levelRequired: null as number | null,
+                inventoryItemId: null as string | null,
               }
             })() : null
 
@@ -976,29 +1197,210 @@ export default function App() {
 
               {/* Шапка */}
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
-                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Снаряжение</div>
-                <div style={{ fontSize:12, color:C.textDim }}>{sortedInventory.length} / {TOTAL_CELLS}</div>
+                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Инвентарь</div>
+                {/* "N / 30" — заполненность сумки (bagUsed/bagKnown выше),
+                    одинаковая на обеих подвкладках и при любом фильтре: сколько
+                    показано, видно по самой сетке. Переполнение — красным и
+                    как есть (см. BAG_CAPACITY). Неизвестные данные — прочерк,
+                    не ноль. */}
+                <div style={{ fontSize:12, color: bagKnown && bagUsed > BAG_CAPACITY ? C.danger : C.textDim }}>
+                  {bagKnown ? `${bagUsed} / ${BAG_CAPACITY}` : '—'}
+                </div>
               </div>
 
+              {/* Подвкладки. Тот же приём, что у разделов магазина выше
+                  (SHOP_TABS): чипы в строку, активный обведён C.glowEdge.
+                  Высота 44px — минимум тап-зоны из дизайн-системы. */}
+              <div style={{ display:'flex', gap:6, marginBottom:10, padding:'0 8px' }}>
+                {([
+                  { id: 'equipment' as const, label: 'Экипировка' },
+                  { id: 'consumables' as const, label: 'Расходники' },
+                ]).map((t) => {
+                  const active = gearTab === t.id
+                  return (
+                    <div key={t.id} onClick={() => setGearTab(t.id)}
+                      style={{
+                        boxSizing:'border-box', height:44,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        background:C.nicheDeep, borderRadius:6, padding:'0 14px',
+                        fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
+                        border:`1px solid ${active ? C.glowEdge : C.stoneDark}`,
+                        color: active ? C.glowCore : C.textDim,
+                      }}>
+                      {t.label}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Фильтр по слоту — только в "Экипировке": расходники ни в один
+                  слот не надеваются, фильтровать их нечем.
+                  Выпадающий список, а не ряд кнопок: семь кнопок на 360px
+                  вставали только сеткой 4+3 (~94px), и вместе с подвкладками
+                  это три ряда управления до первой ячейки — около трети экрана.
+                  Здесь одна строка 44px (минимум тап-зоны). Цена — выбор слота
+                  в два тапа вместо одного, и варианты не видны без раскрытия.
+                  Раскрытый список лежит ПОВЕРХ сетки (absolute), не раздвигает
+                  её. Под ним прозрачная подложка на весь экран: тап мимо списка
+                  попадает в неё и закрывает. Навбар подложкой не накрыть — он
+                  вне прокручиваемого контейнера, а у того из-за mask свой
+                  stacking context, — поэтому список закрывает и onClick
+                  навбара, иначе при возврате на вкладку он был бы раскрыт.
+                  Рамка кнопки подсвечена, пока выбран конкретный слот: сетка
+                  урезана, и это видно без раскрытия (роль прежней плашки
+                  "Только: ...").
+                  Пункт "Всё" — он же сброс фильтра. */}
+              {gearTab === 'equipment' && (() => {
+                const options: { slot: string | null; label: string }[] = [{ slot: null, label: 'Всё' }, ...HERO_SLOTS]
+                // slotFilter ставится только из HERO_SLOTS, так что промах здесь —
+                // баг. Называем его вслух, а не рисуем "Всё" над урезанной сеткой.
+                const currentLabel = options.find((o) => o.slot === slotFilter)?.label ?? `Неизвестный слот "${slotFilter}"`
+                return (
+                  <>
+                    {slotFilterOpen && (
+                      <div onClick={() => setSlotFilterOpen(false)}
+                        style={{ position:'fixed', top:0, left:0, right:0, bottom:0, zIndex:1 }} />
+                    )}
+                    {/* zIndex:2 — выше подложки: тап по самой кнопке сворачивает
+                        список, а не проваливается в подложку. */}
+                    <div style={{ position:'relative', zIndex:2, marginBottom:10, padding:'0 8px' }}>
+                      <div onClick={() => setSlotFilterOpen((open) => !open)}
+                        style={{
+                          boxSizing:'border-box', height:44,
+                          display:'flex', alignItems:'center', justifyContent:'space-between', gap:8,
+                          background:C.nicheDeep, borderRadius:6, padding:'0 12px',
+                          fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
+                          border:`1px solid ${slotFilter !== null || slotFilterOpen ? C.glowEdge : C.stoneDark}`,
+                          color: slotFilter !== null ? C.glowCore : C.textDim,
+                        }}>
+                        <span>{currentLabel}</span>
+                        <span style={{ fontSize:9 }}>{slotFilterOpen ? '▲' : '▼'}</span>
+                      </div>
+                      {slotFilterOpen && (
+                        <div style={{
+                          position:'absolute', top:'calc(100% + 4px)', left:8, right:8,
+                          boxSizing:'border-box', overflow:'hidden',
+                          background:C.appBg, border:`1px solid ${C.stoneDark}`, borderRadius:8,
+                          boxShadow:'0 6px 18px rgba(0,0,0,0.6)',
+                        }}>
+                          {options.map((o) => {
+                            const active = slotFilter === o.slot
+                            return (
+                              <div key={o.slot ?? 'all'}
+                                onClick={() => { setSlotFilter(o.slot); setSlotFilterOpen(false) }}
+                                style={{
+                                  boxSizing:'border-box', height:44,
+                                  display:'flex', alignItems:'center', justifyContent:'space-between',
+                                  padding:'0 12px', fontSize:12, cursor:'pointer',
+                                  // Активный пункт — не только цветом: фон, полоса
+                                  // слева и галочка (дизайн-система: не полагаться
+                                  // на один цвет).
+                                  background: active ? C.nicheDeep : 'transparent',
+                                  borderLeft:`3px solid ${active ? C.glowEdge : 'transparent'}`,
+                                  color: active ? C.glowCore : C.textMain,
+                                }}>
+                                <span>{o.label}</span>
+                                {active && <span>✓</span>}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
+
+              {/* Состояние загрузки предметов — ПЛАШКОЙ над сеткой и ТОЛЬКО в
+                  "Экипировке": это неизвестность про inventory, а расходники
+                  живут на своих данных (player.potions) и к ней отношения не
+                  имеют. */}
+              {gearTab === 'equipment' && inventoryStatus !== 'ready' && (
+                <div style={{
+                  margin:'0 8px 10px', padding:'8px 10px', borderRadius:8,
+                  background:C.nicheDeep,
+                  border:`1px solid ${inventoryStatus === 'error' ? C.danger : C.stoneDark}`,
+                  fontSize:11, color: inventoryStatus === 'error' ? C.danger : C.textDim,
+                  display:'flex', alignItems:'center', justifyContent:'space-between', gap:8,
+                }}>
+                  <span>
+                    {inventoryStatus === 'loading'
+                      ? 'Предметы загружаются…'
+                      : inventoryStatus === 'error'
+                        ? 'Предметы не загрузились — что лежит в сумке, неизвестно.'
+                        : 'Предметы недоступны — ты вне мира.'}
+                  </span>
+                  {inventoryStatus === 'error' && (
+                    <span
+                      onClick={() => { void loadInventory() }}
+                      style={{ flexShrink:0, color:C.glowCore, cursor:'pointer', textDecoration:'underline' }}>
+                      Повторить
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* То же для расходников: источник, который пуст НЕ по-настоящему,
+                  объясняет себя строкой (сейчас такой один — зелья при
+                  незагруженном профиле). */}
+              {gearTab === 'consumables' && consumableNotes.map((note) => (
+                <div key={note} style={{
+                  margin:'0 8px 10px', padding:'8px 10px', borderRadius:8,
+                  background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                  fontSize:11, color:C.textDim,
+                }}>
+                  {note}
+                </div>
+              ))}
+
               {/* Сетка ячеек */}
-              {sortedInventory.length === 0 ? (
-                <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>Пусто</div>
+              {shownCells.length === 0 ? (
+                // "Пусто" утверждаем ТОЛЬКО когда данные действительно есть и
+                // они пусты. В остальных состояниях пустоту уже объяснила
+                // плашка выше, и повторять здесь "пусто" было бы тем же тихим
+                // фолбэком. При активном фильтре сумка не пуста — пуст только
+                // выбранный слот, так и пишем.
+                (gearTab === 'equipment' ? inventoryStatus === 'ready' : potionStock !== null) ? (
+                  <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>
+                    {gearTab === 'equipment' && slotFilter !== null ? 'Для этого слота ничего нет' : 'Пусто'}
+                  </div>
+                ) : null
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(5, minmax(0, 1fr))', gap:5, padding:'0 8px' }}>
-                  {sortedInventory.map((cell) => (
+                  {shownCells.map((cell) => (
                     <div key={cell.key}
                       onClick={() => setGearSelectedItem(cell.open)}
                       style={{
                         boxSizing:'border-box', position:'relative', aspectRatio:'1',
-                        background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:8,
-                        boxShadow:'inset 0 2px 5px rgba(0,0,0,0.5)', cursor:'pointer',
+                        background:C.nicheDeep,
+                        // Надетый предмет — та же рамка со свечением, что у
+                        // занятого гнезда на экране "Персонаж".
+                        border:`1px solid ${cell.equipped ? C.glowEdge : C.stoneDark}`,
+                        borderRadius:8,
+                        boxShadow: cell.equipped
+                          ? 'inset 0 0 12px rgba(209,151,68,0.35), inset 0 2px 5px rgba(0,0,0,0.5)'
+                          : 'inset 0 2px 5px rgba(0,0,0,0.5)',
+                        cursor:'pointer',
                       }}>
-                      <img
-                        src={cell.iconSrc}
-                        alt={cell.alt}
-                        style={{ width:'100%', height:'100%', objectFit:'contain' }}
-                      />
-                      {cell.qty > 1 && (
+                      {/* iconSrc === null — слот не из известных шести, картинки
+                          под него нет (см. itemIconSrc): показываем название
+                          текстом, а не битую картинку. */}
+                      {cell.iconSrc === null ? (
+                        <div style={{
+                          width:'100%', height:'100%', display:'flex', alignItems:'center',
+                          justifyContent:'center', textAlign:'center', padding:2,
+                          boxSizing:'border-box', fontSize:8, color:C.textDim,
+                        }}>
+                          {cell.alt}
+                        </div>
+                      ) : (
+                        <img
+                          src={cell.iconSrc}
+                          alt={cell.alt}
+                          style={{ width:'100%', height:'100%', objectFit:'contain' }}
+                        />
+                      )}
+                      {cell.qty !== null && cell.qty > 1 && (
                         <div style={{ position:'absolute', right:2, bottom:1, fontSize:9, color:C.bone }}>×{cell.qty}</div>
                       )}
                     </div>
@@ -1029,11 +1431,15 @@ export default function App() {
                         boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
                         display:'flex', alignItems:'center', justifyContent:'center',
                       }}>
-                        <img
-                          src={selectedEntry.iconSrc}
-                          alt={selectedEntry.name}
-                          style={{ width:54, height:54, objectFit:'contain', display:'block' }}
-                        />
+                        {/* null — неизвестный слот, иконки нет (см. itemIconSrc):
+                            гнездо остаётся пустым, битой картинки не ставим. */}
+                        {selectedEntry.iconSrc !== null && (
+                          <img
+                            src={selectedEntry.iconSrc}
+                            alt={selectedEntry.name}
+                            style={{ width:54, height:54, objectFit:'contain', display:'block' }}
+                          />
+                        )}
                       </div>
                       <div>
                         <div style={{ fontSize:15, color:C.textMain }}>{selectedEntry.name}</div>
@@ -1041,9 +1447,13 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
-                      {selectedEntry.desc}
-                    </div>
+                    {/* Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок просто
+                        не рисуется, заглушкой вроде "—" не заполняем. */}
+                    {selectedEntry.desc !== null && (
+                      <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
+                        {selectedEntry.desc}
+                      </div>
+                    )}
 
                     <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
                       <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
@@ -1446,12 +1856,28 @@ export default function App() {
           {id:'hero', label:'Персонаж', icon:'nav_hero.png'},
           {id:'shop', label:'Магазин', icon:'nav_shop.png'},
           {id:'explore', label:'Исследовать', icon:'nav_explore.png'},
-          {id:'gear', label:'Снаряжение', icon:'nav_gear.png'},
+          // id 'gear' остался историческим: игроку видна только подпись, а
+          // переименование идентификатора задело бы тип activeTab,
+          // gearSelectedItem и все setActiveTab('gear') — шум без пользы.
+          {id:'gear', label:'Инвентарь', icon:'nav_gear.png'},
           {id:'friends', label:'Друзья', icon:'nav_friends.png'},
         ] as const).map(tab => {
           const active = activeTab === tab.id
           return (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            <button key={tab.id}
+              // Заход в "Инвентарь" через навбар — всегда в одно и то же
+              // состояние: подвкладка "Экипировка", фильтр снят. Иначе слот,
+              // выбранный когда-то тапом по гнезду на "Персонаже", залипал бы,
+              // и игрок видел бы часть сумки, не понимая почему. Второй способ
+              // снять фильтр — пункт "Всё" в выпадающем списке.
+              // setSlotFilterOpen(false) — на ЛЮБОЙ вкладке: навбар подложка
+              // списка не накрывает (см. комментарий у фильтра), и уход с
+              // раскрытым списком оставил бы его раскрытым до возврата.
+              onClick={() => {
+                setActiveTab(tab.id)
+                setSlotFilterOpen(false)
+                if (tab.id === 'gear') { setGearTab('equipment'); setSlotFilter(null) }
+              }}
               style={{
                 flex:1, padding:'8px 0', border:'none', background:'none',
                 fontSize:10, display:'flex', flexDirection:'column',
