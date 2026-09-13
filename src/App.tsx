@@ -56,15 +56,75 @@ const SLOT_CODE: Record<string, string> = {
 // Развязка — перегенерировать арт под iconPath ЛИБО переписать iconPath в
 // сиде на существующий набор — отдельная задача, она требует правки сида и
 // миграции, то есть серверной стороны. Пока она не сделана, iconPath читать
-// нельзя. Экран "Персонаж" его всё ещё читает и ровно этим уязвим.
+// нельзя.
+//
+// ОТСЮДА берут иконку ОБА экрана с предметами: вкладка "Инвентарь" (ячейки и
+// карточка) и экран "Персонаж" (гнёзда надетого) — и рисуют её через ItemIcon
+// ниже. "Персонаж" читал iconPath
+// дольше всех и ровно на этом ломался: надетые шлем/перчатки/сапоги/амулет
+// 6 тира отдавали 404 на GitHub Pages (проверено запросами), WebView рисовал
+// "?". Не возвращать ни один из экранов на iconPath; новому экрану с иконкой
+// предмета — тоже сюда.
 //
 // null — неизвестный слот (в схеме Item.slot это свободная строка, не enum):
-// вызывающий рисует название текстом вместо картинки, а не тянет
+// ItemIcon рисует название текстом вместо картинки, а не тянет
 // ".../undefined_t3.png".
 function itemIconSrc(slot: string, tier: number): string | null {
   const code = SLOT_CODE[slot]
   if (!code) return null
   return `${import.meta.env.BASE_URL}assets/icons/items/${code}_t${tier}.png`
+}
+
+// Иконка в ячейке — ОДНА точка на все места, где она рисуется: гнездо
+// "Персонажа", ячейка и карточка "Инвентаря". Разбирает оба нештатных случая:
+//   src === null — неизвестный слот (контракт itemIconSrc): название текстом;
+//   картинка не загрузилась (404, битый файл) — красная рамка с "!" и
+//   console.error с URL. Раньше WebView молча рисовал на этом месте "?", и
+//   404 четырёх иконок 6 тира нашли только глазами на телефоне.
+// Принимает готовый src, а не slot/tier: ячейка и карточка "Инвентаря" общие
+// с зельями, у которых путь из каталога зелий, — отдельной ветки под них быть
+// не должно. Предметам src по-прежнему даёт ТОЛЬКО itemIconSrc.
+function ItemIcon({ src, name, size }: { src: string | null; name: string; size: number | 'fill' }) {
+  // Запоминаем, КАКОЙ src упал, а не булев флаг: гнездо "Персонажа" остаётся
+  // тем же экземпляром при смене надетого предмета, и флаг от прошлой картинки
+  // пометил бы битой новую.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const box = size === 'fill' ? '100%' : size
+  if (src === null) {
+    return (
+      <div style={{
+        width:box, height:box, boxSizing:'border-box', padding:2,
+        display:'flex', alignItems:'center', justifyContent:'center', textAlign:'center',
+        fontSize: size === 'fill' || size > 30 ? 8 : 7, color:C.textDim,
+      }}>
+        {name}
+      </div>
+    )
+  }
+  if (failedSrc === src) {
+    return (
+      <div style={{
+        width:box, height:box, boxSizing:'border-box',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        border:`1px solid ${C.danger}`, borderRadius:4,
+        color:C.danger, fontWeight:700,
+        fontSize: size === 'fill' ? 20 : Math.max(11, Math.round(size * 0.55)),
+      }}>
+        !
+      </div>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt={name}
+      onError={() => {
+        console.error(`Item icon failed to load: ${src} (${name})`)
+        setFailedSrc(src)
+      }}
+      style={{ width:box, height:box, objectFit:'contain', display:'block' }}
+    />
+  )
 }
 
 // Флейвор-тексты предметов — ЕДИНСТВЕННОЕ, что осталось от клиентской копии
@@ -763,9 +823,13 @@ export default function App() {
                           cursor:'pointer',
                         }}>
                         {equippedItem ? (
-                          <img
-                            src={`${import.meta.env.BASE_URL}assets/equipment/processed/${equippedItem.item.iconPath}`}
-                            style={{ width:22, height:22, objectFit:'contain' }}
+                          // Тот же источник, что у "Инвентаря" — itemIconSrc, НЕ
+                          // item.iconPath (почему — см. комментарий у itemIconSrc).
+                          // null и провал загрузки разбирает ItemIcon.
+                          <ItemIcon
+                            src={itemIconSrc(equippedItem.item.slot, equippedItem.item.tier)}
+                            name={equippedItem.item.nameRu}
+                            size={22}
                           />
                         ) : (
                           <img
@@ -1404,24 +1468,8 @@ export default function App() {
                           : 'inset 0 2px 5px rgba(0,0,0,0.5)',
                         cursor:'pointer',
                       }}>
-                      {/* iconSrc === null — слот не из известных шести, картинки
-                          под него нет (см. itemIconSrc): показываем название
-                          текстом, а не битую картинку. */}
-                      {cell.iconSrc === null ? (
-                        <div style={{
-                          width:'100%', height:'100%', display:'flex', alignItems:'center',
-                          justifyContent:'center', textAlign:'center', padding:2,
-                          boxSizing:'border-box', fontSize:8, color:C.textDim,
-                        }}>
-                          {cell.alt}
-                        </div>
-                      ) : (
-                        <img
-                          src={cell.iconSrc}
-                          alt={cell.alt}
-                          style={{ width:'100%', height:'100%', objectFit:'contain' }}
-                        />
-                      )}
+                      {/* null (неизвестный слот) и провал загрузки — в ItemIcon. */}
+                      <ItemIcon src={cell.iconSrc} name={cell.alt} size="fill" />
                       {cell.qty !== null && cell.qty > 1 && (
                         <div style={{ position:'absolute', right:2, bottom:1, fontSize:9, color:C.bone }}>×{cell.qty}</div>
                       )}
@@ -1453,15 +1501,8 @@ export default function App() {
                         boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
                         display:'flex', alignItems:'center', justifyContent:'center',
                       }}>
-                        {/* null — неизвестный слот, иконки нет (см. itemIconSrc):
-                            гнездо остаётся пустым, битой картинки не ставим. */}
-                        {selectedEntry.iconSrc !== null && (
-                          <img
-                            src={selectedEntry.iconSrc}
-                            alt={selectedEntry.name}
-                            style={{ width:54, height:54, objectFit:'contain', display:'block' }}
-                          />
-                        )}
+                        {/* null (неизвестный слот) и провал загрузки — в ItemIcon. */}
+                        <ItemIcon src={selectedEntry.iconSrc} name={selectedEntry.name} size={54} />
                       </div>
                       <div>
                         <div style={{ fontSize:15, color:C.textMain }}>{selectedEntry.name}</div>
