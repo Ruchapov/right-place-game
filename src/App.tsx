@@ -504,6 +504,14 @@ export default function App() {
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
+  // Снаряжение не готово — в НАСТОЯЩЕЙ сессии забег из меню не стартует: броня
+  // (totalArmor) и урон оружия (weaponDamage) считаются по inventory, и без
+  // него забег пошёл бы молча с бронёй 0. Вне Telegram (DevTester, статус
+  // 'idle') не блокируем: сервера нет вовсе, забег там — заглушка с оранжевой
+  // плашкой. Отладочные кнопки карт этот гейт намеренно обходят — их страхует
+  // проверка в начале setup() в Explore.tsx (экран ошибки, энергия не списана).
+  const gearNotReady = isTelegramSession && inventoryStatus !== 'ready'
+  const runBlocked = notEnoughEnergy || gearNotReady
   // Суммарная броня надетых предметов — та же формула, что уже показывает
   // статистика "Броня" на экране "Персонаж" (см. charStats ниже), вынесена
   // сюда же, чтобы прокинуть тем же числом в Explore (см. задача "броня в
@@ -1874,14 +1882,14 @@ export default function App() {
           {/* 5. Главная кнопка */}
           <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + env(safe-area-inset-bottom))' }}>
             <div
-              onClick={() => { if (!notEnoughEnergy) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
+              onClick={() => { if (!runBlocked) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
               style={{
                 boxSizing:'border-box',
                 background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                 borderRadius:9, padding:13, textAlign:'center',
                 boxShadow:'inset 0 0 14px rgba(209,151,68,0.3)',
-                opacity: notEnoughEnergy ? 0.5 : 1,
-                cursor: notEnoughEnergy ? 'default' : 'pointer',
+                opacity: runBlocked ? 0.5 : 1,
+                cursor: runBlocked ? 'default' : 'pointer',
               }}>
               <span style={{ fontFamily:FONT_DISPLAY, fontSize:14, color:C.glowCore }}>
                 {`Начать забег (−${RUN_COST} ⚡)`}
@@ -1890,6 +1898,30 @@ export default function App() {
             {notEnoughEnergy && (
               <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
                 Недостаточно энергии (нужно {RUN_COST}).
+              </div>
+            )}
+            {/* Причина блокировки по снаряжению — тем же приёмом, что строка
+                энергии выше. "Повторить" — тот же loadInventory, что на вкладке
+                "Инвентарь"; после тапа статус станет 'loading', и строка сама
+                сменится на "загружается…", второй запрос не уйдёт. */}
+            {gearNotReady && (
+              <div style={{ marginTop:8, fontSize:11, textAlign:'center', color: inventoryStatus === 'loading' ? C.textDim : C.danger }}>
+                {inventoryStatus === 'loading' ? (
+                  'Снаряжение загружается…'
+                ) : inventoryStatus === 'error' ? (
+                  <>
+                    Снаряжение не загрузилось — броня и урон неизвестны.{' '}
+                    <span
+                      onClick={() => { void loadInventory() }}
+                      style={{ color:C.glowCore, cursor:'pointer', textDecoration:'underline' }}>
+                      Повторить
+                    </span>
+                  </>
+                ) : (
+                  // 'idle' в Telegram-сессии — токена в localStorage нет (loadInventory
+                  // вышел на !token). Повтор это не исправит, нужен новый логин.
+                  'Снаряжение недоступно — нет токена сессии. Перезайди в игру.'
+                )}
               </div>
             )}
           </div>
