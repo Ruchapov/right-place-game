@@ -8,16 +8,16 @@
 
 | Файл | Строк | Что внутри |
 |---|---|---|
-| [`docs/explore-engine.md`](docs/explore-engine.md) | 701 | физика, коллизия, камера, AI зверя и босса, хитбоксы, HUD-плита, управление |
+| [`docs/explore-engine.md`](docs/explore-engine.md) | 868 | физика, коллизия, камера, AI зверя и босса, хитбоксы, HUD-плита, управление |
 | [`docs/explore-features.md`](docs/explore-features.md) | 175 | броня, зелье, сундук, reward float, формула трофеев |
-| [`docs/entity-modules.md`](docs/entity-modules.md) | 131 | контракт createXSystem, порядок вызовов в тикере, skills/enemy/boss |
-| [`docs/skills.md`](docs/skills.md) | 367 | пять скиллов, восстановленная из git реализация Battle.tsx, арт |
+| [`docs/entity-modules.md`](docs/entity-modules.md) | 286 | контракт createXSystem, порядок вызовов в тикере, skills/enemy/boss |
+| [`docs/skills.md`](docs/skills.md) | 361 | пять скиллов, восстановленная из git реализация Battle.tsx, арт |
 | [`docs/server-explore.md`](docs/server-explore.md) | 189 | эндпоинты забега, розыгрыш событий на сервере, экраны итогов |
-| [`docs/maps.md`](docs/maps.md) | 250 | шесть карт A–F, слот-файлы, декор, темы, тайник D, обелиски F |
-| [`docs/items.md`](docs/items.md) | 295 | каталог 36 предметов, тиры, слоты, инвентарь, дроп (спроектирован, не реализован) |
+| [`docs/maps.md`](docs/maps.md) | 252 | шесть карт A–F, слот-файлы, декор, темы, тайник D, обелиски F |
+| [`docs/items.md`](docs/items.md) | 340 | каталог 36 предметов, тиры, слоты, инвентарь, дроп (спроектирован, не реализован) |
 | [`docs/shop.md`](docs/shop.md) | 161 | разделы, вёрстка витрины, зелья, цены, что не сделано |
 | [`docs/meta-screens.md`](docs/meta-screens.md) | 202 | экраны Персонаж/Снаряжение/Друзья/Исследовать, иконки, стиль |
-| [`docs/art-pipeline.md`](docs/art-pipeline.md) | 628 | генерация и нарезка спрайтов (Nano Banana/Veo/хромакей), грабли, список готовых ассетов |
+| [`docs/art-pipeline.md`](docs/art-pipeline.md) | 654 | генерация и нарезка спрайтов (Nano Banana/Veo/хромакей), грабли, список готовых ассетов |
 
 ## Project Info
 - **Bot:** @RightPlaceGame_bot | **Mini App:** t.me/RightPlaceGame_bot/game
@@ -105,6 +105,37 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
   идентичной форме: HP-плита (`HP_FRAME_H`) и плита итогов забега
   (`results_plate.png`, паддинг-боттом трюк) — оба раза чинилось одним и
   тем же приёмом.
+- **Удаление колонки в проде — ВСЕГДА две миграции, не одна.** Сначала
+  `add` (новые колонки + переливка данных), выкладка нового сервера,
+  проверка вживую — и только отдельным заходом `drop`. Одной миграцией
+  нельзя: Prisma перечисляет колонки в `SELECT` поимённо, а деплой на Render
+  не мгновенный, поэтому ещё живой старый процесс начинает падать на каждом
+  чтении персонажа, то есть на ЛОГИНЕ, у всех сразу. Проделано на
+  `potionCharges` → `potionT1..T5` (`20260911120000_potion_tiers_add` +
+  `20260911130000_potion_charges_drop`).
+- **Папку `drop`-миграции нельзя создавать заранее, «чтобы была».**
+  `prisma migrate deploy` применяет ВСЕ pending-миграции разом, так что
+  заготовленная папка сработает на ближайшем же деплое и уронит логин ровно
+  так, как две миграции и должны были предотвратить. Создавать её — вторым
+  заходом, непосредственно перед применением.
+- **Шипы vs габарит игрока: инвариант, который перевернётся МОЛЧА.** Урон
+  шипов меряется по ЗАМЕРЕННОЙ макушке спрайта
+  (`SPIKE_BODY_TOP_GROUND = 3.73` / `SPIKE_BODY_TOP_AIR = 31.85`,
+  `constants.ts`), а не по верху бокса `phys.y` — бокс выше настоящей головы,
+  и разброс зависит от позы (в прыжке ноги поджаты, якорь смещён, см.
+  `RISE_ANCHOR_Y`/`FALL_ANCHOR_Y`). Отсутствие бага держится на неравенстве
+  `JUMP_HIT_OFFSET_Y − TILE_SIZE*PLATFORM_H_RATIO − SPIKE_BODY_TOP_AIR <= 0`,
+  сейчас `40 − 28.16 − 31.85 = −20.01` (запас 20px). Сменят спрайт героя или
+  поднимут высоту прыжка — знак перевернётся, и шип на узкой платформе `'='`
+  снова начнёт бить по воздуху над головой, БЕЗ падений и ошибок. Рецепт
+  перезамера обеих констант — в комментарии к ним в `constants.ts`.
+- **Анти-чит-потолки ломаются молча при смене формы данных.** Потолок
+  полученного урона считался как `run.potions * 0.25`, где `potions` был
+  скаляром. При переходе на массив по тирам выражение не упало бы — оно
+  дало бы `NaN`/мусор и начало РЕЗАТЬ рост выносливости у честных игроков.
+  Пересчитано на `run.sips × максимальный healFrac по каталогу`. Правило:
+  меняя форму поля в `currentRun`, отдельно проверять все анти-чит-формулы,
+  которые его читают.
 
 ## Security TODO (before real users)
 - Rotate JWT_SECRET (weak placeholder) and Neon DB password
@@ -121,15 +152,16 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 |---|---|---|
 | `POST /auth/login` | `{initData}` | Verify Telegram initData → JWT; закрывает зависший explore-забег как смерть (`interruptedRun`, см. Phase 2.5) |
 | `POST /run/start-explore` | `{mapFile?}` | Explore: карту выбирает сервер, если `mapFile` не прислан; см. Phase 2.5 |
-| `POST /run/finish-explore` | `{closedEvents, died, smugglerOutcome?}` | Explore: начисляет/обнуляет трофеи, закрывает currentRun; см. Phase 2.5 |
+| `POST /run/finish-explore` | `{closedEvents, died, smugglerOutcome?, attackDamageDealt?, skillDamageDealt?, healedAmount?, damageTaken?, potionsDrunkByTier?}` | Explore: начисляет/обнуляет трофеи, закрывает currentRun; см. Phase 2.5 |
 | `POST /character/skills` | `{skills: string[]}` | Save equipped skills (max 2) |
-| `POST /character/buy-potion` | — | Buy 1 potion for 20 gold |
+| `POST /character/buy-potion` | `{tier}` | Покупка ОДНОГО зелья тира 1..5. Цена и `levelRequired` — из каталога (`server/src/potions.ts`), не из тела. Ответ `{gold, potions[5]}` |
 | `GET /character/inventory` | — | Список предметов персонажа. ⚠️ Текущий UI вкладки "Снаряжение" на хардкоде и этот эндпоинт не зовёт (см. "Система предметов" ниже) |
 | `POST /character/equip` | `{inventoryItemId, equip}` | Надеть/снять (проверка уровня, авто-снятие того же слота). Тот же ⚠️, что выше |
 | `GET /health` | — | `{status, game, timestamp}` |
 
 **Prisma Character fields** (сверено по `server/prisma/schema.prisma`, без id/userId/createdAt/updatedAt/relations):
-`level, energy, lastEnergyUpdate, endurance, strength, strengthAtLevelUp, agility, enduranceAtLevelUp, luck, strengthProgress, enduranceProgress, agilityProgress, bonusLevels, gold, trophies, crystals, potionCharges, equippedSkills([]), currentRun(Json?)`.
+`level, energy, lastEnergyUpdate, endurance, strength, agility, luck, strengthProgress, enduranceProgress, agilityProgress, bonusLevels, gold, trophies, crystals, potionT1..potionT5, equippedSkills([]), currentRun(Json?)`.
+Скалярного `potionCharges` БОЛЬШЕ НЕТ — заменён пятью `potionT<N>` (Int, `potionT1` default 3, остальные 0), колонка удалена миграцией `20260911130000_potion_charges_drop`.
 `bonusLevels` (Int, default 0, `schema.prisma:38`) в прежней версии этой записи ОТСУТСТВОВАЛ — а он живой: это единственный источник уровней НЕ от статов, его читает `calculateLevel(strength, agility, endurance, bonusLevels)` и в `/run/start-explore`, и в `/character/equip`. Полей `totalDamageReceived`/`totalDamageDealt`/`totalSkillUses` в схеме НЕТ (были в старой версии этой записи, не сверялись).
 ⚠️ **`luck` и `crystals` нигде не читаются и не пишутся в `server/src`** (сверено grep'ом по всему серверу) — открытый вопрос, не задача: это не следствие удаления старого потока, поля были мёртвыми и до него.
 
@@ -143,7 +175,7 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 (см. Next Steps, [СТАРЫЙ ПОТОК]).
 
 **`App.tsx`** — Main state.
-PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility, equippedSkills, potionCharges}`
+PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility, equippedSkills, potions[5]}`
 - Navigation: 5-tab bottom nav (Персонаж / Магазин / Исследовать / Снаряжение / Друзья)
 - Кнопка "Начать забег" открывает `<Explore>` БЕЗ `mapFile` — карту
   называет сервер (Phase 2.5, см. ниже). Debug-панель карт A-F передаёт
@@ -207,11 +239,108 @@ calculateLevel(strength, agility, endurance, bonusLevels):
   [ЭКОНОМИКА]). Единственный СУЩЕСТВУЮЩИЙ обмен трофеев — у Контрабандиста
   ВНУТРИ забега, ×1.5 при удаче / кража половины при провале (другая
   механика, не путать с обменом на золото).
-- Potions: max 3 per run, tracked in currentRun.potions
+- Potions: ПЯТЬ ТИРОВ, у каждого своя сила лечения и уровень открытия —
+  каталог `src/potions.ts` (10/15/20/25/30% от maxHp, ур. 1/5/10/20/30, цена
+  20/45/90/160/280). Запас свой на каждый тир (`Character.potionT1..T5`).
+  `currentRun.potions` — снимок склада ПО ТИРАМ на старт забега,
+  `currentRun.sips` — лимит глотков за забег (`MAX_SIPS_PER_RUN = 3`, но не
+  больше суммы запаса). Пьётся всегда СТАРШИЙ доступный тир, кончился —
+  следующий вниз прямо внутри забега; иконка на кнопке HUD показывает, что
+  выпьется следующим.
 
 ---
 
 ## Next Steps (приоритет)
+
+### Сделано (сессия 11-13.09.2026)
+
+- **[ШИПЫ] Баг «урон от шипов сквозь платформу» ПОЧИНЕН.** Причина была НЕ в
+  шипах: прямоугольник тела игрока (`PLAYER_HEIGHT = 128` от `phys.y`) выше
+  настоящей макушки спрайта, а величина расхождения зависит от позы — в
+  прыжке ноги поджаты и якорь смещён (`RISE_ANCHOR_Y = 0.729` /
+  `FALL_ANCHOR_Y = 0.816`), поэтому фигура рисуется ниже. Замеры по альфе
+  спрайтов: земля (idle/run) 3.73…18.86, воздух (кадры 9 и 14 `jump.png`)
+  31.85…47.35 — разброс ~44px. Починка: `isTouchingSpikes` получает верх ТЕЛА
+  вместо верха бокса, мерка выбирается по `phys.onGround` из двух ЗАМЕРЕННЫХ
+  констант `SPIKE_BODY_TOP_GROUND = 3.73` / `SPIKE_BODY_TOP_AIR = 31.85`
+  (минимум внутри группы поз, чтобы проверка не пропустила реальную голову).
+  НИЗ остался `phys.y + PLAYER_HEIGHT` — шипы под ногами не затронуты.
+  ⚠️ Держится на инварианте `JUMP_HIT_OFFSET_Y − TILE_SIZE*PLATFORM_H_RATIO −
+  SPIKE_BODY_TOP_AIR <= 0` (сейчас −20.01), который перевернётся МОЛЧА при
+  смене спрайта героя или высоты прыжка — см. одноимённую запись в Critical
+  Gotchas и рецепт перезамера в комментарии к константам.
+
+- **[ЗЕЛЬЯ] Система пяти тиров — ГОТОВА целиком** (схема, сервер, клиент,
+  магазин, HUD):
+  1. **Схема:** пять колонок `Character.potionT1..potionT5` вместо скалярного
+     `potionCharges`. Две миграции — `20260911120000_potion_tiers_add`
+     (ADD + `UPDATE potionT1 = potionCharges`) и
+     `20260911130000_potion_charges_drop` (DROP отдельным заходом).
+  2. **Единый каталог:** `src/potions.ts` — источник правды (тир, `healFrac`,
+     `levelRequired`, `price`, иконка, название, флейвор) + `MAX_SIPS_PER_RUN`,
+     `highestAvailableTier()`, `emptyPotionStock()`. Байт-в-байт копия
+     `server/src/potions.ts`, сверка `python tools/check_potion_sync.py`
+     (read-only, sha256) — гонять ПЕРЕД деплоем сервера, как `check_map_sync.py`.
+     Общего пакета нет: `tsconfig.app.json` включает только `src`, у сервера
+     `rootDir "./src"`. До каталога проценты лечения жили в ТРЁХ местах и
+     противоречили друг другу (витрина обещала 10..30%, лечило всегда 25%).
+  3. **Покупка:** `/character/buy-potion` принимает `{tier}`, цену и уровень
+     открытия берёт из каталога, проверяет `calculateLevel(...)`, отдаёт
+     `{gold, potions[5]}`. Кнопка в витрине подключена (была `onClick={() => {}}`).
+  4. **Забег:** `/run/start-explore` кладёт в `currentRun` снимок склада по
+     тирам и `sips`; клиент держит `potionStockRef`/`potionSipsLeftRef`, на
+     кадре глотка выбирает `highestAvailableTier` и лечит
+     `maxHp * POTION_TIERS[tier-1].healFrac`. Прежняя заглушка
+     `POTION_HEAL_FRAC = 0.25` удалена.
+  5. **Списание:** `/run/finish-explore` принимает `potionsDrunkByTier[]` и
+     клэмпит в три ступени — поэлементная валидация (мусор → 0, как у
+     `closedEvents`), потолок ПО КАЖДОМУ ТИРУ против `currentRun.potions`
+     (именно он не даёт списать выпитое дорогое как дешёвое), потолок по сумме
+     против `sips` со срезом излишка от МЛАДШИХ тиров вверх. Списывается
+     независимо от `died`.
+  6. **HUD:** кнопка зелья показывает фоном иконку тира, который выпьется
+     следующим, и текстом число ОСТАВШИХСЯ ГЛОТКОВ; меняется по ходу забега.
+
+### Открытые задачи (всплыли в сессии 11-13.09.2026)
+
+- **[ТРОФЕИ, не воспроизводится] Сообщение «за успешный забег трофеи не
+  прибавляются» НЕ подтвердилось, причина не найдена.** Цепочка прослежена
+  целиком и оказалась целой. ПРОВЕРЕНО И ИСКЛЮЧЕНО: рассинхрон клиент/сервер
+  по тройке событий (клиент берёт массив сервера как есть, индексы и длина
+  совпадают); расхождение путей «смерть от скилла» vs «от меча» (обе идут
+  через общую `damageEnemy`/`damageBoss`, путь закрытия события один); имя
+  поля `trophyReward` (совпадает буква в букву с читающим его `trophySum`);
+  длина массива событий (всегда 3, проверено прогоном реального
+  `rollRunEvents` по всем семи картам). Порядок проверки, ЕСЛИ симптом
+  вернётся: (1) была ли на экране итогов плашка `saveStatus` — красная «Забег
+  не запомнят» или серая «Ты вне мира»; (2) есть ли `POST /run/finish-explore`
+  в логах Render и с каким кодом (400 `No active explore run` и 401 ретраев
+  не получают и уходят в `.catch` — только консоль и плашка); (3) как именно
+  закончился забег — смерть / выход шестерёнкой / все три события. Без этих
+  трёх фактов дальше копать бессмысленно.
+
+- **[ПРОИЗВОДИТЕЛЬНОСТЬ, НЕ ИЗМЕРЕНО] Просадки/подвисания при беге на
+  некоторых картах.** Похоже на догрузку текстур в момент появления объекта в
+  кадре. Гипотеза НЕ проверена ничем — ни профайлером, ни замером, ни
+  сопоставлением с конкретными картами/объектами. Не чинить по догадке:
+  сначала измерить.
+
+- **[ЗЕЛЬЯ, дыра] Закрыл приложение в забеге — выпитое НЕ списывается.**
+  Прерванный забег закрывает `/auth/login` (обнуляет трофеи), но данных о
+  выпитом нет — клиент их не прислал, а выдумывать нельзя (`auth.ts` отдаёт
+  склад как есть). Следствие: убить приложение выгоднее, чем умереть, —
+  прямое нарушение принятого правила «закрыть приложение никогда не должно
+  быть выгоднее смерти» (см. Design Decisions, вариант А).
+
+- **[ЗЕЛЬЯ/ЭКОНОМИКА] Покупка не ограничена сверху, а в забег едет максимум
+  3 глотка.** `potionT<N>` копятся без потолка, `MAX_SIPS_PER_RUN = 3` —
+  золото за зелья сверх этого тратится впустую и игроку об этом нигде не
+  сказано.
+
+- **[СНАРЯЖЕНИЕ] Экипировка на вкладке — фейковые данные.** `TEST_INVENTORY`
+  (6 захардкоженных предметов) в `App.tsx`; реальный `GET /character/inventory`
+  вкладкой НЕ вызывается. Зелья на той же вкладке переведены на настоящий
+  `player.potions`, экипировка — нет.
 
 ### Открытые задачи (очередь, всплыли в Phase 2)
 - **[EXPLORE, мелкое]** `enemiesRef` НЕ очищается в cleanup эффекта
@@ -514,6 +643,12 @@ calculateLevel(strength, agility, endurance, bonusLevels):
       офлайн-заглушку `DevTester` (вне Telegram); в Telegram скиллы приходят
       с сервера и этой строкой не задеваются. Перед релизом вернуть боевой
       набор — по прежней записи в коде это было `['heal', 'dash']`.
+    - **Панель диагностики прыжка** (`// TEMP DEBUG: jump diagnostics`) —
+      временный замер пропавших прыжков: панель под HP-плитой и счётчики в
+      `Explore.tsx`, счётчик нажатий ▲ в `TouchControls.tsx`. Снимать целиком:
+      после уборки `grep -rn "TEMP DEBUG: jump diagnostics" src` должен быть
+      пуст, а кнопка ▲ в `TouchControls.tsx` вернуться к одной строке
+      `bindTap(jump, () => { jumpPressedRef.current = true })`.
     - Панели тюнеров (`TEMP_FIREBALL_TUNER`/`TEMP_ICEBALL_TUNER`) в этом
       чеклисте НЕ значатся и не нужны — удалены вместе с запеканием чисел
       снаряда в константы, `grep -rn "TEMP_FIREBALL\|TEMP_ICEBALL" src` пуст.

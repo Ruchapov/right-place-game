@@ -1100,6 +1100,105 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     }
   }
 
+  // TEMP DEBUG: jump diagnostics — ОСНОВНОЙ БЛОК. Временный замер пропавших
+  // прыжков, НЕ фикс: логику прыжка, физику и кнопки не меняет, только считает
+  // и показывает. Панель пишется ТОЛЬКО прямо в DOM через реф (по образцу
+  // updateHpBar), без useState — сама рендеров Explore не вызывает, иначе
+  // исказила бы замер. Снимается целиком: grep "TEMP DEBUG: jump diagnostics"
+  // по src/ (этот блок + точки вызова в тикере, setup(), клавиатуре, разметке и
+  // TouchControls.tsx) и пункт в CLAUDE.md "УБРАТЬ ПЕРЕД РЕЛИЗОМ".
+  const jumpDbgPanelRef = useRef<HTMLDivElement>(null)
+  // presses — отдельный реф-число: инкрементирует САМ обработчик нажатия
+  // (кнопка ▲ в TouchControls, клавиша прыжка), а не тикер. presses больше, чем
+  // jumps + eaten, — нажатия, слившиеся в один флаг до того, как тикер его прочёл.
+  const jumpDbgPressesRef = useRef(0)
+  const jumpDbgRef = useRef({
+    jumps: 0,
+    eaten: 0,
+    lastEatenReason: null as string | null,
+    lastEatenAt: 0,
+    // Макс. длительность кадра: окно текущей секунды и прошлой, показывается
+    // большее из двух — пик держится на экране 1–2 с, а не мелькает кадр.
+    frameMaxCur: 0,
+    frameMaxPrev: 0,
+    frameWindowStart: 0,
+    // Сдвигал ли pushPlayerOutX (сундук) игрока С ПРОШЛОГО обновления панели:
+    // панель пишется раз в 100 мс, и признак "ровно в этом кадре" на ней почти
+    // никогда не совпал бы с кадром записи.
+    chestPushedSinceRender: false,
+    lastRenderAt: 0,
+  })
+  // now передаётся снаружи (из setup()/тикера), а не берётся здесь: функции в
+  // теле компонента с performance.now() линтер считает вызовом во время рендера.
+  function jumpDbgReset(now: number) {
+    jumpDbgPressesRef.current = 0
+    Object.assign(jumpDbgRef.current, {
+      jumps: 0, eaten: 0, lastEatenReason: null, lastEatenAt: 0,
+      frameMaxCur: 0, frameMaxPrev: 0, frameWindowStart: now,
+      chestPushedSinceRender: false, lastRenderAt: 0,
+    })
+  }
+  // Начало тика. elapsedMS, а не deltaMS: deltaMS у PixiJS срезан потолком
+  // minFPS и масштабирован speed, elapsedMS — сырое время кадра.
+  function jumpDbgOnFrame(elapsedMS: number, now: number) {
+    const d = jumpDbgRef.current
+    if (now - d.frameWindowStart >= 1000) {
+      d.frameMaxPrev = d.frameMaxCur
+      d.frameMaxCur = 0
+      d.frameWindowStart = now
+    }
+    d.frameMaxCur = Math.max(d.frameMaxCur, elapsedMS)
+  }
+  // Сразу ПОСЛЕ блока прыжка в тикере, только если флаг был выставлен.
+  // jumped — настоящий jumpedThisFrame из самого блока, условие здесь не
+  // повторяется. Причины отказа — те же три части условия: при отказе блок
+  // прыжка только сбрасывает флаг, так что к этому вызову они не изменились.
+  function jumpDbgOnConsume(jumped: boolean, now: number) {
+    const d = jumpDbgRef.current
+    if (jumped) {
+      d.jumps += 1
+      return
+    }
+    const reasons: string[] = []
+    if (deathRef.current) reasons.push('death')
+    if (!physicsRef.current.onGround) reasons.push('onGround')
+    if (drinkingRef.current) reasons.push('drinking')
+    d.eaten += 1
+    // Пустой список невозможен по условию прыжка — если случится, "?" громко.
+    d.lastEatenReason = reasons.length > 0 ? reasons.join('+') : '?'
+    d.lastEatenAt = now
+  }
+  // После цикла сундуков в тикере. Пишет в DOM не чаще раза в 100 мс: запись
+  // текста каждый кадр сама стоила бы пересчёта стилей и искажала бы замер
+  // длительности кадра. Счётчики при этом точные — копятся каждый кадр.
+  function jumpDbgRender(now: number) {
+    const d = jumpDbgRef.current
+    if (now - d.lastRenderAt < 100) return
+    d.lastRenderAt = now
+    const panel = jumpDbgPanelRef.current
+    if (!panel) return
+    const phys = physicsRef.current
+    // Зазор по x между боксом игрока и хитбоксом ближайшего сундука; 0 —
+    // пересекаются по x.
+    let chestGap: number | null = null
+    for (const chest of chestsRef.current) {
+      const box = chest.hitbox
+      const gap = Math.max(0, box.x - (phys.x + C.PLAYER_WIDTH), phys.x - (box.x + box.width))
+      if (chestGap === null || gap < chestGap) chestGap = gap
+    }
+    panel.textContent = [
+      `presses ${jumpDbgPressesRef.current}  jumps ${d.jumps}  eaten ${d.eaten}`,
+      `last eaten: ${d.lastEatenReason === null ? '—' : `${d.lastEatenReason} ${Math.round(now - d.lastEatenAt)}ms ago`}`,
+      `onGround ${phys.onGround ? 'Y' : 'N'}  vy ${phys.vy.toFixed(2)}  dir ${dirRef.current}`,
+      `frame max 1s: ${Math.round(Math.max(d.frameMaxCur, d.frameMaxPrev))}ms`,
+      chestGap === null
+        ? 'chest —'
+        : `chest gap ${Math.round(chestGap)}px  pushed ${d.chestPushedSinceRender ? 'Y' : 'N'}`,
+    ].join('\n')
+    d.chestPushedSinceRender = false
+  }
+  // TEMP DEBUG: jump diagnostics — конец основного блока.
+
   // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку
   // (см. attackPressedRef-обработчик в setup). Определена на уровне компонента
   // (не внутри setup/applyAttackHit), т.к. вызывается из takeDamage ниже —
@@ -1268,6 +1367,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           e.preventDefault()
           if (e.repeat) return
           jumpPressedRef.current = true
+          jumpDbgPressesRef.current += 1 // TEMP DEBUG: jump diagnostics
           break
         case 'KeyJ':
           if (e.repeat) return
@@ -1921,6 +2021,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // createEnemySystem().spawn() пушит новых врагов сразу в этот же ref.
       enemiesRef.current = [] // сброс на случай повторного запуска setup()
       chestsRef.current = [] // сброс на случай повторного запуска setup()
+      jumpDbgReset(performance.now()) // TEMP DEBUG: jump diagnostics — счётчики за забег
       smugglersRef.current = [] // сброс на случай повторного запуска setup()
       finishExploreSentRef.current = false // сброс на случай повторного запуска setup()
       smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
@@ -2931,6 +3032,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
 
       app.ticker.add((ticker) => {
         const dt = ticker.deltaTime
+        // TEMP DEBUG: jump diagnostics — время кадра
+        const jumpDbgNow = performance.now()
+        jumpDbgOnFrame(ticker.elapsedMS, jumpDbgNow)
         const startX = phys.x
         const startY = phys.y
         // Верх бокового хитбокса в прыжке — та же поправка, что у
@@ -3097,6 +3201,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // Прыжок: только с тверди, двойного прыжка нет. Одно нажатие —
         // ровно один прыжок, флаг сразу сбрасывается.
         let jumpedThisFrame = false
+        const jumpDbgHadPress = jumpPressedRef.current // TEMP DEBUG: jump diagnostics
         if (jumpPressedRef.current) {
           jumpPressedRef.current = false
           if (!deathRef.current && phys.onGround && !drinkingRef.current) {
@@ -3105,6 +3210,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             jumpedThisFrame = true
           }
         }
+        if (jumpDbgHadPress) jumpDbgOnConsume(jumpedThisFrame, jumpDbgNow) // TEMP DEBUG: jump diagnostics
 
         // Вертикальная физика (гравитация + приземление)
         const wasOnGround = phys.onGround
@@ -3388,8 +3494,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               ])
             }
           }
+          const jumpDbgXBefore = phys.x // TEMP DEBUG: jump diagnostics — сдвинул ли push (сама функция не тронута)
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
+          if (phys.x !== jumpDbgXBefore) jumpDbgRef.current.chestPushedSinceRender = true // TEMP DEBUG: jump diagnostics
         }
+        jumpDbgRender(jumpDbgNow) // TEMP DEBUG: jump diagnostics
 
         // Обелиски: стена по X (та же pushPlayerOutX, что у сундука) — и
         // после удара по обелиску тоже (см. задачу). Спрайт/хитбокс не
@@ -3952,6 +4061,28 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         eventKinds={eventKinds}
       />
 
+      {/* TEMP DEBUG: jump diagnostics — панель замера под HP-плитой. Текст
+          пишет jumpDbgRender прямо в DOM; React-детей здесь нет намеренно,
+          иначе React и запись в textContent спорили бы за один узел. */}
+      <div
+        ref={jumpDbgPanelRef}
+        style={{
+          position: 'fixed',
+          top: `calc(env(safe-area-inset-top) + 6px + ${C.HP_FRAME_H} + 4px)`,
+          left: 8,
+          zIndex: 1001,
+          pointerEvents: 'none',
+          fontFamily: 'monospace',
+          fontSize: 10,
+          lineHeight: 1.35,
+          color: '#EDE7F2',
+          background: 'rgba(0,0,0,0.6)',
+          padding: '3px 6px',
+          borderRadius: 4,
+          whiteSpace: 'pre',
+        }}
+      />
+
       {/* Выход через шестерёнку = смерть по решению разработчика (трофеи
           сгорают) — sendFinishExplore(true) включает экран итогов ниже,
           onClose родителя уходит только по кнопке "В меню" на нём, не
@@ -3973,6 +4104,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             skill1BtnRef={skill1BtnRef}
             skill2BtnRef={skill2BtnRef}
             updateSkillButtons={updateSkillButtons}
+            jumpDbgPressesRef={jumpDbgPressesRef /* TEMP DEBUG: jump diagnostics */}
           />
         </>
       )}

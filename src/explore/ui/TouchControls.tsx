@@ -21,6 +21,9 @@ interface TouchControlsProps {
   // причине, что updatePotionButton: cssText в ref-колбэке ниже стирает
   // opacity при каждом ре-рендере, вид переустанавливается сразу после.
   updateSkillButtons: () => void
+  // TEMP DEBUG: jump diagnostics — счётчик нажатий ▲, инкремент прямо в
+  // обработчике нажатия (см. jumpDbgPressesRef в Explore.tsx).
+  jumpDbgPressesRef: MutableRefObject<number>
 }
 
 export default function TouchControls({
@@ -36,6 +39,7 @@ export default function TouchControls({
   skill1BtnRef,
   skill2BtnRef,
   updateSkillButtons,
+  jumpDbgPressesRef, // TEMP DEBUG: jump diagnostics
 }: TouchControlsProps) {
   return (
     <>
@@ -247,7 +251,12 @@ export default function TouchControls({
             }
 
             bindTap(atk, () => { attackPressedRef.current = true })
-            bindTap(jump, () => { jumpPressedRef.current = true })
+            // TEMP DEBUG: jump diagnostics — до замера здесь была одна строка
+            // bindTap(jump, () => { jumpPressedRef.current = true })
+            bindTap(jump, () => {
+              jumpPressedRef.current = true
+              jumpDbgPressesRef.current += 1 // TEMP DEBUG: jump diagnostics
+            })
 
             const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
             if (dodgeEl) bindTap(dodgeEl, () => { dodgePressedRef.current = true })
