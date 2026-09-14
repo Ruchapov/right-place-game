@@ -92,7 +92,23 @@ function potionStockToColumns(stock: number[]): PotionColumns {
 // индекс = тир-1), `sips` — сколько глотков вообще разрешено за забег
 // (MAX_SIPS_PER_RUN, но не больше суммы запаса). Раньше здесь был один скаляр,
 // который смешивал две разные вещи: сколько есть и сколько можно выпить.
-type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number }
+// `potionsDrunk` — выпитое за забег ПО ТИРАМ, пишет /run/sip по одному глотку.
+// Склад (potionT1..T5) оно не трогает — списание одним пакетом в
+// /run/finish-explore. Необязательное: у забега без глотков и у забега, начатого
+// до появления /run/sip, поля нет. Читать только через readRunPotionsDrunk.
+type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[] }
+
+// Выпитое по тирам из currentRun. Поля нет — глотков не было: это честные нули,
+// а не догадка. Поле есть, но не массив из POTION_TIER_COUNT неотрицательных
+// целых — null: состояние испорчено, и вызывающий обязан сказать об этом
+// громко, а не считать с нуля.
+function readRunPotionsDrunk(run: ActiveExploreRun): number[] | null {
+  const raw: unknown = run.potionsDrunk
+  if (raw === undefined) return new Array(POTION_TIER_COUNT).fill(0)
+  if (!Array.isArray(raw) || raw.length !== POTION_TIER_COUNT) return null
+  if (!raw.every((n) => Number.isInteger(n) && (n as number) >= 0)) return null
+  return [...(raw as number[])]
+}
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
 // (App.tsx) still sends an explicit one, still validated below.
@@ -120,6 +136,8 @@ type FinishExploreBody = {
   // (currentRun.potions), then capped again against the run's sip allowance.
   potionsDrunkByTier?: number[]
 }
+// Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
+type SipBody = { tier?: number }
 // Shared "run result" shape — one results screen for both ways an Explore
 // run can end: the client explicitly finishing it (POST /run/finish-explore)
 // or the server finding a stale one still open on the NEXT login (POST
@@ -254,6 +272,74 @@ export async function runRoutes(server: FastifyInstance) {
       sips: potionSips,
       armor: totalArmor,
     })
+  })
+
+  // Зафиксировать ОДИН выпитый глоток по тиру — в currentRun, а не в складе.
+  // Колонки potionT1..T5 здесь НЕ трогаются: списание со склада остаётся одним
+  // пакетом в /run/finish-explore, иначе выпитое спишется дважды.
+  //
+  // Потолки — те же, что у finish-explore (ступени 2 и 3 там), но превышение
+  // здесь ОТКАЗ 400, а не тихое срезание: о рассинхроне клиент должен узнать на
+  // самом глотке.
+  server.post<{ Body: SipBody }>('/run/sip', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+
+    const rawTier = request.body?.tier
+    const tierSpec = Number.isInteger(rawTier) ? potionTierByNumber(rawTier as number) : null
+    if (tierSpec === null) {
+      return reply.status(400).send({ error: 'Unknown potion tier' })
+    }
+    const tierIndex = tierSpec.tier - 1
+
+    const drunk = readRunPotionsDrunk(run)
+    if (drunk === null) {
+      request.log.error({ userId, potionsDrunk: run.potionsDrunk }, 'sip: currentRun.potionsDrunk is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+
+    // Потолок по тиру — снимок склада на старте забега (ступень 2 finish-explore).
+    const runStock = Array.isArray(run.potions) ? run.potions : []
+    const issued = runStock[tierIndex] ?? 0
+    if (drunk[tierIndex] + 1 > issued) {
+      return reply.status(400).send({ error: 'Tier stock exhausted', tier: tierSpec.tier, issued, drunk: drunk[tierIndex] })
+    }
+    // Потолок по сумме — run.sips (ступень 3 finish-explore), тот же откат на
+    // MAX_SIPS_PER_RUN для нецелого значения.
+    const sipsAllowed = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
+    const drunkTotal = drunk.reduce((sum, n) => sum + n, 0)
+    if (drunkTotal + 1 > sipsAllowed) {
+      return reply.status(400).send({ error: 'No sips left', sips: sipsAllowed, drunk: drunkTotal })
+    }
+
+    const nextDrunk = [...drunk]
+    nextDrunk[tierIndex] += 1
+    const nextRun: ActiveExploreRun = { ...run, potionsDrunk: nextDrunk }
+
+    // Условная запись: применяется, только если currentRun в базе всё ещё РОВНО
+    // тот, что прочитан выше (jsonb-сравнение, порядок ключей не важен). Без
+    // этого read-modify-write гонялся бы: два глотка подряд теряли бы
+    // инкремент, а finish-explore или вход, закрывшие забег между чтением и
+    // записью, получили бы currentRun обратно — забег "воскрес" бы, старт
+    // следующего упёрся бы в 'A run is already in progress', а ближайший вход
+    // закрыл бы его как смерть.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      data: { currentRun: nextRun as unknown as Prisma.InputJsonValue },
+    })
+    if (written.count === 0) {
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+
+    return reply.send({ potionsDrunk: nextDrunk, sipsLeft: sipsAllowed - (drunkTotal + 1) })
   })
 
   // Finish a map-based Explore run: award trophies for the events the client
@@ -396,6 +482,17 @@ export async function runRoutes(server: FastifyInstance) {
         const v = rawDrunk[i]
         if (Number.isInteger(v) && (v as number) >= 0) reportedDrunk[i] = v as number
       }
+    }
+
+    // Сверка с тем, что накопил /run/sip в currentRun. Только ПРЕДУПРЕЖДЕНИЕ:
+    // списание по-прежнему идёт от числа клиента (ступени 2–3 ниже), расхождение
+    // здесь — сигнал о рассинхроне клиента и сервера, а не повод отказать.
+    const recordedDrunk = readRunPotionsDrunk(run)
+    if (recordedDrunk === null || reportedDrunk.some((n, i) => n !== recordedDrunk[i])) {
+      request.log.warn(
+        { userId, reportedDrunk, rawReported: rawDrunk, recordedDrunk, rawRecorded: run.potionsDrunk },
+        'finish-explore: potionsDrunkByTier differs from /run/sip record in currentRun',
+      )
     }
 
     // Ступень 2: потолок ПО КАЖДОМУ ТИРУ отдельно — run.potions это снимок из
