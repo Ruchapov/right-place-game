@@ -1128,7 +1128,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     const expectedDrunk = [...potionsDrunkByTierRef.current]
     const expectedSipsLeft = potionSipsLeftRef.current
     const gen = sipRunGenRef.current
-    sipQueueRef.current = sipQueueRef.current.then(async () => {
+    const link = sipQueueRef.current.then(async () => {
       try {
         const result = await recordSip(sessionToken, tier)
         const same =
@@ -1149,7 +1149,23 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         sipSyncRef.current.mismatched += 1
         setSipSync({ ...sipSyncRef.current })
       } catch (err) {
-        console.error('Explore: /run/sip — глоток НЕ сохранён на сервере', { tier, error: err })
+        // Причина — отдельными полями, не только внутри объекта ошибки: в
+        // консоли инспектора сразу видно, таймаут это, сеть или ответ сервера.
+        console.error(
+          'Explore: /run/sip — глоток НЕ сохранён на сервере',
+          err instanceof SipError
+            ? {
+                tier,
+                kind: err.kind,
+                budgetExhausted: err.budgetExhausted,
+                status: err.status,
+                serverError: err.serverError,
+                attempts: err.attempts,
+                attemptLog: err.attemptLog,
+                error: err,
+              }
+            : { tier, error: err },
+        )
         if (gen !== sipRunGenRef.current) return
         const limitRejected =
           err instanceof SipError &&
@@ -1159,7 +1175,16 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         if (limitRejected) sipSyncRef.current.limitRejected = true
         setSipSync({ ...sipSyncRef.current })
       }
+    }).catch((unexpected) => {
+      // Брошено ВНЕ try выше (из самого catch) — звено всё равно обязано
+      // завершиться, иначе каждый следующий глоток ждал бы его вечно.
+      console.error('Explore: /run/sip — непредвиденная ошибка при обработке глотка', { tier, error: unexpected })
     })
+    // В очередь кладётся звено, которое завершается ВСЕГДА: пустой обработчик
+    // бросить не может, так что следующий глоток стартует при любом исходе.
+    // recordSip сам ограничен по времени (SIP_TOTAL_BUDGET_MS в api.ts), поэтому
+    // звено не может и зависнуть навсегда.
+    sipQueueRef.current = link.catch(() => {})
   }
 
   // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку

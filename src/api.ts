@@ -207,37 +207,102 @@ export type SipResult = { potionsDrunk: number[]; sipsLeft: number }
 // Отказ /run/sip после всех повторов — по образцу EquipError: вызывающему мало
 // факта ошибки, ему нужен код и текст сервера, чтобы отличить рассинхрон лимита
 // ('Tier stock exhausted' / 'No sips left') от сбоя сети.
+// Причина последней неудачной попытки:
+//   timeout — попытку прервал наш таймер (SIP_ATTEMPT_TIMEOUT_MS или остаток
+//             общего бюджета), fetch сам бы так и висел;
+//   network — fetch отказал сам (нет сети, DNS, CORS и т.п.);
+//   http    — сервер ответил кодом ошибки.
+export type SipFailureKind = 'timeout' | 'network' | 'http'
+
 export class SipError extends Error {
-  /** HTTP-код последней попытки; null — ответа не было (сетевая ошибка). */
+  /** HTTP-код последней попытки; null — ответа не было (таймаут или сеть). */
   status: number | null
   /** Поле error из тела ответа; null — тела нет или в нём не строка. */
   serverError: string | null
   /** Сколько попыток сделано всего, включая повторы. */
   attempts: number
-  /** Исходная ошибка fetch при сетевом сбое, иначе null. */
+  /** Причина последней неудачной попытки, см. SipFailureKind. */
+  kind: SipFailureKind
+  /** true — повторы оборвал общий бюджет времени (SIP_TOTAL_BUDGET_MS), а не их лимит. */
+  budgetExhausted: boolean
+  /** Исход каждой попытки по порядку — для консоли: "#1 timeout 4000ms", "#2 network: …". */
+  attemptLog: string[]
+  /** Исходная ошибка fetch при сетевом сбое или таймауте, иначе null. */
   networkError: unknown
-  constructor(message: string, status: number | null, serverError: string | null, attempts: number, networkError: unknown) {
+  constructor(message: string, fields: {
+    status: number | null
+    serverError: string | null
+    attempts: number
+    kind: SipFailureKind
+    budgetExhausted: boolean
+    attemptLog: string[]
+    networkError: unknown
+  }) {
     super(message)
-    this.status = status
-    this.serverError = serverError
-    this.attempts = attempts
-    this.networkError = networkError
+    this.status = fields.status
+    this.serverError = fields.serverError
+    this.attempts = fields.attempts
+    this.kind = fields.kind
+    this.budgetExhausted = fields.budgetExhausted
+    this.attemptLog = fields.attemptLog
+    this.networkError = fields.networkError
   }
 }
 
-// Повторы — тот же принцип, что у finishRunExplore: сетевая ошибка и 5xx
-// повторяются (до 2 раз, пауза короткая-потом-длиннее), 4xx — отказ сразу.
-// Исключение — 409 'Run state changed, retry': штатная гонка двух быстрых
-// глотков на сервере, повторяется ОДИН раз, без паузы.
+// Повторы — тот же принцип, что у finishRunExplore: сетевая ошибка, таймаут
+// попытки и 5xx повторяются (до 2 раз, пауза короткая-потом-длиннее), 4xx —
+// отказ сразу. Исключение — 409 'Run state changed, retry': штатная гонка двух
+// быстрых глотков на сервере, повторяется ОДИН раз, без паузы.
 const SIP_RETRY_DELAYS_MS = [300, 1200]
+// Время ограничено ЯВНО: fetch сам по себе не ограничен ничем, и без сети
+// (авиарежим) отказ мог не наступить вовсе — тогда не срабатывал catch в
+// sendSip, не загоралась плашка и вставала очередь глотков.
+//   SIP_ATTEMPT_TIMEOUT_MS — потолок одной попытки (запрос + чтение тела);
+//   SIP_TOTAL_BUDGET_MS    — потолок всего вызова вместе с повторами и паузами.
+// Худший случай 4000 + 300 + 4000 + 1200 = 9500 мс до третьей попытки, поэтому
+// она получает только остаток бюджета (2500 мс), а не полные 4000.
+const SIP_ATTEMPT_TIMEOUT_MS = 4000
+const SIP_TOTAL_BUDGET_MS = 12000
+
+function describeFetchError(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+}
 
 export async function recordSip(token: string, tier: number): Promise<SipResult> {
   const body = JSON.stringify({ tier })
+  const deadline = Date.now() + SIP_TOTAL_BUDGET_MS
+  const attemptLog: string[] = []
   let transientRetries = 0
   let conflictRetried = false
   let attempts = 0
+  let lastKind: SipFailureKind = 'timeout'
+
+  // Следующая пауза перед повтором, если повтор ещё разрешён И пауза вместе с
+  // хоть каким-то временем на попытку укладывается в бюджет. null — повторять
+  // нельзя; budgetExhausted различает "кончился бюджет" и "кончились повторы".
+  const nextRetryDelay = (): { delay: number | null; budgetExhausted: boolean } => {
+    const delay = SIP_RETRY_DELAYS_MS[transientRetries]
+    if (delay === undefined) return { delay: null, budgetExhausted: false }
+    if (Date.now() + delay >= deadline) return { delay: null, budgetExhausted: true }
+    return { delay, budgetExhausted: false }
+  }
+
   while (true) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw new SipError(`Sip failed (${lastKind}, time budget exhausted) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: null, serverError: null, attempts, kind: lastKind, budgetExhausted: true, attemptLog, networkError: null,
+      })
+    }
     attempts++
+    const attemptTimeout = Math.min(SIP_ATTEMPT_TIMEOUT_MS, remaining)
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, attemptTimeout)
+
     let response: Response
     try {
       response = await fetch(`${SERVER_URL}/run/sip`, {
@@ -247,33 +312,67 @@ export async function recordSip(token: string, tier: number): Promise<SipResult>
           'Content-Type': 'application/json',
         },
         body,
+        signal: controller.signal,
       })
     } catch (e) {
-      if (transientRetries < SIP_RETRY_DELAYS_MS.length) {
-        await sleep(SIP_RETRY_DELAYS_MS[transientRetries])
+      clearTimeout(timer)
+      lastKind = timedOut ? 'timeout' : 'network'
+      attemptLog.push(timedOut ? `#${attempts} timeout ${attemptTimeout}ms` : `#${attempts} network: ${describeFetchError(e)}`)
+      const retry = nextRetryDelay()
+      if (retry.delay !== null) {
+        await sleep(retry.delay)
         transientRetries++
         continue
       }
-      throw new SipError(`Sip failed: network error: ${e instanceof Error ? e.message : String(e)}`, null, null, attempts, e)
+      throw new SipError(`Sip failed (${lastKind}${retry.budgetExhausted ? ', time budget exhausted' : ''}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: null, serverError: null, attempts, kind: lastKind, budgetExhausted: retry.budgetExhausted, attemptLog, networkError: e,
+      })
     }
+
     if (response.ok) {
-      return await response.json() as SipResult
+      // Тело читается под тем же таймером: зависшее тело — тот же зависший
+      // запрос. Но БЕЗ повтора: сервер уже ответил 200, глоток у него записан,
+      // и повтор записал бы его второй раз.
+      try {
+        const data = await response.json() as SipResult
+        clearTimeout(timer)
+        return data
+      } catch (e) {
+        clearTimeout(timer)
+        lastKind = timedOut ? 'timeout' : 'network'
+        attemptLog.push(`#${attempts} ${response.status} but body unreadable: ${timedOut ? `timeout ${attemptTimeout}ms` : describeFetchError(e)}`)
+        throw new SipError(`Sip failed (${lastKind}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+          status: response.status, serverError: null, attempts, kind: lastKind, budgetExhausted: false, attemptLog, networkError: e,
+        })
+      }
     }
+
     const err: unknown = await response.json().catch(() => ({}))
+    clearTimeout(timer)
     const serverError =
       typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
         ? (err as { error: string }).error
         : null
-    if (response.status >= 500 && transientRetries < SIP_RETRY_DELAYS_MS.length) {
-      await sleep(SIP_RETRY_DELAYS_MS[transientRetries])
-      transientRetries++
-      continue
+    lastKind = 'http'
+    attemptLog.push(`#${attempts} http ${response.status}${serverError !== null ? ` ${serverError}` : ''}`)
+    if (response.status >= 500) {
+      const retry = nextRetryDelay()
+      if (retry.delay !== null) {
+        await sleep(retry.delay)
+        transientRetries++
+        continue
+      }
+      throw new SipError(`Sip failed (http ${response.status}${retry.budgetExhausted ? ', time budget exhausted' : ''}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: response.status, serverError, attempts, kind: 'http', budgetExhausted: retry.budgetExhausted, attemptLog, networkError: null,
+      })
     }
     if (response.status === 409 && !conflictRetried) {
       conflictRetried = true
-      continue
+      continue // бюджет проверяется в начале цикла
     }
-    throw new SipError(`Sip failed: ${response.status} ${JSON.stringify(err)}`, response.status, serverError, attempts, null)
+    throw new SipError(`Sip failed: ${response.status} ${JSON.stringify(err)} after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+      status: response.status, serverError, attempts, kind: 'http', budgetExhausted: false, attemptLog, networkError: null,
+    })
   }
 }
 
