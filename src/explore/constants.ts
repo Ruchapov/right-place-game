@@ -955,7 +955,8 @@ export const HEAL_COOLDOWN_MS = 5000
 // ATTACK_RANGE=70 на игрока и врага), позже РАЗДЕЛЕНА на два независимых
 // значения (подобраны вживую отладочными слайдерами, см. историю) —
 // PLAYER_ATTACK_RANGE для хитбокса атаки игрока, ENEMY_ATTACK_RANGE для
-// inMeleeReach (дальность удара врага). ATTACK_DAMAGE=15+floor(strength/2),
+// inMeleeReach (дальность удара врага). Урон — НЕ здесь: playerAttackDamage в
+// src/playerDamage.ts (15+floor(strength/2)+урон надетого оружия).
 // ATTACK_COOLDOWN=0.5с (там cooldownLeft тоже тикает в секундах через
 // ticker.deltaMS/1000).
 export const PLAYER_ATTACK_RANGE = 56

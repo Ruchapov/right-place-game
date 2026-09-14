@@ -44,6 +44,7 @@ import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, finishRunExplore, type RunResultSummary, type StartExploreResult } from './api'
+import { playerAttackDamage } from './playerDamage'
 
 type ExploreProps = {
   onClose?: () => void
@@ -87,6 +88,12 @@ type ExploreProps = {
   // выше. Не задан → 0 (см. armorRef ниже, как characterLevelRef откатывается
   // на C.PLAYER_LEVEL_FALLBACK при отсутствующем level).
   armor?: number
+  // Урон надетого оружия (App.tsx: weaponDamage) — слагаемое формулы
+  // playerAttackDamage. 0 — оружия не надето; null/не задан — НЕИЗВЕСТЕН
+  // (инвентарь не загружен или битая строка каталога): настоящий забег с таким
+  // значением не стартует (см. проверку в начале setup()), ноль молча не
+  // подставляется.
+  weaponDamage?: number | null
   // Экипированные скиллы (App.tsx: player.equippedSkills — приходят с сервера,
   // /auth/login -> character.equippedSkills, максимум 2, см. handleSkillToggle).
   // Массив КОРОЧЕ двух (или пустой) — легитимно: игрок волен экипировать 0, 1
@@ -540,7 +547,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, equippedSkills }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, equippedSkills }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -849,10 +856,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   const facingRef = useRef<1 | -1>(1)
 
   // Атака игрока — числа из Battle.tsx (ATTACK_RANGE/ATTACK_COOLDOWN выше).
-  const attackDamage = 15 + Math.floor((strength ?? 0) / 2)
-  // Готовое значение урона — держим наготове для будущего врага/сундука,
-  // сам урон пока никому не применяется (только механизм хитбокса).
-  const attackDamageRef = useRef(attackDamage)
+  // Урон удара мечом. Ставится ОДИН раз на забег в setup() — формулой
+  // playerAttackDamage (src/playerDamage.ts, общая с экраном "Персонаж"), до
+  // вызова /run/start-explore и с громким отказом, если урон неизвестен.
+  // Ноль здесь — НЕ игровое значение: тикер регистрируется в самом конце
+  // setup(), удар раньше невозможен, а утечка нуля была бы ЗАМЕТНА (враги не
+  // получают урона) — тот же приём, что у potionStockRef ниже.
+  const attackDamageRef = useRef(0)
   const attackPressedRef = useRef(false) // флаг тапа по ⚔, читается и сбрасывается в ticker (как jumpPressedRef)
   const attackCooldownRef = useRef(0) // остаток кулдауна, секунды — как cooldownLeft в Battle.tsx
   const attackActiveRef = useRef(false) // true на короткое окно после удара — хитбокс активен
@@ -1228,7 +1238,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     healPlayerRef.current = healPlayer
     applySpikeDamageRef.current = () => takeDamage(maxHp * C.SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
-    attackDamageRef.current = attackDamage
     characterLevelRef.current = characterLevel
     armorRef.current = armor ?? 0
   })
@@ -1326,6 +1335,29 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     async function setup() {
       app = new Application()
       const base = import.meta.env.BASE_URL
+
+      // Урон удара мечом — фиксируется ЗДЕСЬ, один раз на забег, и ДО
+      // /run/start-explore ниже: отказ тут не тратит энергию и не создаёт
+      // currentRun. Сила и снаряжение во время забега не меняются, поэтому
+      // пересчёт на каждом рендере не нужен и был бы вреден: единственная
+      // перезагрузка инвентаря при открытом забеге (App.tsx,
+      // requestPlayerRefresh после финиша) на миг сделала бы урон неизвестным.
+      // Неизвестное — громкий throw в экран ошибки, а не ноль (CLAUDE.md,
+      // Design Decisions — тихие фолбэки).
+      if (strength === undefined) {
+        throw new Error('Сила персонажа неизвестна — профиль не загружен. Забег не начат, энергия не списана.')
+      }
+      if (token) {
+        if (weaponDamage === undefined || weaponDamage === null) {
+          throw new Error('Урон неизвестен — снаряжение не загрузилось. Забег не начат, энергия не списана.')
+        }
+        attackDamageRef.current = playerAttackDamage(strength, weaponDamage)
+      } else {
+        // Офлайн UI-отладка без token: инвентаря нет вовсе (App.tsx:
+        // inventoryStatus 'idle'), урон — без оружия. Это заглушка, и она
+        // названа на оранжевой плашке ("урон без оружия"), как запас зелий.
+        attackDamageRef.current = playerAttackDamage(strength, 0)
+      }
 
       // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
       // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
@@ -3836,7 +3868,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               whiteSpace: 'nowrap',
             }}
           >
-            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTION_STOCK.join('/')} по тирам (заглушка)
+            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTION_STOCK.join('/')} по тирам (заглушка) · урон без оружия
           </div>
         </div>
       )}

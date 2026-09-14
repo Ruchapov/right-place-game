@@ -3,6 +3,7 @@ import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
 import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, EquipError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS } from './potions'
+import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import './App.css'
 
@@ -517,6 +518,17 @@ export default function App() {
   // сеть для неё не нужна вовсе.
   const totalArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
 
+  // Урон надетого оружия — слагаемое формулы урона (src/playerDamage.ts), одно
+  // и то же число для строки "Урон" на экране "Персонаж" и для пропа Explore.
+  // null — НЕИЗВЕСТЕН, а не ноль: инвентарь не 'ready' (грузится, ошибка,
+  // офлайн), либо у надетого оружия damage null (битая строка каталога). Ноль —
+  // только когда оружия честно не надето.
+  const equippedWeapon = inventory.find(i => i.equipped && i.item.slot === 'weapon')
+  const weaponDamage: number | null =
+    inventoryStatus !== 'ready' ? null
+      : equippedWeapon === undefined ? 0
+        : equippedWeapon.item.damage
+
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
   // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
   // result.trophies/strength/endurance/agility/level — АБСОЛЮТНЫЕ значения из
@@ -727,15 +739,16 @@ export default function App() {
               heal:'Лечение', dash:'Рывок-удар', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар',
             }
             const heroSkillSlots = [0, 1].map(i => p.equippedSkills[i] ?? null)
-            // Броня и Удача считаются по НАДЕТЫМ предметам, то есть по
-            // inventory — и врут нулём, пока он не загружен (см.
-            // inventoryStatus). Ноль здесь неотличим от честного "ничего не
-            // надето", поэтому вне 'ready' ставим прочерк. Остальные четыре
-            // стата приходят из player и этой оговорки не требуют — player
+            // Броня, Удача и Урон (слагаемое надетого оружия) считаются по
+            // НАДЕТЫМ предметам, то есть по inventory — и врали бы нулём, пока
+            // он не загружен (см. inventoryStatus). Ноль здесь неотличим от
+            // честного "ничего не надето", поэтому вне 'ready' ставим прочерк
+            // (у Урона — через weaponDamage === null). Остальные три стата
+            // приходят из player и этой оговорки не требуют — player
             // уже закрыт guard'ом "Данные персонажа недоступны" выше.
             const equipStatsKnown = inventoryStatus === 'ready'
             const charStats: { iconSrc: string; value: number | string; label: string }[] = [
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: 15 + Math.floor(p.strength / 2), label:'Урон' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: weaponDamage === null ? '—' : playerAttackDamage(p.strength, weaponDamage), label:'Урон' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: equipStatsKnown ? totalArmor : '—', label:'Броня' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
@@ -2010,7 +2023,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} equippedSkills={player?.equippedSkills} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
     </div>
   )
 }
