@@ -1,5 +1,62 @@
 import type { MutableRefObject } from 'react'
 
+// Подсветка нажатия боевых кнопок. Горит ТОЛЬКО по решению кода: атрибут
+// data-pressed ставится в том же обработчике pointerdown, где пишется реф
+// нажатия, и снимается там же, где нажатие отпускается (у ◀/▶ — там же, где
+// сбрасывается dirRef). Не :active — горящая кнопка значит "код увидел
+// нажатие", а не "браузер что-то нарисовал".
+//
+// Вид задан правилом по атрибуту (PRESS_CSS), а не инлайн-стилями: функция-реф
+// контейнера на КАЖДОМ рендере перезаписывает cssText скриптовых кнопок, и
+// инлайн-подсветка удерживаемой кнопки стёрлась бы. Атрибут cssText не трогает.
+// !important — чтобы правило перебило инлайновые background/border. Только
+// background-color, не background целиком: у 🧪 фоном идёт иконка тира.
+const PRESS_MIN_VISIBLE_MS = 120
+const PRESS_TRANSITION = 'transform 70ms ease-out, background-color 70ms ease-out, border-color 70ms ease-out'
+const PRESS_CSS = `
+  [data-touch-controls] [data-pressed="1"] {
+    transform: scale(0.88) !important;
+    background-color: #3A3344 !important;
+    border-color: #E8B23A !important;
+  }
+`
+
+// Момент нажатия и таймер отложенного гашения — по самому DOM-узлу, а не в
+// замыкании bindTap: bindTap переназначается на каждом рендере, и таймер
+// старого замыкания погасил бы уже НОВОЕ нажатие той же кнопки.
+const pressState = new WeakMap<HTMLElement, { at: number; timer: number | null }>()
+
+function pressOn(el: HTMLElement) {
+  const prev = pressState.get(el)
+  if (prev?.timer != null) window.clearTimeout(prev.timer)
+  pressState.set(el, { at: performance.now(), timer: null })
+  el.setAttribute('data-pressed', '1')
+}
+
+function pressOff(el: HTMLElement) {
+  const st = pressState.get(el)
+  if (st?.timer != null) window.clearTimeout(st.timer)
+  pressState.delete(el)
+  el.removeAttribute('data-pressed')
+}
+
+// Разовые кнопки: мгновенный тап всё равно виден — гаснет не раньше, чем через
+// PRESS_MIN_VISIBLE_MS после нажатия. Дольше уже прошедшего не держит.
+function pressOffAfterMin(el: HTMLElement) {
+  const st = pressState.get(el)
+  if (!st) {
+    el.removeAttribute('data-pressed')
+    return
+  }
+  const left = PRESS_MIN_VISIBLE_MS - (performance.now() - st.at)
+  if (left <= 0) {
+    pressOff(el)
+    return
+  }
+  if (st.timer != null) window.clearTimeout(st.timer)
+  st.timer = window.setTimeout(() => pressOff(el), left)
+}
+
 interface TouchControlsProps {
   dirRef: MutableRefObject<number>
   jumpPressedRef: MutableRefObject<boolean>
@@ -43,11 +100,13 @@ export default function TouchControls({
 }: TouchControlsProps) {
   return (
     <>
+      {/* Вид подсветки нажатия — см. PRESS_CSS вверху файла. */}
+      <style>{PRESS_CSS}</style>
       {/* Экранные кнопки управления — компактная раскладка в стиле Battle.tsx
           (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
           refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
           dodgePressedRef) — меняется только вид, не способ ввода. */}
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 178, zIndex: 1001, pointerEvents: 'none' }}>
+      <div data-touch-controls="" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 178, zIndex: 1001, pointerEvents: 'none' }}>
         {/* Движение — левый блок */}
         <button
           aria-label="Влево"
@@ -55,17 +114,20 @@ export default function TouchControls({
             e.preventDefault()
             e.currentTarget.setPointerCapture(e.pointerId)
             dirRef.current = -1
+            pressOn(e.currentTarget)
           }}
           onPointerUp={(e) => {
             dirRef.current = 0
+            pressOff(e.currentTarget)
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
           }}
-          onPointerLeave={() => { dirRef.current = 0 }}
+          onPointerLeave={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           onPointerCancel={(e) => {
             dirRef.current = 0
+            pressOff(e.currentTarget)
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
           }}
-          onLostPointerCapture={() => { dirRef.current = 0 }}
+          onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
             position: 'absolute', left: 23, bottom: 12, width: 52, height: 52,
             borderRadius: '50%', border: '1px solid #3A3344',
@@ -74,6 +136,7 @@ export default function TouchControls({
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
             WebkitTouchCallout: 'none',
             pointerEvents: 'all',
+            transition: PRESS_TRANSITION,
           }}
         >
           ◀
@@ -84,17 +147,20 @@ export default function TouchControls({
             e.preventDefault()
             e.currentTarget.setPointerCapture(e.pointerId)
             dirRef.current = 1
+            pressOn(e.currentTarget)
           }}
           onPointerUp={(e) => {
             dirRef.current = 0
+            pressOff(e.currentTarget)
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
           }}
-          onPointerLeave={() => { dirRef.current = 0 }}
+          onPointerLeave={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           onPointerCancel={(e) => {
             dirRef.current = 0
+            pressOff(e.currentTarget)
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
           }}
-          onLostPointerCapture={() => { dirRef.current = 0 }}
+          onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
             position: 'absolute', left: 90, bottom: 12, width: 52, height: 52,
             borderRadius: '50%', border: '1px solid #3A3344',
@@ -103,6 +169,7 @@ export default function TouchControls({
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
             WebkitTouchCallout: 'none',
             pointerEvents: 'all',
+            transition: PRESS_TRANSITION,
           }}
         >
           ▶
@@ -151,6 +218,7 @@ export default function TouchControls({
                 display:flex; align-items:center; justify-content:center;
                 touch-action:none; user-select:none; -webkit-user-select:none;
                 -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+              transition:${PRESS_TRANSITION};
               `
               if (!existing) container.appendChild(el)
             })
@@ -168,6 +236,7 @@ export default function TouchControls({
               display:flex; align-items:center; justify-content:center;
               touch-action:none; user-select:none; -webkit-user-select:none;
               -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+              transition:${PRESS_TRANSITION};
             `
             if (!atkEl) container.appendChild(atk)
 
@@ -190,6 +259,7 @@ export default function TouchControls({
               display:flex; align-items:center; justify-content:center;
               touch-action:none; user-select:none; -webkit-user-select:none;
               -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+              transition:${PRESS_TRANSITION};
             `
             if (!jumpEl) container.appendChild(jump)
 
@@ -220,6 +290,7 @@ export default function TouchControls({
               display:flex; align-items:center; justify-content:center;
               touch-action:none; user-select:none; -webkit-user-select:none;
               -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+              transition:${PRESS_TRANSITION};
             `
             if (!potEl) container.appendChild(pot)
             // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
@@ -242,8 +313,12 @@ export default function TouchControls({
                 e.preventDefault()
                 el.setPointerCapture(e.pointerId)
                 action()
+                // Подсветка — сразу за записью в реф внутри action(): горит,
+                // только если код дошёл до фиксации нажатия.
+                pressOn(el)
               }
               const release = (e: PointerEvent) => {
+                pressOffAfterMin(el)
                 if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
               }
               el.onpointerup = release
