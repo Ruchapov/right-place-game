@@ -43,7 +43,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, finishRunExplore, recordSip, SipError, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
 
 type ExploreProps = {
@@ -658,6 +658,22 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // было принять за настоящий (см. задачу: тихий фолбэк — отложенная
   // потеря времени).
   const [localEventFallback, setLocalEventFallback] = useState(false)
+  // Сверка глотков с сервером (POST /run/sip, см. sendSip). null — сбоев и
+  // расхождений в этом забеге не было, плашки нет. Счётчики живут в рефе
+  // sipSyncRef — его читают асинхронные ответы; state — только копия для
+  // рендера плашки и меняется лишь при сбое или расхождении, не на каждом глотке.
+  type SipSyncState = { failed: number; limitRejected: boolean; mismatched: number }
+  const [sipSync, setSipSync] = useState<SipSyncState | null>(null)
+  const sipSyncRef = useRef<SipSyncState>({ failed: 0, limitRejected: false, mismatched: 0 })
+  // Запросы /run/sip уходят СТРОГО по очереди (цепочка промисов): ответ на k-й
+  // глоток сверяется со снимком клиента на k-м глотке, и порядок записи на
+  // сервере обязан совпадать с порядком глотков. Очередь держит только сеть —
+  // лечение, кнопка и счётчики забега её не ждут.
+  const sipQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // Номер забега для ответов /run/sip: setup() увеличивает его на каждом
+  // запуске, и запоздавший ответ прошлого забега (debug-переключатель карт)
+  // плашку нового не зажигает.
+  const sipRunGenRef = useRef(0)
   // Итоги забега для экрана результатов (см. ResultsScreen выше) — null,
   // пока забег идёт. Выставляется РОВНО один раз, синхронно клиентскими
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
@@ -1098,6 +1114,52 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       }
       btn.style.opacity = equippedSlots[i] ? '1' : '0.5'
     }
+  }
+
+  // Фиксация одного глотка на сервере (POST /run/sip). Зовётся на кадре глотка
+  // ПОСЛЕ всей локальной логики: лечение, склад и счётчики уже изменены и от
+  // ответа не зависят. Ответ ничего в забеге не переписывает — сервер и клиент
+  // считают выпитое независимо, расхождение это сигнал бага (плашка + консоль),
+  // а не повод подстроиться. Без token (офлайн-отладка) сервера нет — не шлём.
+  function sendSip(tier: number) {
+    if (!token) return
+    const sessionToken = token
+    // Снимок клиента НА ЭТОМ глотке — с ним сверяется ответ на этот глоток.
+    const expectedDrunk = [...potionsDrunkByTierRef.current]
+    const expectedSipsLeft = potionSipsLeftRef.current
+    const gen = sipRunGenRef.current
+    sipQueueRef.current = sipQueueRef.current.then(async () => {
+      try {
+        const result = await recordSip(sessionToken, tier)
+        const same =
+          Array.isArray(result.potionsDrunk) &&
+          result.potionsDrunk.length === expectedDrunk.length &&
+          result.potionsDrunk.every((n, i) => n === expectedDrunk[i]) &&
+          result.sipsLeft === expectedSipsLeft
+        if (same) return
+        console.error('Explore: /run/sip — сервер насчитал выпитое иначе, чем клиент', {
+          tier,
+          client: { potionsDrunk: expectedDrunk, sipsLeft: expectedSipsLeft },
+          server: result,
+        })
+        if (gen !== sipRunGenRef.current) return
+        // После уже случившегося сбоя сервер закономерно отстаёт на пропущенный
+        // глоток — это не отдельный баг, его уже показывает строка "не сохранён".
+        if (sipSyncRef.current.failed > 0) return
+        sipSyncRef.current.mismatched += 1
+        setSipSync({ ...sipSyncRef.current })
+      } catch (err) {
+        console.error('Explore: /run/sip — глоток НЕ сохранён на сервере', { tier, error: err })
+        if (gen !== sipRunGenRef.current) return
+        const limitRejected =
+          err instanceof SipError &&
+          err.status === 400 &&
+          (err.serverError === 'Tier stock exhausted' || err.serverError === 'No sips left')
+        sipSyncRef.current.failed += 1
+        if (limitRejected) sipSyncRef.current.limitRejected = true
+        setSipSync({ ...sipSyncRef.current })
+      }
+    })
   }
 
   // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку
@@ -1930,6 +1992,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
       potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
+      // Сверка глотков с сервером — тоже на забег (см. sendSip).
+      sipRunGenRef.current += 1
+      sipQueueRef.current = Promise.resolve()
+      sipSyncRef.current = { failed: 0, limitRejected: false, mismatched: 0 }
+      setSipSync(null)
       setRunResult(null) // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
@@ -3563,6 +3630,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               potionSipsLeftRef.current -= 1
               potionCdRef.current = C.POTION_COOLDOWN
               updatePotionButton()
+              // Фиксация глотка на сервере — после всей локальной логики и без
+              // ожидания ответа: лечение уже случилось (см. sendSip).
+              sendSip(tier)
             }
           }
           // Доиграла (тот же способ определения конца, что у атаки: конец
@@ -3872,6 +3942,51 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           </div>
         </div>
       )}
+
+      {/* Сбой или расхождение сверки глотков с сервером (POST /run/sip, см.
+          sendSip) — тот же вид, что у плашки офлайн-заглушки выше, и так же
+          pointerEvents none. Сама не гаснет: держится до конца забега (сброс
+          только в setup()). Стоит под HP-плитой, чтобы не закрывать HUD
+          обелисков сверху. Рассинхрон (отказ сервера по лимиту или другой счёт
+          выпитого) — красным: это баг счёта, а не сеть. */}
+      {sipSync && (() => {
+        const desync = sipSync.limitRejected || sipSync.mismatched > 0
+        const color = desync ? '#E0353B' : '#F08A24'
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: `calc(env(safe-area-inset-top) + 6px + ${C.HP_FRAME_H} + 6px)`,
+              left: 0,
+              right: 0,
+              zIndex: 1002,
+              display: 'flex',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              style={{
+                maxWidth: 'calc(100vw - 16px)',
+                boxSizing: 'border-box',
+                padding: '3px 10px',
+                borderRadius: 6,
+                background: 'rgba(21,18,24,0.85)',
+                border: `1px solid ${color}`,
+                color,
+                fontSize: 'clamp(9px, 2.6vw, 11px)',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                textAlign: 'center',
+              }}
+            >
+              {sipSync.failed > 0 && <div>⚠ Глоток не сохранён на сервере ({sipSync.failed})</div>}
+              {sipSync.limitRejected && <div>РАССИНХРОН: сервер отказал по лимиту глотков — клиент насчитал иначе</div>}
+              {sipSync.mismatched > 0 && <div>РАССИНХРОН: сервер насчитал выпитое иначе ({sipSync.mismatched})</div>}
+            </div>
+          </div>
+        )
+      })()}
 
       {!ready && <StoneFrameScreen title="ПОДГОТОВКА" lines={['Забег готовится...']} pulse />}
 

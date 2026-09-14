@@ -200,6 +200,83 @@ export async function finishRunExplore(
     attempt++
   }
 }
+// Response shape of POST /run/sip (server/src/routes/run.ts): выпитое за забег
+// по тирам (индекс = тир-1) и сколько глотков ещё разрешено — по счёту СЕРВЕРА.
+export type SipResult = { potionsDrunk: number[]; sipsLeft: number }
+
+// Отказ /run/sip после всех повторов — по образцу EquipError: вызывающему мало
+// факта ошибки, ему нужен код и текст сервера, чтобы отличить рассинхрон лимита
+// ('Tier stock exhausted' / 'No sips left') от сбоя сети.
+export class SipError extends Error {
+  /** HTTP-код последней попытки; null — ответа не было (сетевая ошибка). */
+  status: number | null
+  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
+  serverError: string | null
+  /** Сколько попыток сделано всего, включая повторы. */
+  attempts: number
+  /** Исходная ошибка fetch при сетевом сбое, иначе null. */
+  networkError: unknown
+  constructor(message: string, status: number | null, serverError: string | null, attempts: number, networkError: unknown) {
+    super(message)
+    this.status = status
+    this.serverError = serverError
+    this.attempts = attempts
+    this.networkError = networkError
+  }
+}
+
+// Повторы — тот же принцип, что у finishRunExplore: сетевая ошибка и 5xx
+// повторяются (до 2 раз, пауза короткая-потом-длиннее), 4xx — отказ сразу.
+// Исключение — 409 'Run state changed, retry': штатная гонка двух быстрых
+// глотков на сервере, повторяется ОДИН раз, без паузы.
+const SIP_RETRY_DELAYS_MS = [300, 1200]
+
+export async function recordSip(token: string, tier: number): Promise<SipResult> {
+  const body = JSON.stringify({ tier })
+  let transientRetries = 0
+  let conflictRetried = false
+  let attempts = 0
+  while (true) {
+    attempts++
+    let response: Response
+    try {
+      response = await fetch(`${SERVER_URL}/run/sip`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+    } catch (e) {
+      if (transientRetries < SIP_RETRY_DELAYS_MS.length) {
+        await sleep(SIP_RETRY_DELAYS_MS[transientRetries])
+        transientRetries++
+        continue
+      }
+      throw new SipError(`Sip failed: network error: ${e instanceof Error ? e.message : String(e)}`, null, null, attempts, e)
+    }
+    if (response.ok) {
+      return await response.json() as SipResult
+    }
+    const err: unknown = await response.json().catch(() => ({}))
+    const serverError =
+      typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
+        ? (err as { error: string }).error
+        : null
+    if (response.status >= 500 && transientRetries < SIP_RETRY_DELAYS_MS.length) {
+      await sleep(SIP_RETRY_DELAYS_MS[transientRetries])
+      transientRetries++
+      continue
+    }
+    if (response.status === 409 && !conflictRetried) {
+      conflictRetried = true
+      continue
+    }
+    throw new SipError(`Sip failed: ${response.status} ${JSON.stringify(err)}`, response.status, serverError, attempts, null)
+  }
+}
+
 export async function saveEquippedSkills(token: string, skills: string[]): Promise<{ equippedSkills: string[] }> {
   const response = await fetch(`${SERVER_URL}/character/skills`, {
     method: 'POST',
