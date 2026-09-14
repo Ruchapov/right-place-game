@@ -643,12 +643,6 @@ calculateLevel(strength, agility, endurance, bonusLevels):
       офлайн-заглушку `DevTester` (вне Telegram); в Telegram скиллы приходят
       с сервера и этой строкой не задеваются. Перед релизом вернуть боевой
       набор — по прежней записи в коде это было `['heal', 'dash']`.
-    - **Панель диагностики прыжка** (`// TEMP DEBUG: jump diagnostics`) —
-      временный замер пропавших прыжков: панель под HP-плитой и счётчики в
-      `Explore.tsx`, счётчик нажатий ▲ в `TouchControls.tsx`. Снимать целиком:
-      после уборки `grep -rn "TEMP DEBUG: jump diagnostics" src` должен быть
-      пуст, а кнопка ▲ в `TouchControls.tsx` вернуться к одной строке
-      `bindTap(jump, () => { jumpPressedRef.current = true })`.
     - Панели тюнеров (`TEMP_FIREBALL_TUNER`/`TEMP_ICEBALL_TUNER`) в этом
       чеклисте НЕ значатся и не нужны — удалены вместе с запеканием чисел
       снаряда в константы, `grep -rn "TEMP_FIREBALL\|TEMP_ICEBALL" src` пуст.
