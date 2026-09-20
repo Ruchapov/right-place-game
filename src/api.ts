@@ -136,39 +136,70 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-type FinishExploreAttempt =
-  | { ok: true; data: FinishExploreResult }
-  | { ok: false; retry: boolean; error: Error }
+// Причина последней неудачной попытки финиша — те же три вида, что у глотка
+// (см. SipFailureKind ниже): timeout — прервал наш таймер, network — fetch
+// отказал сам, http — сервер ответил кодом ошибки.
+export type FinishFailureKind = 'timeout' | 'network' | 'http'
 
-async function attemptFinishExplore(token: string, body: string): Promise<FinishExploreAttempt> {
-  let response: Response
-  try {
-    response = await fetch(`${SERVER_URL}/run/finish-explore`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-    })
-  } catch (e) {
-    // Сетевая ошибка (нет соединения и т.п., fetch сам бросает) — стоит повторить.
-    return { ok: false, retry: true, error: e instanceof Error ? e : new Error(String(e)) }
+// Отказ /run/finish-explore после всех повторов — по образцу SipError: экрану
+// итогов мало факта ошибки, ему нужны код и текст сервера и число попыток,
+// чтобы отличить "забег на сервере уже закрыт" (400 'No active explore run'
+// после попытки, которая могла дойти, или 200 с нечитаемым телом) от
+// настоящего провала.
+export class FinishExploreError extends Error {
+  /** HTTP-код последней попытки; null — ответа не было (таймаут или сеть). */
+  status: number | null
+  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
+  serverError: string | null
+  /** Сколько попыток сделано всего, включая повторы. */
+  attempts: number
+  /** Причина последней неудачной попытки, см. FinishFailureKind. */
+  kind: FinishFailureKind
+  /** true — повторы оборвал общий бюджет времени (FINISH_TOTAL_BUDGET_MS), а не их лимит. */
+  budgetExhausted: boolean
+  /** Исход каждой попытки по порядку — для консоли. */
+  attemptLog: string[]
+  /** Исходная ошибка fetch при сетевом сбое или таймауте, иначе null. */
+  networkError: unknown
+  constructor(message: string, fields: {
+    status: number | null
+    serverError: string | null
+    attempts: number
+    kind: FinishFailureKind
+    budgetExhausted: boolean
+    attemptLog: string[]
+    networkError: unknown
+  }) {
+    super(message)
+    this.status = fields.status
+    this.serverError = fields.serverError
+    this.attempts = fields.attempts
+    this.kind = fields.kind
+    this.budgetExhausted = fields.budgetExhausted
+    this.attemptLog = fields.attemptLog
+    this.networkError = fields.networkError
   }
-  if (response.ok) {
-    return { ok: true, data: await response.json() as FinishExploreResult }
-  }
-  const err = await response.json().catch(() => ({}))
-  const error = new Error(`Finish explore failed: ${response.status} ${JSON.stringify(err)}`)
-  // 5xx — временная проблема на сервере, стоит повторить. 4xx — отказ по
-  // существу (нет активного explore-забега, невалидные данные и т.п.),
-  // повтор его не исправит.
-  return { ok: false, retry: response.status >= 500, error }
 }
 
-// До 3 попыток (1 обычная + до 2 повторов), пауза короткая-потом-длиннее
-// между ними. Повторяем ТОЛЬКО сетевую ошибку или 5xx — на 4xx бросаем сразу.
+// Повторы — прежние: сетевая ошибка, таймаут попытки и 5xx повторяются до 2
+// раз (пауза короткая-потом-длиннее), 4xx — отказ сразу.
+//
+// Время ограничено ЯВНО, по той же схеме, что у recordSip, но с бОльшими
+// числами: без финиша итоги забега теряются, а сервер на Render Free засыпает
+// после простоя и просыпается порядка минуты — первый запрос после сна ждёт
+// весь подъём.
+//   FINISH_ATTEMPT_TIMEOUT_MS = 20 с — одна попытка (запрос + чтение тела).
+//     Короче подъёма сервера намеренно: попытка, прерванная на просыпающемся
+//     сервере, уступает место следующей, которая застаёт его уже проснувшимся.
+//   FINISH_TOTAL_BUDGET_MS = 60 с — весь вызов с повторами и паузами; столько
+//     максимум висит "Сохраняем итоги..." с заблокированной кнопкой меню.
+//     20 + 0,3 + 20 + 1,2 = 41,5 с до третьей попытки — ей остаётся 18,5 с.
+// Прерванная таймаутом попытка могла всё же дойти до сервера и закрыть забег;
+// тогда следующая получит 400 'No active explore run' — Explore разбирает это
+// отдельно (FinishExploreError.attempts > 1).
 const FINISH_EXPLORE_RETRY_DELAYS_MS = [300, 1200]
+const FINISH_ATTEMPT_TIMEOUT_MS = 20000
+const FINISH_TOTAL_BUDGET_MS = 60000
 
 export async function finishRunExplore(
   token: string,
@@ -191,13 +222,107 @@ export async function finishRunExplore(
   potionsDrunkByTier?: number[],
 ): Promise<FinishExploreResult> {
   const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier })
-  let attempt = 0
+  const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
+  const attemptLog: string[] = []
+  let retries = 0
+  let attempts = 0
+  let lastKind: FinishFailureKind = 'timeout'
+
+  // Следующая пауза перед повтором, если повтор ещё разрешён И пауза
+  // укладывается в бюджет. null — повторять нельзя; budgetExhausted различает
+  // "кончился бюджет" и "кончились повторы".
+  const nextRetryDelay = (): { delay: number | null; budgetExhausted: boolean } => {
+    const delay = FINISH_EXPLORE_RETRY_DELAYS_MS[retries]
+    if (delay === undefined) return { delay: null, budgetExhausted: false }
+    if (Date.now() + delay >= deadline) return { delay: null, budgetExhausted: true }
+    return { delay, budgetExhausted: false }
+  }
+
   while (true) {
-    const result = await attemptFinishExplore(token, body)
-    if (result.ok) return result.data
-    if (!result.retry || attempt >= FINISH_EXPLORE_RETRY_DELAYS_MS.length) throw result.error
-    await sleep(FINISH_EXPLORE_RETRY_DELAYS_MS[attempt])
-    attempt++
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw new FinishExploreError(`Finish explore failed (${lastKind}, time budget exhausted) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: null, serverError: null, attempts, kind: lastKind, budgetExhausted: true, attemptLog, networkError: null,
+      })
+    }
+    attempts++
+    const attemptTimeout = Math.min(FINISH_ATTEMPT_TIMEOUT_MS, remaining)
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, attemptTimeout)
+
+    let response: Response
+    try {
+      response = await fetch(`${SERVER_URL}/run/finish-explore`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+        signal: controller.signal,
+      })
+    } catch (e) {
+      // Сеть или наш таймаут — стоит повторить.
+      clearTimeout(timer)
+      lastKind = timedOut ? 'timeout' : 'network'
+      attemptLog.push(timedOut ? `#${attempts} timeout ${attemptTimeout}ms` : `#${attempts} network: ${describeFetchError(e)}`)
+      const retry = nextRetryDelay()
+      if (retry.delay !== null) {
+        await sleep(retry.delay)
+        retries++
+        continue
+      }
+      throw new FinishExploreError(`Finish explore failed (${lastKind}${retry.budgetExhausted ? ', time budget exhausted' : ''}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: null, serverError: null, attempts, kind: lastKind, budgetExhausted: retry.budgetExhausted, attemptLog, networkError: e,
+      })
+    }
+
+    if (response.ok) {
+      // Тело — под тем же таймером, но БЕЗ повтора: сервер уже ответил 200,
+      // забег у него закрыт, повтор получил бы 400 'No active explore run'.
+      try {
+        const data = await response.json() as FinishExploreResult
+        clearTimeout(timer)
+        return data
+      } catch (e) {
+        clearTimeout(timer)
+        lastKind = timedOut ? 'timeout' : 'network'
+        attemptLog.push(`#${attempts} ${response.status} but body unreadable: ${timedOut ? `timeout ${attemptTimeout}ms` : describeFetchError(e)}`)
+        throw new FinishExploreError(`Finish explore failed (${lastKind}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+          status: response.status, serverError: null, attempts, kind: lastKind, budgetExhausted: false, attemptLog, networkError: e,
+        })
+      }
+    }
+
+    const err: unknown = await response.json().catch(() => ({}))
+    clearTimeout(timer)
+    const serverError =
+      typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
+        ? (err as { error: string }).error
+        : null
+    lastKind = 'http'
+    attemptLog.push(`#${attempts} http ${response.status}${serverError !== null ? ` ${serverError}` : ''}`)
+    // 5xx — временная проблема на сервере, стоит повторить. 4xx — отказ по
+    // существу (нет активного explore-забега, невалидные данные и т.п.),
+    // повтор его не исправит.
+    if (response.status >= 500) {
+      const retry = nextRetryDelay()
+      if (retry.delay !== null) {
+        await sleep(retry.delay)
+        retries++
+        continue
+      }
+      throw new FinishExploreError(`Finish explore failed (http ${response.status}${retry.budgetExhausted ? ', time budget exhausted' : ''}) after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+        status: response.status, serverError, attempts, kind: 'http', budgetExhausted: retry.budgetExhausted, attemptLog, networkError: null,
+      })
+    }
+    throw new FinishExploreError(`Finish explore failed: ${response.status} ${JSON.stringify(err)} after ${attempts} attempts: ${attemptLog.join('; ')}`, {
+      status: response.status, serverError, attempts, kind: 'http', budgetExhausted: false, attemptLog, networkError: null,
+    })
   }
 }
 // Response shape of POST /run/sip (server/src/routes/run.ts): выпитое за забег

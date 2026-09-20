@@ -43,7 +43,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore, recordSip, SipError, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, finishRunExplore, FinishExploreError, recordSip, SipError, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
 
 type ExploreProps = {
@@ -259,6 +259,41 @@ const RESULTS_PLATE_FIELD_Y = 0.165
 const RESULTS_PLATE_FIELD_W = 0.89
 const RESULTS_PLATE_FIELD_H = 0.619
 
+// Состояние сохранения итогов забега на сервере (см. sendFinishExplore и
+// submitFinish в Explore). Раньше null значил сразу и "ждём ответа", и
+// "сохранено" — экран выглядел успешным, пока запрос висел или уже провалился.
+//   pending       — запрос в пути (и значение по умолчанию до финиша забега);
+//   saved         — пришёл успешный ответ, на экране числа сервера;
+//   failed        — не сохранилось; можно повторить теми же данными;
+//   offline       — токена нет, на сервер не ходили (офлайн-отладка);
+//   alreadyClosed — забег на сервере уже закрыт: 400 'No active explore run'
+//                   после попытки, которая могла дойти, или 200 с нечитаемым
+//                   телом. Итоги записаны, но точных чисел клиент не получил.
+type SaveStatus = 'pending' | 'saved' | 'failed' | 'offline' | 'alreadyClosed'
+
+const SAVE_STATUS_VIEW: Record<SaveStatus, { text: string; color: string }> = {
+  pending: { text: 'Сохраняем итоги...', color: Theme.textDim },
+  // Зелёный успеха из дизайн-системы — в ui/theme.ts такого токена нет.
+  saved: { text: 'Итоги сохранены', color: '#4FB477' },
+  failed: { text: 'Забег не запомнят — итоги потеряны', color: Theme.danger },
+  offline: { text: 'Ты вне мира — забег не сохранён', color: Theme.stoneDark },
+  alreadyClosed: { text: 'Забег уже закрыт на сервере — итоги записаны, точные числа неизвестны', color: '#F08A24' },
+}
+
+// Всё, что уезжает в /run/finish-explore, одним снимком — в порядке аргументов
+// finishRunExplore. "Повторить сохранение" шлёт ровно его.
+type FinishPayload = {
+  token: string
+  closedEvents: number[]
+  died: boolean
+  smugglerOutcome: 'gain' | 'steal' | undefined
+  attackDamageDealt: number
+  skillDamageDealt: number
+  healedAmount: number
+  damageTaken: number
+  potionsDrunkByTier: number[]
+}
+
 function ResultsScreen({
   result,
   eventKinds,
@@ -266,13 +301,16 @@ function ResultsScreen({
   saveStatus,
   localEventFallback,
   onMenu,
+  onRetrySave,
 }: {
   result: RunResultSummary
   eventKinds: EventKind[]
   eventClosed: boolean[]
-  saveStatus: 'offline' | 'failed' | null
+  saveStatus: SaveStatus
   localEventFallback: boolean
   onMenu: () => void
+  // Повторная отправка финиша теми же данными — кнопка только при 'failed'.
+  onRetrySave: () => void
 }) {
   // На смерти показываем "потеряно", на успехе — "получено"; оба числа
   // вместе никогда не нужны (см. buildClientResult в Explore ниже — один из
@@ -341,18 +379,18 @@ function ResultsScreen({
             >
               {result.died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'}
             </div>
-            {saveStatus && (
-              <div
-                style={{
-                  fontSize: 'clamp(10px, 3vw, 12px)',
-                  fontStyle: 'italic',
-                  textAlign: 'center',
-                  color: saveStatus === 'failed' ? Theme.danger : Theme.stoneDark,
-                }}
-              >
-                {saveStatus === 'failed' ? 'Забег не запомнят — итоги потеряны' : 'Ты вне мира — забег не сохранён'}
-              </div>
-            )}
+            {/* Строка сохранения — ВСЕГДА, у каждого состояния своя: пустоты,
+                неотличимой от успеха, больше нет (см. SaveStatus выше). */}
+            <div
+              style={{
+                fontSize: 'clamp(10px, 3vw, 12px)',
+                fontStyle: 'italic',
+                textAlign: 'center',
+                color: SAVE_STATUS_VIEW[saveStatus].color,
+              }}
+            >
+              {SAVE_STATUS_VIEW[saveStatus].text}
+            </div>
             {/* Отдельная от saveStatus пометка — про ИСТОЧНИК самих событий,
                 не про сохранение. Сейчас оба условия совпадают (нет token),
                 но это разные факты, и оба должны быть явно видны (см. задачу
@@ -456,6 +494,23 @@ function ResultsScreen({
             </div>
           </div>
 
+          {/* Числа выше — клиентская оценка, пока на экране нет ответа сервера
+              (всё, кроме 'saved'). Пометка отдельной строкой ПОД плитой, а не
+              внутри: поле плиты по высоте рассчитано на подпись и число. */}
+          {saveStatus !== 'saved' && (
+            <div
+              style={{
+                fontSize: 'clamp(9px, 2.6vw, 11px)',
+                fontStyle: 'italic',
+                color: Theme.textDim,
+                textAlign: 'center',
+                flexShrink: 0,
+              }}
+            >
+              {saveStatus === 'pending' ? 'Числа предварительные — ждём ответ сервера' : 'Числа — подсчёт клиента, не с сервера'}
+            </div>
+          )}
+
           {/* 4. Прокачка — ТОЛЬКО прибавка (не выросло — не показываем),
               тем же приёмом заголовка-с-разделителями, что "В СУМКЕ" ниже.
               На прерванном забеге (interruptedRun из /auth/login) сервер
@@ -519,28 +574,53 @@ function ResultsScreen({
             )}
           </div>
 
-          {/* 6. Кнопка "В меню" — единственный способ закрыть этот экран,
+          {/* 6. Кнопки. "В меню" — единственный способ закрыть этот экран,
               onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
+              При 'pending' она ЗАБЛОКИРОВАНА: уход до ответа размонтирует
+              Explore, и провал сохранения после этого никто бы не увидел.
+              При 'failed' рядом — "Повторить сохранение" (те же данные).
               Без marginTop:'auto' — space-evenly на родителе уже распределяет
               место равномерно, auto-маргин перетянул бы его весь на себя. */}
-          <button
-            onClick={onMenu}
-            style={{
-              padding: '12px 30px',
-              borderRadius: 10,
-              border: `2px solid ${Theme.glowEdge}`,
-              background: Theme.nicheDeep,
-              color: Theme.glowCore,
-              fontFamily: C.FONT_DISPLAY,
-              fontWeight: 700,
-              fontSize: 'clamp(13px, 4vw, 15px)',
-              letterSpacing: '0.06em',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            В МЕНЮ
-          </button>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 10, flexShrink: 0 }}>
+            {saveStatus === 'failed' && (
+              <button
+                onClick={onRetrySave}
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: 10,
+                  border: `2px solid ${Theme.glowEdge}`,
+                  background: Theme.nicheDeep,
+                  color: Theme.glowCore,
+                  fontFamily: C.FONT_DISPLAY,
+                  fontWeight: 700,
+                  fontSize: 'clamp(13px, 4vw, 15px)',
+                  letterSpacing: '0.06em',
+                  cursor: 'pointer',
+                }}
+              >
+                ПОВТОРИТЬ СОХРАНЕНИЕ
+              </button>
+            )}
+            <button
+              onClick={saveStatus === 'pending' ? undefined : onMenu}
+              disabled={saveStatus === 'pending'}
+              style={{
+                padding: '12px 30px',
+                borderRadius: 10,
+                border: `2px solid ${Theme.glowEdge}`,
+                background: Theme.nicheDeep,
+                color: Theme.glowCore,
+                fontFamily: C.FONT_DISPLAY,
+                fontWeight: 700,
+                fontSize: 'clamp(13px, 4vw, 15px)',
+                letterSpacing: '0.06em',
+                cursor: saveStatus === 'pending' ? 'default' : 'pointer',
+                opacity: saveStatus === 'pending' ? 0.5 : 1,
+              }}
+            >
+              В МЕНЮ
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -610,6 +690,15 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // остальные становятся no-op, даже если сработали подряд (напр. закрылось
   // 3-е событие и следом игрок сразу нажал выход).
   const finishExploreSentRef = useRef(false)
+  // Снимок данных финиша на момент первой отправки — "Повторить сохранение"
+  // шлёт РОВНО его, а не пересобирает из рефов забега.
+  const finishPayloadRef = useRef<FinishPayload | null>(null)
+  // Запрос финиша в пути — второй не уходит (двойной тап по "Повторить").
+  const finishInFlightRef = useRef(false)
+  // Какая по счёту отправка финиша в этом забеге: 1 — первая, дальше — повторы
+  // кнопкой. Отличает 400 'No active explore run' на повторе (забег закрыт
+  // прошлой попыткой) от такого же 400 на самой первой отправке.
+  const finishSendCountRef = useRef(0)
   // Исход обмена у Контрабандиста в ЭТОМ забеге (gain/steal) — нужен для
   // /run/finish-explore. "Уйти" его не выставляет вообще: без обмена нет
   // исхода, а sendFinishExplore и так шлёт исход только если событие
@@ -679,15 +768,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
   // числа сервера, когда придёт ответ /run/finish-explore.
   const [runResult, setRunResult] = useState<RunResultSummary | null>(null)
-  // Экран итогов раньше показывал buildClientResult молча и на этом
-  // успокаивался — если сеть/сервер потом падали, игрок никак об этом не
-  // узнавал (ошибка уходила только в console.error). null — ответ ещё не
-  // пришёл (или сохранять некуда не требовалось — 'saved' наступит раньше,
-  // чем игрок успеет посмотреть); 'offline' — токена нет вообще, на сервер
-  // не ходили (см. sendFinishExplore, тот же !token, что раньше просто
-  // return'ил); 'failed' — сходили, но не сохранилось (после ретраев внутри
-  // finishRunExplore). См. рендер в ResultsScreen ниже.
-  const [saveStatus, setSaveStatus] = useState<'offline' | 'failed' | null>(null)
+  // Состояние сохранения итогов — см. SaveStatus перед ResultsScreen (там же
+  // смысл каждого значения). 'pending' по умолчанию и после каждого setup().
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('pending')
   // ВРЕМЕННО, для отладки (см. SettingsPanel — тумблер рядом с TEMP_MAP_SWITCHER,
   // убрать вместе с ним перед релизом) — заменяет бывшую константу
   // C.DEBUG_INVINCIBLE. React state, не ref: takeDamage() определена прямо в
@@ -752,16 +835,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   //
   // Экран итогов (ResultsScreen, см. runResult выше) показывается СРАЗУ
   // клиентскими числами (buildClientResult) — не ждём сеть, чтобы не
-  // держать игрока на пустом экране. Если есть token — параллельно уходит
-  // /run/finish-explore, и когда сервер ответит, числа заменяются на
-  // авторитетные (setRunResult(result)) и saveStatus молчит (null — "всё
-  // сохранилось", отдельного 'saved' не заводили, показывать нечего).
-  // Ошибка отправки (после ретраев внутри finishRunExplore) логируется В
-  // КОНСОЛЬ КАК И РАНЬШЕ, но теперь ЕЩЁ и выставляет saveStatus='failed' —
-  // экран итогов обязан явно показать игроку, что результат не сохранён, а
-  // не молчать (раньше молчал). Без токена (DevTester вне Telegram) на
-  // сервер не ходим вообще — как и /run/start-explore, но теперь явно
-  // помечаем это как saveStatus='offline', а не тихий return.
+  // держать игрока на пустом экране. Если есть token — уходит
+  // /run/finish-explore (submitFinish ниже), и saveStatus честно говорит, что
+  // происходит: 'pending', пока запрос в пути; 'saved' с числами сервера после
+  // ответа; 'failed' или 'alreadyClosed' при отказе. Без токена (DevTester вне
+  // Telegram) на сервер не ходим вообще — saveStatus='offline'.
   function sendFinishExplore(died: boolean) {
     if (finishExploreSentRef.current) return
     finishExploreSentRef.current = true
@@ -786,26 +864,93 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     })
     const smugglerOutcome = smugglerClosed ? (smugglerOutcomeRef.current ?? undefined) : undefined
 
-    finishRunExplore(
+    // Те же значения, что и раньше уходили в finishRunExplore напрямую, —
+    // только снятые ОДИН раз, чтобы повторная отправка ушла ровно с ними.
+    finishPayloadRef.current = {
       token,
       closedEvents,
       died,
       smugglerOutcome,
-      attackDamageDealtRef.current,
-      skillDamageDealtRef.current,
-      healedAmountRef.current,
-      damageTakenRef.current,
-      potionsDrunkByTierRef.current,
+      attackDamageDealt: attackDamageDealtRef.current,
+      skillDamageDealt: skillDamageDealtRef.current,
+      healedAmount: healedAmountRef.current,
+      damageTaken: damageTakenRef.current,
+      potionsDrunkByTier: [...potionsDrunkByTierRef.current],
+    }
+    submitFinish()
+  }
+
+  // Одна отправка финиша по снимку finishPayloadRef: первая — из
+  // sendFinishExplore, следующие — кнопкой "Повторить сохранение" на экране
+  // итогов. Успех заменяет клиентские числа серверными; отказ разбирается на
+  // 'alreadyClosed' и 'failed'.
+  function submitFinish() {
+    const payload = finishPayloadRef.current
+    if (payload === null || finishInFlightRef.current) return
+    finishInFlightRef.current = true
+    finishSendCountRef.current += 1
+    const sendNumber = finishSendCountRef.current
+    setSaveStatus('pending')
+
+    finishRunExplore(
+      payload.token,
+      payload.closedEvents,
+      payload.died,
+      payload.smugglerOutcome,
+      payload.attackDamageDealt,
+      payload.skillDamageDealt,
+      payload.healedAmount,
+      payload.damageTaken,
+      payload.potionsDrunkByTier,
     )
       .then((result) => {
         setRunResult(result)
+        setSaveStatus('saved')
         // Настоящий ответ сервера, не клиентский fallback — App.tsx обновляет
         // player этими абсолютными значениями (см. ExploreProps.onRunComplete).
-        onRunCompleteRef.current(result)
+        // Свой try: сбой внутри App не должен через catch ниже превратить уже
+        // сохранённый забег в 'failed'.
+        try {
+          onRunCompleteRef.current(result)
+        } catch (err) {
+          console.error('Explore: onRunComplete упал после успешного сохранения', err)
+        }
       })
       .catch((err) => {
-        console.error('Explore: /run/finish-explore не удалось отправить', err)
-        setSaveStatus('failed')
+        // Забег на сервере уже закрыт, итоги записаны — клиент просто не
+        // получил их чисел:
+        //   200 с нечитаемым телом — сервер ответил успехом;
+        //   400 'No active explore run' — ЕСЛИ до него была попытка, которая
+        //   могла дойти: повтор внутри finishRunExplore после сети/таймаута/5xx
+        //   (attempts > 1) или повторная отправка кнопкой (sendNumber > 1).
+        //   Тот же 400 на самой первой попытке первой отправки — настоящий
+        //   отказ: открытого забега на сервере не было.
+        const alreadyClosed =
+          err instanceof FinishExploreError &&
+          (err.status === 200 ||
+            (err.status === 400 &&
+              err.serverError === 'No active explore run' &&
+              (err.attempts > 1 || sendNumber > 1)))
+        console.error(
+          'Explore: /run/finish-explore — отказ после всех попыток',
+          err instanceof FinishExploreError
+            ? {
+                sendNumber,
+                alreadyClosed,
+                kind: err.kind,
+                budgetExhausted: err.budgetExhausted,
+                status: err.status,
+                serverError: err.serverError,
+                attempts: err.attempts,
+                attemptLog: err.attemptLog,
+                error: err,
+              }
+            : { sendNumber, error: err },
+        )
+        setSaveStatus(alreadyClosed ? 'alreadyClosed' : 'failed')
+      })
+      .finally(() => {
+        finishInFlightRef.current = false
       })
   }
 
@@ -2010,6 +2155,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       chestsRef.current = [] // сброс на случай повторного запуска setup()
       smugglersRef.current = [] // сброс на случай повторного запуска setup()
       finishExploreSentRef.current = false // сброс на случай повторного запуска setup()
+      finishPayloadRef.current = null // сброс на случай повторного запуска setup()
+      finishInFlightRef.current = false // сброс на случай повторного запуска setup()
+      finishSendCountRef.current = 0 // сброс на случай повторного запуска setup()
       smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
       trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
       damageTakenRef.current = 0 // сброс на случай повторного запуска setup()
@@ -2023,6 +2171,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       sipSyncRef.current = { failed: 0, limitRejected: false, mismatched: 0 }
       setSipSync(null)
       setRunResult(null) // сброс на случай повторного запуска setup()
+      setSaveStatus('pending') // сброс на случай повторного запуска setup()
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
       // обелиск создаётся НИЖЕ, внутри map-цикла событий, только если kind
@@ -3904,6 +4053,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         saveStatus={saveStatus}
         localEventFallback={localEventFallback}
         onMenu={() => onClose?.()}
+        onRetrySave={submitFinish}
       />
     )
   }
