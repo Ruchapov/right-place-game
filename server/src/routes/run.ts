@@ -171,7 +171,20 @@ export async function runRoutes(server: FastifyInstance) {
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
     const events = rollRunEvents(mapFile, characterLevel)
 
-    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips }
+    // confirmed: false — забег создан, но игрок его ещё не видел. Снимет флаг
+    // POST /run/ready, когда клиент построит мир (а также первый глоток или
+    // срез прогресса — любая реальная игра, см. /run/sip и /run/progress).
+    // Пока флаг не снят, вход закроет забег БЕЗ штрафа и вернёт энергию:
+    // упавшая текстура или оборванная сеть на экране "ПОДГОТОВКА" не должны
+    // стоить игроку банка трофеев (см. judgeInterruptedRun в runState.ts).
+    //
+    // spentEnergy — СПИСАННОЕ ИМЕННО СЕЙЧАС, выражением от тех же двух чисел,
+    // что уходят в запись ниже, а не копией RUN_COST. Сегодня это одно и то же
+    // (currentEnergy >= RUN_COST проверено выше, клэмпа между ними нет), но
+    // привязка к фактической разнице переживёт и смену константы, и появление
+    // любых скидок: вернуть при закрытии обязаны ровно то, что сняли.
+    const spentEnergy = currentEnergy - newEnergy
+    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips, confirmed: false, spentEnergy }
 
     await prisma.character.update({
       where: { userId },
