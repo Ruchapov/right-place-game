@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, EquipError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, EquipError, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS } from './potions'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
@@ -300,6 +300,20 @@ function liveEnergy(base: number, baseAt: number, now: number): number {
   return Math.min(MAX_ENERGY, base + minutes)
 }
 
+// Причина провала входа словами игрока, а не текстом исключения. Три случая
+// различает сам запрос (RequestError.kind, см. api.ts), и для каждого нужен
+// свой совет: уснувший сервер лечится повторной попыткой, оборванная сеть —
+// нет. Отказ сервера показываем вместе с кодом: 401 при битом initData значит
+// "перезайди в Mini App", и скрывать код тут вредно.
+function describeLoginFailure(e: unknown): string {
+  if (e instanceof RequestError) {
+    if (e.kind === 'timeout') return 'Сервер не ответил вовремя — возможно, он просыпался из сна. Попробуй ещё раз, второй заход обычно быстрее.'
+    if (e.kind === 'network') return 'Нет связи с сервером. Проверь интернет и попробуй снова.'
+    return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
 function hexToRgb(hex: string): string {
   const v = hex.replace('#', '')
   const r = parseInt(v.slice(0, 2), 16)
@@ -489,17 +503,28 @@ export default function App() {
     await loadInventory()
   }
 
-  useEffect(() => {
-    async function init() {
-      try {
-        await refreshPlayerFromServer()
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Unknown error')
-      } finally {
-        setLoading(false)
-      }
+  // Первый вход. Отдельной функцией (а не инлайном в эффекте), потому что её
+  // же дёргает кнопка "Повторить" на экране ошибки — чистая новая попытка с
+  // теми же шагами, а не какое-то отдельное частичное восстановление.
+  // Повторы внутри loginWithTelegram (20 с попытка / 60 с бюджет) — то есть
+  // сюда мы попадаем, только когда сервер не ответил за минуту или отказал по
+  // существу. До этого момента на экране остаётся обычная загрузка.
+  async function runInitialLogin() {
+    setError(null)
+    setLoading(true)
+    try {
+      await refreshPlayerFromServer()
+    } catch (e) {
+      console.error('App: вход не удался', e)
+      setError(describeLoginFailure(e))
+    } finally {
+      setLoading(false)
     }
-    init()
+  }
+
+  useEffect(() => {
+    runInitialLogin()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
@@ -697,7 +722,35 @@ export default function App() {
   void handleSkillToggle
 
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
-  if (error) return <div style={{ padding: 20, color: 'red' }}><b>Ошибка:</b> {error}</div>
+  // Вход не удался после всех повторов (см. runInitialLogin). Раньше здесь
+  // была строка с текстом исключения и без выхода: игроку оставалось только
+  // закрыть Mini App. Теперь — причина словами и кнопка, повторяющая вход с
+  // нуля. В игру с пустым/подставленным профилем не пускаем ни при каком
+  // исходе: player остался null, и рисовать по нему нечего.
+  if (error) return (
+    <div style={{
+      position:'fixed', inset:0, display:'flex', flexDirection:'column',
+      alignItems:'center', justifyContent:'center', gap:16, padding:24,
+      background:C.appBg, textAlign:'center',
+    }}>
+      <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.danger, letterSpacing:0.5 }}>
+        НЕ УДАЛОСЬ ВОЙТИ
+      </div>
+      <div style={{ fontSize:13, lineHeight:1.5, color:C.textDim, maxWidth:320 }}>
+        {error}
+      </div>
+      <button
+        onClick={() => { void runInitialLogin() }}
+        style={{
+          fontFamily:FONT_DISPLAY, fontSize:14, letterSpacing:0.5,
+          color:C.glowCore, background:C.nicheDeep,
+          border:`1px solid ${C.stoneDark}`, borderRadius:8,
+          padding:'10px 26px', cursor:'pointer',
+        }}>
+        Повторить
+      </button>
+    </div>
+  )
 
   return (
     <div style={{

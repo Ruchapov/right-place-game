@@ -1,5 +1,101 @@
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
+// --- Общий запрос с таймаутом ---
+// Почему вообще: `fetch` сам по себе не ограничен ничем, и в WebView он может
+// не завершиться ВООБЩЕ — в авиарежиме нет ни ответа, ни ошибки, промис просто
+// не резолвится (см. CLAUDE.md, Critical Gotchas). Любой экран, который ждёт
+// такой запрос, зависает навсегда.
+//
+// Ядро повторяет проверенное вживую поведение recordProgress ниже: AbortController
+// + таймер, флаг timedOut, чтение тела ПОД ТЕМ ЖЕ дедлайном (зависшее тело — тот
+// же зависший запрос, поэтому clearTimeout только после разбора json).
+//
+// Чего здесь НЕТ намеренно: повторов и общего бюджета. Сколько раз повторять и
+// сколько всего ждать — решает вызывающий, потому что у каждого запроса цена
+// ожидания своя (глоток можно потерять, вход — нет). Здесь же одна попытка.
+//
+// ⚠️ recordSip/finishRunExplore/recordProgress на этот хелпер НЕ переведены:
+// они проверены живыми забегами, и переписывать их ради красоты — риск без
+// выигрыша. Новые вызовы писать через него.
+export type RequestFailureKind = 'timeout' | 'network' | 'http'
+
+export class RequestError extends Error {
+  /** HTTP-код ответа; null — ответа не было (таймаут или сеть). */
+  status: number | null
+  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
+  serverError: string | null
+  kind: RequestFailureKind
+  /** Исходная ошибка fetch при сетевом сбое или таймауте, иначе null. */
+  networkError: unknown
+  /**
+   * Осмысленно ли повторять: таймаут, сетевой отказ и 5xx — да; 4xx — нет,
+   * это отказ по существу, и повтор его не исправит. Считается здесь, чтобы
+   * каждый вызывающий не выводил это правило заново.
+   */
+  retryable: boolean
+  constructor(message: string, fields: {
+    status: number | null
+    serverError: string | null
+    kind: RequestFailureKind
+    networkError: unknown
+  }) {
+    super(message)
+    this.status = fields.status
+    this.serverError = fields.serverError
+    this.kind = fields.kind
+    this.networkError = fields.networkError
+    this.retryable =
+      fields.kind === 'timeout' || fields.kind === 'network' || (fields.status !== null && fields.status >= 500)
+  }
+}
+
+export async function requestJson<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, signal: controller.signal })
+  } catch (e) {
+    clearTimeout(timer)
+    const kind: RequestFailureKind = timedOut ? 'timeout' : 'network'
+    throw new RequestError(
+      `${url} failed (${kind}${timedOut ? ` ${timeoutMs}ms` : `: ${describeFetchError(e)}`})`,
+      { status: null, serverError: null, kind, networkError: e },
+    )
+  }
+
+  if (response.ok) {
+    try {
+      const data = await response.json() as T
+      clearTimeout(timer)
+      return data
+    } catch (e) {
+      clearTimeout(timer)
+      // Ответ пришёл, а тело прочитать не вышло: либо оборвал наш таймер, либо
+      // соединение. Это НЕ http-отказ — сервер своё дело сделал.
+      const kind: RequestFailureKind = timedOut ? 'timeout' : 'network'
+      throw new RequestError(`${url} answered ${response.status} but body unreadable (${kind})`, {
+        status: response.status, serverError: null, kind, networkError: e,
+      })
+    }
+  }
+
+  const err: unknown = await response.json().catch(() => ({}))
+  clearTimeout(timer)
+  const serverError =
+    typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
+      ? (err as { error: string }).error
+      : null
+  throw new RequestError(`${url} failed: ${response.status} ${JSON.stringify(err)}`, {
+    status: response.status, serverError, kind: 'http', networkError: null,
+  })
+}
+
 export type LoginResponse = {
   token: string
   user: { id: number; firstName: string; username: string | null }
@@ -24,19 +120,55 @@ export type LoginResponse = {
   interruptedRun?: RunResultSummary
 }
 
+// Вход — единственный запрос, без которого игра не открывается вообще, поэтому
+// ждёт он дольше всех и повторяется сам. Числа те же, что у finishRunExplore, и
+// по той же причине: сервер на Render Free просыпается из сна порядка минуты, и
+// первая попытка после простоя ждёт весь подъём.
+//   LOGIN_ATTEMPT_TIMEOUT_MS — одна попытка (запрос + чтение тела); короче
+//     подъёма намеренно, чтобы прерванная попытка уступила место следующей,
+//     которая застанет сервер уже проснувшимся.
+//   LOGIN_TOTAL_BUDGET_MS — весь вызов с повторами; столько максимум игрок
+//     видит экран загрузки, после чего получает экран ошибки с "Повторить".
+// Повторяется только то, что имеет шанс пройти со второго раза (RequestError.
+// retryable): таймаут, сетевой отказ, 5xx. 401 (битый initData) и 400 —
+// отказ по существу, показываются сразу, без 60 секунд ожидания впустую.
+// Повтор входа безопасен: он либо даёт тот же результат, либо видит уже
+// закрытый прерванный забег (см. server/src/routes/auth.ts).
+const LOGIN_RETRY_DELAYS_MS = [300, 1200]
+const LOGIN_ATTEMPT_TIMEOUT_MS = 20000
+const LOGIN_TOTAL_BUDGET_MS = 60000
+
 export async function loginWithTelegram(initDataRaw: string): Promise<LoginResponse> {
-  const response = await fetch(`${SERVER_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData: initDataRaw }),
-  })
+  const body = JSON.stringify({ initData: initDataRaw })
+  const deadline = Date.now() + LOGIN_TOTAL_BUDGET_MS
+  let retries = 0
+  let lastError: RequestError | null = null
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Login failed: ${response.status} ${JSON.stringify(err)}`)
+  while (true) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      // Бюджет кончился между попытками. Отдаём ПОСЛЕДНЮЮ настоящую причину,
+      // а не абстрактный "таймаут": экран ошибки покажет её игроку.
+      throw lastError ?? new RequestError('Login failed (time budget exhausted)', {
+        status: null, serverError: null, kind: 'timeout', networkError: null,
+      })
+    }
+    try {
+      return await requestJson<LoginResponse>(
+        `${SERVER_URL}/auth/login`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body },
+        Math.min(LOGIN_ATTEMPT_TIMEOUT_MS, remaining),
+      )
+    } catch (e) {
+      if (!(e instanceof RequestError) || !e.retryable) throw e
+      lastError = e
+      const delay = LOGIN_RETRY_DELAYS_MS[retries]
+      // Повторы кончились ИЛИ пауза уже не влезает в бюджет — отдаём причину.
+      if (delay === undefined || Date.now() + delay >= deadline) throw e
+      await sleep(delay)
+      retries++
+    }
   }
-
-  return await response.json() as LoginResponse
 }
 // Event kind returned by /run/start-explore — same 6 kinds as
 // server/src/runEvents.ts's RunEventKind.
