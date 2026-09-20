@@ -1320,6 +1320,23 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         sipSyncRef.current.mismatched += 1
         setSipSync({ ...sipSyncRef.current })
       } catch (err) {
+        // Отказ ПОСЛЕ отправки финиша — штатная гонка, а не рассинхрон. Два
+        // кода, один и тот же сценарий, вся разница в том, кто успел первым:
+        //   409 — финиш ещё не закоммитился, условная запись глотка не нашла
+        //         строки с прежним currentRun;
+        //   400 'No active explore run' — финиш успел, currentRun уже пуст.
+        // Забег закрыт, его итоги уехали своим запросом — ни плашки, ни
+        // счётчика провалов это не стоит, поэтому log, а не error. Те же коды
+        // ДО финиша — настоящий конфликт, идут дальше обычным путём.
+        if (
+          err instanceof SipError &&
+          finishExploreSentRef.current &&
+          (err.status === 409 ||
+            (err.status === 400 && err.serverError !== null && err.serverError.includes('No active explore run')))
+        ) {
+          console.log('Explore: /run/sip — отказ после финиша забега, штатная гонка', { tier, status: err.status, serverError: err.serverError })
+          return
+        }
         // Причина — отдельными полями, не только внутри объекта ошибки: в
         // консоли инспектора сразу видно, таймаут это, сеть или ответ сервера.
         console.error(
@@ -1413,6 +1430,19 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // которая сообщает о безвозвратно потерянной записи.
         setProgressStalled(false)
       } catch (err) {
+        // Отказ ПОСЛЕ отправки финиша — штатная гонка, та же и с теми же двумя
+        // кодами, что у глотка выше (409 — финиш ещё пишет, 400 'No active
+        // explore run' — уже записал). Срез после финиша не нужен вовсе: финиш
+        // везёт те же четыре числа. Ни серии провалов, ни плашки, только log.
+        if (
+          err instanceof ProgressError &&
+          finishExploreSentRef.current &&
+          (err.status === 409 ||
+            (err.status === 400 && err.serverError !== null && err.serverError.includes('No active explore run')))
+        ) {
+          console.log('Explore: /run/progress — отказ после финиша забега, штатная гонка', { status: err.status, serverError: err.serverError })
+          return
+        }
         // В отличие от глотка — БЕЗ плашки: потерянный срез перезапишется
         // следующим, пугать игрока нечем. В консоль пишем всегда.
         console.error(
