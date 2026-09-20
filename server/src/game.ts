@@ -12,6 +12,32 @@ export function getCurrentEnergy(storedEnergy: number, lastUpdate: Date): number
   const regenerated = storedEnergy + minutesPassed * ENERGY_PER_MINUTE
   return Math.min(MAX_ENERGY, regenerated)
 }
+
+/**
+ * Возврат энергии за забег, который так и не начался (см. judgeInterruptedRun
+ * в runState.ts). Сначала доначисляем всё, что натикало (getCurrentEnergy),
+ * потом возвращаем списанное и упираемся в потолок — так игрок получает ровно
+ * то, что имел бы, не нажав кнопку: двойной регенерации не возникает, выше
+ * MAX_ENERGY не подняться.
+ *
+ * `refunded` — ФАКТИЧЕСКАЯ прибавка, а не spentEnergy: у игрока с энергией под
+ * потолок она меньше списанного (или ноль), и сообщать ему списанное было бы
+ * неправдой.
+ *
+ * ⚠️ Дробный остаток минуты теряется — его отбрасывает floor внутри
+ * getCurrentEnergy, и lastUpdate сдвигается на now. Это та же потеря, что уже
+ * есть у каждого списания энергии в проекте (см. задачу «энергия упирается в
+ * 99»), отдельной новой она здесь не становится.
+ */
+export function refundEnergy(
+  storedEnergy: number,
+  lastUpdate: Date,
+  spentEnergy: number,
+): { energy: number; refunded: number } {
+  const before = getCurrentEnergy(storedEnergy, lastUpdate)
+  const energy = Math.min(MAX_ENERGY, before + spentEnergy)
+  return { energy, refunded: energy - before }
+}
 // --- Stat growth: incremental accumulation ---
 
 // Given the current stat value, current leftover progress, and new RAW damage

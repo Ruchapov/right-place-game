@@ -2,9 +2,10 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy, calculateLevel, applyStatGrowth } from '../game.js'
+import { getCurrentEnergy, calculateLevel, applyStatGrowth, refundEnergy } from '../game.js'
 import {
   type ActiveExploreRun,
+  judgeInterruptedRun,
   readRunPotionsDrunk,
   readRunProgress,
   emptyRunProgress,
@@ -20,6 +21,16 @@ import { emptyPotionStock } from '../potions.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
+
+// Итог забега, закрытого БЕЗ штрафа: игрок его не увидел (клиент не дошёл до
+// POST /run/ready — упала загрузка, оборвалась сеть, убили приложение на
+// экране "ПОДГОТОВКА"). Трофеи, зелья и статы при этом не тронуты, вернулась
+// только энергия. Взаимоисключающе с interruptedRun: один забег закрывается
+// ЛИБО как смерть, ЛИБО как не начавшийся, и оба поля сразу в ответе не
+// появляются никогда (ветки if/else, см. ниже).
+// energyRefunded — ФАКТИЧЕСКИ доначисленное, а не списанное стартом: у игрока
+// с энергией под потолок прибавка меньше (см. refundEnergy в game.ts).
+export type AbandonedRunSummary = { reason: 'not-confirmed'; energyRefunded: number }
 
 export async function authRoutes(server: FastifyInstance) {
   // POST /auth/login — verify Telegram initData and return JWT
@@ -94,11 +105,44 @@ export async function authRoutes(server: FastifyInstance) {
     // `mode` field at all — left completely untouched, it's a different flow.
     const rawRun = char.currentRun as unknown
     let interruptedRun: RunResultSummary | undefined
+    let abandonedRun: AbandonedRunSummary | undefined
 
     if (rawRun && typeof rawRun === 'object' && (rawRun as { mode?: unknown }).mode === 'explore') {
       const run = rawRun as ActiveExploreRun
       const trophiesLost = char.trophies
       const eventsTotal = Array.isArray(run.events) ? run.events.length : 0
+
+      // Штрафовать или нет — решает ЧИСТАЯ функция (runState.ts), здесь только
+      // запись и логи. Любое сомнение она трактует против игрока, поэтому
+      // 'abandoned' означает доказанное «забег не начинался»: не подтверждён
+      // через /run/ready, ни одного удара, ни одного глотка, и известно,
+      // сколько энергии списал старт.
+      const judgement = judgeInterruptedRun(run)
+      for (const problem of judgement.loud) {
+        request.log.error({ userId: user.id, characterId: char.id, problem }, `login: ${problem}`)
+      }
+
+      if (judgement.verdict === 'abandoned') {
+        // Забег, которого игрок не видел: возвращаем энергию и просто убираем
+        // его. Трофеи, зелья, статы, прогрессы, bonusLevels и level НЕ в data
+        // ВООБЩЕ — не «те же значения», а отсутствуют: пустой забег не повод
+        // трогать персонажа.
+        const refund = refundEnergy(char.energy, char.lastEnergyUpdate, judgement.spentEnergy)
+        const refundedAt = new Date()
+        await prisma.character.update({
+          where: { id: char.id },
+          data: {
+            currentRun: Prisma.DbNull,
+            energy: refund.energy,
+            lastEnergyUpdate: refundedAt,
+          },
+        })
+        // Зеркалим в память — ниже из char собирается блок character ответа
+        // (energy там считается getCurrentEnergy'ем от этих двух полей).
+        char.energy = refund.energy
+        char.lastEnergyUpdate = refundedAt
+        abandonedRun = { reason: 'not-confirmed', energyRefunded: refund.refunded }
+      } else {
 
       // Зелья брошенного забега списываются ЗДЕСЬ — иначе убить приложение
       // выгоднее, чем умереть (выпитое остаётся на складе), а это ровно то, что
@@ -252,6 +296,7 @@ export async function authRoutes(server: FastifyInstance) {
         // и разойтись с БД оно не может.
         potions: newPotionStock,
         bonusLevels: char.bonusLevels, // не менялся — брошенный забег бонус не даёт
+        }
       }
     }
 
@@ -288,6 +333,9 @@ export async function authRoutes(server: FastifyInstance) {
         potions: potionStockOf(char),
       },
       ...(interruptedRun ? { interruptedRun } : {}),
+      // Взаимоисключающе с interruptedRun выше — выставляется только во
+      // встречной ветке if/else, оба сразу невозможны.
+      ...(abandonedRun ? { abandonedRun } : {}),
     })
   })
 }

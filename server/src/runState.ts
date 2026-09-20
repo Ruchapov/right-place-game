@@ -40,7 +40,16 @@ import type { RunEvent } from './runEvents.js'
 // потерянный по дороге срез ничего не ломает — следующий перезапишет). Нужен
 // ровно для одного: у брошенного забега /auth/login больше не теряет рост
 // статов. Необязательное, читать только через readRunProgress.
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress }
+// `confirmed` — дошёл ли клиент до готовности показать игру (POST /run/ready).
+// Забег, брошенный ДО этого момента, игрок не видел вовсе: закрывать его как
+// смерть значит штрафовать за упавшую текстуру или оборванную сеть. Поля НЕТ у
+// всех забегов, созданных до появления фичи, — они подтверждены по определению
+// (см. readRunConfirmed).
+// `spentEnergy` — сколько энергии реально списал старт ИМЕННО этого забега.
+// Хранится числом, а не берётся из RUN_COST на момент закрытия: константа
+// меняется (сейчас 3, перед релизом 10), и забег, начатый до её смены, обязан
+// вернуть списанное, а не нынешнее.
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -108,6 +117,94 @@ export function readRunProgress(run: ActiveExploreRun): RunProgress | null {
   const raw: unknown = run.progress
   if (raw === undefined) return emptyRunProgress()
   return parseRunProgress(raw)
+}
+
+// Подтверждён ли забег. true — да (включая забеги БЕЗ поля: все они созданы до
+// появления /run/ready и подтверждены по определению, это факт, а не догадка).
+// false — нет. null — поле есть, но не boolean: состояние испорчено, и
+// вызывающий обязан сказать об этом громко.
+//
+// ⚠️ Испорченное поле вызывающий обязан трактовать как ПОДТВЕРЖДЁННЫЙ забег, то
+// есть против игрока. Обратное сделало бы порчу currentRun выгодной: «непонятно
+// что» означало бы закрытие без штрафа, то есть бесплатную страховку от смерти
+// (см. CLAUDE.md, Design Decisions — вариант А).
+export function readRunConfirmed(run: ActiveExploreRun): boolean | null {
+  const raw: unknown = run.confirmed
+  if (raw === undefined) return true
+  if (typeof raw !== 'boolean') return null
+  return raw
+}
+
+// Списанная этим забегом энергия. null — поля нет ИЛИ оно не целое
+// неотрицательное число; у неподтверждённого забега это ошибка данных, о
+// которой вызывающий обязан сказать громко, а не подставить RUN_COST молча:
+// константа менялась, и её нынешнее значение ничего не доказывает про этот
+// забег.
+export function readRunSpentEnergy(run: ActiveExploreRun): number | null {
+  const raw: unknown = run.spentEnergy
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return null
+  return raw
+}
+
+// Что делать с забегом, найденным открытым при входе (см. /auth/login).
+//   'penalty'   — закрыть как смерть: обнулить трофеи, списать выпитое,
+//                 применить рост статов. Прежнее и единственное поведение.
+//   'abandoned' — закрыть БЕЗ штрафа и вернуть spentEnergy: игрок не увидел
+//                 забег вовсе.
+// `loud` — всё, что вызывающий ОБЯЗАН записать в log.error. Пустой массив
+// значит «данные чистые».
+export type InterruptedRunJudgement = {
+  verdict: 'penalty' | 'abandoned'
+  /** Сколько энергии вернуть. Осмысленно только при 'abandoned', иначе 0. */
+  spentEnergy: number
+  loud: string[]
+}
+
+// Чистая функция: ни Prisma, ни логов, ни времени — только форма currentRun.
+// Правило одно на все ветки: ЛЮБОЕ сомнение трактуется против игрока, то есть
+// в пользу штрафного пути. Иначе порча или недосказанность в currentRun
+// становятся выгодны, и «убить приложение» снова обгоняет честную смерть.
+export function judgeInterruptedRun(run: ActiveExploreRun): InterruptedRunJudgement {
+  const loud: string[] = []
+  const penalty = (): InterruptedRunJudgement => ({ verdict: 'penalty', spentEnergy: 0, loud })
+
+  const confirmed = readRunConfirmed(run)
+  if (confirmed === null) {
+    loud.push('currentRun.confirmed is malformed, treating the run as confirmed')
+    return penalty()
+  }
+  if (confirmed) return penalty()
+
+  // Дальше — только неподтверждённые. Признак реальной игры закрывает
+  // бесплатную страховку: клиент, который «забыл» подтвердиться, но успел
+  // подраться и выпить зелье, закрывается обычным путём.
+  const progress = readRunProgress(run)
+  if (progress === null) {
+    // Испорченный срез не может ДОКАЗАТЬ отсутствие игры — значит не доказывает.
+    loud.push('currentRun.progress is malformed, cannot prove the run was never played')
+    return penalty()
+  }
+  const played =
+    progress.attackDamageDealt > 0 || progress.skillDamageDealt > 0 ||
+    progress.healedAmount > 0 || progress.damageTaken > 0
+  if (played) return penalty()
+
+  const drunk = readRunPotionsDrunk(run)
+  if (drunk === null) {
+    loud.push('currentRun.potionsDrunk is malformed, cannot prove the run was never played')
+    return penalty()
+  }
+  if (drunk.some((n) => n > 0)) return penalty()
+
+  const spentEnergy = readRunSpentEnergy(run)
+  if (spentEnergy === null) {
+    // Вернуть нечего — сколько списали, неизвестно. Закрываем обычным путём:
+    // выдумывать число (RUN_COST «на сегодня») нельзя, оно уже не то.
+    loud.push('currentRun.spentEnergy is missing or malformed on an unconfirmed run, falling back to the penalty path')
+    return penalty()
+  }
+
+  return { verdict: 'abandoned', spentEnergy, loud }
 }
 
 // Во что превратились потолки: сами числа плюс всё, что нужно вызывающему для

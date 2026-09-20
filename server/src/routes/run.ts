@@ -9,6 +9,7 @@ import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../poti
 import {
   type ActiveExploreRun,
   readRunPotionsDrunk,
+  readRunConfirmed,
   parseRunProgress,
   coerceRunProgress,
   clampRunProgress,
@@ -203,6 +204,52 @@ export async function runRoutes(server: FastifyInstance) {
     })
   })
 
+  // Подтверждение старта: клиент дошёл до готовности ПОКАЗАТЬ забег (мир
+  // построен, ассеты загружены). До этого момента забег для игрока не
+  // существовал, и если приложение закрыли раньше — вход вернёт энергию и не
+  // тронет банк трофеев (см. judgeInterruptedRun в runState.ts и /auth/login).
+  //
+  // Идемпотентен: повтор на уже подтверждённом забеге НИЧЕГО не пишет и
+  // отвечает тем же 200. Так повтор после оборванного по таймауту запроса
+  // безопасен — тот же приём, что у 409 на финише.
+  server.post('/run/ready', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+
+    const confirmed = readRunConfirmed(run)
+    if (confirmed === null) {
+      request.log.error(
+        { userId, confirmed: run.confirmed },
+        'ready: currentRun.confirmed is malformed, treating the run as already confirmed',
+      )
+    }
+    // Уже подтверждён (или забег старого формата, без поля) — писать нечего.
+    if (confirmed !== false) {
+      return reply.send({ confirmed: true })
+    }
+
+    const nextRun: ActiveExploreRun = { ...run, confirmed: true }
+
+    // Условная запись — тот же приём и те же касты, что у /run/sip ниже.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      data: { currentRun: nextRun as unknown as Prisma.InputJsonValue },
+    })
+    if (written.count === 0) {
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+
+    return reply.send({ confirmed: true })
+  })
+
   // Зафиксировать ОДИН выпитый глоток по тиру — в currentRun, а не в складе.
   // Колонки potionT1..T5 здесь НЕ трогаются: списание со склада остаётся одним
   // пакетом в /run/finish-explore, иначе выпитое спишется дважды.
@@ -251,7 +298,16 @@ export async function runRoutes(server: FastifyInstance) {
 
     const nextDrunk = [...drunk]
     nextDrunk[tierIndex] += 1
-    const nextRun: ActiveExploreRun = { ...run, potionsDrunk: nextDrunk }
+    // Глоток — доказательство реальной игры, поэтому он же подтверждает забег
+    // (лишнего запроса не появляется: запись currentRun здесь и так идёт).
+    // Условие СТРОГО `=== false`: у забега без поля и у подтверждённого объект
+    // не меняется ни на байт, иначе условная запись ниже дралась бы сама с
+    // собой на ровном месте.
+    const nextRun: ActiveExploreRun = {
+      ...run,
+      potionsDrunk: nextDrunk,
+      ...(run.confirmed === false ? { confirmed: true } : {}),
+    }
 
     // Условная запись: применяется, только если currentRun в базе всё ещё РОВНО
     // тот, что прочитан выше (jsonb-сравнение, порядок ключей не важен). Без
@@ -306,7 +362,14 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid progress' })
     }
 
-    const nextRun: ActiveExploreRun = { ...run, progress }
+    // Срез с ненулевыми счётчиками — такое же доказательство игры, что и
+    // глоток выше, и подтверждает забег тем же способом и с тем же строгим
+    // `=== false` (забег без поля остаётся байт в байт прежним).
+    const nextRun: ActiveExploreRun = {
+      ...run,
+      progress,
+      ...(run.confirmed === false ? { confirmed: true } : {}),
+    }
 
     // Условная запись — ровно та же, что у /run/sip выше, и по той же причине:
     // read-modify-write иначе гоняется. Отдельно важно, что срез НЕ может
@@ -339,6 +402,13 @@ export async function runRoutes(server: FastifyInstance) {
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
+    }
+
+    // Неподтверждённый забег на финише — не отказ: игрок дошёл до конца, и
+    // отбирать награды за не долетевший /run/ready нельзя. Но знать об этом
+    // надо: либо клиент не шлёт подтверждение, либо оно систематически теряется.
+    if (readRunConfirmed(run) === false) {
+      request.log.warn({ userId }, 'finish-explore: run was never confirmed by /run/ready')
     }
 
     const died = request.body.died === true
