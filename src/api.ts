@@ -170,6 +170,64 @@ export async function loginWithTelegram(initDataRaw: string): Promise<LoginRespo
     }
   }
 }
+// --- POST /run/ready: подтверждение, что забег реально показан игроку ---
+// Шлётся, когда мир построен и игра в шаге от показа (Explore.tsx, перед
+// setReady). До этого момента забег для игрока не существовал, и сервер,
+// найдя его открытым при следующем входе, закроет БЕЗ штрафа: вернёт энергию
+// и не тронет банк трофеев (см. server/src/runState.ts, judgeInterruptedRun).
+//
+// Числа меньше, чем у входа: игрок уже смотрит на экран загрузки готового
+// забега, и держать его там минуту нельзя. 8 с на попытку, 24 с на всё.
+// Повторяем таймаут, сеть, 5xx — и ДОПОЛНИТЕЛЬНО 409 'Run state changed,
+// retry': при нём сервер не записал ничего, так что повтор безопасен (в
+// отличие от 4xx по существу, которые показываются сразу).
+// Сам запрос идемпотентен на сервере: повторный вызов и вызов на забеге без
+// поля confirmed отвечают 200 без записи.
+const READY_RETRY_DELAYS_MS = [300, 900]
+const READY_ATTEMPT_TIMEOUT_MS = 8000
+const READY_TOTAL_BUDGET_MS = 24000
+
+export async function confirmRunReady(token: string): Promise<{ confirmed: boolean }> {
+  const deadline = Date.now() + READY_TOTAL_BUDGET_MS
+  let retries = 0
+  let lastError: RequestError | null = null
+
+  while (true) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw lastError ?? new RequestError('Run ready failed (time budget exhausted)', {
+        status: null, serverError: null, kind: 'timeout', networkError: null,
+      })
+    }
+    try {
+      return await requestJson<{ confirmed: boolean }>(
+        `${SERVER_URL}/run/ready`,
+        {
+          method: 'POST',
+          // Тело пустое по смыслу — серверу нужен только токен. Шлём `{}` с
+          // обычным json-заголовком, как все остальные запросы файла: POST
+          // вообще без Content-Type разбирается серверными парсерами
+          // по-разному, и выяснять это на проде не за чем.
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: '{}',
+        },
+        Math.min(READY_ATTEMPT_TIMEOUT_MS, remaining),
+      )
+    } catch (e) {
+      if (!(e instanceof RequestError)) throw e
+      // retryable — таймаут/сеть/5xx (см. RequestError выше); 409 добавляем
+      // здесь, а не в общее правило: для других запросов конфликт означает
+      // другое, и решать за них этот хелпер не должен.
+      if (!e.retryable && e.status !== 409) throw e
+      lastError = e
+      const delay = READY_RETRY_DELAYS_MS[retries]
+      if (delay === undefined || Date.now() + delay >= deadline) throw e
+      await sleep(delay)
+      retries++
+    }
+  }
+}
+
 // Event kind returned by /run/start-explore — same 6 kinds as
 // server/src/runEvents.ts's RunEventKind.
 export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'

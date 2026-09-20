@@ -43,7 +43,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
 
 // Как часто уходит срез счётчиков забега (POST /run/progress, см. sendProgress).
@@ -4115,7 +4115,26 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // функции всё синхронно), но проверяем для консистентности с
       // остальными cancelled-гейтами этой функции.
       if (!cancelled) {
-        setReady(true)
+        // Подтверждаем старт ПОСЛЕ всей загрузки и постройки мира: забег
+        // считается показанным только теперь. Брось игрок приложение раньше —
+        // вход вернёт энергию и не сожжёт банк трофеев (POST /run/ready, см.
+        // server/src/routes/run.ts).
+        // Только если забег РЕАЛЬНО создан на сервере: без токена (офлайн-
+        // заглушка вне Telegram) забега нет вовсе, и подтверждать нечего.
+        // Ошибку НЕ глушим — она уходит в тот же setup().catch, что и остальные
+        // сбои загрузки, и показывает экран ошибки. Тихо продолжать игру с
+        // неподтверждённым забегом нельзя: он выглядел бы обычным, а закрылся
+        // бы без штрафа, то есть смерть стала бы дешевле выхода.
+        if (token && startExploreResult) {
+          await confirmRunReady(token)
+        }
+        // Второй раз, уже после ожидания сети: за 24 секунды бюджета
+        // подтверждения компонент мог размонтироваться (выход, смена карты
+        // debug-переключателем, StrictMode) — показывать игру такому
+        // экземпляру нечего, его Pixi-приложение уже уничтожено.
+        if (!cancelled) {
+          setReady(true)
+        }
       }
     }
 
