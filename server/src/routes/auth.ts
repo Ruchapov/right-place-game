@@ -3,6 +3,17 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
 import { getCurrentEnergy, calculateLevel } from '../game.js'
+import {
+  type ActiveExploreRun,
+  readRunPotionsDrunk,
+  runPotionStock,
+  runSipsAllowed,
+  clampPotionsSpent,
+  subtractPotionStock,
+  potionStockOf,
+  potionStockToColumns,
+} from '../runState.js'
+import { emptyPotionStock } from '../potions.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -82,15 +93,66 @@ export async function authRoutes(server: FastifyInstance) {
     let interruptedRun: RunResultSummary | undefined
 
     if (rawRun && typeof rawRun === 'object' && (rawRun as { mode?: unknown }).mode === 'explore') {
-      const run = rawRun as { events?: unknown[] }
+      const run = rawRun as ActiveExploreRun
       const trophiesLost = char.trophies
       const eventsTotal = Array.isArray(run.events) ? run.events.length : 0
 
+      // Зелья брошенного забега списываются ЗДЕСЬ — иначе убить приложение
+      // выгоднее, чем умереть (выпитое остаётся на складе), а это ровно то, что
+      // дизайн запрещает (см. CLAUDE.md, вариант А). Единственный источник —
+      // currentRun.potionsDrunk, который пишет /run/sip по одному глотку в
+      // момент питья: клиент закрылся, ничего не сообщив, и других данных о
+      // выпитом не существует. Потолки — ТЕ ЖЕ, что у /run/finish-explore
+      // (clampPotionsSpent, runState.ts): не больше выданного на забег по
+      // каждому тиру и не больше run.sips по сумме.
+      //
+      // Ни одна форма currentRun не имеет права уронить ЭТОТ эндпоинт: без
+      // логина игра не открывается вообще, так что цена ошибки здесь —
+      // несписанные зелья, а не потерянный доступ. Поэтому испорченное или
+      // отсутствующее содержимое — громкий warn и списание нуля, без throw.
+      const recordedDrunk = readRunPotionsDrunk(run)
+      let potionsSpent: number[]
+      if (recordedDrunk === null) {
+        potionsSpent = emptyPotionStock()
+        request.log.warn(
+          { userId: user.id, characterId: char.id, potionsDrunk: run.potionsDrunk },
+          'login: interrupted run has malformed currentRun.potionsDrunk, spending 0 potions',
+        )
+      } else {
+        const runStock = runPotionStock(run)
+        const sipsAllowed = runSipsAllowed(run)
+        potionsSpent = clampPotionsSpent(recordedDrunk, runStock, sipsAllowed)
+        if (recordedDrunk.some((n, i) => n !== potionsSpent[i])) {
+          request.log.warn(
+            { userId: user.id, characterId: char.id, recordedDrunk, potionsSpent, runStock, sipsAllowed },
+            'login: interrupted run potionsDrunk exceeded per-tier or sip cap, clamped',
+          )
+        }
+      }
+      const newPotionStock = subtractPotionStock(potionStockOf(char), potionsSpent)
+
+      // Один update на всё: трофеи, забег и склад зелий. Разнести их по двум
+      // записям нельзя — падение между ними оставило бы забег закрытым, а
+      // трофеи/зелья целыми, то есть снова сделало бы закрытие приложения
+      // выгоднее смерти.
       await prisma.character.update({
         where: { id: char.id },
-        data: { trophies: 0, currentRun: Prisma.DbNull },
+        data: {
+          trophies: 0,
+          currentRun: Prisma.DbNull,
+          ...potionStockToColumns(newPotionStock),
+        },
       })
       char.trophies = 0
+      // Склад в памяти — вслед за записью, тем же приёмом, что char.trophies
+      // выше: из char ниже собираются И ответ (character.potions, его клиент
+      // реально читает), И interruptedRun.potions, и оба обязаны показать склад
+      // ПОСЛЕ списания, а не до.
+      char.potionT1 = newPotionStock[0]
+      char.potionT2 = newPotionStock[1]
+      char.potionT3 = newPotionStock[2]
+      char.potionT4 = newPotionStock[3]
+      char.potionT5 = newPotionStock[4]
 
       interruptedRun = {
         interrupted: true,
@@ -115,11 +177,11 @@ export async function authRoutes(server: FastifyInstance) {
         endurance: char.endurance,
         agility: char.agility,
         level: calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels),
-        // Зелья брошенного забега НЕ списываются: клиент закрылся, не сообщив,
-        // сколько выпил, а выдумывать число нельзя. Отдаём текущий склад по
-        // тирам как есть, тем же приёмом, что статы выше. Известная открытая
-        // дыра — закрыть приложение выгоднее, чем умереть, именно по зельям.
-        potions: [char.potionT1, char.potionT2, char.potionT3, char.potionT4, char.potionT5],
+        // Склад ПОСЛЕ списания выпитого за брошенный забег (см. выше) — то же
+        // самое число, что записано в колонки этим же update. Абсолютное
+        // значение, как trophies/strength рядом: клиент им перезаписывает своё,
+        // и разойтись с БД оно не может.
+        potions: newPotionStock,
         bonusLevels: char.bonusLevels, // не менялся — брошенный забег бонус не даёт
       }
     }
@@ -129,6 +191,14 @@ export async function authRoutes(server: FastifyInstance) {
     // ответа клиенту всегда пересчитывается явно, как и везде в проекте
     // (см. calculateLevel в game.ts, правило "логика level не читает").
     const level = calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels)
+
+    // currentRun в ответ не уходит. Клиент его не читает (см. LoginResponse в
+    // src/api.ts — такого поля в типе нет), а у прерванного забега в char
+    // осталась ЗАКРЫТАЯ выше запись: в памяти она не обнуляется, и `...char`
+    // отправил бы игроку забег, которого на сервере уже нет. Снимаем здесь, а
+    // не обнулением char.currentRun, — тогда поле не уедет и у забега старой
+    // 3-комнатной формы, который ветка выше намеренно не трогает.
+    const { currentRun: _closedRun, ...charFields } = char
 
     return reply.send({
       token,
@@ -142,11 +212,11 @@ export async function authRoutes(server: FastifyInstance) {
       // 20260911130000_potion_charges_drop, так что `...char` её больше не
       // несёт — данные живут в potionT1..potionT5.
       character: {
-        ...char,
+        ...charFields,
         level,
         energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate),
         equippedSkills: char.equippedSkills,
-        potions: [char.potionT1, char.potionT2, char.potionT3, char.potionT4, char.potionT5],
+        potions: potionStockOf(char),
       },
       ...(interruptedRun ? { interruptedRun } : {}),
     })

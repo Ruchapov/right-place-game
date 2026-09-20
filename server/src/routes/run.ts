@@ -2,8 +2,20 @@ import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
-import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC } from '../runEvents.js'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../potions.js'
+// Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
+// JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
+import {
+  type ActiveExploreRun,
+  readRunPotionsDrunk,
+  runPotionStock,
+  runSipsAllowed,
+  clampPotionsSpent,
+  subtractPotionStock,
+  potionStockOf,
+  potionStockToColumns,
+} from '../runState.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -62,53 +74,6 @@ function applyStatGrowth(
   }
 }
 
-// Склад зелий персонажа как массив по тирам (индекс = тир-1) и обратно в поля
-// Prisma. Пять колонок вместо Json — цена за атомарные +1/-1 в общем update;
-// эти две функции держат разложение в ОДНОМ месте, чтобы номера тиров не
-// расползлись строковыми ключами по эндпоинтам.
-type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
-
-function potionStockOf(character: PotionColumns): number[] {
-  return [character.potionT1, character.potionT2, character.potionT3, character.potionT4, character.potionT5]
-}
-
-function potionStockToColumns(stock: number[]): PotionColumns {
-  return {
-    potionT1: stock[0],
-    potionT2: stock[1],
-    potionT3: stock[2],
-    potionT4: stock[3],
-    potionT5: stock[4],
-  }
-}
-
-// Shape of the active run stored in Character.currentRun for the
-// map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
-// the tag that identifies this shape in the JSON field.
-// `events` carries the FULL roll (trophyReward/isMimic included) — that part
-// never leaves the server; the client only ever gets the stripped-down
-// version built in /run/start-explore's response.
-// `potions` — снимок склада ПО ТИРАМ на момент старта (длина POTION_TIER_COUNT,
-// индекс = тир-1), `sips` — сколько глотков вообще разрешено за забег
-// (MAX_SIPS_PER_RUN, но не больше суммы запаса). Раньше здесь был один скаляр,
-// который смешивал две разные вещи: сколько есть и сколько можно выпить.
-// `potionsDrunk` — выпитое за забег ПО ТИРАМ, пишет /run/sip по одному глотку.
-// Склад (potionT1..T5) оно не трогает — списание одним пакетом в
-// /run/finish-explore. Необязательное: у забега без глотков и у забега, начатого
-// до появления /run/sip, поля нет. Читать только через readRunPotionsDrunk.
-type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[] }
-
-// Выпитое по тирам из currentRun. Поля нет — глотков не было: это честные нули,
-// а не догадка. Поле есть, но не массив из POTION_TIER_COUNT неотрицательных
-// целых — null: состояние испорчено, и вызывающий обязан сказать об этом
-// громко, а не считать с нуля.
-function readRunPotionsDrunk(run: ActiveExploreRun): number[] | null {
-  const raw: unknown = run.potionsDrunk
-  if (raw === undefined) return new Array(POTION_TIER_COUNT).fill(0)
-  if (!Array.isArray(raw) || raw.length !== POTION_TIER_COUNT) return null
-  if (!raw.every((n) => Number.isInteger(n) && (n as number) >= 0)) return null
-  return [...(raw as number[])]
-}
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
 // (App.tsx) still sends an explicit one, still validated below.
@@ -306,15 +271,15 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Corrupt run state' })
     }
 
-    // Потолок по тиру — снимок склада на старте забега (ступень 2 finish-explore).
-    const runStock = Array.isArray(run.potions) ? run.potions : []
+    // Потолок по тиру — снимок склада на старте забега (потолок 1 clampPotionsSpent).
+    const runStock = runPotionStock(run)
     const issued = runStock[tierIndex] ?? 0
     if (drunk[tierIndex] + 1 > issued) {
       return reply.status(400).send({ error: 'Tier stock exhausted', tier: tierSpec.tier, issued, drunk: drunk[tierIndex] })
     }
-    // Потолок по сумме — run.sips (ступень 3 finish-explore), тот же откат на
-    // MAX_SIPS_PER_RUN для нецелого значения.
-    const sipsAllowed = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
+    // Потолок по сумме — run.sips (потолок 2 clampPotionsSpent), с тем же
+    // откатом на MAX_SIPS_PER_RUN для нецелого значения.
+    const sipsAllowed = runSipsAllowed(run)
     const drunkTotal = drunk.reduce((sum, n) => sum + n, 0)
     if (drunkTotal + 1 > sipsAllowed) {
       return reply.status(400).send({ error: 'No sips left', sips: sipsAllowed, drunk: drunkTotal })
@@ -450,7 +415,7 @@ export async function runRoutes(server: FastifyInstance) {
     // обязан быть не ниже того, что честный игрок реально мог восстановить,
     // иначе он молча срежет ему рост выносливости.
     const maxHealFrac = Math.max(...POTION_TIERS.map((t) => t.healFrac))
-    const runSips = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
+    const runSips = runSipsAllowed(run)
     const maxDamageTaken = run.maxHp * (1 + runSips * maxHealFrac) * 1.5
     if (safeDamageTaken > maxDamageTaken) {
       request.log.warn(
@@ -495,26 +460,14 @@ export async function runRoutes(server: FastifyInstance) {
       )
     }
 
-    // Ступень 2: потолок ПО КАЖДОМУ ТИРУ отдельно — run.potions это снимок из
-    // currentRun, а не из тела запроса. Именно эта ступень не даёт списать
-    // выпитое дорогое как дешёвое: заявить T5 больше, чем на этот забег было
-    // выдано T5, невозможно. Тот же уровень доверия клиенту, что у потолка
-    // урона выше.
-    const runStock = Array.isArray(run.potions) ? run.potions : []
-    const potionsSpent = reportedDrunk.map((n, i) => Math.min(n, runStock[i] ?? 0))
-
-    // Ступень 3: потолок по СУММЕ — за забег разрешено не больше run.sips
-    // глотков независимо от тиров. Излишек срезаем с МЛАДШИХ тиров вверх
-    // (строгая сторона: дорогие списания сохраняются). Сюда попадаем только
-    // если клиент врёт или ошибся в счёте — обе ситуации не должны
-    // оборачиваться подарком.
-    const sipsAllowed = Number.isInteger(run.sips) ? run.sips : MAX_SIPS_PER_RUN
-    let overflow = potionsSpent.reduce((sum, n) => sum + n, 0) - sipsAllowed
-    for (let i = 0; i < POTION_TIER_COUNT && overflow > 0; i++) {
-      const cut = Math.min(potionsSpent[i], overflow)
-      potionsSpent[i] -= cut
-      overflow -= cut
-    }
+    // Ступень 2: оба потолка — по каждому тиру (против снимка run.potions из
+    // currentRun, а не из тела запроса) и по сумме глотков. Арифметика и
+    // порядок среза живут в clampPotionsSpent (runState.ts): /auth/login
+    // списывает зелья брошенного забега теми же потолками, и разойтись им
+    // нельзя. Тот же уровень доверия клиенту, что у потолка урона выше.
+    const runStock = runPotionStock(run)
+    const sipsAllowed = runSipsAllowed(run)
+    const potionsSpent = clampPotionsSpent(reportedDrunk, runStock, sipsAllowed)
     if (reportedDrunk.some((n, i) => n !== potionsSpent[i])) {
       request.log.warn(
         { userId, reportedDrunk, potionsSpent, runStock, sipsAllowed },
@@ -523,9 +476,8 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     // Никогда не в минус, даже если склад сдвинулся между стартом и финишем
-    // (например, покупка посреди забега).
-    const characterStock = potionStockOf(character)
-    const newPotionStock = characterStock.map((n, i) => Math.max(0, n - potionsSpent[i]))
+    // (например, покупка посреди забега) — см. subtractPotionStock.
+    const newPotionStock = subtractPotionStock(potionStockOf(character), potionsSpent)
 
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, clampedAttackDamageDealt,
