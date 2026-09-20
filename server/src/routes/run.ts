@@ -1,14 +1,17 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, applyStatProgress, calculateLevel, scaledEnemyMaxHp, scaledBossMaxHp, STRENGTH_THRESHOLD_BASE, ENDURANCE_THRESHOLD_BASE, AGILITY_THRESHOLD_BASE } from '../game.js'
+import { getCurrentEnergy, applyStatGrowth, calculateLevel } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC } from '../runEvents.js'
-import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../potions.js'
+import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../potions.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
   type ActiveExploreRun,
   readRunPotionsDrunk,
+  parseRunProgress,
+  coerceRunProgress,
+  clampRunProgress,
   runPotionStock,
   runSipsAllowed,
   clampPotionsSpent,
@@ -32,45 +35,6 @@ function getUserId(request: FastifyRequest): number | null {
     return payload.userId as number
   } catch {
     return null
-  }
-}
-
-// Applies one fight's worth of RAW damage (no more per-level normalization —
-// see game.ts) to all three stats via applyStatProgress, then recomputes
-// level via calculateLevel (stat-derived channels + bonusLevels) and adjusts
-// HP for any maxHp increase. bonusLevels here is Character.bonusLevels AS OF
-// THIS WRITE — the caller decides whether it changed (currently only
-// /run/finish-explore increments it on a boss kill, see bossClosed there)
-// and passes the already-updated value in; this function only reads it,
-// never mutates it.
-function applyStatGrowth(
-  currentStrength: number, currentStrengthProgress: number, attackDamage: number,
-  currentEndurance: number, currentEnduranceProgress: number, damageTaken: number,
-  currentAgility: number, currentAgilityProgress: number, skillDamage: number,
-  previousMaxHp: number,
-  currentHp: number,
-  bonusLevels: number,
-) {
-  const strResult = applyStatProgress(currentStrength, currentStrengthProgress, attackDamage, STRENGTH_THRESHOLD_BASE)
-  const endResult = applyStatProgress(currentEndurance, currentEnduranceProgress, damageTaken, ENDURANCE_THRESHOLD_BASE)
-  const agiResult = applyStatProgress(currentAgility, currentAgilityProgress, skillDamage, AGILITY_THRESHOLD_BASE)
-
-  const maxHp = endResult.stat * 8
-  const hpGain = Math.max(0, maxHp - previousMaxHp)
-  const hp = currentHp + hpGain
-
-  const level = calculateLevel(strResult.stat, agiResult.stat, endResult.stat, bonusLevels)
-
-  return {
-    strength: strResult.stat,
-    strengthProgress: strResult.progress,
-    endurance: endResult.stat,
-    enduranceProgress: endResult.progress,
-    agility: agiResult.stat,
-    agilityProgress: agiResult.progress,
-    maxHp,
-    hp,
-    level,
   }
 }
 
@@ -307,6 +271,58 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({ potionsDrunk: nextDrunk, sipsLeft: sipsAllowed - (drunkTotal + 1) })
   })
 
+  // Срез сырых счётчиков забега в currentRun.progress. Нужен ровно для одного:
+  // у забега, брошенного закрытием приложения, /auth/login применяет последний
+  // срез и рост статов больше не теряется (без него смерть растила статы, а
+  // закрытие — нет, и правило "закрыть приложение не выгоднее смерти"
+  // нарушалось в обе стороны).
+  //
+  // ЗАМЕНА, а не сложение: клиент присылает накопленное С НАЧАЛА ЗАБЕГА, и
+  // потерянный по дороге срез ничего не ломает — следующий перезапишет всё
+  // равно. Сложение потребовало бы дельт, а дельта, доставленная дважды
+  // (повтор после таймаута), посчиталась бы дважды.
+  //
+  // Потолки здесь НЕ применяются намеренно: они зависят от уровня персонажа на
+  // момент ПРИМЕНЕНИЯ и считаются один раз там, где срез превращается в статы
+  // (clampRunProgress в /auth/login и в финише). Хранится сырьё.
+  server.post<{ Body: unknown }>('/run/progress', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+
+    // СТРОГО, в отличие от финиша: срез целиком наш собственный формат, и
+    // частично разобранному верить нельзя — испорченное поле здесь означает
+    // сломанного клиента, о котором надо узнать сразу, а не рост статов,
+    // тихо посчитанный от нуля.
+    const progress = parseRunProgress(request.body)
+    if (progress === null) {
+      return reply.status(400).send({ error: 'Invalid progress' })
+    }
+
+    const nextRun: ActiveExploreRun = { ...run, progress }
+
+    // Условная запись — ровно та же, что у /run/sip выше, и по той же причине:
+    // read-modify-write иначе гоняется. Отдельно важно, что срез НЕ может
+    // воскресить уже закрытый забег — финиш или вход, обнулившие currentRun
+    // между чтением и записью, не совпадут с фильтром, и запись не применится.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      data: { currentRun: nextRun as unknown as Prisma.InputJsonValue },
+    })
+    if (written.count === 0) {
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+
+    return reply.send({ progress })
+  })
+
   // Finish a map-based Explore run: award trophies for the events the client
   // closed (amounts come ONLY from the server's own currentRun.events, never
   // from the request body), apply the Contrabandist multiplier if rolled,
@@ -374,61 +390,40 @@ export async function runRoutes(server: FastifyInstance) {
     // "levelUp?" после.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
 
-    const safeAttackDamageDealt = Math.max(0, request.body.attackDamageDealt ?? 0)
-    const safeSkillDamageDealt = Math.max(0, request.body.skillDamageDealt ?? 0)
-    const safeHealedAmount = Math.max(0, request.body.healedAmount ?? 0)
-    const safeDamageTaken = Math.max(0, request.body.damageTaken ?? 0)
+    // Четыре сырых счётчика из тела — МЯГКИЙ разбор (кривое поле становится
+    // нулём, остальные живут): у старого клиента их может не быть вовсе, а
+    // отказывать всему финишу из-за одного числа нельзя, забег уже сыгран.
+    const reportedProgress = coerceRunProgress(request.body)
 
-    // Потолок нанесённого урона (анти-чит) — число врагов ЭТОГО забега
-    // (сумма clusterPoints у kind:'enemy' событий run.events — из
-    // currentRun, клиенту не доверяем) × HP врага на уровне персонажа, ПЛЮС
-    // число боссов × HP босса на том же уровне (scaledBossMaxHp — множитель
-    // BOSS_HP_MULT поверх scaledEnemyMaxHp, см. game.ts) — иначе забег с
-    // одним боссом и без обычных врагов давал потолок 0 и обрезал весь урон.
-    // Всё вместе × запас 1.5 (промахи/оверкилл).
-    const enemyCount = run.events
-      .filter((ev) => ev.kind === 'enemy')
-      .reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0)
-    const bossCount = run.events.filter((ev) => ev.kind === 'boss').length
-    const maxDamageDealt = (enemyCount * scaledEnemyMaxHp(characterLevel) + bossCount * scaledBossMaxHp(characterLevel)) * 1.5
-
-    const combinedAttackSkill = safeAttackDamageDealt + safeSkillDamageDealt
-    const attackSkillScale =
-      combinedAttackSkill > maxDamageDealt && combinedAttackSkill > 0 ? maxDamageDealt / combinedAttackSkill : 1
-    if (attackSkillScale < 1) {
+    // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
+    // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
+    // логи: что именно срезано и в каком забеге.
+    const capped = clampRunProgress(reportedProgress, run, characterLevel)
+    if (capped.dealtScale < 1) {
       request.log.warn(
-        { userId, combinedAttackSkill, maxDamageDealt, enemyCount, bossCount, characterLevel },
+        {
+          userId,
+          combinedAttackSkill: reportedProgress.attackDamageDealt + reportedProgress.skillDamageDealt,
+          maxDamageDealt: capped.maxDamageDealt,
+          enemyCount: capped.enemyCount,
+          bossCount: capped.bossCount,
+          characterLevel,
+        },
         'finish-explore: attackDamageDealt+skillDamageDealt exceeded cap, clamped',
       )
     }
-    const clampedAttackDamageDealt = Math.round(safeAttackDamageDealt * attackSkillScale)
-    const clampedSkillDamageDealt = Math.round(safeSkillDamageDealt * attackSkillScale)
-
-    // Потолок полученного урона (анти-чит) — maxHp ЭТОГО забега (снимок
-    // run.maxHp из currentRun, посчитан при /run/start-explore — не
-    // character.endurance*8 заново: доверяем тому же снимку, что и ниже у
-    // "зарядов зелья") × (1 + заряды зелий забега × 0.25 — полное лечение
-    // каждым зарядом) × запас 1.5.
-    // Раньше здесь стояло `run.potions * 0.25`, где potions был скаляром, а
-    // 0.25 — единственной силой лечения. Теперь глотков ровно run.sips, а
-    // лечить они могут по-разному, поэтому берём МАКСИМУМ по каталогу: потолок
-    // обязан быть не ниже того, что честный игрок реально мог восстановить,
-    // иначе он молча срежет ему рост выносливости.
-    const maxHealFrac = Math.max(...POTION_TIERS.map((t) => t.healFrac))
-    const runSips = runSipsAllowed(run)
-    const maxDamageTaken = run.maxHp * (1 + runSips * maxHealFrac) * 1.5
-    if (safeDamageTaken > maxDamageTaken) {
+    if (reportedProgress.damageTaken > capped.maxDamageTaken) {
       request.log.warn(
-        { userId, damageTaken: safeDamageTaken, maxDamageTaken, runMaxHp: run.maxHp, sips: runSips },
+        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
         'finish-explore: damageTaken exceeded cap, clamped',
       )
     }
-    const clampedDamageTaken = Math.min(safeDamageTaken, maxDamageTaken)
-
-    // healedAmount — clamp к maxHp забега (тот же базовый принцип, что и у
-    // damageTaken выше), складывается со skillDamageDealt внутри applyStatGrowth —
-    // скиллы + лечение растят ловкость.
-    const clampedHealedAmount = Math.min(safeHealedAmount, run.maxHp)
+    if (reportedProgress.healedAmount > capped.maxHealed) {
+      request.log.warn(
+        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed },
+        'finish-explore: healedAmount exceeded cap, clamped',
+      )
+    }
 
     // bonusLevels инкрементируется здесь, ДО applyStatGrowth — level (снимок)
     // обязан пересчитаться уже с новым bonusLevels в той же формуле
@@ -480,9 +475,9 @@ export async function runRoutes(server: FastifyInstance) {
     const newPotionStock = subtractPotionStock(potionStockOf(character), potionsSpent)
 
     const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, clampedAttackDamageDealt,
-      character.endurance, character.enduranceProgress, clampedDamageTaken,
-      character.agility, character.agilityProgress, clampedSkillDamageDealt + clampedHealedAmount,
+      character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
+      character.endurance, character.enduranceProgress, capped.progress.damageTaken,
+      character.agility, character.agilityProgress, capped.progress.skillDamageDealt + capped.progress.healedAmount,
       run.maxHp,
       run.hp,
       newBonusLevels,

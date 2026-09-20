@@ -501,6 +501,103 @@ export async function recordSip(token: string, tier: number): Promise<SipResult>
   }
 }
 
+// --- POST /run/progress: срез сырых счётчиков забега ---
+// Те же четыре числа, что уезжают в финише (Explore.tsx:
+// attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/damageTakenRef), —
+// накопленное С НАЧАЛА ЗАБЕГА, не дельта. Сервер кладёт их в currentRun
+// ЗАМЕНОЙ, и /auth/login применяет последний срез, если забег брошен закрытием
+// приложения. Финиш это НЕ отменяет: он остаётся главным источником, срез —
+// страховка на случай, когда финиша не будет вовсе.
+export type RunProgressSnapshot = {
+  attackDamageDealt: number
+  skillDamageDealt: number
+  healedAmount: number
+  damageTaken: number
+}
+
+export class ProgressError extends Error {
+  /** HTTP-код попытки; null — ответа не было (таймаут или сеть). */
+  status: number | null
+  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
+  serverError: string | null
+  /** Причина, та же шкала, что у SipError. */
+  kind: SipFailureKind
+  /** Исходная ошибка fetch при сетевом сбое или таймауте, иначе null. */
+  networkError: unknown
+  constructor(message: string, fields: { status: number | null; serverError: string | null; kind: SipFailureKind; networkError: unknown }) {
+    super(message)
+    this.status = fields.status
+    this.serverError = fields.serverError
+    this.kind = fields.kind
+    this.networkError = fields.networkError
+  }
+}
+
+// Таймаут ОБЯЗАТЕЛЕН по той же причине, что у recordSip: в авиарежиме fetch
+// может не завершиться вовсе — ни ответа, ни ошибки, — и очередь запросов
+// забега встала бы навсегда (см. CLAUDE.md, "fetch без таймаута в WebView").
+// Тот же потолок одной попытки, что у глотка.
+const PROGRESS_TIMEOUT_MS = 4000
+
+// Повторов НЕТ, в отличие от recordSip/finishRunExplore, и это осознанно:
+// каждый следующий срез несёт НАКОПЛЕННОЕ с начала забега и перезаписывает
+// потерянный целиком. Повтор здесь стоил бы времени очереди, ничего не
+// добавляя, — а 409 'Run state changed, retry' у среза вообще штатный: он
+// означает, что забег уже закрыли финишем, и повторять тем более нечего.
+export async function recordProgress(token: string, snapshot: RunProgressSnapshot): Promise<{ progress: RunProgressSnapshot }> {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, PROGRESS_TIMEOUT_MS)
+
+  let response: Response
+  try {
+    response = await fetch(`${SERVER_URL}/run/progress`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(snapshot),
+      signal: controller.signal,
+    })
+  } catch (e) {
+    clearTimeout(timer)
+    const kind: SipFailureKind = timedOut ? 'timeout' : 'network'
+    throw new ProgressError(
+      `Progress failed (${kind}${timedOut ? ` ${PROGRESS_TIMEOUT_MS}ms` : `: ${describeFetchError(e)}`})`,
+      { status: null, serverError: null, kind, networkError: e },
+    )
+  }
+
+  if (response.ok) {
+    // Тело — под тем же таймером: зависшее тело это тот же зависший запрос.
+    try {
+      const data = await response.json() as { progress: RunProgressSnapshot }
+      clearTimeout(timer)
+      return data
+    } catch (e) {
+      clearTimeout(timer)
+      const kind: SipFailureKind = timedOut ? 'timeout' : 'network'
+      throw new ProgressError(`Progress failed (${response.status} but body unreadable, ${kind})`, {
+        status: response.status, serverError: null, kind, networkError: e,
+      })
+    }
+  }
+
+  const err: unknown = await response.json().catch(() => ({}))
+  clearTimeout(timer)
+  const serverError =
+    typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
+      ? (err as { error: string }).error
+      : null
+  throw new ProgressError(`Progress failed: ${response.status} ${JSON.stringify(err)}`, {
+    status: response.status, serverError, kind: 'http', networkError: null,
+  })
+}
+
 export async function saveEquippedSkills(token: string, skills: string[]): Promise<{ equippedSkills: string[] }> {
   const response = await fetch(`${SERVER_URL}/character/skills`, {
     method: 'POST',

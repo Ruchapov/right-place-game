@@ -43,8 +43,17 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, finishRunExplore, FinishExploreError, recordSip, SipError, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
+
+// Как часто уходит срез счётчиков забега (POST /run/progress, см. sendProgress).
+// Потеря прогресса при закрытии приложения ограничена этим интервалом — а цена
+// интервала всего одна запись в БД, и только если числа изменились.
+const PROGRESS_INTERVAL_MS = 20_000
+// Сколько срезов подряд должно не дойти, чтобы зажечь плашку. Один-два —
+// обычная потеря связи, которую перезапишет следующий срез; три подряд значат,
+// что на сервер не уходит ничего.
+const PROGRESS_FAIL_STREAK_FOR_PLAQUE = 3
 
 type ExploreProps = {
   onClose?: () => void
@@ -754,15 +763,32 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   type SipSyncState = { failed: number; limitRejected: boolean; mismatched: number }
   const [sipSync, setSipSync] = useState<SipSyncState | null>(null)
   const sipSyncRef = useRef<SipSyncState>({ failed: 0, limitRejected: false, mismatched: 0 })
-  // Запросы /run/sip уходят СТРОГО по очереди (цепочка промисов): ответ на k-й
-  // глоток сверяется со снимком клиента на k-м глотке, и порядок записи на
-  // сервере обязан совпадать с порядком глотков. Очередь держит только сеть —
-  // лечение, кнопка и счётчики забега её не ждут.
-  const sipQueueRef = useRef<Promise<void>>(Promise.resolve())
-  // Номер забега для ответов /run/sip: setup() увеличивает его на каждом
-  // запуске, и запоздавший ответ прошлого забега (debug-переключатель карт)
-  // плашку нового не зажигает.
-  const sipRunGenRef = useRef(0)
+  // Запросы, которые ПИШУТ currentRun на сервере (/run/sip и /run/progress),
+  // уходят СТРОГО по очереди — одной цепочкой промисов на оба. Две причины:
+  //   1) ответ на k-й глоток сверяется со снимком клиента на k-м глотке, и
+  //      порядок записи на сервере обязан совпадать с порядком глотков;
+  //   2) оба эндпоинта пишут currentRun УСЛОВНО (updateMany с фильтром по
+  //      прежнему значению, см. server/src/routes/run.ts) — два запроса в
+  //      полёте одновременно означают, что один получит 409 и не запишется.
+  //      У глотка 409 зажигает КРАСНУЮ плашку рассинхрона, так что срез,
+  //      идущий отдельной очередью, ломал бы сверку глотков на ровном месте.
+  // Очередь держит только сеть — лечение, кнопка и счётчики забега её не ждут.
+  const runWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // Номер забега для ответов /run/sip и /run/progress: setup() увеличивает его
+  // на каждом запуске, и запоздавший ответ прошлого забега (debug-переключатель
+  // карт) плашку нового не зажигает.
+  const runWriteGenRef = useRef(0)
+  // Последний УСПЕШНО отправленный срез счётчиков (см. sendProgress). null —
+  // в этом забеге ни один срез ещё не дошёл. Нужен ровно для одного: не слать
+  // срез, если с прошлой удачной отправки ни одно из четырёх чисел не
+  // изменилось (стоял в меню, шёл по пустой карте).
+  const progressSentRef = useRef<RunProgressSnapshot | null>(null)
+  // Сколько срезов подряд не дошло. Сбрасывается любым успехом. Один-два сбоя
+  // плашки не стоят: срез — фоновая страховка, следующий несёт накопленное с
+  // начала забега и перезаписывает потерянный целиком. Три подряд — уже не
+  // случайность, и игроку стоит знать, что прогресс забега на сервер не идёт.
+  const progressFailStreakRef = useRef(0)
+  const [progressStalled, setProgressStalled] = useState(false)
   // Итоги забега для экрана результатов (см. ResultsScreen выше) — null,
   // пока забег идёт. Выставляется РОВНО один раз, синхронно клиентскими
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
@@ -1272,8 +1298,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // Снимок клиента НА ЭТОМ глотке — с ним сверяется ответ на этот глоток.
     const expectedDrunk = [...potionsDrunkByTierRef.current]
     const expectedSipsLeft = potionSipsLeftRef.current
-    const gen = sipRunGenRef.current
-    const link = sipQueueRef.current.then(async () => {
+    const gen = runWriteGenRef.current
+    const link = runWriteQueueRef.current.then(async () => {
       try {
         const result = await recordSip(sessionToken, tier)
         const same =
@@ -1287,7 +1313,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           client: { potionsDrunk: expectedDrunk, sipsLeft: expectedSipsLeft },
           server: result,
         })
-        if (gen !== sipRunGenRef.current) return
+        if (gen !== runWriteGenRef.current) return
         // После уже случившегося сбоя сервер закономерно отстаёт на пропущенный
         // глоток — это не отдельный баг, его уже показывает строка "не сохранён".
         if (sipSyncRef.current.failed > 0) return
@@ -1311,7 +1337,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               }
             : { tier, error: err },
         )
-        if (gen !== sipRunGenRef.current) return
+        if (gen !== runWriteGenRef.current) return
         const limitRejected =
           err instanceof SipError &&
           err.status === 400 &&
@@ -1329,8 +1355,99 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // бросить не может, так что следующий глоток стартует при любом исходе.
     // recordSip сам ограничен по времени (SIP_TOTAL_BUDGET_MS в api.ts), поэтому
     // звено не может и зависнуть навсегда.
-    sipQueueRef.current = link.catch(() => {})
+    runWriteQueueRef.current = link.catch(() => {})
   }
+
+  // Срез накопленных счётчиков забега на сервер (POST /run/progress) — фоновая
+  // страховка на случай, когда финиша не будет вовсе (игрок закрыл приложение):
+  // /auth/login применит последний срез и рост статов не потеряется. Зовётся из
+  // двух мест: при закрытии КАЖДОГО события (closeEvent) и по таймеру раз в
+  // PROGRESS_INTERVAL_MS (см. эффект ниже).
+  //
+  // Игру не блокирует ничем: ответа никто не ждёт, числа в забеге от него не
+  // зависят (сервер получает сырьё, а не результат), запрос уходит в общую
+  // очередь записей currentRun.
+  function sendProgress() {
+    if (!token) return
+    const sessionToken = token
+    // Забег уже закрыт финишем — срез не нужен и не может записаться (сервер
+    // ответил бы 409/400 на закрытый currentRun), а счётчик неудач зря дошёл бы
+    // до плашки. Финиш и так везёт эти же четыре числа, он главный источник.
+    if (finishExploreSentRef.current) return
+
+    const snapshot: RunProgressSnapshot = {
+      attackDamageDealt: attackDamageDealtRef.current,
+      skillDamageDealt: skillDamageDealtRef.current,
+      healedAmount: healedAmountRef.current,
+      damageTaken: damageTakenRef.current,
+    }
+    // Ничего не изменилось с прошлой УДАЧНОЙ отправки — на сервере уже лежит
+    // ровно это. Сравнение с последним успехом, а не с последней попыткой:
+    // после сбоя срез обязан уйти снова.
+    // База при отсутствии отправок — нули, а не "слать всегда": у забега без
+    // среза сервер и так читает нули (readRunProgress), так что пустой срез
+    // ничего не добавил бы. Без этого каждый забег начинался бы с заведомо
+    // бесполезного запроса, а тихий забег слал бы его каждые 20 секунд.
+    const sent = progressSentRef.current ?? { attackDamageDealt: 0, skillDamageDealt: 0, healedAmount: 0, damageTaken: 0 }
+    if (
+      sent.attackDamageDealt === snapshot.attackDamageDealt &&
+      sent.skillDamageDealt === snapshot.skillDamageDealt &&
+      sent.healedAmount === snapshot.healedAmount &&
+      sent.damageTaken === snapshot.damageTaken
+    ) return
+
+    const gen = runWriteGenRef.current
+    const link = runWriteQueueRef.current.then(async () => {
+      // Проверка ПОВТОРНО, уже перед самой отправкой: пока звено стояло в
+      // очереди за глотком, забег мог кончиться. Такой запрос всё равно получил
+      // бы отказ по закрытому currentRun и зря двигал бы счётчик неудач.
+      if (finishExploreSentRef.current || gen !== runWriteGenRef.current) return
+      try {
+        await recordProgress(sessionToken, snapshot)
+        if (gen !== runWriteGenRef.current) return
+        progressSentRef.current = snapshot
+        progressFailStreakRef.current = 0
+        // Успех означает, что на сервере лежит ВЕСЬ прогресс забега (срез
+        // накопительный, а не дельта), поэтому прежние неудачи больше ничего
+        // не значат и плашка обязана погаснуть — в отличие от плашки глотка,
+        // которая сообщает о безвозвратно потерянной записи.
+        setProgressStalled(false)
+      } catch (err) {
+        // В отличие от глотка — БЕЗ плашки: потерянный срез перезапишется
+        // следующим, пугать игрока нечем. В консоль пишем всегда.
+        console.error(
+          'Explore: /run/progress — срез прогресса не сохранён',
+          err instanceof ProgressError
+            ? { kind: err.kind, status: err.status, serverError: err.serverError, snapshot, error: err }
+            : { snapshot, error: err },
+        )
+        if (gen !== runWriteGenRef.current) return
+        progressFailStreakRef.current += 1
+        // Три подряд — это уже не случайная потеря пакета, а нерабочая связь с
+        // сервером: закрытие приложения сейчас обойдётся игроку в весь рост
+        // статов за забег, и об этом стоит сказать.
+        if (progressFailStreakRef.current >= PROGRESS_FAIL_STREAK_FOR_PLAQUE) setProgressStalled(true)
+      }
+    }).catch((unexpected) => {
+      // Брошено ВНЕ try выше (из самого catch) — звено всё равно обязано
+      // завершиться, иначе следующая запись currentRun ждала бы его вечно.
+      console.error('Explore: /run/progress — непредвиденная ошибка при отправке среза', { error: unexpected })
+    })
+    runWriteQueueRef.current = link.catch(() => {})
+  }
+
+  // Таймер срезов: раз в PROGRESS_INTERVAL_MS, всё время жизни забега. Сам
+  // sendProgress решает, уходить ли запросу (не изменилось с прошлой удачной
+  // отправки / забег уже закрыт финишем), поэтому тикать он может свободно —
+  // тихий забег без единого удара не порождает ни одного запроса.
+  // Зависимость только от token: sendProgress читает ТОЛЬКО рефы и сеттеры
+  // состояния, поэтому замыкание первого рендера остаётся верным весь забег.
+  useEffect(() => {
+    if (!token) return
+    const id = setInterval(() => sendProgress(), PROGRESS_INTERVAL_MS)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
 
   // Хитстан от урона: обрывает замах атаки и на HURT_MS блокирует новую атаку
   // (см. attackPressedRef-обработчик в setup). Определена на уровне компонента
@@ -2165,11 +2282,15 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
       potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
-      // Сверка глотков с сервером — тоже на забег (см. sendSip).
-      sipRunGenRef.current += 1
-      sipQueueRef.current = Promise.resolve()
+      // Сверка глотков с сервером — тоже на забег (см. sendSip). Поколение и
+      // очередь общие с срезами прогресса (см. runWriteQueueRef).
+      runWriteGenRef.current += 1
+      runWriteQueueRef.current = Promise.resolve()
       sipSyncRef.current = { failed: 0, limitRejected: false, mismatched: 0 }
       setSipSync(null)
+      progressSentRef.current = null // сброс на случай повторного запуска setup()
+      progressFailStreakRef.current = 0 // сброс на случай повторного запуска setup()
+      setProgressStalled(false)
       setRunResult(null) // сброс на случай повторного запуска setup()
       setSaveStatus('pending') // сброс на случай повторного запуска setup()
 
@@ -2709,6 +2830,15 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           // sendFinishExplore, когда придёт настоящий ответ сервера (см. там,
           // обновляет player в App.tsx).
           sendFinishExplore(false)
+        } else {
+          // Забег продолжается — снимаем срез счётчиков (см. sendProgress):
+          // событие это самый крупный шаг забега, и именно после него обиднее
+          // всего потерять рост статов, закрыв приложение.
+          // ИМЕННО в else: на последнем событии срез не нужен (финиш выше везёт
+          // те же четыре числа и закрывает забег), а уйди он — два запроса
+          // гонялись бы за одну и ту же запись currentRun, и срез получил бы
+          // 409 просто потому, что финиш успел раньше.
+          sendProgress()
         }
       }
 
@@ -4124,8 +4254,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           только в setup()). Стоит под HP-плитой, чтобы не закрывать HUD
           обелисков сверху. Рассинхрон (отказ сервера по лимиту или другой счёт
           выпитого) — красным: это баг счёта, а не сеть. */}
-      {sipSync && (() => {
-        const desync = sipSync.limitRejected || sipSync.mismatched > 0
+      {(sipSync || progressStalled) && (() => {
+        const desync = sipSync !== null && (sipSync.limitRejected || sipSync.mismatched > 0)
         const color = desync ? '#E0353B' : '#F08A24'
         return (
           <div
@@ -4155,9 +4285,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
                 textAlign: 'center',
               }}
             >
-              {sipSync.failed > 0 && <div>⚠ Глоток не сохранён на сервере ({sipSync.failed})</div>}
-              {sipSync.limitRejected && <div>РАССИНХРОН: сервер отказал по лимиту глотков — клиент насчитал иначе</div>}
-              {sipSync.mismatched > 0 && <div>РАССИНХРОН: сервер насчитал выпитое иначе ({sipSync.mismatched})</div>}
+              {sipSync && sipSync.failed > 0 && <div>⚠ Глоток не сохранён на сервере ({sipSync.failed})</div>}
+              {sipSync && sipSync.limitRejected && <div>РАССИНХРОН: сервер отказал по лимиту глотков — клиент насчитал иначе</div>}
+              {sipSync && sipSync.mismatched > 0 && <div>РАССИНХРОН: сервер насчитал выпитое иначе ({sipSync.mismatched})</div>}
+              {/* Срезы прогресса (см. sendProgress): гаснет сама, как только
+                  срез дойдёт, — успешный срез несёт ВЕСЬ прогресс забега, и
+                  прежние неудачи перестают что-либо значить. */}
+              {progressStalled && <div>⚠ Прогресс забега не уходит на сервер — выход сейчас потеряет рост статов</div>}
             </div>
           </div>
         )

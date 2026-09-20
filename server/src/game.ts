@@ -33,7 +33,12 @@ export function applyStatProgress(
   let progress = currentProgress + newDamage
   while (true) {
     const threshold = Math.round(base * Math.pow(stat / 10, STAT_THRESHOLD_EXPONENT))
-    if (progress < threshold) break
+    // Условие ОТРИЦАНИЕМ, не `progress < threshold`: на нечисле обе прямые
+    // проверки ложны, цикл не вышел бы никогда и повесил бы весь сервер
+    // (событийный цикл один). Так нечисло выходит на первой же итерации.
+    // Вызывающие обязаны давать конечные числа (см. clampRunProgress в
+    // runState.ts) — это не подмена их проверок, а защита от зависания.
+    if (!(progress >= threshold)) break
     progress -= threshold
     stat++
   }
@@ -43,6 +48,50 @@ export function applyStatProgress(
 export const STRENGTH_THRESHOLD_BASE = 710
 export const ENDURANCE_THRESHOLD_BASE = 290
 export const AGILITY_THRESHOLD_BASE = 710
+
+// Applies one run's worth of RAW damage (no more per-level normalization —
+// see above) to all three stats via applyStatProgress, then recomputes level
+// via calculateLevel (stat-derived channels + bonusLevels) and adjusts HP for
+// any maxHp increase. bonusLevels here is Character.bonusLevels AS OF THIS
+// WRITE — the caller decides whether it changed (only /run/finish-explore
+// increments it, on a boss kill) and passes the already-updated value in;
+// this function only reads it, never mutates it.
+//
+// Живёт здесь, а не в routes/run.ts, где вырос: вызывающих стало ДВА —
+// /run/finish-explore и /auth/login, который применяет срез брошенного забега
+// (см. runState.ts). Ни один из них не имеет права считать рост статов своей
+// формулой, иначе закрытое приложение и честная смерть растили бы статы
+// по-разному.
+export function applyStatGrowth(
+  currentStrength: number, currentStrengthProgress: number, attackDamage: number,
+  currentEndurance: number, currentEnduranceProgress: number, damageTaken: number,
+  currentAgility: number, currentAgilityProgress: number, skillDamage: number,
+  previousMaxHp: number,
+  currentHp: number,
+  bonusLevels: number,
+) {
+  const strResult = applyStatProgress(currentStrength, currentStrengthProgress, attackDamage, STRENGTH_THRESHOLD_BASE)
+  const endResult = applyStatProgress(currentEndurance, currentEnduranceProgress, damageTaken, ENDURANCE_THRESHOLD_BASE)
+  const agiResult = applyStatProgress(currentAgility, currentAgilityProgress, skillDamage, AGILITY_THRESHOLD_BASE)
+
+  const maxHp = endResult.stat * 8
+  const hpGain = Math.max(0, maxHp - previousMaxHp)
+  const hp = currentHp + hpGain
+
+  const level = calculateLevel(strResult.stat, agiResult.stat, endResult.stat, bonusLevels)
+
+  return {
+    strength: strResult.stat,
+    strengthProgress: strResult.progress,
+    endurance: endResult.stat,
+    enduranceProgress: endResult.progress,
+    agility: agiResult.stat,
+    agilityProgress: agiResult.progress,
+    maxHp,
+    hp,
+    level,
+  }
+}
 
 // --- Leveling: function of current stats PLUS bonusLevels, no stat history ---
 // Replaces the old incremental +3 Endurance / +6 Strength bookkeeping

@@ -2,10 +2,13 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy, calculateLevel } from '../game.js'
+import { getCurrentEnergy, calculateLevel, applyStatGrowth } from '../game.js'
 import {
   type ActiveExploreRun,
   readRunPotionsDrunk,
+  readRunProgress,
+  emptyRunProgress,
+  clampRunProgress,
   runPotionStock,
   runSipsAllowed,
   clampPotionsSpent,
@@ -131,16 +134,68 @@ export async function authRoutes(server: FastifyInstance) {
       }
       const newPotionStock = subtractPotionStock(potionStockOf(char), potionsSpent)
 
-      // Один update на всё: трофеи, забег и склад зелий. Разнести их по двум
-      // записям нельзя — падение между ними оставило бы забег закрытым, а
+      // Рост статов за брошенный забег — из последнего среза, который клиент
+      // клал в currentRun.progress по ходу дела (POST /run/progress). До него
+      // смерть статы растила, а закрытие приложения — нет, и правило "закрыть
+      // не выгоднее, чем умереть" нарушалось в обе стороны сразу.
+      //
+      // Формула и потолки — ТЕ ЖЕ, что в /run/finish-explore, одним кодом
+      // (clampRunProgress + applyStatGrowth): разойдись они, закрытие
+      // приложения снова стало бы отдельной, выгодной или невыгодной, дорогой.
+      // bonusLevels НЕ меняется — босс брошенного забега бонуса не даёт
+      // (сервер не знает, убит ли он), но в applyStatGrowth уходит текущий:
+      // уровень обязан пересчитаться по полной формуле.
+      const levelBefore = calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels)
+      const recordedProgress = readRunProgress(run)
+      const progressToApply = recordedProgress ?? emptyRunProgress()
+      if (recordedProgress === null) {
+        request.log.warn(
+          { userId: user.id, characterId: char.id, progress: run.progress },
+          'login: interrupted run has malformed currentRun.progress, applying zero stat growth',
+        )
+      } else if (
+        progressToApply.attackDamageDealt === 0 && progressToApply.skillDamageDealt === 0 &&
+        progressToApply.healedAmount === 0 && progressToApply.damageTaken === 0
+      ) {
+        // Ноль по всем четырём — среза не было вовсе (забег прерван раньше
+        // первой отправки) либо он пуст. Рост статов за этот забег потерян
+        // целиком, и это стоит видеть в логах: ровно та дыра, ради которой
+        // /run/progress и заводился.
+        request.log.warn(
+          { userId: user.id, characterId: char.id, hasSnapshot: run.progress !== undefined },
+          'login: interrupted run has no accumulated progress, stat growth is zero',
+        )
+      }
+      const cappedProgress = clampRunProgress(progressToApply, run, levelBefore)
+      const growth = applyStatGrowth(
+        char.strength, char.strengthProgress, cappedProgress.progress.attackDamageDealt,
+        char.endurance, char.enduranceProgress, cappedProgress.progress.damageTaken,
+        char.agility, char.agilityProgress, cappedProgress.progress.skillDamageDealt + cappedProgress.progress.healedAmount,
+        run.maxHp,
+        run.hp,
+        char.bonusLevels,
+      )
+
+      // Один update на всё: трофеи, забег, склад зелий и статы. Разнести их по
+      // двум записям нельзя — падение между ними оставило бы забег закрытым, а
       // трофеи/зелья целыми, то есть снова сделало бы закрытие приложения
-      // выгоднее смерти.
+      // выгоднее смерти. level пишется ОБЯЗАТЕЛЬНО вместе со статами: колонка
+      // денормализованная, и схема требует обновлять её при любой записи
+      // статов (см. комментарий к полю в schema.prisma).
       await prisma.character.update({
         where: { id: char.id },
         data: {
           trophies: 0,
           currentRun: Prisma.DbNull,
           ...potionStockToColumns(newPotionStock),
+          strength: growth.strength,
+          strengthProgress: growth.strengthProgress,
+          endurance: growth.endurance,
+          enduranceProgress: growth.enduranceProgress,
+          agility: growth.agility,
+          agilityProgress: growth.agilityProgress,
+          bonusLevels: char.bonusLevels,
+          level: growth.level,
         },
       })
       char.trophies = 0
@@ -153,6 +208,19 @@ export async function authRoutes(server: FastifyInstance) {
       char.potionT3 = newPotionStock[2]
       char.potionT4 = newPotionStock[3]
       char.potionT5 = newPotionStock[4]
+      // Статы — тем же приёмом и по той же причине: ниже из char собирается
+      // блок character ответа (клиент кладёт его прямо в player), и показать
+      // там статы ДО роста значило бы соврать ровно на величину роста.
+      const strengthGained = growth.strength - char.strength
+      const enduranceGained = growth.endurance - char.endurance
+      const agilityGained = growth.agility - char.agility
+      char.strength = growth.strength
+      char.strengthProgress = growth.strengthProgress
+      char.endurance = growth.endurance
+      char.enduranceProgress = growth.enduranceProgress
+      char.agility = growth.agility
+      char.agilityProgress = growth.agilityProgress
+      char.level = growth.level
 
       interruptedRun = {
         interrupted: true,
@@ -163,20 +231,21 @@ export async function authRoutes(server: FastifyInstance) {
         eventsTotal,
         items: [],
         bonuses: [],
-        // Брошенный забег закрывается как смерть БЕЗ applyStatGrowth (сервер
-        // не знает, что игрок успел сделать) — тот же принцип, что и у
-        // eventsClosed/items/bonuses выше: нечего показать, значит нули.
-        strengthGained: 0,
-        enduranceGained: 0,
-        agilityGained: 0,
-        leveledUp: false,
-        // Абсолютные значения — статы тут НЕ менялись (см. выше), просто
-        // текущие char.*, тем же приёмом, что ответ /run/finish-explore.
+        // Настоящие приросты за брошенный забег — из последнего среза
+        // (см. applyStatGrowth выше). Нулями они остаются только тогда, когда
+        // среза не было или он испорчен, и это честный ноль, а не заглушка,
+        // какой эти поля были раньше.
+        strengthGained,
+        enduranceGained,
+        agilityGained,
+        leveledUp: growth.level > levelBefore,
+        // Абсолютные значения ПОСЛЕ роста — char.* уже обновлены выше, тем же
+        // приёмом, что ответ /run/finish-explore.
         trophies: 0,
         strength: char.strength,
         endurance: char.endurance,
         agility: char.agility,
-        level: calculateLevel(char.strength, char.agility, char.endurance, char.bonusLevels),
+        level: growth.level,
         // Склад ПОСЛЕ списания выпитого за брошенный забег (см. выше) — то же
         // самое число, что записано в колонки этим же update. Абсолютное
         // значение, как trophies/strength рядом: клиент им перезаписывает своё,
