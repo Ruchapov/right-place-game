@@ -483,8 +483,18 @@ export async function runRoutes(server: FastifyInstance) {
       newBonusLevels,
     )
 
-    await prisma.character.update({
-      where: { userId },
+    // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
+    // применяется, только если currentRun в базе всё ещё РОВНО тот, что
+    // прочитан в начале обработчика (jsonb-сравнение, порядок ключей не
+    // важен). Между чтением и этой строкой забег мог закрыть /auth/login —
+    // игрок убил приложение, не дождавшись "Сохраняем итоги...", и зашёл
+    // заново. Без фильтра финиш писал бы поверх результата входа от своего,
+    // уже устаревшего снимка статов и трофеев.
+    // Одна запись на весь обработчик: до неё нет ни записей в БД, ни ответа
+    // клиенту — только warn'ы, описывающие расчёт. Поэтому отказ здесь не
+    // может оставить забег закрытым наполовину.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
       data: {
         trophies: died ? 0 : newTrophies,
         strength: growth.strength,
@@ -503,6 +513,24 @@ export async function runRoutes(server: FastifyInstance) {
         currentRun: Prisma.DbNull,
       },
     })
+    if (written.count === 0) {
+      // Тот же код и текст, что у /run/sip и /run/progress: клиент уже умеет
+      // повторять финиш на 409 теми же данными (api.ts, finishRunExplore).
+      // Повтор безопасен именно потому, что здесь НИЧЕГО не записано.
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+    if (written.count !== 1) {
+      // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
+      // фильтр по нему может дать только 0 или 1 строку. Если это всё же
+      // случилось, откатить уже нечего: запись применена к нескольким
+      // персонажам. Поэтому громко в лог и дальше обычный ответ — тихо
+      // проглотить такое нельзя, но и врать клиенту, что забег не сохранён,
+      // тоже: его собственная строка записана верно.
+      request.log.error(
+        { userId, count: written.count },
+        'finish-explore: conditional write matched an unexpected number of characters',
+      )
+    }
 
     const result: RunResultSummary = {
       interrupted: false,
