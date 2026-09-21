@@ -541,8 +541,10 @@ export async function finishRunExplore(
 // по тирам (индекс = тир-1) и сколько глотков ещё разрешено — по счёту СЕРВЕРА.
 export type SipResult = { potionsDrunk: number[]; sipsLeft: number }
 
-// Отказ /run/sip после всех повторов — по образцу EquipError: вызывающему мало
-// факта ошибки, ему нужен код и текст сервера, чтобы отличить рассинхрон лимита
+// Отказ /run/sip после всех повторов — той же формы, что RequestError выше
+// (класс отдельный, потому что эта функция на общий хелпер не переводилась:
+// она проверена живыми забегами). Вызывающему мало факта ошибки, ему нужен
+// код и текст сервера, чтобы отличить рассинхрон лимита
 // ('Tier stock exhausted' / 'No sips left') от сбоя сети.
 // Причина последней неудачной попытки:
 //   timeout — попытку прервал наш таймер (SIP_ATTEMPT_TIMEOUT_MS или остаток
@@ -893,52 +895,51 @@ export type InventoryItem = {
 
 export type InventoryResponse = { inventory: InventoryItem[] }
 
+// Инвентарь. Повторить его БЕЗОПАСНО — это GET, он ничего не меняет, поэтому
+// здесь повтор есть (в отличие от покупки). Две попытки: зависший инвентарь
+// стоит дорого — `inventoryStatus` застревает в 'loading', а вместе с ним
+// блокируется кнопка "Начать забег" (броня и урон оружия считаются по нему).
+const INVENTORY_ATTEMPT_TIMEOUT_MS = 8000
+const INVENTORY_ATTEMPTS = 2
+const INVENTORY_RETRY_DELAY_MS = 400
+
 export async function fetchInventory(token: string): Promise<InventoryResponse> {
-  const response = await fetch(`${SERVER_URL}/character/inventory`, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-    },
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Fetch inventory failed: ${response.status} ${JSON.stringify(err)}`)
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requestJson<InventoryResponse>(
+        `${SERVER_URL}/character/inventory`,
+        { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
+        INVENTORY_ATTEMPT_TIMEOUT_MS,
+      )
+    } catch (e) {
+      // 4xx повторять незачем — отказ по существу (нет токена, нет персонажа).
+      if (attempt >= INVENTORY_ATTEMPTS || !(e instanceof RequestError) || !e.retryable) throw e
+      await sleep(INVENTORY_RETRY_DELAY_MS)
+    }
   }
-  return await response.json() as InventoryResponse
 }
 
 export type EquipResponse = { success: boolean; equippedItemId: string | null; unequippedItemId: string | null }
 
-// Отказ /character/equip с разобранным ответом. Вызывающему мало факта ошибки:
-// текст отказа по существу (400 "Недостаточный уровень") надо показать игроку
-// на экране. message — тот же, что был у простого Error, консоль не меняется.
-export class EquipError extends Error {
-  status: number
-  /** Поле error из тела ответа; null — тела нет или в нём не строка. */
-  serverError: string | null
-  constructor(status: number, serverError: string | null, body: unknown) {
-    super(`Equip item failed: ${status} ${JSON.stringify(body)}`)
-    this.status = status
-    this.serverError = serverError
-  }
-}
+// Надеть/снять. Повторов НЕТ, хотя запись и идемпотентна по значению
+// (сервер пишет equipped: true/false, а не переключает): при потерянном ответе
+// честнее не гадать, а перечитать инвентарь — он и покажет, что на сервере на
+// самом деле (см. handleEquipItem в App.tsx). Отдельный класс ошибки больше не
+// нужен: RequestError несёт и status, и serverError — текст отказа по существу
+// (400 "Недостаточный уровень") достаётся из него так же.
+const EQUIP_TIMEOUT_MS = 5000
 
 export async function equipItem(token: string, inventoryItemId: string, equip: boolean): Promise<EquipResponse> {
-  const response = await fetch(`${SERVER_URL}/character/equip`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
+  return requestJson<EquipResponse>(
+    `${SERVER_URL}/character/equip`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ inventoryItemId, equip }),
     },
-    body: JSON.stringify({ inventoryItemId, equip }),
-  })
-  if (!response.ok) {
-    const err: unknown = await response.json().catch(() => ({}))
-    const serverError =
-      typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string'
-        ? (err as { error: string }).error
-        : null
-    throw new EquipError(response.status, serverError, err)
-  }
-  return await response.json() as EquipResponse
+    EQUIP_TIMEOUT_MS,
+  )
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, fetchInventory, equipItem, EquipError, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
@@ -777,15 +777,26 @@ export default function App() {
       // console.error остаётся для консоли, но одного его мало — отказ
       // обязан быть виден в карточке.
       console.error('Equip item failed', e)
-      // 400 — отказ по существу, у сервера он по-русски ("Недостаточный
-      // уровень"), показываем как есть. Остальное — 401/404 с английским
-      // служебным текстом, 5xx, обрыв сети — игроку общей строкой.
-      setGearEquipError(
-        e instanceof EquipError && e.status === 400 && e.serverError !== null
-          ? e.serverError
-          : `Не удалось ${equip ? 'надеть' : 'снять'} — сервер не ответил или отказал. Попробуй ещё раз.`,
-      )
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: ответа нет, но запрос МОГ дойти и
+        // примениться. Гадать нельзя — перечитываем инвентарь, и экран
+        // покажет то, что на сервере на самом деле. Повторять сам equip не
+        // нужно: сервер пишет булево по значению, но второй запрос всё равно
+        // ничего не добавит к неизвестности, а перечитывание отвечает точно.
+        setGearEquipError('Ответ не пришёл — обновляю инвентарь.')
+        await loadInventory()
+      } else {
+        // 400 — отказ по существу, у сервера он по-русски ("Недостаточный
+        // уровень"), показываем как есть. Остальное — 401/404 с английским
+        // служебным текстом — игроку общей строкой.
+        setGearEquipError(
+          e instanceof RequestError && e.status === 400 && e.serverError !== null
+            ? e.serverError
+            : `Не удалось ${equip ? 'надеть' : 'снять'} — сервер не ответил или отказал. Попробуй ещё раз.`,
+        )
+      }
     } finally {
+      // Разблокируется в ЛЮБОМ исходе, включая перезагрузку инвентаря выше.
       setEquipping(false)
     }
   }
