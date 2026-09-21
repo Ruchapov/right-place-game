@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC } from '../runEvents.js'
-import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, potionTierByNumber } from '../potions.js'
+import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -663,7 +663,7 @@ export async function runRoutes(server: FastifyInstance) {
   // каталога (src/potions.ts, копия server/src/potions.ts), НЕ из тела запроса:
   // клиент называет только тир. Раньше эндпоинт параметров не принимал вовсе и
   // продавал одно абстрактное зелье за захардкоженные 20 золота.
-  server.post<{ Body: { tier?: number } }>('/character/buy-potion', async (request, reply) => {
+  server.post<{ Body: { tier?: number; count?: number } }>('/character/buy-potion', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
@@ -676,6 +676,14 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Unknown potion tier' })
     }
 
+    // Сколько штук. Поля нет — ровно одно, как шлёт клиент без счётчика: его
+    // ответ обязан остаться прежним до байта. Разбор — чистой функцией из
+    // каталога (parsePurchaseCount), там же потолок.
+    const count = parsePurchaseCount(request.body?.count)
+    if (count === null) {
+      return reply.status(400).send({ error: 'Invalid count', max: MAX_POTIONS_PER_PURCHASE })
+    }
+
     // Уровень открытия — та же чистая функция от статов, что и везде в файле
     // (колонка Character.level её НЕ источник, только снимок).
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
@@ -683,22 +691,45 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Tier not unlocked', levelRequired: tierSpec.levelRequired })
     }
 
-    if (character.gold < tierSpec.price) {
-      return reply.status(400).send({ error: 'Not enough gold', price: tierSpec.price })
+    // Цена ВСЕЙ покупки. Прежний ответ 400 и то же поле price (цена за штуку —
+    // клиент показывает её в строке отказа), добавился только total.
+    const totalPrice = tierSpec.price * count
+    if (character.gold < totalPrice) {
+      return reply.status(400).send({ error: 'Not enough gold', price: tierSpec.price, total: totalPrice })
     }
 
     const stock = potionStockOf(character)
-    stock[tierSpec.tier - 1] += 1
+    stock[tierSpec.tier - 1] += count
 
     const updated = await prisma.character.update({
       where: { userId },
       data: {
-        gold: character.gold - tierSpec.price,
+        gold: character.gold - totalPrice,
         ...potionStockToColumns(stock),
       },
     })
 
     return reply.send({ gold: updated.gold, potions: potionStockOf(updated) })
+  })
+
+  // Профиль для сверки баланса — ТОЛЬКО чтение. Нужен магазину, чтобы обновить
+  // золото и склад, не устраивая ради этого полный логин: /auth/login закрывает
+  // открытый currentRun (как смерть, если забег был подтверждён), и делать это
+  // побочным эффектом кнопки «обновить» нельзя.
+  // Поэтому здесь НЕТ ни одной записи, currentRun не читается и не трогается,
+  // энергия не пересчитывается: getCurrentEnergy сдвигает lastEnergyUpdate у
+  // вызывающих её эндпоинтов, а тихо терять остаток минуты на каждом обновлении
+  // витрины — цена на пустом месте.
+  server.get('/character/profile', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Та же форма и тот же помощник, что у buy-potion выше: клиент разбирает
+    // оба ответа одним кодом.
+    return reply.send({ gold: character.gold, potions: potionStockOf(character) })
   })
 
   server.get('/character/inventory', async (request, reply) => {
