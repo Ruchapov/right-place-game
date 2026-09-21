@@ -4522,7 +4522,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           отсюда напрямую (тот же приём, что и в ветке смерти выше). Дедуп
           (finishExploreSentRef) общий на все 3 триггера — если забег уже
           закрылся по другому пути, здесь просто no-op. */}
-      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible} onClose={() => sendFinishExplore(true)} />
+      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible} onClose={() => sendFinishExplore(true)} trophies={trophies} runTrophies={() => trophiesEarnedRef.current} />
 
           <TouchControls
             dirRef={dirRef}

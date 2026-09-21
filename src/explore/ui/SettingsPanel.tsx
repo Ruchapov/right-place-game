@@ -24,11 +24,25 @@ interface SettingsPanelProps {
   invincible: boolean
   onToggleInvincible: (value: boolean) => void
   onClose?: () => void
+  // Банк трофеев игрока ДО забега — ровно тот, что сгорит при выходе (выход
+  // через шестерёнку = смерть, см. Explore.tsx). undefined — профиль не
+  // загружен: тогда число не показываем ВООБЩЕ, а не подставляем ноль
+  // (ноль здесь неотличим от «терять нечего» и уже вводил в заблуждение).
+  trophies?: number
+  // Добытое в ЭТОМ забеге на момент открытия окна подтверждения. Считает его
+  // Explore (trophiesEarnedRef), и снимок делается при открытии: реф сам
+  // перерисовку не вызывает, а показывать устаревшее число хуже, чем не
+  // показывать.
+  runTrophies: () => number
 }
 
-export default function SettingsPanel({ mapFile, onSelectMap, invincible, onToggleInvincible, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ mapFile, onSelectMap, invincible, onToggleInvincible, onClose, trophies, runTrophies }: SettingsPanelProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false)
+  // Снимок добытого за забег на момент ОТКРЫТИЯ окна: дальше оно может расти
+  // (игра под затемнением не на паузе), но диалог должен показывать то, что
+  // было, когда игрок спросил.
+  const [runTrophiesAtOpen, setRunTrophiesAtOpen] = useState(0)
 
   return (
     <>
@@ -184,7 +198,7 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
                 </button>
               ))}
               <button
-                onClick={() => setExitConfirmOpen(true)}
+                onClick={() => { setRunTrophiesAtOpen(Math.max(0, Math.round(runTrophies()))); setExitConfirmOpen(true) }}
                 style={{
                   padding: '14px 8px',
                   borderRadius: 10,
@@ -228,11 +242,20 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
               textAlign: 'center',
             }}
           >
+            {/* Что РЕАЛЬНО происходит при выходе: сервер получает
+                finish-explore с died:true и обнуляет колонку трофеев целиком
+                (весь банк, не только добытое за забег), а заработанное в этом
+                забеге не начисляется вовсе. Поэтому строк две, и вторая
+                появляется, только если есть чему не начислиться. */}
             <div style={{ color: '#EDE7F2', fontSize: 15, marginBottom: 18, lineHeight: 1.4 }}>
-              {/* TODO: взять реальные трофеи забега/игрока — Explore сейчас
-                  не получает trophies пропом, старый выход тоже нигде не
-                  показывал число. Заглушка 0, пока не подключат данные. */}
-              Выйти из забега? Вы потеряете {0} трофеев
+              {trophies === undefined
+                ? 'Выйти из забега? Весь накопленный банк трофеев сгорит.'
+                : `Выйти из забега? Весь банк трофеев сгорит: ${Math.max(0, Math.round(trophies))}.`}
+              {runTrophiesAtOpen > 0 && (
+                <div style={{ fontSize: 13, color: '#B9AFC7', marginTop: 8 }}>
+                  Добытое в этом забеге ({runTrophiesAtOpen}) не начислится.
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
