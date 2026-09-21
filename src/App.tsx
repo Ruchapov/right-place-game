@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchInventory, equipItem, EquipError, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
-import { POTION_TIERS } from './potions'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, fetchInventory, equipItem, EquipError, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import './App.css'
@@ -387,6 +387,16 @@ export default function App() {
   // Запрос покупки в полёте — гасит кнопку от двойного тапа: эндпоинт не
   // идемпотентный, второй тап купил бы второе зелье.
   const [shopBuyPending, setShopBuyPending] = useState(false)
+  // Сколько зелий покупаем за раз (степпер на карточке). Сбрасывается в 1 при
+  // открытии карточки: переносить число между тирами нельзя, цены разные.
+  const [shopQty, setShopQty] = useState(1)
+  // Баланс под вопросом: ответа на покупку не было (таймаут/сеть/5xx), а
+  // значит сервер МОГ её применить — золото и склад на экране больше ничего
+  // не доказывают. Пока не сверились через fetchProfile, покупать нельзя:
+  // вторая покупка поверх неизвестного состояния спишет золото второй раз
+  // (эндпоинт не идемпотентен).
+  const [shopBalanceUnknown, setShopBalanceUnknown] = useState(false)
+  const [shopBalancePending, setShopBalancePending] = useState(false)
   // Выбранная ячейка инвентаря. Предмет адресуется inventoryItemId — именно им
   // оперирует POST /character/equip, и именно он различает два одинаковых
   // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
@@ -616,39 +626,106 @@ export default function App() {
     }
   }
 
-  // tier — номер 1..5. Цену и уровень открытия проверяет ещё и сервер по СВОЕЙ
-  // копии каталога: здешние проверки только для UI, доверенного источника из
-  // них не делаем.
-  async function handleBuyPotion(tier: number) {
+  // Отказ сервера по существу (4xx) — словами игрока. Коды приходят из
+  // server/src/routes/run.ts, строки там английские и служебные.
+  function describeBuyRefusal(e: RequestError): string {
+    switch (e.serverError) {
+      case 'Not enough gold': return 'Недостаточно золота — проверь баланс, он мог измениться.'
+      case 'Tier not unlocked': return 'Это зелье ещё не открыто по уровню.'
+      case 'Invalid count': return `Количество должно быть от 1 до ${MAX_POTIONS_PER_PURCHASE}.`
+      case 'Unknown potion tier': return 'Неизвестный тир зелья.'
+      default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
+    }
+  }
+
+  // tier — номер 1..5, count — сколько штук. Цену, уровень открытия и потолок
+  // count проверяет ещё и сервер по СВОЕЙ копии каталога: здешние проверки
+  // только для UI, доверенного источника из них не делаем.
+  async function handleBuyPotion(tier: number, count: number) {
     const token = localStorage.getItem('jwt')
     if (!token || !player) {
       setShopBuyError('Профиль не загружен — покупка недоступна.')
       return
     }
     if (shopBuyPending) return
+    // Баланс не сверен после потерянного ответа — покупать нельзя (см.
+    // shopBalanceUnknown). Кнопка в этом состоянии и так погашена, это
+    // страховка от второго пути вызова.
+    if (shopBalanceUnknown) return
     const spec = POTION_TIERS[tier - 1]
     if (!spec) {
       setShopBuyError('Неизвестный тир зелья.')
       return
     }
-    if (player.gold < spec.price) {
-      setShopBuyError(`Недостаточно золота (нужно ${spec.price}).`)
+    // Тем же разбором, что у сервера (общий каталог) — чтобы отказ выглядел
+    // одинаково с обеих сторон.
+    const safeCount = parsePurchaseCount(count)
+    if (safeCount === null) {
+      setShopBuyError(`Количество должно быть от 1 до ${MAX_POTIONS_PER_PURCHASE}.`)
       return
     }
+    const total = spec.price * safeCount
+    if (player.gold < total) {
+      setShopBuyError(`Недостаточно золота (нужно ${total}).`)
+      return
+    }
+    // Склад ДО покупки — с ним сверяем ответ: сервер мог продать меньше, чем
+    // просили (например, старая версия, которая про count не знает).
+    const before = player.potions[tier - 1] ?? 0
     setShopBuyPending(true)
     setShopBuyError(null)
     try {
-      const result = await buyPotion(token, tier)
+      const result = await buyPotion(token, tier, safeCount)
       // gold/potions — абсолютные значения из БД, поэтому меню обновляется
       // сразу, без перезахода.
       setPlayer(prev => prev ? { ...prev, gold: result.gold, potions: result.potions } : prev)
+      const added = (result.potions[tier - 1] ?? 0) - before
+      if (added !== safeCount) {
+        // Молчаливый успех здесь соврал бы: игрок просил N, а получил другое.
+        setShopBuyError(`Сервер продал ${Math.max(0, added)} из ${safeCount}.`)
+      }
     } catch (e) {
-      // Молчание здесь уже стоило бы игроку догадок: раньше ошибка уходила
-      // ТОЛЬКО в консоль. Console.error оставлен, плюс видимая строка.
       console.error('Buy potion failed', e)
-      setShopBuyError('Не удалось купить — сервер отказал. Попробуй ещё раз.')
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: ответа нет, но запрос МОГ дойти и
+        // примениться. Повторять нельзя (спишет второй раз), продолжать
+        // покупки тоже — сначала сверка.
+        setShopBalanceUnknown(true)
+        setShopBuyError('Ответ не пришёл — покупка могла пройти. Обнови баланс.')
+      } else if (e instanceof RequestError) {
+        setShopBuyError(describeBuyRefusal(e))
+      } else {
+        setShopBuyError('Не удалось купить — сервер отказал. Попробуй ещё раз.')
+      }
     } finally {
       setShopBuyPending(false)
+    }
+  }
+
+  // Сверка баланса после потерянного ответа. ТОЛЬКО чтение
+  // (GET /character/profile) — не полный вход: loginWithTelegram закрыл бы
+  // открытый на сервере забег, а кнопка «обновить» такого права не имеет.
+  async function handleRefreshBalance() {
+    const token = localStorage.getItem('jwt')
+    if (!token) {
+      setShopBuyError('Профиль не загружен — сверка недоступна.')
+      return
+    }
+    if (shopBalancePending) return
+    setShopBalancePending(true)
+    try {
+      const profile = await fetchProfile(token)
+      setPlayer(prev => prev ? { ...prev, gold: profile.gold, potions: profile.potions } : prev)
+      // Состояние снова известно — покупки разблокированы.
+      setShopBalanceUnknown(false)
+      setShopBuyError(null)
+    } catch (e) {
+      // Сбой сверки тоже виден: молча оставить игрока с погашенной кнопкой и
+      // без объяснения нельзя. Блокировка сохраняется, кнопка остаётся.
+      console.error('Fetch profile failed', e)
+      setShopBuyError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
+    } finally {
+      setShopBalancePending(false)
     }
   }
 
@@ -1048,7 +1125,7 @@ export default function App() {
                     const unlocked = playerLevel >= p.levelRequired
                     return (
                       <div key={p.tier}
-                        onClick={() => { setShopSelectedPotion(String(p.tier)); setShopBuyError(null) }}
+                        onClick={() => { setShopSelectedPotion(String(p.tier)); setShopBuyError(null); setShopQty(1) }}
                         style={{
                           boxSizing:'border-box',
                           position:'relative',
@@ -1149,28 +1226,87 @@ export default function App() {
                           ? `Недостаточно золота (нужно ${selectedPotion.price}).`
                           : null
                       const msg = shopBuyError ?? affordMsg
+                      // Потолок степпера — меньшее из двух: сколько разрешает
+                      // сервер (MAX_POTIONS_PER_PURCHASE, общий каталог) и на
+                      // сколько хватает золота. Не хватает даже на одно —
+                      // maxQty 0, степпер погашен, строка прежняя.
+                      const affordableMax = player === null ? 0 : Math.floor(player.gold / selectedPotion.price)
+                      const maxQty = Math.min(MAX_POTIONS_PER_PURCHASE, affordableMax)
+                      // Зажим на случай, если золото убыло после выбора N
+                      // (покупка соседнего тира, сверка баланса).
+                      const qty = Math.min(Math.max(1, shopQty), Math.max(1, maxQty))
+                      const totalPrice = selectedPotion.price * qty
+                      const buyDisabled = shopBuyPending || !canAfford || shopBalanceUnknown
                       return (
                       <>
                       {/* Цена — из каталога, она же применяется сервером: с
                           появлением тиров витринная и реальная цена наконец
                           одно и то же число, оранжевая плашка про расхождение
-                          снята. Счётчик количества по-прежнему не нужен —
-                          эндпоинт покупает ровно одно зелье за вызов. */}
+                          снята. */}
+                      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                        <button
+                          onClick={() => setShopQty(q => Math.max(1, Math.min(q, maxQty) - 1))}
+                          disabled={qty <= 1 || maxQty < 1}
+                          style={{
+                            width:40, height:40, flexShrink:0, borderRadius:9,
+                            border:`1px solid ${C.stoneDark}`, background:C.nicheDeep,
+                            color:C.textMain, fontSize:20, lineHeight:1,
+                            cursor: qty <= 1 || maxQty < 1 ? 'default' : 'pointer',
+                            opacity: qty <= 1 || maxQty < 1 ? 0.4 : 1,
+                          }}>−</button>
+                        <div style={{ flex:1, textAlign:'center' }}>
+                          <div style={{ fontSize:18, color:C.textMain, fontFamily:FONT_DISPLAY }}>{maxQty < 1 ? 1 : qty}</div>
+                          {/* Лимит глотков — из каталога, не литерал: игрок
+                              иначе не узнает, что запас сверх этого числа в
+                              один забег не поедет. */}
+                          <div style={{ fontSize:10, color:C.textDim, marginTop:2 }}>
+                            В забег берётся до {MAX_SIPS_PER_RUN} глотков
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setShopQty(q => Math.min(maxQty, Math.max(1, q) + 1))}
+                          disabled={qty >= maxQty || maxQty < 1}
+                          style={{
+                            width:40, height:40, flexShrink:0, borderRadius:9,
+                            border:`1px solid ${C.stoneDark}`, background:C.nicheDeep,
+                            color:C.textMain, fontSize:20, lineHeight:1,
+                            cursor: qty >= maxQty || maxQty < 1 ? 'default' : 'pointer',
+                            opacity: qty >= maxQty || maxQty < 1 ? 0.4 : 1,
+                          }}>+</button>
+                      </div>
                       <div
-                        onClick={() => handleBuyPotion(selectedPotion.tier)}
+                        onClick={() => { if (!buyDisabled) handleBuyPotion(selectedPotion.tier, qty) }}
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                           borderRadius:9, padding:11, textAlign:'center',
                           color:C.glowCore, fontSize:14,
-                          cursor: shopBuyPending ? 'default' : 'pointer',
-                          opacity: shopBuyPending || !canAfford ? 0.5 : 1,
+                          cursor: buyDisabled ? 'default' : 'pointer',
+                          opacity: buyDisabled ? 0.5 : 1,
                           boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
                         }}>
-                        {shopBuyPending ? 'Покупка...' : `Купить за ${selectedPotion.price}`}
+                        {shopBuyPending ? 'Покупка...' : `Купить ×${qty} — ${totalPrice}`}
                       </div>
                       {msg && (
                         <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
                           {msg}
+                        </div>
+                      )}
+                      {/* Появляется только когда баланс под вопросом (ответа
+                          на покупку не было). Пока сверка не прошла, покупка
+                          погашена — иначе второй запрос спишет золото ещё раз
+                          поверх, возможно, уже применённого первого. */}
+                      {shopBalanceUnknown && (
+                        <div
+                          onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
+                          style={{
+                            marginTop:8, background:C.nicheDeep,
+                            border:`1px solid ${C.stoneDark}`, borderRadius:9,
+                            padding:'9px 11px', textAlign:'center',
+                            color:C.textMain, fontSize:13,
+                            cursor: shopBalancePending ? 'default' : 'pointer',
+                            opacity: shopBalancePending ? 0.5 : 1,
+                          }}>
+                          {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
                         </div>
                       )}
                       </>

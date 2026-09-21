@@ -832,22 +832,46 @@ export type BuyPotionResult = {
   potions: number[]
 }
 
-// tier — номер тира 1..5 (см. src/potions.ts). Цену и уровень открытия сервер
-// берёт из СВОЕЙ копии каталога, клиент называет только тир.
-export async function buyPotion(token: string, tier: number): Promise<BuyPotionResult> {
-  const response = await fetch(`${SERVER_URL}/character/buy-potion`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
+// Покупка и сверка баланса — короткий таймаут: игрок стоит в магазине и ждёт
+// ответа, держать его дольше нечем. 5 с хватает проснувшемуся серверу; спящий
+// не уложится, и это честнее показать строкой, чем морозить кнопку.
+const SHOP_TIMEOUT_MS = 5000
+
+// tier — номер тира 1..5 (см. src/potions.ts), count — сколько штук
+// (1..MAX_POTIONS_PER_PURCHASE). Цену, уровень открытия и потолок count сервер
+// проверяет по СВОЕЙ копии каталога, клиент называет только тир и количество.
+//
+// ПОВТОРОВ НЕТ и быть не должно: эндпоинт НЕ идемпотентен — прерванная попытка
+// могла дойти и списать золото, а повтор списал бы второй раз. Поэтому при
+// сетевом сбое вызывающий обязан не «попробовать ещё», а СВЕРИТЬ баланс
+// (fetchProfile ниже) — см. handleBuyPotion в App.tsx.
+export async function buyPotion(token: string, tier: number, count: number): Promise<BuyPotionResult> {
+  return requestJson<BuyPotionResult>(
+    `${SERVER_URL}/character/buy-potion`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tier, count }),
     },
-    body: JSON.stringify({ tier }),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Buy potion failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json()
+    SHOP_TIMEOUT_MS,
+  )
+}
+
+// Сверка баланса: золото и склад зелий по тирам. ТОЛЬКО чтение — сервер на
+// этом пути ничего не пишет (GET /character/profile).
+// Нужна отдельно от loginWithTelegram именно поэтому: вход — полноценный
+// логин, и он ЗАКРЫВАЕТ открытый на сервере забег (подтверждённый — как
+// смерть, со сгоранием банка трофеев). Делать это побочным эффектом кнопки
+// «Обновить баланс» нельзя.
+export async function fetchProfile(token: string): Promise<BuyPotionResult> {
+  return requestJson<BuyPotionResult>(
+    `${SERVER_URL}/character/profile`,
+    { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
+    SHOP_TIMEOUT_MS,
+  )
 }
 
 export type InventoryItem = {
