@@ -716,6 +716,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   const deathFramesRef = useRef<Texture[] | null>(null)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
+  // Окна прощения прыжка (мс, тикают по ticker.deltaMS — см. C.JUMP_BUFFER_MS
+  // и C.COYOTE_MS). jumpBufferRef — нажатие ждёт опоры; coyoteRef — опора
+  // «помнится» после схода с края. Оба обнуляются в ветке реального прыжка:
+  // буфер, чтобы одно нажатие дало ровно один прыжок, койот — чтобы койот не
+  // превратился в двойной прыжок.
+  const jumpBufferRef = useRef(0)
+  const coyoteRef = useRef(0)
 
   // "3 события за забег" — временный каркас. eventsRef хранит выбранные события
   // и их Pixi-маркеры (заполняется в setup(), после загрузки слот-файла).
@@ -1539,6 +1546,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     drinkingRef.current = false // обрываем питьё (смерть главнее)
     hurtTimerRef.current = 0
     landTimerRef.current = 0
+    // Окна прыжка — смерть главнее и здесь: нажатие, сделанное за миг до
+    // гибели, не должно выстрелить прыжком поверх death-анимации. Условие
+    // прыжка и так проверяет deathRef, это вторая линия (deathRef не
+    // сбрасывается никогда, но окна не должны переживать забег в рефах).
+    jumpBufferRef.current = 0
+    coyoteRef.current = 0
     const hero = heroSpriteRef.current
     const deathFrames = deathFramesRef.current
     if (hero && deathFrames) {
@@ -2371,6 +2384,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
       potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
+      // Окна прыжка — тоже на забег: setup() перезапускается БЕЗ размонтирования
+      // (debug-переключатель карт), и недотаявший буфер выстрелил бы прыжком на
+      // первом же кадре нового забега.
+      jumpBufferRef.current = 0 // сброс на случай повторного запуска setup()
+      coyoteRef.current = 0 // сброс на случай повторного запуска setup()
       // Сверка глотков с сервером — тоже на забег (см. sendSip). Поколение и
       // очередь общие с срезами прогресса (см. runWriteQueueRef).
       runWriteGenRef.current += 1
@@ -3554,16 +3572,35 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
 
         phys.x = clamp(phys.x, 0, worldWidthPx - C.PLAYER_WIDTH)
 
-        // Прыжок: только с тверди, двойного прыжка нет. Одно нажатие —
-        // ровно один прыжок, флаг сразу сбрасывается.
-        let jumpedThisFrame = false
+        // Прыжок: только с тверди (или в койот-окно после схода с края),
+        // двойного прыжка нет. Одно нажатие — ровно один прыжок.
+        //
+        // Окна тают ПЕРЕД приёмом нажатия: нажатие, пришедшее в этом кадре,
+        // получает полные JUMP_BUFFER_MS, а не на кадр меньше.
+        jumpBufferRef.current = Math.max(0, jumpBufferRef.current - ticker.deltaMS)
+        coyoteRef.current = Math.max(0, coyoteRef.current - ticker.deltaMS)
+        // Флаг ввода по-прежнему разовый (его ставят и клавиатура, и кнопка ▲),
+        // но теперь он не пропадает, а ПЕРЕЛИВАЕТСЯ в буфер: раньше он гасился
+        // до проверки условий, и нажатие за миг до опоры исчезало молча.
         if (jumpPressedRef.current) {
           jumpPressedRef.current = false
-          if (!deathRef.current && phys.onGround && !drinkingRef.current) {
-            phys.vy = -C.JUMP_VELOCITY
-            phys.onGround = false
-            jumpedThisFrame = true
-          }
+          jumpBufferRef.current = C.JUMP_BUFFER_MS
+        }
+        let jumpedThisFrame = false
+        if (
+          jumpBufferRef.current > 0 &&
+          !deathRef.current &&
+          (phys.onGround || coyoteRef.current > 0) &&
+          !drinkingRef.current
+        ) {
+          phys.vy = -C.JUMP_VELOCITY
+          phys.onGround = false
+          // Оба окна гасим ЗДЕСЬ и только здесь: буфер — чтобы одно нажатие не
+          // дало второй прыжок в следующем кадре, койот — чтобы прыжок из
+          // койот-окна не оставил это же окно на второй прыжок в воздухе.
+          jumpBufferRef.current = 0
+          coyoteRef.current = 0
+          jumpedThisFrame = true
         }
 
         // Вертикальная физика (гравитация + приземление)
@@ -3629,6 +3666,19 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         if (justLanded && dirRef.current === 0 && !jumpedThisFrame) {
           landTimerRef.current = C.LAND_MS
         }
+
+        // Койот-окно — зеркало justLanded выше: фронт "был на опоре, стал не на
+        // опоре". Заводится ТОЛЬКО при сходе с края; после прыжка не заводится
+        // (jumpedThisFrame), иначе оно дало бы второй прыжок в воздухе. Проверка
+        // на jumpedThisFrame сейчас избыточна — прыжок выше уже сбросил
+        // phys.onGround, и wasOnGround тоже false, — но оставлена намеренно:
+        // она и есть то правило, которое иначе молча сломается при смене
+        // порядка блоков в тике.
+        if (wasOnGround && !phys.onGround && !jumpedThisFrame) {
+          coyoteRef.current = C.COYOTE_MS
+        }
+        // На опоре окно не нужно и копиться не должно.
+        if (phys.onGround) coyoteRef.current = 0
 
         // Шипы: неуязвимость тикает каждый кадр независимо от касания;
         // урон только когда истекла и хитбокс реально пересекает '^'.
