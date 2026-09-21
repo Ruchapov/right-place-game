@@ -18,6 +18,11 @@
   → сверяется с `KNOWN_MAP_FILES` (белый список) — debug-панель карт A-F в
   App.tsx этим путём и работает, без изменений.
 - Списывает `RUN_COST` энергии, читает экипировку для брони.
+- Клиент ждёт ответа 45 секунд и НЕ повторяет запрос (`04cbe77`): повтор
+  упёрся бы в 400 `A run is already in progress` после попытки, которая
+  всё-таки дошла. Загрузку после ответа (сетка, слоты, `app.init`, фоны,
+  спрайт-листы) сторожит отдельный предохранитель 60 с — он снимается ровно
+  перед `POST /run/ready`, чтобы не оборвать подтверждение посреди запроса.
 - Разыгрывает тройку событий `rollRunEvents(mapFile, characterLevel)`, где
   `characterLevel = calculateLevel(character.strength, character.agility,
   character.endurance, character.bonusLevels)` — СВЕЖЕВЫЧИСЛЕННЫЙ уровень
