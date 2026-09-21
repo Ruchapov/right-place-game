@@ -118,7 +118,20 @@ export type LoginResponse = {
   // — see server/src/routes/auth.ts. character.trophies above already
   // reflects the wipe; this just carries the summary for the results screen.
   interruptedRun?: RunResultSummary
+  // Приходит вместо interruptedRun, когда забег закрыт БЕЗ штрафа (игрок его
+  // не увидел). Взаимоисключающи: сервер ставит их во встречных ветках
+  // if/else, оба сразу не приходят никогда. Нет открытого забега — нет ни
+  // одного из двух.
+  abandonedRun?: AbandonedRunSummary
 }
+
+// КОПИЯ серверного типа `AbandonedRunSummary` — оригинал в
+// server/src/routes/auth.ts:33. Общего пакета между клиентом и сервером в
+// проекте нет (tsconfig.app.json включает только "src", у сервера rootDir
+// "./src"), поэтому синхронизация РУЧНАЯ: меняется там — правится и здесь.
+// Автоматической сверки на этот тип нет, в отличие от каталога зелий
+// (tools/check_potion_sync.py).
+export type AbandonedRunSummary = { reason: 'not-confirmed'; energyRefunded: number }
 
 // Вход — единственный запрос, без которого игра не открывается вообще, поэтому
 // ждёт он дольше всех и повторяется сам. Числа те же, что у finishRunExplore, и

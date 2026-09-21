@@ -5,6 +5,7 @@ import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, fetchIn
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
+import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[] }
@@ -324,6 +325,12 @@ function hexToRgb(hex: string): string {
 
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
+  // Итог прошлого забега, который сервер закрыл сам на этом входе — окно
+  // PastRunNotice. null — показывать нечего. Ставится ТОЛЬКО в
+  // refreshPlayerFromServer из ответа /auth/login (см. ниже), снимается
+  // только кнопкой в самом окне: пока игрок его не закрыл, оно переживает
+  // любой фоновый рефреш.
+  const [pastRunNotice, setPastRunNotice] = useState<PastRunNoticeData | null>(null)
   // Дедуп параллельных фоновых рефрешей (см. requestPlayerRefresh ниже) —
   // если несколько merge-хендлеров подряд (или почти одновременно) обнаружат
   // player===null, должен уйти ОДИН логин-запрос, а не N параллельных.
@@ -501,6 +508,26 @@ export default function App() {
     setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
+    // Итог прошлого забега — из ТОГО ЖЕ ответа и рядом с setPlayer выше:
+    // character там уже несёт последствия закрытия (сгоревший банк трофеев
+    // или возвращённую энергию), и без этого окна игрок видит только
+    // изменившиеся числа, без объяснения, откуда они.
+    // Сервер ставит два поля во встречных ветках if/else (routes/auth.ts),
+    // то есть вместе они не приходят никогда. Если всё же пришли — это
+    // расхождение с сервером, и оно должно быть громким, а не молча
+    // разрешённым в пользу одного из них (показываем 'interrupted': он
+    // единственный из двух говорит о штрафе).
+    if (data.interruptedRun && data.abandonedRun) {
+      console.error('App: /auth/login прислал оба итога прошлого забега сразу', data.interruptedRun, data.abandonedRun)
+    }
+    if (data.interruptedRun) {
+      setPastRunNotice({ kind: 'interrupted', result: data.interruptedRun })
+    } else if (data.abandonedRun) {
+      setPastRunNotice({ kind: 'abandoned', summary: data.abandonedRun })
+    }
+    // Ни одного из двух — состояние НЕ трогаем (нет else!): сюда приходит и
+    // фоновый повторный вход (requestPlayerRefresh), а он не должен стирать
+    // окно, которое игрок ещё не прочитал.
     // Инвентарь — ЗДЕСЬ ЖЕ, вместе с профилем, а не лениво при первом открытии
     // вкладки "Снаряжение" (см. задачу "броня не работает" — totalArmor
     // читает inventory, и Explore должен получить его ДО первого удара, не
@@ -2256,6 +2283,12 @@ export default function App() {
       </div>
 
       {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+
+      {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
+          дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх
+          любого экрана, включая уже открытый Explore (1000) и его экран
+          итогов. */}
+      {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => setPastRunNotice(null)} />}
     </div>
   )
 }
