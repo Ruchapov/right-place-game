@@ -259,20 +259,32 @@ export type StartExploreResult = {
 // server/src/runEvents.ts, pickRunMapFile) и называет её в ответе
 // (StartExploreResult.mapFile); тело запроса в этом случае уходит БЕЗ поля
 // mapFile вовсе, а не с mapFile: undefined.
+// Старт забега. Таймаут БОЛЬШОЙ: сервер на Render Free засыпает после
+// простоя, и хотя вход игрок прошёл раньше, меню он мог держать открытым
+// достаточно долго, чтобы сервер снова уснул — первый запрос после сна ждёт
+// весь подъём.
+const START_EXPLORE_TIMEOUT_MS = 45000
+
+// Повторов НЕТ, в отличие от входа и подтверждения, и это не экономия:
+// повторять старт ОПАСНО. Прерванная попытка могла дойти и создать забег, и
+// тогда второй запрос получит 400 'A run is already in progress' — игрок
+// увидит отказ вместо забега, а энергия будет уже списана. Одна попытка,
+// честный таймаут, дальше решает игрок.
+// Цена ошибки упала: забег, начатый и не подтверждённый через /run/ready,
+// закрывается при следующем входе БЕЗ штрафа и с возвратом энергии.
 export async function startRunExplore(token: string, mapFile?: string): Promise<StartExploreResult> {
-  const response = await fetch(`${SERVER_URL}/run/start-explore`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
+  return requestJson<StartExploreResult>(
+    `${SERVER_URL}/run/start-explore`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(mapFile !== undefined ? { mapFile } : {}),
     },
-    body: JSON.stringify(mapFile !== undefined ? { mapFile } : {}),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Start explore failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json() as StartExploreResult
+    START_EXPLORE_TIMEOUT_MS,
+  )
 }
 
 // Shared "run result" shape — server/src/routes/run.ts's RunResultSummary,

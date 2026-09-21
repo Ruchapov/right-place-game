@@ -43,8 +43,39 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
+
+// Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
+// сообщения, а не подстроки чужого ответа: их кладёт сюда только код ниже, и
+// он же их проверяет — подстрока из тела сервера могла бы измениться на
+// сервере и молча перестать совпадать.
+const SETUP_ERR_START_TIMEOUT = 'setup/start-timeout'
+const SETUP_ERR_LOAD_WATCHDOG = 'setup/load-watchdog'
+
+// Потолок на ВСЮ загрузку после успешного старта: карта, слоты, init канваса,
+// фоны, спрайт-листы. Любой из них может зависнуть навсегда (fetch в WebView
+// не обязан завершаться, см. CLAUDE.md), а забег на сервере уже создан. Через
+// этот срок игрок получает экран ошибки вместо вечной "ПОДГОТОВКИ" — забег
+// при этом останется неподтверждённым и закроется при следующем входе без
+// штрафа, с возвратом энергии.
+const LOAD_WATCHDOG_MS = 60000
+
+// Старт с человеческой причиной таймаута. Отдельная обёртка, потому что зовут
+// его из двух мест (карту называет сервер / карта известна заранее), а
+// распознавать таймаут нужно ОДИНАКОВО в обоих.
+async function startRunOrExplain(token: string, mapFile?: string): Promise<StartExploreResult> {
+  try {
+    return await startRunExplore(token, mapFile)
+  } catch (err) {
+    // Только 'timeout' — ответа не было вовсе. Сетевой отказ (авиарежим) и
+    // отказ сервера по существу остаются со своими прежними текстами.
+    if (err instanceof RequestError && err.kind === 'timeout') {
+      throw new Error(`${SETUP_ERR_START_TIMEOUT}: ${err.message}`)
+    }
+    throw err
+  }
+}
 
 // Как часто уходит срез счётчиков забега (POST /run/progress, см. sendProgress).
 // Потеря прогресса при закрытии приложения ограничена этим интервалом — а цена
@@ -1703,6 +1734,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // эффект дважды в dev, так что cleanup может сработать, пока setup() ещё
     // ждёт fetch/init — без этого флага он ловил недоинициализированный app.
     let initialized = false
+    // Предохранитель загрузки: заводится ПОСЛЕ успешного старта (забег на
+    // сервере уже есть) и снимается перед подтверждением. Локальная
+    // переменная эффекта, как cancelled: при двойном монтаже StrictMode у
+    // каждого экземпляра свой таймер, и cleanup первого снимает именно свой.
+    let loadWatchdog: ReturnType<typeof setTimeout> | null = null
+    const clearLoadWatchdog = () => {
+      if (loadWatchdog !== null) {
+        clearTimeout(loadWatchdog)
+        loadWatchdog = null
+      }
+    }
     let onBgResize: (() => void) | null = null
     // Собирается внутри setup(), после worldContainer/grid/getPlayerCombatBox
     // — сюда же, во внешнюю область видимости эффекта, чтобы cleanup ниже
@@ -1759,10 +1801,26 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // файла), и запись в него перезапустила бы этот же эффект второй раз,
       // а с ним и повторный /run/start-explore (вторая трата энергии, вторая
       // попытка создать currentRun поверх уже существующего).
+      // Заводится сразу, как забег появился на сервере, — из ОБОИХ мест
+      // старта ниже. Сработав, не бросает в setup() (зависший await этого не
+      // заметил бы: следующая строка не выполнится никогда), а сам ставит
+      // экран ошибки и поднимает cancelled — тем самым запрещая и
+      // подтверждение, и setReady, даже если загрузка доедет часом позже.
+      const armLoadWatchdog = () => {
+        loadWatchdog = setTimeout(() => {
+          loadWatchdog = null
+          if (cancelled) return
+          cancelled = true
+          console.error(`Explore: загрузка забега не уложилась в ${LOAD_WATCHDOG_MS} мс, забег не показан`)
+          setSetupError(`${SETUP_ERR_LOAD_WATCHDOG}: загрузка не уложилась в ${LOAD_WATCHDOG_MS} мс`)
+        }, LOAD_WATCHDOG_MS)
+      }
+
       let resolvedMapFile = mapFile
       let startExploreResult: StartExploreResult | null = null
       if (mapFile === '') {
-        startExploreResult = await startRunExplore(token!) // token точно есть, см. useState выше
+        startExploreResult = await startRunOrExplain(token!) // token точно есть, см. useState выше
+        armLoadWatchdog()
         resolvedMapFile = startExploreResult.mapFile
       }
 
@@ -1778,7 +1836,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // выше не делался (mapFile !== ''), делаем его теперь для уже
       // известного имени — 1:1 прежнее поведение.
       if (token && !startExploreResult) {
-        startExploreResult = await startRunExplore(token, resolvedMapFile)
+        startExploreResult = await startRunOrExplain(token, resolvedMapFile)
+        armLoadWatchdog()
       }
       if (startExploreResult) {
         console.log('Explore: /run/start-explore ответ сервера', startExploreResult)
@@ -4125,6 +4184,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // сбои загрузки, и показывает экран ошибки. Тихо продолжать игру с
         // неподтверждённым забегом нельзя: он выглядел бы обычным, а закрылся
         // бы без штрафа, то есть смерть стала бы дешевле выхода.
+        // Снимаем предохранитель ДО подтверждения: у confirmRunReady свой
+        // дедлайн (24 с), и оборвать его посреди запроса нельзя — подтверждение
+        // дошло бы до сервера, а игрок увидел бы ошибку и решил, что забег не
+        // начался. С этой секунды загрузка кончилась, сторожить больше нечего.
+        clearLoadWatchdog()
         if (token && startExploreResult) {
           await confirmRunReady(token)
         }
@@ -4133,6 +4197,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // debug-переключателем, StrictMode) — показывать игру такому
         // экземпляру нечего, его Pixi-приложение уже уничтожено.
         if (!cancelled) {
+          clearLoadWatchdog() // страховка: забег показан, сторожить нечего
           setReady(true)
         }
       }
@@ -4150,6 +4215,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
 
     return () => {
       cancelled = true
+      clearLoadWatchdog()
       skills?.dispose()
       enemySystem?.dispose()
       bossSystem?.dispose()
@@ -4188,8 +4254,18 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // setSetupError выше), а туда и startRunExplore, и confirmRunReady кладут
     // тело ответа целиком — { "error": "<текст>" } сервера попадает в строку
     // дословно (server/src/routes/run.ts).
+    // Первыми — два СВОИХ случая: они узнаются по префиксу, который ставит
+    // только код выше (startRunOrExplain и предохранитель загрузки), а не по
+    // подстроке чужого ответа. Оба означают одно и то же для игрока: забег на
+    // сервере, возможно, создан, но показан не был, значит закроется без
+    // потерь при следующем входе — это верно ровно потому, что он остался
+    // неподтверждённым (/run/ready до него не дошёл).
     const hint =
-      setupError.includes('No active explore run')
+      setupError.startsWith(SETUP_ERR_START_TIMEOUT)
+        ? 'Сервер не ответил на старт забега. Закрой приложение полностью и открой снова: забег, который ты не увидел, закроется без потерь.'
+        : setupError.startsWith(SETUP_ERR_LOAD_WATCHDOG)
+        ? 'Загрузка забега не завершилась. Закрой приложение полностью и открой снова: забег, который ты не увидел, закроется без потерь.'
+        : setupError.includes('No active explore run')
         ? 'Забег уже закрыт на сервере. Вернись в меню и начни заново.'
         : setupError.includes('A run is already in progress')
           // Про энергию и трофеи здесь НИЧЕГО не обещаем: забег, начатый до
