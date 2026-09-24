@@ -19,10 +19,35 @@
 | [`docs/meta-screens.md`](docs/meta-screens.md) | экраны Персонаж/Инвентарь/Друзья/Исследовать, иконки, стиль |
 | [`docs/art-pipeline.md`](docs/art-pipeline.md) | генерация и нарезка спрайтов (Nano Banana/Veo/хромакей), грабли, список готовых ассетов |
 
-⚠️ Записи в `docs/` про зелья, прерванный забег и рост статов СТАРШЕ сессии
-21.09.2026 — источник правды по `currentRun`, `/run/sip`, `/run/progress` и
-закрытию брошенного забега сейчас здесь (Architecture + «Сделано (сессия
-21.09.2026)»), а не в `docs/server-explore.md`.
+⚠️ Источник правды по форме `currentRun`, набору эндпоинтов и потолкам —
+раздел **Architecture** ниже в этом файле; `docs/server-explore.md`
+разворачивает их подробно, но при расхождении верить Architecture.
+
+### Навыки (`.claude/skills/`) — открывать по теме задачи
+
+Это не справка, а инструкции: сессия ОБЯЗАНА открыть подходящий скилл до
+того, как начнёт править соответствующий код.
+
+| Скилл | Когда открывать |
+|---|---|
+| [`pixijs-conventions`](.claude/skills/pixijs-conventions/SKILL.md) | любая правка боевого кода и PixiJS: тикер, `AnimatedSprite`, спрайт-листы, хитбоксы, тайминги атаки/уклонения, AI врага и босса, экранные кнопки |
+| [`right-place-design`](.claude/skills/right-place-design/SKILL.md) | любая вёрстка и внешний вид: меню, кнопки, диалоги, HUD, инвентарь, цвета, шрифты, отступы, размеры под палец |
+| [`right-place-maps`](.claude/skills/right-place-maps/SKILL.md) | геометрия карт: символы сетки, модель прыжка, правило обязательного подъёма, проверки `map_tools.py` перед выкладкой карты |
+
+⚠️ Два первых скилла в своих описаниях до сих пор называют `Battle.tsx`,
+`Smuggler.tsx` и `Puzzle.tsx` — этих файлов в проекте НЕТ с удаления старого
+боевого потока. Сами правила в теле скиллов живые, устарели только примеры
+имён; боевой код теперь целиком в `Explore.tsx` и `src/explore/`.
+
+⚠️ `map_tools.py`, на который ссылается `right-place-maps`, лежит ВНЕ
+репозитория — `C:\Users\Андрей Рычапов\Desktop\assets\map_tools.py`. В
+`tools/` его нет и никогда не было, искать там бесполезно.
+
+### Скрипты (`tools/`)
+
+Обе сверки read-only, по sha256, сами ничего не чинят — гонять ПЕРЕД
+деплоем сервера (подробности и причина — в Critical Gotchas):
+`python tools\check_map_sync.py` и `python tools\check_potion_sync.py`.
 
 ## Project Info
 - **Bot:** @RightPlaceGame_bot | **Mini App:** t.me/RightPlaceGame_bot/game
@@ -322,13 +347,13 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 
 `Battle.tsx`, `Smuggler.tsx`, `Puzzle.tsx` — старый 3-комнатный боевой поток
 (PixiJS-сцена боя + окна смуглера/загадки старого потока) — УДАЛЕНЫ целиком
-(см. Next Steps, [СТАРЫЙ ПОТОК]).
+— весь боевой код теперь в `Explore.tsx` и `src/explore/`.
 
 **`App.tsx`** — Main state.
 PlayerData: `{id, firstName, level, gold, trophies, strength, endurance, agility, equippedSkills, potions[5]}`
 - Navigation: 5-tab bottom nav (Персонаж / Магазин / Исследовать / Снаряжение / Друзья)
 - Кнопка "Начать забег" открывает `<Explore>` БЕЗ `mapFile` — карту
-  называет сервер (Phase 2.5, см. ниже). Debug-панель карт A-F передаёт
+  называет сервер (`/run/start-explore`, см. Architecture). Debug-панель карт A-F передаёт
   `mapFile` явно и продолжает работать как раньше.
 - Старт забега ЗАБЛОКИРОВАН, пока не загружен инвентарь (`gearNotReady`):
   броня и урон оружия считаются по нему, без него забег пошёл бы с бронёй 0.
@@ -447,7 +472,7 @@ calculateLevel(strength, agility, endurance, bonusLevels):
 ## Economy
 - Trophies = risky currency. Копятся МЕЖДУ забегами (не сгорают по одному
   забегу), стираются ТОЛЬКО смертью (весь банк целиком, см.
-  `/run/finish-explore` в "Server Integration" ниже) — abandon по кнопке
+  `/run/finish-explore` в Architecture выше) — abandon по кнопке
   выхода тоже засчитывается как смерть, отдельного "тихого" выхода без
   потери нет. ЕДИНСТВЕННОЕ исключение (21.09.2026) — забег, который игрок
   вообще не увидел (неподтверждённый, см. `POST /run/ready` и Design
