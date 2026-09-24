@@ -1,6 +1,6 @@
 ---
 name: right-place-maps
-description: Map geometry rules for the Right Place Telegram roguelike — grid symbols, the jump/traversal model, the mandatory-ascent rule, and the map_tools.py toolchain (build/build_legacy/build_walls/report/lint/lint_ascent/debug). Use this skill whenever designing, editing, or validating level grids (.txt maps A–F), tuning jump distances, deciding whether '#' or '=' is correct for a tile, or running traversal checks before shipping a map. Do NOT use it for the visual renderer (mapRenderer.ts/render_lib.py — separate concern) or in-game physics/collision code (see pixijs-conventions).
+description: Map geometry rules for the Right Place Telegram roguelike — grid symbols, the jump/traversal model, the mandatory-ascent rule, and the map_tools.py toolchain (build/build_legacy/build_walls/report/lint/lint_ascent/debug). Use this skill whenever designing, editing, or validating level grids (.txt maps A–F), tuning jump distances, deciding whether '#' or '=' is correct for a tile, or running traversal checks before shipping a map. Do NOT use it for the visual renderer (mapRenderer.ts, or render_lib.py — an external tool that is NOT in this repository — separate concern) or in-game physics/collision code (see pixijs-conventions).
 ---
 
 # Right Place — карты: геометрия и проходимость
@@ -13,8 +13,9 @@ description: Map geometry rules for the Right Place Telegram roguelike — grid 
 сверяйтесь и правьте то, что устарело.
 
 ⚠️ **Этот документ создан заново в текущей сессии** — до этого в проекте не
-было отдельного SKILL-файла про карты, хотя `map_tools.py` и `render_lib.py`
-уже на него ссылались в докстрингах. Правила ниже собраны из фактического
+было отдельного SKILL-файла про карты, хотя `map_tools.py` (в репозитории,
+`tools/map_tools.py`) и `render_lib.py` (ВНЕШНИЙ инструмент, вне
+репозитория, лежит у Андрея на машине) уже на него ссылались в докстрингах. Правила ниже собраны из фактического
 кода (`build()` в `map_tools.py`, комментарии `stairs()`/`plat()`,
 `PLAYER_HEIGHT` в `Explore.tsx`) — не выдуманы, но раньше нигде не были
 записаны одним текстом. Если где-то найдётся более старая/другая версия
@@ -118,7 +119,9 @@ description: Map geometry rules for the Right Place Telegram roguelike — grid 
 ## Когда НЕ использовать этот skill
 
 - Рендер тайлов/декора (текстуры, обводка, `PLATFORM_H_RATIO` как визуальный
-  параметр) → `mapRenderer.ts` / `render_lib.py`, не сюда.
+  параметр) → `mapRenderer.ts` (в репозитории, `src/`) или `render_lib.py`
+  (ВНЕШНИЙ инструмент, вне репозитория, лежит у Андрея на машине — искать
+  его здесь бесполезно), не сюда.
 - Физика/коллизия игрока в реальном времени (гравитация, прыжок, тач-кнопки)
   → `pixijs-conventions`.
 - Слоты событий (враг/сундук/NPC/босс) — своя JSON-схема, вне геометрии.
