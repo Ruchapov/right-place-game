@@ -1,0 +1,629 @@
+You are acting as a Senior Game Designer, Systems Designer, Economy Designer, and Technical Game Designer.
+
+Your task is NOT to redesign the game.
+
+Your task is to analyze the existing design, identify missing information, balance risks, progression issues, technical risks, exploitable mechanics, and unclear systems.
+
+IMPORTANT RULES:
+
+- Do NOT change the genre.
+- Do NOT replace mechanics with your own ideas.
+- Do NOT redesign the core gameplay loop.
+- Do NOT suggest a completely different game.
+- Stay within the design described below.
+- If information is missing, ask specific questions.
+- If you find balance issues, explain why they may become problematic.
+- If a mechanic can be abused, explain how.
+- If a system is unclear, ask for clarification.
+- Think like a designer preparing a game for production.
+
+At the end provide:
+
+1. Design contradictions
+2. Missing systems
+3. Balance concerns
+4. Potential exploits
+5. Technical implementation risks
+6. Questions that must be answered before development starts
+7. MVP readiness score from 1 to 10
+
+====================================================
+PROJECT OVERVIEW
+====================================================
+
+Game Name:
+Right Place
+
+Platform:
+Telegram Mini App (Web App)
+
+Genre:
+Roguelike with Souls-like combat elements
+
+Initial Mode:
+PvE only
+
+Future:
+PvP mode planned
+
+====================================================
+CAMERA
+====================================================
+
+Current preferred option:
+
+2D Side View
+
+Reason:
+Combat focuses on fighting a single dangerous enemy.
+Dodging is one of the main gameplay mechanics.
+
+====================================================
+CORE GAME LOOP
+====================================================
+
+Player presses "Start Run"
+
+↓
+
+Selects equipment (or keeps current equipment)
+
+↓
+
+Spends 10 Energy
+
+↓
+
+Receives 3 random rooms
+
+↓
+
+Completes the rooms
+
+↓
+
+Receives rewards
+
+↓
+
+Returns to menu
+
+↓
+
+Upgrades character
+
+↓
+
+Starts another run
+
+====================================================
+ENERGY SYSTEM
+====================================================
+
+Maximum Energy:
+100
+
+Regeneration:
+1 Energy per minute
+
+Cost per Run:
+10 Energy
+
+====================================================
+ROOM SYSTEM
+====================================================
+
+Each run consists of 3 random rooms.
+
+Possible room types:
+
+1. Normal Enemy
+2. Boss
+3. Treasure Chest
+4. Trap
+5. Smuggler
+6. Puzzle
+
+Rooms are completely random.
+
+Possible examples:
+
+Enemy + Enemy + Enemy
+
+or
+
+Chest + Trap + Enemy
+
+or
+
+Boss + Enemy + Puzzle
+
+Boss rooms are not guaranteed.
+
+A player may encounter no boss for many runs.
+
+====================================================
+COMBAT SYSTEM
+====================================================
+
+Player actions:
+
+- Movement
+- Attack
+- Dodge
+- Skills
+- Potion usage
+
+Not included:
+
+- Blocking
+- Parrying
+- Combo systems
+
+Core combat philosophy:
+
+Attack
+→ Dodge
+→ Reposition
+→ Attack again
+
+====================================================
+BASIC ATTACK
+====================================================
+
+Starting weapon:
+
+Sword
+
+Attack style:
+
+Single attack
+
+No combo chain
+
+====================================================
+DODGE SYSTEM
+====================================================
+
+Dodging is skill-based.
+
+Not RNG-based.
+
+Success depends on player timing.
+
+====================================================
+SKILLS
+====================================================
+
+The player may equip only 2 skills.
+
+There are currently 5 starter skills.
+
+Skill #1
+
+Dash Strike
+
+The player dashes.
+
+If the dash reaches or passes through an enemy, damage is dealt.
+
+--------------------------------
+
+Skill #2
+
+Fireball
+
+Ranged damage projectile.
+
+--------------------------------
+
+Skill #3
+
+Slash
+
+Deals damage.
+
+Applies Bleeding.
+
+Bleeding deals damage every second.
+
+--------------------------------
+
+Skill #4
+
+Heal
+
+Restores health.
+
+--------------------------------
+
+Skill #5
+
+Ice Ball
+
+Deals damage and slows enemies.
+
+--------------------------------
+
+Cooldown:
+
+All skills currently have a 5-second cooldown.
+
+Mana:
+None.
+
+Skill resource:
+None.
+
+Skills are limited only by cooldowns.
+
+====================================================
+HEALING
+====================================================
+
+Healing is performed through potions.
+
+Potion uses are limited.
+
+Potions may be used:
+
+- During combat
+- Between rooms
+
+====================================================
+CHARACTER STATS
+====================================================
+
+ENDURANCE
+
+Starting value:
+10
+
+Formula:
+
+1 Endurance = 8 HP
+
+Starting Health:
+80 HP
+
+Endurance increases based on total damage received over the lifetime of the character.
+
+The more damage received, the more Endurance increases.
+
+--------------------------------
+
+STRENGTH
+
+Increases physical damage.
+
+Strength increases through dealing damage.
+
+--------------------------------
+
+AGILITY
+
+Increases through using skills.
+
+Agility improves skill effectiveness.
+
+--------------------------------
+
+ATTACK SPEED
+
+Determined by weapon.
+
+--------------------------------
+
+CRITICAL CHANCE
+
+Determined by weapon.
+
+--------------------------------
+
+CRITICAL DAMAGE
+
+Starting value:
+
+1.5x
+
+--------------------------------
+
+ARMOR
+
+Provided by equipment.
+
+--------------------------------
+
+ARMOR PENETRATION
+
+Provided by weapons.
+
+--------------------------------
+
+MOVEMENT SPEED
+
+Can be increased through equipment.
+
+Maximum planned value:
+
+1.5x base speed
+
+--------------------------------
+
+LUCK
+
+Affects:
+
+- Gold
+- Loot quality
+- Rewards
+
+Does NOT affect:
+
+- Accuracy
+- Dodge success
+
+====================================================
+LEVELING SYSTEM
+====================================================
+
+Players can level up in two ways.
+
+METHOD #1
+
+Stat Progression
+
+To gain a level:
+
+Endurance must increase by +3
+
+AND
+
+Strength + Agility combined must increase by +6
+
+Example:
+
+Strength +4
+Agility +2
+
+or
+
+Strength +1
+Agility +5
+
+--------------------------------
+
+METHOD #2
+
+Boss Kill
+
+Killing a boss immediately grants a level.
+
+Stats do not automatically increase.
+
+====================================================
+LEVEL BENEFITS
+====================================================
+
+Higher levels increase rewards.
+
+Examples:
+
+- More gold
+- More resources
+- More trophies
+
+The exact scaling is not yet defined.
+
+====================================================
+CURRENCIES
+====================================================
+
+GOLD
+
+Primary currency.
+
+Used for character progression and upgrades.
+
+Obtained from:
+
+- Chests
+- Events
+- Selling items
+
+Normal enemies do NOT drop gold.
+
+--------------------------------
+
+TROPHIES
+
+Main loot currency.
+
+Enemy killed
+→ Trophy obtained
+
+Trophies can be exchanged for gold.
+
+If the player dies:
+
+All trophies are lost.
+
+--------------------------------
+
+CRYSTALS
+
+Premium currency.
+
+Obtained through:
+
+- Daily quests
+- Real-money purchases
+
+Currently not required for MVP functionality.
+
+====================================================
+SMUGGLER
+====================================================
+
+The Smuggler is a random room encounter.
+
+The player may exchange all carried trophies.
+
+Trophies are multiplied by 1.5.
+
+Example:
+
+10 trophies → 15 trophies
+
+Core risk/reward concept:
+
+Players are encouraged to hold trophies and risk losing them.
+
+====================================================
+EQUIPMENT
+====================================================
+
+Equipment slots:
+
+- Weapon
+- Helmet
+- Armor
+- Boots
+- Gloves
+- Amulet
+
+No rarity system at launch.
+
+Equipment unlocks based on player level.
+
+Weapon:
+Damage + additional stats
+
+Helmet:
+Defense + additional stats
+
+Armor:
+Defense only
+
+Boots:
+Movement speed
+
+Gloves:
+Not yet defined
+
+Amulet:
+Not yet defined
+
+====================================================
+ENEMIES
+====================================================
+
+Initial enemy faction:
+
+Undead
+
+Enemy Type #1
+
+Melee Fighter
+
+Moves toward the player.
+
+Uses AoE attacks.
+
+--------------------------------
+
+Enemy Type #2
+
+Ranged Fighter
+
+Maintains distance.
+
+Attacks frequently.
+
+====================================================
+FIRST BOSS
+====================================================
+
+The first boss is an enhanced version of a normal enemy.
+
+Stats:
+
+1.5x normal enemy stats
+
+Abilities:
+
+- AoE attack
+- Ranged attack
+
+====================================================
+REWARDS
+====================================================
+
+Normal Enemy Rewards:
+
+- Trophy
+- Chance to drop equipment
+
+Items can only drop at the player's level or below.
+
+--------------------------------
+
+Boss Rewards:
+
+Boss Trophy
+
+Allows the player to choose a permanent stat reward.
+
+Examples:
+
+- Health
+- Damage
+- Other stats
+
+====================================================
+DEATH
+====================================================
+
+If the player dies:
+
+The run immediately ends.
+
+Lost:
+
+- All trophies
+
+Kept:
+
+- Character level
+- Character stats
+- Equipment
+- Progression
+
+====================================================
+MVP GOAL
+====================================================
+
+Primary player objective:
+
+Reach Level 20
+
+Future content unlocks after Level 20, but those systems are not yet designed.
+
+====================================================
+YOUR TASK
+====================================================
+
+Analyze this design document as if the game is about to enter production.
+
+Provide:
+
+1. Design Contradictions
+2. Missing Design Information
+3. Balance Risks
+4. Economy Risks
+5. Progression Risks
+6. Exploitable Systems
+7. Technical Risks for a Telegram Mini App
+8. Questions that must be answered before development
+9. Recommended development priorities
+10. MVP Readiness Score (1-10)

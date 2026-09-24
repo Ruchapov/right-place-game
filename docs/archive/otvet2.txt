@@ -1,0 +1,351 @@
+# Additional Design Clarifications
+
+## Level Scaling vs Boss Leveling
+
+Enemies scale with player level.
+
+For every level gained, enemies become stronger by increasing their Health and Damage values.
+
+This means that players who gain levels by defeating bosses but neglect their stat progression will eventually struggle against both normal enemies and future bosses.
+
+Leveling through bosses provides access to better rewards but does not automatically make the character stronger.
+
+---
+
+## Endurance Progression Through Taking Damage
+
+This system is intentional.
+
+Although Endurance increases by receiving damage, players are discouraged from intentionally farming damage because:
+
+* Trophies are the primary progression currency.
+* All trophies are lost upon death.
+* Runs end immediately when the player dies.
+
+A player repeatedly dying to farm Endurance sacrifices valuable progression resources.
+
+---
+
+## Equipment Progression
+
+New equipment tiers unlock every 5 levels up to Level 50.
+
+Examples:
+
+* Level 5 equipment
+* Level 10 equipment
+* Level 15 equipment
+* Level 20 equipment
+
+Higher-level players also receive more trophies from enemy kills.
+
+This creates a long-term progression curve.
+
+---
+
+## Skill and Enemy Balance
+
+Numerical balancing has not been finalized.
+
+Design goals:
+
+* Combat should remain challenging throughout progression.
+* Players should never completely outscale content.
+* Skills can be upgraded.
+* Skill progression should use diminishing returns.
+* Progression should feel meaningful but not allow players to consume all content within a single day.
+
+Exact formulas will be defined during balancing and playtesting.
+
+---
+
+## Smuggler Spawn Rate
+
+Smuggler room chance:
+
+3%
+
+The Smuggler appears as a random room event.
+
+---
+
+## Gloves
+
+Gloves provide progression bonuses.
+
+Different gloves specialize in either:
+
+* Strength Growth
+* Agility Growth
+
+The percentage bonus increases with equipment level.
+
+Exact values are not finalized yet.
+
+---
+
+## Amulets
+
+Amulets increase Luck.
+
+Luck bonuses increase with equipment level.
+
+Exact values are not finalized yet.
+
+---
+
+## Strength and Agility Growth
+
+### Strength
+
+Formula:
+
+2 Strength = +1 Damage
+
+Strength is gained through dealing damage.
+
+The exact progression curve should be designed to prevent players from progressing too quickly.
+
+---
+
+### Agility
+
+Agility increases through skill usage.
+
+Each skill benefits from Agility differently.
+
+Examples:
+
+* Increased damage
+* Increased effectiveness
+* Stronger status effects
+
+Exact scaling will be defined later.
+
+---
+
+## Potions
+
+Starting charges:
+
+3
+
+Healing amount:
+
+50% of maximum Health
+
+Cooldown:
+
+2 seconds
+
+Potions can be used:
+
+* During combat
+* Between rooms
+
+Potion charges are restored before a new run if replacement potions are available.
+
+Additional potions can be purchased using Gold.
+
+---
+
+## Endurance Anti-Mastery Effect
+
+The system intentionally remains unchanged.
+
+Although highly skilled players receive less damage and therefore gain Endurance more slowly, Health can also be increased through other progression systems.
+
+---
+
+## Heal Skill
+
+The Heal skill restores:
+
+10% of maximum Health.
+
+It shares the same 5-second cooldown as all other skills.
+
+This is considered acceptable because Heal occupies one of the player's two skill slots and therefore replaces a potential damage skill.
+
+---
+
+## Boss Philosophy
+
+This behavior is intentional.
+
+Bosses are designed to be highly desirable encounters.
+
+Boss rewards:
+
+* Immediate level gain
+* Boss Trophy
+* Permanent stat reward
+
+Because Boss rooms have a low appearance rate, encountering one should feel exciting and valuable.
+
+---
+
+## Economy Philosophy
+
+This is intentional.
+
+Gold is meant to be less reliable than trophies.
+
+Players are expected to take risks and make decisions regarding trophy management.
+
+Randomness is part of the intended experience.
+
+---
+
+## Smuggler Risk
+
+Smuggler room chance:
+
+3%
+
+Additional risk:
+
+20% chance that the Smuggler steals 50% of the player's carried trophies.
+
+This prevents the Smuggler from becoming a completely safe multiplier.
+
+---
+
+## Progression Speed
+
+The exact progression speed toward Level 20 has not been finalized.
+
+The plan is to build the MVP first, then adjust progression through playtesting.
+
+---
+
+## Different Progression Paths
+
+This behavior is intentional.
+
+Players who focus on:
+
+* Boss hunting
+* Stat grinding
+
+will reach Level 20 with different builds and power levels.
+
+Build diversity is considered a positive feature.
+
+---
+
+## Endurance Farming Prevention
+
+Players cannot leave combat safely.
+
+If a player exits a run early:
+
+* The run is considered failed.
+* All carried trophies are lost.
+
+This discourages intentionally farming damage with no consequences.
+
+---
+
+## Smuggler Exploit Concern
+
+No additional restrictions are planned.
+
+The Smuggler is already limited by:
+
+* 3% appearance rate
+* Trophy loss on death
+* Trophy loss on run abandonment
+* 20% theft chance
+
+---
+
+## Room Rerolling
+
+No additional protection is planned.
+
+Starting a run already costs Energy.
+
+Leaving early also causes trophy loss.
+
+These costs are considered sufficient.
+
+---
+
+## Trophy Persistence
+
+Trophies are lost when:
+
+* The player dies
+* The player abandons a run
+
+This preserves the intended risk-versus-reward gameplay loop.
+
+---
+
+## Technical Risks
+
+Technical concerns for Telegram Mini Apps will be evaluated during development and addressed progressively.
+
+---
+
+## Enemy Scaling
+
+Enemies scale with player level.
+
+Enemy Health and Damage increase as player level increases.
+
+---
+
+## Room Spawn Rates
+
+Normal Enemy:
+60%
+
+Chest:
+15%
+
+Trap:
+10%
+
+Puzzle:
+10%
+
+Smuggler:
+3%
+
+Boss:
+2%
+
+---
+
+## Trap Room
+
+When entering a Trap Room:
+
+* An explosion immediately occurs.
+* The player takes damage.
+* Damage cannot be avoided.
+* The player then proceeds to the next room.
+
+---
+
+## Potion Economy
+
+Potions are purchased using Gold.
+
+Each run begins with available potion charges if the player owns sufficient potions.
+
+---
+
+## Endurance Design Decision
+
+Endurance scaling through taking damage is intentional and will remain unchanged.
+
+---
+
+## Combat Authority
+
+The final networking model has not yet been chosen.
+
+The implementation approach should be selected based on what is most appropriate for security, anti-cheat protection, performance, and Telegram Mini App limitations.
