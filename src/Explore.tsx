@@ -43,7 +43,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { playerAttackDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
@@ -320,13 +320,20 @@ const SAVE_STATUS_VIEW: Record<SaveStatus, { text: string; color: string }> = {
   alreadyClosed: { text: 'Забег уже закрыт на сервере — итоги записаны, точные числа неизвестны', color: '#F08A24' },
 }
 
+// Сколько держится надпись об неизвестном исходе сделки (см.
+// showSmugglerNotice). 3.5 с: игрок в этот момент стоит у Контрабандиста, но
+// читать её на бегу тоже должно хватать.
+const SMUGGLER_NOTICE_MS = 3500
+
 // Всё, что уезжает в /run/finish-explore, одним снимком — в порядке аргументов
 // finishRunExplore. "Повторить сохранение" шлёт ровно его.
 type FinishPayload = {
   token: string
   closedEvents: number[]
   died: boolean
-  smugglerOutcome: 'gain' | 'steal' | undefined
+  // smugglerOutcome УБРАН: исход сделки бросает сервер и хранит в
+  // currentRun.smugglerDeal (см. /run/smuggler-deal). Клиент его больше не
+  // знает заранее и не сообщает.
   attackDamageDealt: number
   skillDamageDealt: number
   healedAmount: number
@@ -352,10 +359,19 @@ function ResultsScreen({
   // Повторная отправка финиша теми же данными — кнопка только при 'failed'.
   onRetrySave: () => void
 }) {
-  // На смерти показываем "потеряно", на успехе — "получено"; оба числа
-  // вместе никогда не нужны (см. buildClientResult в Explore ниже — один из
-  // них всегда 0).
-  const trophyCount = result.died ? result.trophiesLost : result.trophiesEarned
+  // Три случая, а не два:
+  //   смерть — "потеряно", число = весь сгоревший банк (trophiesLost);
+  //   не смерть и trophiesEarned < 0 — тоже "ПОТЕРЯНО", и по МОДУЛЮ: так
+  //     выглядит кража у Контрабандиста, когда итог меньше банка на старте
+  //     (ставка = банк + добыча до сделки, множитель кражи 0.5). Показать это
+  //     как "получено −400" значило бы соврать подписью;
+  //   иначе — "получено".
+  // ⚠️ Отрицательное здесь НЕ обрезается нулём ни тут, ни в buildClientResult:
+  // ноль вместо убытка — тихий фолбэк, он прячет самую дорогую для игрока
+  // новость (см. CLAUDE.md, Design Decisions).
+  const trophiesLostNotDied = !result.died && result.trophiesEarned < 0
+  const trophyLossView = result.died || trophiesLostNotDied
+  const trophyCount = result.died ? result.trophiesLost : Math.abs(result.trophiesEarned)
   return (
     <div
       style={{
@@ -515,7 +531,7 @@ function ResultsScreen({
               }}
             >
               <div style={{ fontSize: 'clamp(8px, 2.4vw, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
-                {result.died ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
+                {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
@@ -750,7 +766,30 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // /run/finish-explore. "Уйти" его не выставляет вообще: без обмена нет
   // исхода, а sendFinishExplore и так шлёт исход только если событие
   // smuggler реально закрыто (см. ниже).
-  const smugglerOutcomeRef = useRef<'gain' | 'steal' | null>(null)
+  // --- Состояние окна Контрабандиста (всё в рефах: панель живёт в Pixi и
+  // обновляется императивно, перерисовывать React на каждый ответ незачем —
+  // см. скилл pixijs-conventions, "боевое состояние в рефах") ---
+  //   'idle'    — панель закрыта, запроса не было;
+  //   'loading' — quote в полёте, в строке "…", "Обменять" погашена;
+  //   'ready'   — пришли stake/ifGain, кнопка доступна;
+  //   'failed'  — quote не удался (сеть, 400, 409, офлайн без токена):
+  //               "Сделка сейчас недоступна", "Обменять" погашена, "Уйти" жива.
+  const smugglerQuoteStateRef = useRef<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+  const smugglerQuoteRef = useRef<{ stake: number; ifGain: number } | null>(null)
+  // Сделка в полёте — гасит обе кнопки до ответа.
+  const smugglerDealPendingRef = useRef(false)
+  // Номер последнего запроса. Ответ с чужим номером игнорируется: игрок мог
+  // закрыть панель ("Уйти") и открыть заново, пока первый запрос летел, — иначе
+  // поздний ответ нарисовал бы числа в уже другом состоянии окна.
+  const smugglerRequestSeqRef = useRef(0)
+  // Короткая надпись поверх забега, когда исход сделки остался неизвестным
+  // (запрос не подтвердился). Это React-состояние, а не Pixi: надпись живёт
+  // секунды и к кадрам не привязана, так что правило «боевое состояние в рефах»
+  // на неё не распространяется — перерисовка происходит дважды за сделку.
+  const [smugglerNotice, setSmugglerNotice] = useState<string | null>(null)
+  // Таймер автоскрытия. В ref, чтобы вторая надпись сбросила таймер первой и не
+  // погасла раньше времени, и чтобы cleanup эффекта мог его снять.
+  const smugglerNoticeTimerRef = useRef<number | null>(null)
   // Сумма всех трофейных float-попапов за забег (kind:'trophy', с учётом
   // negative) — накапливается в spawnRewardFloat (см. ниже). Explore не
   // ведёт реальный счёт трофеев игрока (офлайн по деньгам, см. CLAUDE.md,
@@ -853,8 +892,33 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // /run/finish-explore — trophiesLost = character.trophies ДО обнуления).
   // Проп не передан (напр. вызов Explore без него) → fallback на earned,
   // как раньше — заниженная, но хоть какая-то оценка вместо голого 0.
+  // Показать надпись на SMUGGLER_NOTICE_MS. Прежний таймер снимается — иначе он
+  // погасил бы новую надпись.
+  function showSmugglerNotice(text: string) {
+    if (smugglerNoticeTimerRef.current !== null) clearTimeout(smugglerNoticeTimerRef.current)
+    setSmugglerNotice(text)
+    smugglerNoticeTimerRef.current = window.setTimeout(() => {
+      setSmugglerNotice(null)
+      smugglerNoticeTimerRef.current = null
+    }, SMUGGLER_NOTICE_MS)
+  }
+
+  // Индексы событий, ЗАКРЫТЫХ на этот момент. Один список на три запроса —
+  // финиш и обе ручки Контрабандиста: разойдись они, сервер посчитал бы ставку
+  // сделки и итог забега от разных наборов событий.
+  function collectClosedEventIndices(): number[] {
+    const out: number[] = []
+    eventsRef.current.forEach((ev, i) => {
+      if (ev.closed) out.push(i)
+    })
+    return out
+  }
+
   function buildClientResult(died: boolean): RunResultSummary {
-    const earned = Math.max(0, Math.round(trophiesEarnedRef.current))
+    // БЕЗ Math.max(0, …) намеренно: кража у Контрабандиста делает добычу забега
+    // отрицательной, и ноль вместо убытка спрятал бы её от игрока (экран итогов
+    // умеет показать минус — см. trophyLossView в ResultsScreen выше).
+    const earned = Math.round(trophiesEarnedRef.current)
     const lost = trophies !== undefined ? Math.max(0, Math.round(trophies)) : earned
     return {
       interrupted: false,
@@ -919,14 +983,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       return
     }
 
-    const closedEvents: number[] = []
-    let smugglerClosed = false
-    eventsRef.current.forEach((ev, i) => {
-      if (!ev.closed) return
-      closedEvents.push(i)
-      if (ev.kind === 'smuggler') smugglerClosed = true
-    })
-    const smugglerOutcome = smugglerClosed ? (smugglerOutcomeRef.current ?? undefined) : undefined
+    const closedEvents = collectClosedEventIndices()
 
     // Те же значения, что и раньше уходили в finishRunExplore напрямую, —
     // только снятые ОДИН раз, чтобы повторная отправка ушла ровно с ними.
@@ -934,7 +991,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       token,
       closedEvents,
       died,
-      smugglerOutcome,
       attackDamageDealt: attackDamageDealtRef.current,
       skillDamageDealt: skillDamageDealtRef.current,
       healedAmount: healedAmountRef.current,
@@ -960,7 +1016,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       payload.token,
       payload.closedEvents,
       payload.died,
-      payload.smugglerOutcome,
       payload.attackDamageDealt,
       payload.skillDamageDealt,
       payload.healedAmount,
@@ -2264,10 +2319,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // визуал. Несколько наград — столбик вверх от (worldX, worldY), каждая
       // следующая на REWARD_ROW_GAP выше. Обновление/удаление — см. блок
       // "Плавающие попапы наград" в ticker'е ниже.
+      // color — необязательное переопределение цвета текста. Нужно сделке
+      // Контрабандиста: удача там зелёная (успех), а не бронзовая «цвет трофея»,
+      // потому что важен ИСХОД, а не тип валюты. Не задан — прежнее правило
+      // (negative → красный, иначе REWARD_TEXT_COLOR по типу).
       function spawnRewardFloat(
         worldX: number,
         worldY: number,
-        rewards: { kind: RewardKind; amount: number; negative?: boolean }[]
+        rewards: { kind: RewardKind; amount: number; negative?: boolean; color?: number }[]
       ) {
         rewards.forEach((reward, i) => {
           // Клиентская оценка трофейного итога забега (см. trophiesEarnedRef/
@@ -2283,7 +2342,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             style: {
               fontSize: 20,
               fontWeight: 'bold',
-              fill: reward.negative ? 0xe0353b : C.REWARD_TEXT_COLOR[reward.kind],
+              fill: reward.color ?? (reward.negative ? 0xe0353b : C.REWARD_TEXT_COLOR[reward.kind]),
               stroke: { color: 0x000000, width: 4 },
             },
           })
@@ -2377,7 +2436,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       finishPayloadRef.current = null // сброс на случай повторного запуска setup()
       finishInFlightRef.current = false // сброс на случай повторного запуска setup()
       finishSendCountRef.current = 0 // сброс на случай повторного запуска setup()
-      smugglerOutcomeRef.current = null // сброс на случай повторного запуска setup()
+      // Сброс на случай повторного запуска setup() (React 19 Strict Mode
+      // монтирует эффект дважды).
+      smugglerQuoteStateRef.current = 'idle'
+      smugglerQuoteRef.current = null
+      smugglerDealPendingRef.current = false
+      smugglerRequestSeqRef.current = 0
       trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
       damageTakenRef.current = 0 // сброс на случай повторного запуска setup()
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
@@ -2682,10 +2746,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         .stroke({ color: 0x3a3344, width: 2 })
       smugglerPanel.addChild(smugglerPanelBg)
 
+      // Строка 1 — только настроение, без цифр: множитель клиенту больше не
+      // известен (его знает сервер), а обещать «×1.5» текстом, когда числа
+      // приходят готовыми, значило бы держать вторую правду в UI.
       const smugglerPanelText = new Text({
-        text: 'Контрабандист предлагает обмен\nтрофеи ×1.5',
+        text: 'Тьма платит щедро. Иногда.',
         style: {
-          fontSize: 16,
+          fontSize: 15,
           fontWeight: 'bold',
           fill: 0xede7f2,
           align: 'center',
@@ -2696,6 +2763,52 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       smugglerPanelText.x = C.SMUGGLER_PANEL_W / 2
       smugglerPanelText.y = 12
       smugglerPanel.addChild(smugglerPanelText)
+
+      // Строка 2 — иконка трофея + «ставка → при удаче». Текстура ТА ЖЕ, что у
+      // всплывашек наград (assets.rewardIcons.trophy), отдельной не заводим:
+      // одна валюта — одна картинка (правило дизайн-скилла про currency display).
+      // Размер панели НЕ меняется (300×120): строка 1 занимает y 12..~30, эта
+      // строка стоит на y 44 высотой ~24, кнопки начинаются с
+      // SMUGGLER_PANEL_H − SMUGGLER_BTN_H − 14 = 72 — зазор остаётся.
+      const smugglerRow = new Container()
+      smugglerRow.y = 44
+      const smugglerRowIcon = new Sprite(rewardIconTextures.trophy)
+      smugglerRowIcon.anchor.set(0, 0.5)
+      smugglerRowIcon.scale.set(C.REWARD_ICON_H / smugglerRowIcon.texture.height)
+      const smugglerRowText = new Text({
+        text: '…',
+        style: {
+          fontSize: 16,
+          fontWeight: 'bold',
+          fill: C.REWARD_TEXT_COLOR.trophy,
+          stroke: { color: 0x000000, width: 4 },
+        },
+      })
+      smugglerRowText.anchor.set(0, 0.5)
+      smugglerRow.addChild(smugglerRowIcon, smugglerRowText)
+      smugglerPanel.addChild(smugglerRow)
+
+      // Пересобирает строку 2 под новый текст и центрирует её в панели. Ни один
+      // объект не создаётся — переиспользуются те же Sprite и Text (правило
+      // pixijs-conventions: не плодить объекты). Вызывается только на смену
+      // состояния окна, не каждый кадр.
+      function layoutSmugglerRow(text: string, withIcon: boolean) {
+        smugglerRowText.text = text
+        smugglerRowIcon.visible = withIcon
+        const iconW = withIcon ? smugglerRowIcon.width + 6 : 0
+        smugglerRowIcon.x = 0
+        smugglerRowText.x = iconW
+        const rowWidth = iconW + smugglerRowText.width
+        smugglerRow.x = (C.SMUGGLER_PANEL_W - rowWidth) / 2
+      }
+
+      // Гасит/включает кнопку панели. eventMode 'none' снимает и тап, и курсор —
+      // одной alpha мало: полупрозрачная кнопка всё равно осталась бы нажимаемой.
+      function setSmugglerBtnEnabled(btn: Container, on: boolean) {
+        btn.alpha = on ? 1 : 0.45
+        btn.eventMode = on ? 'static' : 'none'
+        btn.cursor = on ? 'pointer' : 'default'
+      }
 
       // Кнопка панели — фон roundRect + центрированный текст, оба цвета
       // (рамка/текст) совпадают с акцентом кнопки. Возвращает Container с
@@ -2735,30 +2848,102 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       smugglerExchangeBtn.y = C.SMUGGLER_PANEL_H - C.SMUGGLER_BTN_H - 14
       smugglerPanel.addChild(smugglerExchangeBtn)
       smugglerExchangeBtnRef.current = smugglerExchangeBtn
-      // Обмен — Explore офлайн (см. SMUGGLER_* константы выше): трофеи нигде
-      // реально не начисляются/списываются, только визуальный float. Оба
-      // исхода (успех/кража) закрывают событие — панель повторно не откроется
-      // (см. проверку !ev.closed в перехвате dodge).
+      // Сделка. Исход бросает СЕРВЕР (/run/smuggler-deal) — клиентского броска
+      // больше нет вовсе. Панель остаётся открытой, пока ответ не пришёл, но обе
+      // кнопки погашены: сделка неповторима, и второй тап не должен её повторять.
+      //
+      // Событие закрывается в ЛЮБОМ случае — и на успехе, и на провале запроса:
+      // на сервере сделка могла уже записаться (эндпоинт идемпотентен), и дать
+      // игроку второй подход значило бы предложить перебросить неудачу.
       smugglerExchangeBtn.on('pointertap', () => {
         const activeSmuggler = smugglerActiveRef.current
-        smugglerPanelOpenRef.current = false
-        smugglerPanel.visible = false
         if (!activeSmuggler) return
+        if (smugglerDealPendingRef.current) return
+        if (smugglerQuoteStateRef.current !== 'ready') return // кнопка и так погашена
+        if (!token) return // без токена до 'ready' не дойти, это страховка
 
+        const seq = smugglerRequestSeqRef.current
+        const eventIndex = activeSmuggler.eventIndex
         const floatX = activeSmuggler.sprite.x
         const floatY = activeSmuggler.sprite.y - C.SMUGGLER_DRAW_H
-        const before = C.SMUGGLER_TEST_TROPHIES
-        if (Math.random() < C.SMUGGLER_STEAL_CHANCE) {
-          const after = Math.round(before * C.SMUGGLER_STEAL_FRAC)
-          spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: before - after, negative: true }])
-          smugglerOutcomeRef.current = 'steal'
-        } else {
-          const after = Math.round(before * C.SMUGGLER_MULT)
-          spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: after - before }])
-          smugglerOutcomeRef.current = 'gain'
-        }
-        closeEvent(activeSmuggler.eventIndex)
+
+        smugglerDealPendingRef.current = true
+        setSmugglerBtnEnabled(smugglerExchangeBtn, false)
+        setSmugglerBtnEnabled(smugglerLeaveBtn, false)
+
+        smugglerDeal(token, collectClosedEventIndices())
+          .then((deal) => {
+            smugglerPanelOpenRef.current = false
+            smugglerPanel.visible = false
+            smugglerDealPendingRef.current = false
+            if (seq !== smugglerRequestSeqRef.current) return
+            // Числа СЕРВЕРНЫЕ, своих не считаем. Удача — зелёным (успех), кража
+            // — красным и с минусом: цвет не единственный признак (знак и модуль
+            // тоже разные), как требует дизайн-скилл.
+            const delta = deal.after - deal.stake
+            if (deal.outcome === 'gain') {
+              spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: delta, color: 0x4fb477 }])
+            } else {
+              spawnRewardFloat(floatX, floatY, [{ kind: 'trophy', amount: -delta, negative: true }])
+            }
+            closeEvent(eventIndex)
+          })
+          .catch((e) => {
+            smugglerPanelOpenRef.current = false
+            smugglerPanel.visible = false
+            smugglerDealPendingRef.current = false
+            // Исход неизвестен: запрос мог дойти и записаться, а мог и нет.
+            // Всплывашку НЕ показываем — врать числом нельзя, а придумать его
+            // клиенту не из чего. Вместо неё короткая надпись, и точный итог
+            // игрок увидит на экране итогов, где числа придут от сервера.
+            console.error('Smuggler deal failed', e)
+            if (seq !== smugglerRequestSeqRef.current) return
+            showSmugglerNotice('Исход сделки — в итогах забега')
+            closeEvent(eventIndex)
+          })
       })
+
+      // Открытие окна: спросить у сервера ставку. Пока ответа нет — «…» и
+      // погашенная «Обменять»; отказ — «Сделка сейчас недоступна», «Уйти» жива.
+      // Токена нет (офлайн-отладка вне Telegram) — сразу 'failed': сервера нет,
+      // и рисовать выдуманные числа нельзя (запрет тихих фолбэков; про офлайн
+      // уже говорит оранжевая плашка сверху).
+      function requestSmugglerQuote() {
+        const seq = ++smugglerRequestSeqRef.current
+        smugglerQuoteRef.current = null
+        smugglerDealPendingRef.current = false
+        setSmugglerBtnEnabled(smugglerLeaveBtn, true)
+
+        if (!token) {
+          smugglerQuoteStateRef.current = 'failed'
+          layoutSmugglerRow('Сделка сейчас недоступна', false)
+          setSmugglerBtnEnabled(smugglerExchangeBtn, false)
+          return
+        }
+
+        smugglerQuoteStateRef.current = 'loading'
+        layoutSmugglerRow('…', false)
+        setSmugglerBtnEnabled(smugglerExchangeBtn, false)
+
+        smugglerQuote(token, collectClosedEventIndices())
+          .then((quote) => {
+            if (seq !== smugglerRequestSeqRef.current) return // окно уже другое
+            smugglerQuoteRef.current = quote
+            smugglerQuoteStateRef.current = 'ready'
+            layoutSmugglerRow(`${quote.stake} → ${quote.ifGain}`, true)
+            setSmugglerBtnEnabled(smugglerExchangeBtn, true)
+          })
+          .catch((e) => {
+            if (seq !== smugglerRequestSeqRef.current) return
+            // Громко в консоль: 400/409 здесь означают расхождение клиента с
+            // сервером (нет забега, нет Контрабандиста, сделка уже была), и
+            // молчать об этом нельзя — на экране игрок видит только отказ.
+            console.error('Smuggler quote failed', e)
+            smugglerQuoteStateRef.current = 'failed'
+            layoutSmugglerRow('Сделка сейчас недоступна', false)
+            setSmugglerBtnEnabled(smugglerExchangeBtn, false)
+          })
+      }
 
       const smugglerLeaveBtn = buildSmugglerButton('Уйти', 0xe0353b)
       smugglerLeaveBtn.x = smugglerBtnStartX + C.SMUGGLER_BTN_W + C.SMUGGLER_BTN_GAP
@@ -3818,6 +4003,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             if (nearbySmuggler) {
               smugglerActiveRef.current = nearbySmuggler
               smugglerPanelOpenRef.current = true
+              // Ставку спрашиваем на КАЖДОЕ открытие: к этому моменту игрок мог
+              // закрыть ещё событие, и она изменилась. Запрос ничего не пишет на
+              // сервере, звать его повторно безопасно.
+              requestSmugglerQuote()
             } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
               dodgeIframeRef.current = C.PLAYER_DODGE_IFRAME_MS
               dodgeCooldownRef.current = C.PLAYER_DODGE_COOLDOWN_MS
@@ -4288,6 +4477,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       rewardFloatsRef.current = []
       bossSpikesRef.current = []
       bossWavesRef.current = []
+      // Таймер надписи о сделке — иначе он выстрелит setSmugglerNotice уже на
+      // размонтированном компоненте.
+      if (smugglerNoticeTimerRef.current !== null) {
+        clearTimeout(smugglerNoticeTimerRef.current)
+        smugglerNoticeTimerRef.current = null
+      }
     }
     // TEMP: map switcher — mapFile в зависимостях, чтобы смена карты через
     // временный переключатель (см. панель настроек ниже) перезапускала этот
@@ -4399,6 +4594,44 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           но полностью скрыт непрозрачным экраном ожидания поверх (см.
           ниже) — игрок его не видит, что и требовалось по смыслу задачи. */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Надпись об исходе сделки, который не подтвердился (см.
+          showSmugglerNotice). Ставится ниже оранжевой плашки-заглушки, чтобы не
+          перекрывать её: обе живут сверху и могут оказаться на экране разом.
+          pointerEvents none — не перехватывает тапы по игре под ней. Цвет
+          приглушённый, не danger: это не ошибка игрока и не урон, а сообщение
+          «итог будет позже». */}
+      {smugglerNotice !== null && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 'env(safe-area-inset-top)',
+            left: 0,
+            right: 0,
+            zIndex: 1002,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              marginTop: 32,
+              padding: '3px 10px',
+              borderRadius: 6,
+              background: 'rgba(21,18,24,0.85)',
+              border: `1px solid ${Theme.stoneDark}`,
+              color: Theme.bone,
+              fontSize: 'clamp(9px, 2.6vw, 11px)',
+              fontWeight: 700,
+              letterSpacing: '0.03em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {smugglerNotice}
+          </div>
+        </div>
+      )}
 
       {/* Видимая пометка "события розыграны локально, не сервером" (см.
           localEventFallback выше, setup()) — ТОЛЬКО офлайн-отладка без

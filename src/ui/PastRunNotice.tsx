@@ -80,6 +80,16 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
   // заголовок на смерть в обход флага значило бы соврать, если ветка когда-то
   // начнёт отдавать died:false.
   const died = notice.kind === 'interrupted' ? notice.result.died : false
+  // ТА ЖЕ логика подписи, что у ResultsScreen в Explore.tsx (менять вместе —
+  // плита трофеев здесь её копия): «ПОТЕРЯНО» не только на смерти, но и когда
+  // добыча забега отрицательна. Отрицательной её делает кража у Контрабандиста
+  // (ставка = банк + добыча до сделки, множитель кражи 0.5), и показать убыток
+  // как «получено −400» значило бы соврать подписью. Число тогда берётся по
+  // модулю, а знак несёт подпись.
+  // Сейчас у `interrupted` сервер всегда ставит died: true, то есть ветка
+  // недостижима — но копия плиты обязана врать одинаково с оригиналом, иначе
+  // разойдутся они молча.
+  const trophyLossView = died || (notice.kind === 'interrupted' && notice.result.trophiesEarned < 0)
   const title = notice.kind === 'abandoned' ? 'ЗАБЕГ НЕ НАЧАЛСЯ' : died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'
   const subtitle =
     notice.kind === 'abandoned' ? 'Штрафа нет' : 'Забег не завершён — приложение было закрыто'
@@ -185,7 +195,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                 }}
               >
                 <div style={{ fontSize: 'clamp(8px, 2.4vw, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
-                  {died ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
+                  {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span
@@ -193,11 +203,11 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                       fontFamily: C.FONT_DISPLAY,
                       fontWeight: 900,
                       fontSize: 'clamp(19px, 5.8vw, 25px)',
-                      color: died ? Theme.danger : Theme.glowCore,
+                      color: trophyLossView ? Theme.danger : Theme.glowCore,
                       lineHeight: 1,
                     }}
                   >
-                    {died ? notice.result.trophiesLost : notice.result.trophiesEarned}
+                    {died ? notice.result.trophiesLost : Math.abs(notice.result.trophiesEarned)}
                   </span>
                   <img src={C.REWARD_ICON_SRC.trophy} alt="" draggable={false} style={{ width: 20, height: 20, objectFit: 'contain' }} />
                 </div>

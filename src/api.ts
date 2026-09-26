@@ -428,7 +428,11 @@ export async function finishRunExplore(
   token: string,
   closedEvents: number[],
   died: boolean,
-  smugglerOutcome?: 'gain' | 'steal',
+  // ⚠️ smugglerOutcome УБРАН (27.09.2026). Исход сделки с Контрабандистом теперь
+  // бросает СЕРВЕР (POST /run/smuggler-deal) и хранит в currentRun.smugglerDeal;
+  // финиш читает его оттуда, а тело запроса больше не участвует. Прежняя схема
+  // («клиент присылает исход, сервер верит на слово») позволяла всегда присылать
+  // 'gain'. Поле в теле не отправляется вовсе — сервер его игнорирует.
   // Сырые счётчики за забег (см. Explore.tsx — attackDamageDealtRef/
   // skillDamageDealtRef/healedAmountRef/damageTakenRef), НЕ готовые приросты
   // статов — сервер сам прогоняет их через applyStatGrowth, после клэмпа по
@@ -444,7 +448,7 @@ export async function finishRunExplore(
   // забег) и по сумме глотков, затем вычитает из колонок potionT1..T5.
   potionsDrunkByTier?: number[],
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, smugglerOutcome, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier })
+  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -972,6 +976,87 @@ export async function exchangeTrophies(token: string): Promise<ExchangeTrophiesR
     },
     SHOP_TIMEOUT_MS,
   )
+}
+
+// --- Контрабандист: предложение и сделка ---
+//
+// Обе ручки берут ОДНО и то же тело — индексы событий, закрытых К ЭТОМУ МОМЕНТУ,
+// ровно тот же список, что уезжает в финиш (Explore.tsx: collectClosedEventIndices).
+// Суммы наград клиент не присылает и не может: они лежат в currentRun.events на
+// сервере, и ставку считает он.
+//
+// Таймауты короткие: игрок стоит перед панелью и ждёт ответа, держать его дольше
+// нечем. Повторы разрешены у ОБЕИХ — quote не пишет ничего вовсе, а deal
+// идемпотентна (повтор возвращает тот же сохранённый исход, нового броска нет).
+// Поэтому прерванная попытка не может ни списать, ни перебросить.
+const SMUGGLER_ATTEMPT_TIMEOUT_MS = 5000
+const SMUGGLER_TOTAL_BUDGET_MS = 15000
+const SMUGGLER_RETRY_DELAYS_MS = [300, 1200]
+
+export type SmugglerQuote = {
+  /** Что стоит на кону: банк трофеев + трофеи событий, закрытых до сделки. */
+  stake: number
+  /** Сколько станет при удаче. Считает сервер — клиент множитель не знает. */
+  ifGain: number
+}
+
+export type SmugglerDealResult = {
+  outcome: 'gain' | 'steal'
+  stake: number
+  /** Сколько стало из stake после исхода. Прибавка/убыль = after − stake. */
+  after: number
+}
+
+// Общий цикл повторов для обеих ручек. Повторяем ТОЛЬКО retryable
+// (таймаут/сеть/5xx): 400 («нет забега», «нет Контрабандиста») и 409 («сделка уже
+// сделана», «состояние изменилось») — это окончательные ответы по существу, и
+// повтор их не исправит, а вызывающий обязан их различить.
+async function smugglerRequest<T>(path: string, token: string, closedEvents: number[]): Promise<T> {
+  const body = JSON.stringify({ closedEvents })
+  const deadline = Date.now() + SMUGGLER_TOTAL_BUDGET_MS
+  let retries = 0
+  let lastError: RequestError | null = null
+
+  while (true) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw lastError ?? new RequestError(`${path} failed (time budget exhausted)`, {
+        status: null, serverError: null, kind: 'timeout', networkError: null,
+      })
+    }
+    try {
+      return await requestJson<T>(
+        `${SERVER_URL}${path}`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body,
+        },
+        Math.min(SMUGGLER_ATTEMPT_TIMEOUT_MS, remaining),
+      )
+    } catch (e) {
+      if (!(e instanceof RequestError)) throw e
+      if (!e.retryable) throw e
+      lastError = e
+      const delay = SMUGGLER_RETRY_DELAYS_MS[retries]
+      if (delay === undefined || Date.now() + delay >= deadline) throw e
+      await sleep(delay)
+      retries++
+    }
+  }
+}
+
+// Сколько на кону и что будет при удаче. Сервер на этом пути НИЧЕГО не пишет,
+// поэтому звать можно свободно (например на каждое открытие панели).
+// 409 `Deal already made` — сделка в этом забеге уже сделана.
+export async function smugglerQuote(token: string, closedEvents: number[]): Promise<SmugglerQuote> {
+  return smugglerRequest<SmugglerQuote>('/run/smuggler-quote', token, closedEvents)
+}
+
+// Сама сделка. Бросок делает сервер и запоминает его в currentRun.smugglerDeal,
+// поэтому повтор безопасен и вернёт ТОТ ЖЕ исход — перебросить неудачу нельзя.
+export async function smugglerDeal(token: string, closedEvents: number[]): Promise<SmugglerDealResult> {
+  return smugglerRequest<SmugglerDealResult>('/run/smuggler-deal', token, closedEvents)
 }
 
 export type InventoryItem = {

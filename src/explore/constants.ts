@@ -782,13 +782,14 @@ export const SMUGGLER_BTN_H = 34
 export const SMUGGLER_BTN_GAP = 16
 // Поле от края экрана при зажатии окна в границах вьюпорта (см. ticker).
 export const SMUGGLER_PANEL_MARGIN = 8
-// Логика обмена (см. кнопку "Обменять") — Explore офлайн, трофеи нигде не
-// начисляются/списываются по-настоящему, только визуальный float. Реальный
-// счёт трофеев — Phase 2.5.
-export const SMUGGLER_TEST_TROPHIES = 10 // заглушка "было"
-export const SMUGGLER_MULT = 1.5 // множитель при успехе
-export const SMUGGLER_STEAL_CHANCE = 0.2 // шанс кражи
-export const SMUGGLER_STEAL_FRAC = 0.5 // доля кражи (половина)
+// ⚠️ ЗДЕСЬ БОЛЬШЕ НЕТ НИ ОДНОЙ ЦИФРЫ ОБМЕНА. Удалены 27.09.2026:
+// SMUGGLER_TEST_TROPHIES (заглушка "было" = 10), SMUGGLER_MULT,
+// SMUGGLER_STEAL_CHANCE, SMUGGLER_STEAL_FRAC — клиент больше не бросает исход
+// и не считает суммы. Всё это делает СЕРВЕР: ставку считает
+// POST /run/smuggler-quote, бросок и результат — POST /run/smuggler-deal
+// (server/src/runEvents.ts, те же имена констант живут теперь только там).
+// Клиент рисует ПРИСЛАННЫЕ числа, своих не выводит — иначе панель обещала бы
+// одно, а сервер начислял другое, и разошлись бы они молча.
 
 export const REWARD_ICON_SRC: Record<RewardKind, string> = {
   gold: `${import.meta.env.BASE_URL}assets/icons/icon_gold.png`,
