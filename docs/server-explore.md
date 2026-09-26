@@ -83,19 +83,28 @@
   попытку, 12 с на весь вызов.
 
 ### POST /run/finish-explore
-- Тело: `{closedEvents: number[], died: boolean, smugglerOutcome?,
-  attackDamageDealt?, skillDamageDealt?, healedAmount?, damageTaken?}` —
-  последние 4 (RAW счётчики за весь забег: `Explore.tsx`'s
+- Тело: `{closedEvents: number[], died: boolean, attackDamageDealt?,
+  skillDamageDealt?, healedAmount?, damageTaken?, potionsDrunkByTier?}` —
+  четыре RAW-счётчика за весь забег (`Explore.tsx`'s
   `attackDamageDealtRef`/`skillDamageDealtRef`/`healedAmountRef`/
   `damageTakenRef`) кормят рост статов, см. ниже.
+- ⚠️ **`smugglerOutcome` из тела УБРАН 27.09.2026.** Исход сделки бросает
+  СЕРВЕР (`POST /run/smuggler-deal`) и хранит в `currentRun.smugglerDeal`;
+  финиш читает его оттуда. Поле осталось в серверном типе тела, но не
+  читается вовсе, а клиент его не отправляет.
 - Суммирует `trophyReward` ТОЛЬКО закрытых событий из СВОЕГО
-  `currentRun.events` (не из тела запроса — клиент не может подделать
-  суммы), применяет множитель Контрабандиста, если smuggler-событие закрыто
-  и `smugglerOutcome` прислан (⚠️ бросок кражи/успеха НЕ переигрывает — верит
-  слову клиента, см. открытую задачу ниже).
+  `currentRun.events` (не из тела запроса — клиент не может подделать суммы;
+  из тела приходят лишь индексы, и им сервер верит, см. CLAUDE.md, Next Steps,
+  [БЕЗОПАСНОСТЬ]).
+- ⚠️ **Формула трофеев переписана 27.09.2026** — источник правды в CLAUDE.md,
+  Architecture («Формула трофеев на финише»). Коротко: есть сделка →
+  `deal.after` + добыча событий, закрытых ПОСЛЕ сделки (закрытое ДО уже внутри
+  `deal.stake` и умножено); нет сделки → банк + вся добыча без множителя.
+  `trophiesEarned = итог − банк` и **может быть отрицательным** (кража), нулём
+  не обрезается.
 - `died` → ВЕСЬ `character.trophies` (весь банк, не только добытое в этом
   забеге) обнуляется, `trophiesLost` в ответе = этот банк. Не `died` →
-  трофеи добавляются, `trophiesLost=0`.
+  пишется итог, `trophiesLost=0`.
 - **Рост статов — ГОТОВО, подключён** (было открытой задачей, устарело):
   клэмпит счётчики анти-читом (`enemyCount`/`bossCount` из СВОЕГО
   `currentRun.events` × `scaledEnemyMaxHp`/`scaledBossMaxHp` на уровне
