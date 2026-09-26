@@ -69,12 +69,24 @@ export const TROPHY_MULT_BOSS = 4 // constants.ts:460
 export const TROPHY_BASE = 12.5 // constants.ts:452
 export const TROPHY_LEVEL_POWER = 0.446 // constants.ts:453
 export const TROPHY_SPREAD = 0.4 // constants.ts:454, разброс +-20%
-// Контрабандист (POST /run/finish-explore) — множитель применяется к ИТОГОВОЙ
-// сумме трофеев за забег, не к отдельному событию (см. run.ts). SMUGGLER_STEAL_CHANCE
-// сюда не перенесена — клиент уже прислал готовый исход (smugglerOutcome), сервер
-// сам бросок не разыгрывает.
+// Контрабандист (POST /run/smuggler-quote и /run/smuggler-deal).
+//
+// Множитель применяется к СТАВКЕ — банку трофеев персонажа ПЛЮС трофеи событий,
+// закрытых ДО сделки (см. stakeFromClosedEvents в routes/run.ts). Не к добыче
+// забега и не к отдельному событию: на кону всё накопленное, в этом и смысл
+// трофеев как рискованной валюты (решение дизайнера).
+//
+// ⚠️ БРОСОК ТЕПЕРЬ СЕРВЕРНЫЙ. Раньше исход присылал клиент полем
+// smugglerOutcome, а сервер верил на слово (известное слабое место, см.
+// CLAUDE.md). Теперь SMUGGLER_STEAL_CHANCE живёт здесь, бросает
+// /run/smuggler-deal, результат пишется в currentRun.smugglerDeal, и финиш
+// читает ЕГО, а не тело запроса.
 export const SMUGGLER_MULT = 1.5 // constants.ts:429
 export const SMUGGLER_STEAL_FRAC = 0.5 // constants.ts:431
+// Вероятность кражи вместо удачи. Копия клиентской SMUGGLER_STEAL_CHANCE
+// (constants.ts:790), но источник правды теперь ЗДЕСЬ: клиентская осталась
+// только у офлайн-заглушки всплывашки и на исход больше не влияет.
+export const SMUGGLER_STEAL_CHANCE = 0.2 // constants.ts:790
 
 // --- Типы ---
 

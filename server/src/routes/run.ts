@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
-import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC } from '../runEvents.js'
+import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
@@ -19,10 +19,46 @@ import {
   subtractPotionStock,
   potionStockOf,
   potionStockToColumns,
+  readSmugglerDeal,
+  type SmugglerDeal,
 } from '../runState.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
+
+// --- Общее для финиша и обеих ручек Контрабандиста ---
+
+// Индексы закрытых событий из тела запроса: только целые, в диапазоне, без
+// повторов. Мусор (отрицательное, дробное, вне диапазона, дубли) отбрасывается
+// молча — он не должен ни портить сумму, ни валить запрос. ОДНА функция на всех
+// читателей намеренно: расхождение в валидации между ставкой и финишем дало бы
+// разные суммы на одних и тех же данных.
+function parseClosedEventIndices(raw: unknown, run: ActiveExploreRun): number[] {
+  const list = Array.isArray(raw) ? raw : []
+  return [...new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < run.events.length))]
+}
+
+// Индекс события Контрабандиста в забеге, или -1 если его в этом забеге нет.
+// Событие в розыгрыше одно (см. runEvents.ts), findIndex этого достаточно.
+function smugglerEventIndex(run: ActiveExploreRun): number {
+  return run.events.findIndex((e) => e.kind === 'smuggler')
+}
+
+// Сумма trophyReward перечисленных событий, КРОМЕ самого Контрабандиста. Его
+// собственный trophyReward сейчас всегда 0 (runEvents.ts), но исключается явно:
+// иначе появление у него награды молча удвоило бы ставку.
+function trophySumOf(run: ActiveExploreRun, indices: number[]): number {
+  const smuggler = smugglerEventIndex(run)
+  return indices.reduce((sum, i) => (i === smuggler ? sum : sum + run.events[i].trophyReward), 0)
+}
+
+// Ставка сделки: банк персонажа ПЛЮС трофеи событий, закрытых к этому моменту.
+// Банк входит целиком — в этом весь смысл механики (на кону всё накопленное, не
+// выручка одного забега). Суммы берутся из СВОЕГО currentRun.events, клиент
+// называет только индексы.
+function stakeFromClosedEvents(bank: number, run: ActiveExploreRun, closed: number[]): number {
+  return bank + trophySumOf(run, closed)
+}
 
 // Read & verify the JWT from the Authorization header. Returns userId or null.
 function getUserId(request: FastifyRequest): number | null {
@@ -39,14 +75,24 @@ function getUserId(request: FastifyRequest): number | null {
   }
 }
 
+// Тело обеих ручек Контрабандиста (/run/smuggler-quote и /run/smuggler-deal):
+// индексы событий, закрытых к моменту обращения. Валидируются так же, как
+// closedEvents финиша (parseClosedEventIndices) — суммы наград клиент не
+// присылает вовсе.
+type SmugglerBody = { closedEvents?: number[] }
+
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
 // (App.tsx) still sends an explicit one, still validated below.
 type StartExploreBody = { mapFile?: string }
 // Body shape for POST /run/finish-explore. closedEvents — indices into the
 // ActiveExploreRun.events array (see FinishExplore route below for how
-// they're validated). smugglerOutcome is only meaningful if a 'smuggler'
-// event is among closedEvents; ignored otherwise. attackDamageDealt/
+// they're validated).
+// ⚠️ smugglerOutcome БОЛЬШЕ НЕ ЧИТАЕТСЯ: исход сделки бросает сервер
+// (/run/smuggler-deal) и хранит в currentRun.smugglerDeal. Поле оставлено в
+// типе только потому, что старый клиент его ещё присылает — принять и
+// проигнорировать дешевле, чем отказывать всему финишу. Новый клиент его
+// слать не должен. attackDamageDealt/
 // skillDamageDealt/healedAmount/damageTaken — RAW counters accumulated by
 // the client over the whole run (Explore.tsx: attackDamageDealtRef/
 // skillDamageDealtRef/healedAmountRef/damageTakenRef), NOT pre-computed stat
@@ -401,7 +447,9 @@ export async function runRoutes(server: FastifyInstance) {
 
   // Finish a map-based Explore run: award trophies for the events the client
   // closed (amounts come ONLY from the server's own currentRun.events, never
-  // from the request body), apply the Contrabandist multiplier if rolled,
+  // from the request body), apply the Contrabandist deal already recorded in
+  // currentRun.smugglerDeal (the multiplier itself was applied at deal time, in
+  // /run/smuggler-deal — NOT here, and never from the request body),
   // zero trophies on death, close currentRun.
   server.post<{ Body: FinishExploreBody }>('/run/finish-explore', async (request, reply) => {
     const userId = getUserId(request)
@@ -425,23 +473,48 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const died = request.body.died === true
-    // Indices only, deduped, in range — garbage from the client (out-of-range,
-    // negative, repeated, non-integer) is silently dropped rather than
-    // corrupting the sum or throwing.
-    const rawClosedEvents = Array.isArray(request.body.closedEvents) ? request.body.closedEvents : []
-    const closedEvents = [...new Set(
-      rawClosedEvents.filter((i) => Number.isInteger(i) && i >= 0 && i < run.events.length)
-    )]
+    // Индексы закрытых событий — общая валидация (parseClosedEventIndices):
+    // та же, что у обеих ручек Контрабандиста, иначе ставка и финиш посчитали бы
+    // разные суммы на одних и тех же данных.
+    const closedEvents = parseClosedEventIndices(request.body.closedEvents, run)
 
-    const trophySum = closedEvents.reduce((sum, i) => sum + run.events[i].trophyReward, 0)
+    // --- Трофеи за забег ---
+    //
+    // Банк ДО забега. Он же банк на СТАРТЕ: за время открытого забега трофеи в
+    // БД не меняет ничего (сверено по всем записям в server/src — обмен на
+    // золото фильтром требует пустой currentRun, покупка зелий трофеи не
+    // трогает, а /auth/login меняет их только ВМЕСТЕ с закрытием забега, после
+    // которого этот обработчик получит 400/409).
+    const bank = character.trophies
+    const dealRead = readSmugglerDeal(run)
+    if (dealRead.kind === 'malformed') {
+      // Итог посчитать нечем: сделка была, но её числа испорчены. Молча
+      // посчитать «как будто сделки не было» нельзя — это тихо отменило бы
+      // кражу или отняло выигрыш.
+      request.log.error({ userId, smugglerDeal: run.smugglerDeal }, 'finish-explore: currentRun.smugglerDeal is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
 
-    // Multiplier applies to the TOTAL for the run, after summing every closed
-    // event — not to the smuggler event's own (always-0) trophyReward. Order
-    // in which events were closed isn't tracked server-side, so this is a
-    // deliberate simplification (confirmed — not a bug): if the smuggler was
-    // the ONLY closed event, trophySum is 0 and the multiplier correctly
-    // yields 0 either way.
-    const smugglerClosed = closedEvents.some((i) => run.events[i].kind === 'smuggler')
+    // Итоговый банк ПОСЛЕ забега (при смерти обнуляется ниже).
+    //   Сделка была: множитель уже применён к ставке в момент сделки
+    //     (deal.after), и к результату прибавляется ТОЛЬКО добыча событий,
+    //     закрытых ПОСЛЕ неё. Закрытое до сделки второй раз не считается — оно
+    //     уже внутри deal.stake.
+    //   Сделки не было: банк плюс вся добыча, без множителя — прежнее поведение.
+    let total: number
+    if (dealRead.kind === 'deal') {
+      const deal = dealRead.deal
+      const before = new Set(deal.closedBefore)
+      const afterDealIndices = closedEvents.filter((i) => !before.has(i))
+      total = deal.after + trophySumOf(run, afterDealIndices)
+    } else {
+      total = bank + trophySumOf(run, closedEvents)
+    }
+
+    // ⚠️ Поле smugglerOutcome из тела запроса НЕ ЧИТАЕТСЯ вообще — исход бросает
+    // сервер в /run/smuggler-deal и хранит в currentRun.smugglerDeal. Старый
+    // клиент поле ещё присылает; оно игнорируется намеренно, а не по забывчивости
+    // (прежняя схема позволяла всегда присылать 'gain').
     // Убийство босса — bonusLevels += 1 (см. задачу). "Закрыт" здесь значит
     // ТО ЖЕ самое, что уже решает выплату трофеев выше (closedEvents,
     // провалидированные индексы в run.events ИЗ currentRun, не из тела
@@ -450,20 +523,19 @@ export async function runRoutes(server: FastifyInstance) {
     // само по себе доказывает, что босс в ЭТОМ забеге был (currentRun —
     // серверные данные), а не то, что клиент придумал.
     const bossClosed = closedEvents.some((i) => run.events[i].kind === 'boss')
-    const smugglerOutcome = request.body.smugglerOutcome
-    let trophyTotal = trophySum
-    if (smugglerClosed && smugglerOutcome === 'gain') {
-      trophyTotal = trophySum * SMUGGLER_MULT
-    } else if (smugglerClosed && smugglerOutcome === 'steal') {
-      trophyTotal = trophySum * (1 - SMUGGLER_STEAL_FRAC)
-    }
-    const earned = Math.round(trophyTotal)
 
-    const newTrophies = character.trophies + earned
+    const newTrophies = total
+    // Насколько банк изменился за забег. ⚠️ МОЖЕТ БЫТЬ ОТРИЦАТЕЛЬНЫМ и нулём не
+    // обрезается: при краже у Контрабандиста итог законно меньше банка на
+    // старте, и это ровно то, что игрок должен увидеть. Math.max(0, …) здесь
+    // превратил бы потерю в правдоподобный ноль (см. CLAUDE.md, запрет тихих
+    // фолбэков).
+    const earned = newTrophies - bank
     // trophiesLost — the balance actually wiped by death (the character's
     // PRE-update total, not just this run's earned amount): on a normal
     // (non-death) finish nothing was lost, so 0.
-    const trophiesLost = died ? character.trophies : 0
+    // Не меняется этой правкой: смерть по-прежнему жжёт ВЕСЬ предрановый банк.
+    const trophiesLost = died ? bank : 0
 
     // --- Stat growth (see game.ts applyStatGrowth) — applies regardless of
     // died: the player still dealt/took damage over the run either way. ---
@@ -637,6 +709,115 @@ export async function runRoutes(server: FastifyInstance) {
       bonusLevels: newBonusLevels,
     }
     return reply.send(result)
+  })
+
+  // --- Контрабандист: предложение и сделка ---
+  //
+  // Две ручки вместо одной, потому что у них РАЗНАЯ природа: quote только
+  // считает и ничего не пишет (её можно звать сколько угодно, например пока
+  // игрок стоит перед панелью), а deal делает неповторимый бросок и пишет его
+  // результат. Смешать их в одну значило бы бросать кости на каждое открытие
+  // панели.
+  //
+  // Тело у обеих одно: closedEvents — индексы событий, закрытых К ЭТОМУ
+  // МОМЕНТУ. Суммы наград клиент не присылает и не может: они лежат в
+  // currentRun.events на сервере (см. stakeFromClosedEvents).
+
+  // Сколько стоит на кону и что будет при удаче. ТОЛЬКО чтение — ни одной записи.
+  server.post<{ Body: SmugglerBody }>('/run/smuggler-quote', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+    if (smugglerEventIndex(run) < 0) {
+      return reply.status(400).send({ error: 'No smuggler in this run' })
+    }
+
+    // Сделка уже была — предложение бессмысленно: второй раз ставку не делают,
+    // и показать «на кону N» после броска значило бы соврать.
+    const dealRead = readSmugglerDeal(run)
+    if (dealRead.kind === 'malformed') {
+      request.log.error({ userId, smugglerDeal: run.smugglerDeal }, 'smuggler-quote: currentRun.smugglerDeal is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+    if (dealRead.kind === 'deal') {
+      return reply.status(409).send({ error: 'Deal already made' })
+    }
+
+    const closedEvents = parseClosedEventIndices(request.body?.closedEvents, run)
+    const stake = stakeFromClosedEvents(character.trophies, run, closedEvents)
+
+    return reply.send({ stake, ifGain: Math.round(stake * SMUGGLER_MULT) })
+  })
+
+  // Сама сделка: бросок и запись результата.
+  //
+  // ⚠️ ИСХОД БРОСАЕТ СЕРВЕР. Поле smugglerOutcome из тела финиша больше не
+  // читается вовсе — прежняя схема («клиент присылает исход, сервер верит на
+  // слово») позволяла всегда присылать 'gain'.
+  //
+  // ИДЕМПОТЕНТНОСТЬ обязательна и держится на самой сделке в currentRun: бросок
+  // неповторим, поэтому повторный запрос (потерянный ответ, двойной тап, второе
+  // устройство) возвращает УЖЕ СОХРАНЁННОЕ, а не бросает заново. Без этого
+  // повтор был бы способом перебросить неудачу.
+  server.post<{ Body: SmugglerBody }>('/run/smuggler-deal', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+    if (smugglerEventIndex(run) < 0) {
+      return reply.status(400).send({ error: 'No smuggler in this run' })
+    }
+
+    const dealRead = readSmugglerDeal(run)
+    if (dealRead.kind === 'malformed') {
+      request.log.error({ userId, smugglerDeal: run.smugglerDeal }, 'smuggler-deal: currentRun.smugglerDeal is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+    // Уже сделана — отдаём то же самое, БЕЗ броска и без записи.
+    if (dealRead.kind === 'deal') {
+      const { outcome, stake, after } = dealRead.deal
+      return reply.send({ outcome, stake, after })
+    }
+
+    const closedBefore = parseClosedEventIndices(request.body?.closedEvents, run)
+    const stake = stakeFromClosedEvents(character.trophies, run, closedBefore)
+
+    const outcome: SmugglerDeal['outcome'] = Math.random() < SMUGGLER_STEAL_CHANCE ? 'steal' : 'gain'
+    const after = outcome === 'gain'
+      ? Math.round(stake * SMUGGLER_MULT)
+      : Math.round(stake * (1 - SMUGGLER_STEAL_FRAC))
+
+    const deal: SmugglerDeal = { closedBefore, stake, outcome, after }
+    const nextRun: ActiveExploreRun = { ...run, smugglerDeal: deal }
+
+    // Условная запись — тот же приём и те же касты, что у /run/sip и финиша:
+    // применяется, только если currentRun в базе всё ещё РОВНО тот, что прочитан
+    // выше. Между чтением и записью забег мог закрыть финиш или /auth/login —
+    // без фильтра сделка «воскресила» бы закрытый забег.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      data: { currentRun: nextRun as unknown as Prisma.InputJsonValue },
+    })
+    if (written.count === 0) {
+      // Бросок при этом НЕ сохранён и на следующей попытке будет сделан заново.
+      // Это верно: раз забега уже нет, то и сделки в нём быть не может.
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+
+    return reply.send({ outcome, stake, after })
   })
 
   server.post<{ Body: { skills: string[] } }>('/character/skills', async (request, reply) => {

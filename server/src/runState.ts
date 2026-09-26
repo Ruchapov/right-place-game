@@ -49,7 +49,7 @@ import type { RunEvent } from './runEvents.js'
 // Хранится числом, а не берётся из RUN_COST на момент закрытия: константа
 // меняется (сейчас 3, перед релизом 10), и забег, начатый до её смены, обязан
 // вернуть списанное, а не нынешнее.
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -144,6 +144,80 @@ export function readRunSpentEnergy(run: ActiveExploreRun): number | null {
   const raw: unknown = run.spentEnergy
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return null
   return raw
+}
+
+// --- Сделка с Контрабандистом (POST /run/smuggler-deal) ---
+//
+// Пишется ОДИН раз за забег и потом только читается: бросок удачи/кражи
+// неповторим, поэтому повторный запрос обязан вернуть уже сохранённое (см.
+// идемпотентность эндпоинта), а финиш — посчитать итог по ЭТИМ числам, а не
+// бросить заново.
+//   closedBefore — индексы событий, закрытых К МОМЕНТУ сделки. Нужны финишу,
+//     чтобы отделить добычу ДО сделки (она уже внутри stake и умножена) от
+//     добычи ПОСЛЕ (прибавляется без множителя). Без этого списка финиш
+//     посчитал бы закрытое до сделки дважды.
+//   stake — банк персонажа + трофеи событий из closedBefore, то есть то, что
+//     стояло на кону.
+//   outcome — исход СЕРВЕРНОГО броска.
+//   after — сколько стало из stake после множителя. Хранится готовым числом, а
+//     не пересчитывается на финише: пересчёт по константам разошёлся бы с тем,
+//     что игрок увидел, если константы поменяют посреди живого забега.
+export type SmugglerDeal = {
+  closedBefore: number[]
+  stake: number
+  outcome: 'gain' | 'steal'
+  after: number
+}
+
+// Результат чтения сделки — ТРИ различимых состояния, а не два. «Сделки не
+// было» и «поле испорчено» обязаны различаться: свалить их в один null значило
+// бы посчитать испорченную сделку как отсутствующую, то есть тихо отменить
+// кражу (или отнять выигрыш) — ровно тот молчаливый фолбэк, который в проекте
+// запрещён.
+export type SmugglerDealRead =
+  | { kind: 'none' }
+  | { kind: 'deal'; deal: SmugglerDeal }
+  | { kind: 'malformed' }
+
+// СТРОГИЙ разбор: любое отклонение — malformed, вызывающий обязан сказать громко.
+// Числа требуются целыми неотрицательными (stake складывается из целых
+// trophyReward и целого банка, after — результат Math.round), индексы — целыми
+// неотрицательными; верхнюю границу индекса здесь не проверяем, её знает только
+// вызывающий (длина run.events), и он же её применяет.
+export function parseSmugglerDeal(raw: unknown): SmugglerDeal | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+
+  const closedBefore = record.closedBefore
+  if (!Array.isArray(closedBefore)) return null
+  if (!closedBefore.every((i) => Number.isInteger(i) && (i as number) >= 0)) return null
+
+  const stake = record.stake
+  if (!Number.isInteger(stake) || (stake as number) < 0) return null
+
+  const after = record.after
+  if (!Number.isInteger(after) || (after as number) < 0) return null
+
+  const outcome = record.outcome
+  if (outcome !== 'gain' && outcome !== 'steal') return null
+
+  return {
+    closedBefore: [...(closedBefore as number[])],
+    stake: stake as number,
+    outcome,
+    after: after as number,
+  }
+}
+
+// Сделка из currentRun. Поля нет — сделки не было (честное состояние, а не
+// догадка: до появления фичи его не было ни у одного забега, и тогда обмена у
+// Контрабандиста через сервер тоже не существовало).
+export function readSmugglerDeal(run: ActiveExploreRun): SmugglerDealRead {
+  const raw: unknown = run.smugglerDeal
+  if (raw === undefined) return { kind: 'none' }
+  const parsed = parseSmugglerDeal(raw)
+  if (parsed === null) return { kind: 'malformed' }
+  return { kind: 'deal', deal: parsed }
 }
 
 // Что делать с забегом, найденным открытым при входе (см. /auth/login).
