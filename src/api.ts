@@ -123,6 +123,14 @@ export type LoginResponse = {
   // if/else, оба сразу не приходят никогда. Нет открытого забега — нет ни
   // одного из двух.
   abandonedRun?: AbandonedRunSummary
+  // Курс обмена трофеев на золото (server/src/game.ts, TROPHY_GOLD_RATE).
+  // ОПЦИОНАЛЬНОЕ намеренно, хотя нынешний сервер его всегда присылает: объявить
+  // его `number` значило бы получить `undefined`, типизированный как число, на
+  // любом старом или подменённом ответе — ровно тот тихий фолбэк, который в
+  // проекте запрещён. Разбирать ТОЛЬКО через readTrophyGoldRate ниже; своего
+  // числа у клиента нет и быть не должно (копия константы разъехалась бы с
+  // сервером молча).
+  trophyGoldRate?: number
 }
 
 // КОПИЯ серверного типа `AbandonedRunSummary` — оригинал в
@@ -875,16 +883,93 @@ export async function buyPotion(token: string, tier: number, count: number): Pro
   )
 }
 
-// Сверка баланса: золото и склад зелий по тирам. ТОЛЬКО чтение — сервер на
-// этом пути ничего не пишет (GET /character/profile).
+/**
+ * Разбор курса обмена трофеев на золото из ответа сервера (логин и профиль).
+ *
+ * Возвращает null на ВСЁ, что не является пригодным курсом: поля нет, это не
+ * число, NaN/Infinity, ноль или отрицательное. Null — не «нуль курса», а «курс
+ * неизвестен»: окно обмена в этом состоянии так и пишет и гасит кнопку.
+ * Подставить сюда 1 нельзя ни при каких условиях — клиент начал бы обещать
+ * курс, которого сервер не называл, и разошёлся бы с ним молча.
+ *
+ * Ноль и отрицательное отбрасываются вместе с мусором намеренно: обменять банк
+ * по такому курсу значит сжечь его за ничто, и предлагать это игроку нельзя.
+ */
+export function readTrophyGoldRate(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null
+  return raw
+}
+
+// Ответ GET /character/profile. Форма РАЗОШЛАСЬ с BuyPotionResult (сервер добавил
+// trophies и trophyGoldRate), поэтому у профиля теперь свой тип — прежний общий
+// молча скрыл бы оба новых поля.
+export type ProfileResult = {
+  gold: number
+  trophies: number
+  potions: number[]
+  /** null — сервер курс не назвал (см. readTrophyGoldRate). */
+  trophyGoldRate: number | null
+}
+
+// Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
+// чтение — сервер на этом пути ничего не пишет (GET /character/profile).
 // Нужна отдельно от loginWithTelegram именно поэтому: вход — полноценный
 // логин, и он ЗАКРЫВАЕТ открытый на сервере забег (подтверждённый — как
 // смерть, со сгоранием банка трофеев). Делать это побочным эффектом кнопки
 // «Обновить баланс» нельзя.
-export async function fetchProfile(token: string): Promise<BuyPotionResult> {
-  return requestJson<BuyPotionResult>(
+export async function fetchProfile(token: string): Promise<ProfileResult> {
+  const raw = await requestJson<{
+    gold: number
+    trophies: number
+    potions: number[]
+    trophyGoldRate?: unknown
+  }>(
     `${SERVER_URL}/character/profile`,
     { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
+    SHOP_TIMEOUT_MS,
+  )
+  return {
+    gold: raw.gold,
+    trophies: raw.trophies,
+    potions: raw.potions,
+    trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
+  }
+}
+
+// Итог обмена: gold и trophies — АБСОЛЮТНЫЕ значения из БД (сервер перечитывает
+// их после записи), goldGained — прибавка, которую игрок увидит тостом. Считать
+// что-либо из них на клиенте не нужно и нельзя: курс применяет сервер.
+export type ExchangeTrophiesResult = {
+  gold: number
+  trophies: number
+  goldGained: number
+}
+
+/**
+ * Полный обмен трофеев на золото (POST /character/exchange-trophies).
+ *
+ * ПОВТОРОВ НЕТ. Формально второй запрос не удвоил бы обмен (после успеха трофеев
+ * уже 0, и сервер ответит 400 `No trophies to exchange`), но различить «первый
+ * запрос применился» и «не дошёл вовсе» повтор всё равно не может, а goldGained
+ * — число, которое игрок должен увидеть, — во втором ответе уже не придёт.
+ * Поэтому при сетевом сбое вызывающий обязан не «попробовать ещё», а СВЕРИТЬ
+ * баланс (fetchProfile выше) — тот же порядок, что у buyPotion.
+ */
+export async function exchangeTrophies(token: string): Promise<ExchangeTrophiesResult> {
+  return requestJson<ExchangeTrophiesResult>(
+    `${SERVER_URL}/character/exchange-trophies`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      // '{}', а НЕ отсутствующее тело: с Content-Type: application/json Fastify
+      // отвергает пустое тело своей ошибкой (FST_ERR_CTP_EMPTY_JSON_BODY, 400)
+      // ещё до обработчика, и отказ выглядел бы как отказ обмена. Сервер полей
+      // из тела не читает — ему нужен только валидный JSON.
+      body: JSON.stringify({}),
+    },
     SHOP_TIMEOUT_MS,
   )
 }

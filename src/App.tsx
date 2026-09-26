@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, exchangeTrophies, readTrophyGoldRate, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
@@ -253,8 +253,47 @@ function SlotIcon({ slot, size = 24, color = '#3A3344' }: { slot: string; size?:
   )
 }
 
+/**
+ * Склонение слова «трофей» при числе: 1 трофей, 2 трофея, 5 трофеев.
+ *
+ * Правило русского счёта по последним разрядам, а не по остатку от 10: числа
+ * 11–14 идут во множественное («11 трофеев»), несмотря на последнюю цифру,
+ * поэтому сначала отсекается сотенный остаток 11..14. Проверено на 1, 2, 5, 11,
+ * 21, 22, 111, 112.
+ *
+ * Math.abs — от отрицательного числа: банк отрицательным быть не может, но
+ * формула не должна молча давать неверное слово, если когда-нибудь сможет.
+ */
+function trophyWord(n: number): string {
+  const abs = Math.abs(n) % 100
+  if (abs >= 11 && abs <= 14) return 'трофеев'
+  const last = abs % 10
+  if (last === 1) return 'трофей'
+  if (last >= 2 && last <= 4) return 'трофея'
+  return 'трофеев'
+}
+
 const MAX_ENERGY = 100
 const RUN_COST = 3 // DEV: держать в синхроне с сервером (вернуть 10 перед релизом)
+/**
+ * TEMP_DEV_TROPHY_GOLD_RATE — ТЕСТОВЫЙ курс обмена трофеев на золото для
+ * офлайн-заглушки DevTester (вне Telegram, см. её в эффекте входа ниже).
+ *
+ * Это НЕ боевой курс и НЕ копия серверной константы: настоящий курс живёт
+ * только на сервере (TROPHY_GOLD_RATE в server/src/game.ts) и приходит клиенту
+ * полем trophyGoldRate в ответе логина и GET /character/profile. Здесь число
+ * нужно ровно затем, чтобы вкладку "Обмен" можно было верстать в браузере, где
+ * запросов к серверу нет вообще.
+ *
+ * Равен серверному (там тоже 1) НАМЕРЕННО: курс по дизайну 1 к 1, и тестовое
+ * число, отличающееся от боевого, показывало бы в браузере не ту вкладку,
+ * которую увидит игрок. Совпадение с сервером здесь — совпадение значений, а не
+ * копия константы: сервер эту строку не читает, а клиент в Telegram — не
+ * исполняет.
+ *
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
+ */
+const TEMP_DEV_TROPHY_GOLD_RATE = 1
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -386,7 +425,7 @@ export default function App() {
   // Раскрыт ли выпадающий список фильтра. Чисто вёрсточный флаг: что выбрано,
   // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
   const [slotFilterOpen, setSlotFilterOpen] = useState(false)
-  const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги'>('Расходники')
+  const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги' | 'Обмен'>('Расходники')
   const [shopSelectedPotion, setShopSelectedPotion] = useState<string | null>(null)
   // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
   // приёмом, что "Недостаточно энергии" под кнопкой забега ниже).
@@ -404,6 +443,27 @@ export default function App() {
   // (эндпоинт не идемпотентен).
   const [shopBalanceUnknown, setShopBalanceUnknown] = useState(false)
   const [shopBalancePending, setShopBalancePending] = useState(false)
+  // --- Обмен трофеев на золото (POST /character/exchange-trophies) ---
+  // Курс. ЕДИНСТВЕННЫЙ источник — ответы сервера (логин и GET /character/profile),
+  // своего числа у клиента нет: копия константы разошлась бы с серверной молча
+  // (см. readTrophyGoldRate в api.ts). null — курс неизвестен, окно так и пишет
+  // и гасит кнопку; подставлять 1 нельзя.
+  const [trophyGoldRate, setTrophyGoldRate] = useState<number | null>(null)
+  // Запрос в полёте — гасит кнопку от повторного тапа.
+  const [exchangePending, setExchangePending] = useState(false)
+  const [exchangeError, setExchangeError] = useState<string | null>(null)
+  // Показанный баланс устарел, но обмен ТОЧНО не применился: сервер отказал
+  // 400 "No trophies to exchange" или 409 "State changed, retry" — оба означают,
+  // что не записано ничего. Отдельно от shopBalanceUnknown намеренно: тот значит
+  // "запрос МОГ примениться" и потому блокирует ещё и покупки, а здесь блокировать
+  // нечего — достаточно предложить сверку.
+  const [exchangeBalanceStale, setExchangeBalanceStale] = useState(false)
+  // Тост "+N золота" после удачного обмена (N — goldGained из ответа сервера).
+  // null — тоста нет.
+  const [goldToast, setGoldToast] = useState<number | null>(null)
+  // Таймер автоскрытия тоста. В ref, а не в состоянии: второй обмен подряд должен
+  // сбросить прежний таймер, иначе он погасит новый тост раньше времени.
+  const goldToastTimerRef = useRef<number | null>(null)
   // Выбранная ячейка инвентаря. Предмет адресуется inventoryItemId — именно им
   // оперирует POST /character/equip, и именно он различает два одинаковых
   // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
@@ -488,6 +548,13 @@ export default function App() {
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
       setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0] })
+      // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
+      // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
+      // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
+      // Telegram запросов к серверу нет вовсе). Совпадает с боевым курсом (1 к 1)
+      // намеренно — см. объяснение у самой константы.
+      // В Telegram эта строка не исполняется — курс приходит с логином ниже.
+      setTrophyGoldRate(TEMP_DEV_TROPHY_GOLD_RATE)
       setEnergyBase(MAX_ENERGY)
       setEnergyBaseAt(Date.now())
       return
@@ -508,6 +575,11 @@ export default function App() {
     setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
+    // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
+    // это правило экономики, а не свойство персонажа (server/src/routes/auth.ts).
+    // Через readTrophyGoldRate, а не присваиванием: нет поля или мусор — null,
+    // то есть "курс неизвестен", и окно обмена скажет это словами.
+    setTrophyGoldRate(readTrophyGoldRate(data.trophyGoldRate))
     // Итог прошлого забега — из ТОГО ЖЕ ответа и рядом с setPlayer выше:
     // character там уже несёт последствия закрытия (сгоревший банк трофеев
     // или возвращённую энергию), и без этого окна игрок видит только
@@ -732,28 +804,112 @@ export default function App() {
   // Сверка баланса после потерянного ответа. ТОЛЬКО чтение
   // (GET /character/profile) — не полный вход: loginWithTelegram закрыл бы
   // открытый на сервере забег, а кнопка «обновить» такого права не имеет.
+  // Зовётся из двух мест: карточки зелья и окна обмена — сверяет и то, и другое
+  // одним запросом, поэтому гасит ошибки обоих.
   async function handleRefreshBalance() {
     const token = localStorage.getItem('jwt')
     if (!token) {
       setShopBuyError('Профиль не загружен — сверка недоступна.')
+      setExchangeError('Профиль не загружен — сверка недоступна.')
       return
     }
     if (shopBalancePending) return
     setShopBalancePending(true)
     try {
       const profile = await fetchProfile(token)
-      setPlayer(prev => prev ? { ...prev, gold: profile.gold, potions: profile.potions } : prev)
-      // Состояние снова известно — покупки разблокированы.
+      // trophies мержится наравне с золотом: обмен меняет ОБА числа, и сверять
+      // после него только золото значило бы оставить в шапке банк, которого
+      // уже нет.
+      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions } : prev)
+      // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
+      // перестав его присылать, означает именно "курс неизвестен": сохранить
+      // прежнее число было бы тихим фолбэком на устаревшее значение.
+      setTrophyGoldRate(profile.trophyGoldRate)
+      // Состояние снова известно — покупки и обмен разблокированы.
       setShopBalanceUnknown(false)
+      setExchangeBalanceStale(false)
       setShopBuyError(null)
+      setExchangeError(null)
     } catch (e) {
       // Сбой сверки тоже виден: молча оставить игрока с погашенной кнопкой и
       // без объяснения нельзя. Блокировка сохраняется, кнопка остаётся.
       console.error('Fetch profile failed', e)
       setShopBuyError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
+      setExchangeError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
     } finally {
       setShopBalancePending(false)
     }
+  }
+
+  // Полный обмен банка трофеев на золото. Курс применяет СЕРВЕР — клиент его
+  // только показывает (см. trophyGoldRate), а gold/trophies после обмена берёт
+  // из ответа, а не считает сам.
+  async function handleExchangeTrophies() {
+    const token = localStorage.getItem('jwt')
+    if (!token) {
+      // Вне Telegram (заглушка DevTester) токена нет и сервера нет — это не сбой,
+      // и говорить про "попробуй ещё раз" здесь было бы ложью.
+      setExchangeError('Обмен работает только в Telegram — здесь сервера нет.')
+      return
+    }
+    if (player === null) {
+      setExchangeError('Профиль не загружен — обмен недоступен.')
+      return
+    }
+    if (exchangePending) return
+    // Все три — страховка от второго пути вызова: кнопка в этих состояниях уже
+    // погашена (см. разметку окна).
+    if (shopBalanceUnknown) return
+    if (trophyGoldRate === null) return
+    if (player.trophies <= 0) return
+    setExchangePending(true)
+    setExchangeError(null)
+    try {
+      const result = await exchangeTrophies(token)
+      // Абсолютные значения из БД — не расчёт по курсу на клиенте.
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, trophies: result.trophies } : prev)
+      // Вкладка остаётся открытой — числа на ней просто пересчитаются от нового
+      // player (трофеи 0, золото выросло), а прибавку назовёт тост ниже.
+      setExchangeBalanceStale(false)
+      showGoldToast(result.goldGained)
+    } catch (e) {
+      console.error('Exchange trophies failed', e)
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: ответа нет, но обмен МОГ примениться.
+        // Дальше нельзя ни обменивать, ни покупать — ровно то же состояние, что
+        // у потерянного ответа покупки, поэтому и флаг тот же.
+        setShopBalanceUnknown(true)
+        setExchangeError('Ответ не пришёл — обмен мог пройти. Обнови баланс.')
+      } else if (e instanceof RequestError && e.serverError === 'Run in progress') {
+        setExchangeError('Идёт забег — обмен после его окончания.')
+      } else if (
+        e instanceof RequestError &&
+        (e.serverError === 'No trophies to exchange' || e.serverError === 'State changed, retry')
+      ) {
+        // Оба кода означают, что сервер не записал НИЧЕГО, а показанный банк
+        // разошёлся с базой. Покупки не блокируем — блокировать нечего.
+        setExchangeBalanceStale(true)
+        setExchangeError('Баланс изменился.')
+      } else if (e instanceof RequestError) {
+        // Текст сервера как есть — придумывать за него объяснение нельзя.
+        setExchangeError(`Не удалось обменять: ${e.serverError ?? `сервер отказал (${e.status})`}`)
+      } else {
+        setExchangeError('Не удалось обменять — неизвестная ошибка.')
+      }
+    } finally {
+      setExchangePending(false)
+    }
+  }
+
+  // Тост "+N золота". Прежний таймер снимается, иначе второй обмен подряд
+  // получил бы тост, погашенный таймером первого.
+  function showGoldToast(amount: number) {
+    if (goldToastTimerRef.current !== null) clearTimeout(goldToastTimerRef.current)
+    setGoldToast(amount)
+    goldToastTimerRef.current = window.setTimeout(() => {
+      setGoldToast(null)
+      goldToastTimerRef.current = null
+    }, 2600)
   }
 
   async function loadInventory() {
@@ -1110,7 +1266,7 @@ export default function App() {
             )
           })()}
           {activeTab === 'shop' && (() => {
-            const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги'] as const
+            const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги', 'Обмен'] as const
             const playerLevel = player?.level ?? 1
             // Витрина = каталог (src/potions.ts). Прежний локальный массив
             // POTIONS удалён: проценты/цены/уровни жили в трёх местах и уже
@@ -1122,30 +1278,54 @@ export default function App() {
             return (
             <div style={{ padding: '0 4px' }}>
 
-              {/* Шапка */}
+              {/* Шапка — только показ валют, ничего нажимаемого: обмен живёт
+                  отдельной вкладкой ниже. player === null здесь недостижим (до
+                  меню не дойти), но нуль вместо неизвестного числа читался бы
+                  как "всё потратили" — самый дорогой симптом из возможных, см.
+                  правило про тихие фолбэки в CLAUDE.md. Поэтому прочерк, а не
+                  прежний `?? 0`. */}
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
                 <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Магазин</div>
                 <div style={{ display:'flex', gap:14 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                     <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                    <span style={{ fontSize:12, color:C.bone }}>{player?.gold ?? 0}</span>
+                    <span style={{ fontSize:12, color:C.bone }}>{player === null ? '—' : player.gold}</span>
                   </div>
                   <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                     <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                    <span style={{ fontSize:12, color:C.bone }}>{player?.trophies ?? 0}</span>
+                    <span style={{ fontSize:12, color:C.bone }}>{player === null ? '—' : player.trophies}</span>
                   </div>
                 </div>
               </div>
 
-              {/* Вкладки разделов */}
-              <div style={{ display:'flex', gap:6, overflowX:'auto', marginBottom:14, padding:'0 8px' }}>
+              {/* Вкладки разделов — пять в один ряд без переполнения на обычном
+                  телефоне.
+                  Места меньше, чем кажется: ширину режут ДВА родителя — контейнер
+                  прокрутки (padding 20, см. корень render'а) и обёртка вкладки
+                  (padding '0 4px'), то есть 48px из ширины экрана. На 360px ряду
+                  остаётся 312px, и при прежних padding '6px 6px'/gap 4 он требовал
+                  336–342px (замерено метриками Segoe UI и Arial на 11px) — отсюда
+                  и бралась серая полоса прокрутки под вкладками.
+                  Решение: базовый padding по X ужат до 2px (ряду нужно 288–294px),
+                  а свободное место раздаётся вкладкам через flex:'1 1 auto' — они
+                  растягиваются на всю ширину, и на 390/412px отступы внутри выходят
+                  заметно больше базовых 2px. Шрифт ОСТАВЛЕН 11px.
+                  min-width у flex-элементов НЕ обнулён намеренно: авто-минимум по
+                  содержимому не даёт сжать вкладку до обрезки текста, поэтому на
+                  очень узких экранах (320px — iPhone SE, там дефицит ~22px) ряд
+                  честно прокручивается, а не калечит подписи.
+                  className='no-scrollbar' (src/App.css) убирает саму полосу на всех
+                  ширинах, прокрутку сохраняя: webkit-псевдоэлемент инлайн-стилем не
+                  задать. */}
+              <div className="no-scrollbar" style={{ display:'flex', gap:4, overflowX:'auto', marginBottom:14, padding:'0 2px' }}>
                 {SHOP_TABS.map(tab => {
                   const active = shopTab === tab
                   return (
                     <div key={tab} onClick={() => setShopTab(tab)}
                       style={{
                         boxSizing:'border-box',
-                        background:C.nicheDeep, borderRadius:6, padding:'6px 11px',
+                        flex:'1 1 auto', textAlign:'center',
+                        background:C.nicheDeep, borderRadius:6, padding:'6px 2px',
                         fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
                         border: `1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
@@ -1193,7 +1373,115 @@ export default function App() {
                     )
                   })}
                 </div>
-              ) : (
+              ) : shopTab === 'Обмен' ? (() => {
+                // Банк. player === null недостижим, но нулём его подменять
+                // нельзя: "банк неизвестен" и "банк пуст" выглядели бы одинаково
+                // (см. правило про тихие фолбэки в CLAUDE.md).
+                const bank = player === null ? null : player.trophies
+                const rateKnown = trophyGoldRate !== null
+                const nothingToExchange = bank !== null && bank <= 0
+                // Баланс под вопросом (обмен мог пройти) или сервер сказал, что
+                // показанный банк устарел — в обоих случаях нужна сверка.
+                const blocked = shopBalanceUnknown || exchangeBalanceStale
+                const exchangeDisabled =
+                  exchangePending || bank === null || !rateKnown || nothingToExchange || blocked
+                // У каждой причины свой текст: игрок должен видеть ИМЕННО свою.
+                const mainLabel =
+                  exchangePending ? 'Обмен…'
+                    : bank === null ? 'Профиль не загружен'
+                      : !rateKnown ? 'Курс обмена неизвестен'
+                        : nothingToExchange ? 'Нечего обменивать'
+                          : `Обменять ${bank} ${trophyWord(bank)}`
+
+                return (
+                <div style={{ padding:'0 8px' }}>
+                  {/* Строка обмена: трофеи → золото, ТОЛЬКО две иконки одного
+                      размера. Чисел здесь нет вовсе: банк называет текст кнопки
+                      ниже, а итоговое золото — сервер после обмена.
+                      Высота блока = высоте иконок: строка сетки ровно 56px (оба
+                      столбца — по одной картинке), alignItems:'center' ставит их на
+                      один уровень и центрует стрелку, паддинг симметричный, а
+                      display:'block' у img убирает зазор под картинкой от базовой
+                      линии строки — иначе внизу оставалась бы лишняя полоска.
+                      Колонки 1fr/auto/1fr держат стрелку точно по центру блока. */}
+                  <div style={{
+                    background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                    borderRadius:10, padding:'16px 12px',
+                    boxShadow:'inset 0 2px 6px rgba(0,0,0,0.55)',
+                    display:'grid', gridTemplateColumns:'1fr auto 1fr', alignItems:'center', gap:8,
+                    marginBottom:14,
+                  }}>
+                    <div style={{ display:'flex', justifyContent:'center' }}>
+                      <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
+                    </div>
+                    <span style={{ fontSize:20, color:C.stoneMid }}>→</span>
+                    <div style={{ display:'flex', justifyContent:'center' }}>
+                      <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
+                    </div>
+                  </div>
+
+                  {/* Курсивом и приглушённо — тем же приёмом, что описание зелья
+                      в его карточке (там же fontStyle italic + C.textDim).
+                      &nbsp; перед тире — чтобы оно не начинало строку при переносе
+                      (сущность, а не символ: в исходнике неразрывный пробел
+                      невидим и его легко потерять при правке). */}
+                  <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
+                    Трофеи тянут к земле и манят смерть. Золото легче&nbsp;— и его у тебя уже не отнимут.
+                  </div>
+
+                  {/* Курс здесь НЕ печатается: его называет сервер, и единственное
+                      место, где его отсутствие видно игроку, — текст кнопки ниже
+                      ("Курс обмена неизвестен"). Само состояние trophyGoldRate
+                      осталось и по-прежнему решает, доступна ли кнопка. */}
+                  <div style={{ fontSize:11, color:C.textDim, marginBottom:14 }}>
+                    Меняются все трофеи разом.
+                  </div>
+
+                  {/* Основная кнопка во всю ширину. minHeight 44 — палец (правило
+                      скилла), заливка и свечение как у "Купить" в карточке зелья:
+                      одно основное действие на экран. */}
+                  <div
+                    onClick={() => { if (!exchangeDisabled) handleExchangeTrophies() }}
+                    style={{
+                      boxSizing:'border-box',
+                      minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                      borderRadius:9, padding:'11px 12px', textAlign:'center',
+                      color:C.glowCore, fontSize:15,
+                      cursor: exchangeDisabled ? 'default' : 'pointer',
+                      opacity: exchangeDisabled ? 0.5 : 1,
+                      boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+                    }}>
+                    {mainLabel}
+                  </div>
+
+                  {exchangeError !== null && (
+                    <div style={{ marginTop:10, fontSize:11, color:C.danger, textAlign:'center' }}>
+                      {exchangeError}
+                    </div>
+                  )}
+
+                  {/* Та же кнопка и тот же обработчик, что в карточке зелья: один
+                      GET /character/profile сверяет и золото со складом, и банк
+                      трофеев с курсом. */}
+                  {blocked && (
+                    <div
+                      onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
+                      style={{
+                        marginTop:8, background:C.nicheDeep,
+                        border:`1px solid ${C.stoneDark}`, borderRadius:9,
+                        padding:'9px 11px', textAlign:'center',
+                        color:C.textMain, fontSize:13,
+                        cursor: shopBalancePending ? 'default' : 'pointer',
+                        opacity: shopBalancePending ? 0.5 : 1,
+                      }}>
+                      {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
+                    </div>
+                  )}
+                </div>
+                )
+              })() : (
                 <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>скоро</div>
               )}
 
@@ -1362,6 +1650,7 @@ export default function App() {
                   </div>
                 </div>
               )}
+
 
             </div>
             )
@@ -2289,6 +2578,31 @@ export default function App() {
           любого экрана, включая уже открытый Explore (1000) и его экран
           итогов. */}
       {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => setPastRunNotice(null)} />}
+
+      {/* Тост об удачном обмене. Показывает goldGained ИЗ ОТВЕТА СЕРВЕРА — окно
+          обмена к этому моменту уже закрыто (см. handleExchangeTrophies), и без
+          тоста игрок увидел бы только изменившиеся числа в шапке, без объяснения.
+          Над навигацией (999) и над оверлеем карточек (1000), но НИЖЕ окна о
+          прошлом забеге (2000): то говорит о штрафе и перекрывать его нечем.
+          pointerEvents:'none' — тост ничего не перехватывает, он не нажимается и
+          гаснет сам (таймер в showGoldToast). */}
+      {goldToast !== null && (
+        <div style={{
+          position:'fixed', left:0, right:0, bottom:96,
+          display:'flex', justifyContent:'center',
+          zIndex:1100, pointerEvents:'none',
+        }}>
+          <div style={{
+            display:'flex', alignItems:'center', gap:7,
+            background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+            borderRadius:10, padding:'9px 14px',
+            boxShadow:'0 4px 14px rgba(0,0,0,0.6), inset 0 0 12px rgba(209,151,68,0.22)',
+          }}>
+            <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={18} height={18} style={{ display:'block', objectFit:'contain' }} />
+            <span style={{ fontFamily:FONT_DISPLAY, fontSize:15, color:C.glowCore }}>+{goldToast} золота</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
