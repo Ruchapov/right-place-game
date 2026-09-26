@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy, calculateLevel, applyStatGrowth, refundEnergy } from '../game.js'
+import { getCurrentEnergy, calculateLevel, applyStatGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
   type ActiveExploreRun,
   judgeInterruptedRun,
@@ -332,6 +332,11 @@ export async function authRoutes(server: FastifyInstance) {
         equippedSkills: char.equippedSkills,
         potions: potionStockOf(char),
       },
+      // Курс обмена трофеев на золото — та же константа и тем же полем, что
+      // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,
+      // чтобы меню могло показать курс сразу, не дожидаясь отдельного запроса
+      // и не заводя копию числа на клиенте.
+      trophyGoldRate: TROPHY_GOLD_RATE,
       ...(interruptedRun ? { interruptedRun } : {}),
       // Взаимоисключающе с interruptedRun выше — выставляется только во
       // встречной ветке if/else, оба сразу невозможны.

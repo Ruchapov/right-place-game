@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, applyStatGrowth, calculateLevel } from '../game.js'
+import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -712,6 +712,99 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({ gold: updated.gold, potions: potionStockOf(updated) })
   })
 
+  // Обмен трофеев на золото — операция МЕЖДУ забегами (из меню), не путать с
+  // Контрабандистом: тот меняет трофеи на трофеи ВНУТРИ забега (SMUGGLER_MULT
+  // в finish-explore выше), здесь же рискованная валюта переводится в
+  // стабильную по курсу TROPHY_GOLD_RATE (game.ts).
+  //
+  // Обмен только ПОЛНЫЙ: весь банк разом. Частичного нет намеренно — сумма
+  // тогда приходила бы от клиента, и её пришлось бы проверять ещё и на
+  // отрицательные/дробные/превышающие банк значения; полный обмен не берёт из
+  // тела запроса ничего вообще, поэтому подделывать в нём нечего.
+  //
+  // Тело — пустой объект {}: ни одно поле не читается.
+  server.post('/character/exchange-trophies', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Открытый забег — отказ. Банк трофеев в этот момент ещё не решён: финиш
+    // его либо пополнит, либо сожжёт целиком (смерть), и /auth/login делает то
+    // же самое с брошенным забегом. Обменять банк посреди забега значило бы
+    // вынести трофеи из-под риска, ради которого они и существуют (см.
+    // CLAUDE.md, Economy: трофеи — рискованная валюта).
+    if (character.currentRun !== null) {
+      return reply.status(400).send({ error: 'Run in progress' })
+    }
+
+    const trophies = character.trophies
+    // Нечего менять — честный отказ, а не «успешный» обмен нуля на ноль:
+    // клиент обязан отличать «обменял» от «обменивать было нечего».
+    if (trophies <= 0) {
+      return reply.status(400).send({ error: 'No trophies to exchange' })
+    }
+
+    // floor, а не round: округление в пользу игрока здесь дало бы золото из
+    // воздуха. При TROPHY_GOLD_RATE >= 1 дробной части не возникает вовсе —
+    // см. предупреждение у самой константы (game.ts) о курсе ниже 1.
+    const goldGained = Math.floor(trophies * TROPHY_GOLD_RATE)
+
+    // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/finish-explore
+    // выше: применяется, только если в базе всё ещё РОВНО то состояние, что
+    // прочитано в начале обработчика.
+    //   trophies в фильтре — против параллельного финиша забега и /auth/login:
+    //     оба пишут трофеи (начисляют или обнуляют), и обмен по устаревшему
+    //     снимку выдал бы золото за банк, которого уже нет.
+    //   пустой currentRun в фильтре — против старта забега, успевшего
+    //     открыться между чтением и записью: проверка выше к этому моменту уже
+    //     устарела бы.
+    // Совпало 0 строк — не записано НИЧЕГО (одна запись на весь обработчик,
+    // до неё в БД не ушло ни байта), поэтому повтор клиентом безопасен.
+    const written = await prisma.character.updateMany({
+      where: { userId, trophies, currentRun: { equals: Prisma.DbNull } },
+      data: {
+        // increment, а не вычисленное `character.gold + goldGained`: золото
+        // могло измениться между чтением и записью (/character/buy-potion его
+        // списывает и в этот фильтр не попадает — currentRun он не читает и не
+        // пишет, см. CLAUDE.md, «Покупка зелья в окне финиша»). Вычисленное
+        // значение затёрло бы покупку старым снимком, increment ложится поверх
+        // актуального числа.
+        gold: { increment: goldGained },
+        trophies: 0,
+      },
+    })
+    if (written.count === 0) {
+      return reply.status(409).send({ error: 'State changed, retry' })
+    }
+    if (written.count !== 1) {
+      // Недостижимо, пока Character.userId объявлен @unique (schema.prisma).
+      // Тот же громкий лог, что у finish-explore: откатить уже нечего, но
+      // проглотить молча запись, задевшую чужих персонажей, нельзя.
+      request.log.error(
+        { userId, count: written.count },
+        'exchange-trophies: conditional write matched an unexpected number of characters',
+      )
+    }
+
+    // Перечитываем — не вычисляем из старого снимка: increment выше посчитала
+    // БАЗА, и единственный честный способ назвать итоговое золото — спросить
+    // её. goldGained остаётся тем числом, на которое написан increment: именно
+    // его игрок увидит прибавкой.
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      // Персонаж существовал строкой выше (updateMany нашёл его) — исчезнуть
+      // он мог только удалением в ту же секунду. Подставлять сюда
+      // правдоподобные числа нельзя: обмен УЖЕ применён, и соврать о балансе
+      // хуже, чем громко отказать.
+      request.log.error({ userId }, 'exchange-trophies: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Exchange applied but balance could not be read' })
+    }
+
+    return reply.send({ gold: updated.gold, trophies: updated.trophies, goldGained })
+  })
+
   // Профиль для сверки баланса — ТОЛЬКО чтение. Нужен магазину, чтобы обновить
   // золото и склад, не устраивая ради этого полный логин: /auth/login закрывает
   // открытый currentRun (как смерть, если забег был подтверждён), и делать это
@@ -727,9 +820,21 @@ export async function runRoutes(server: FastifyInstance) {
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    // Та же форма и тот же помощник, что у buy-potion выше: клиент разбирает
-    // оба ответа одним кодом.
-    return reply.send({ gold: character.gold, potions: potionStockOf(character) })
+    // gold/potions — той же формы и тем же помощником, что у buy-potion выше:
+    // клиент разбирает оба ответа одним кодом. Сверх них профиль несёт ещё два
+    // поля, которых у покупки нет:
+    //   trophies — банк трофеев. Нужен обмену (POST /character/exchange-trophies
+    //     выше): без него единственным источником трофеев остаётся ответ логина,
+    //     а тот закрывает открытый забег и кнопкой «обновить» вызываться не
+    //     имеет права.
+    //   trophyGoldRate — курс обмена. Отдаётся числом ИМЕННО ЗДЕСЬ, чтобы на
+    //     клиенте не заводить копию константы (см. TROPHY_GOLD_RATE в game.ts).
+    return reply.send({
+      gold: character.gold,
+      trophies: character.trophies,
+      potions: potionStockOf(character),
+      trophyGoldRate: TROPHY_GOLD_RATE,
+    })
   })
 
   server.get('/character/inventory', async (request, reply) => {
