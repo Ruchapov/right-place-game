@@ -1968,6 +1968,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         }, LOAD_WATCHDOG_MS)
       }
 
+      // Сброс состояния оберега — ДО запроса старта, потому что ответ старта его
+      // и включает (см. consumablesTaken ниже). Стоял в общем блоке сбросов в
+      // конце setup() и гасил оберег через полтысячи строк после выдачи: оберег
+      // не срабатывал никогда (баг 28.09.2026). Нужен для ПОВТОРНОГО запуска
+      // setup() — debug-переключатель карт и StrictMode-дубль монтирования.
+      charmReadyRef.current = false
+      charmUsedRef.current = false
+      charmIframeRef.current = 0
+      charmReviveFracRef.current = 0
+      setCharmReady(false)
+
       let resolvedMapFile = mapFile
       let startExploreResult: StartExploreResult | null = null
       if (mapFile === '') {
@@ -2584,11 +2595,10 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       finishSendCountRef.current = 0 // сброс на случай повторного запуска setup()
       // Сброс на случай повторного запуска setup() (React 19 Strict Mode
       // монтирует эффект дважды).
-      charmReadyRef.current = false
-      charmUsedRef.current = false
-      charmIframeRef.current = 0
-      charmReviveFracRef.current = 0
-      setCharmReady(false)
+      // ⚠️ Оберега здесь НЕТ намеренно: его состояние включается ВЫШЕ, из ответа
+      // /run/start-explore, а этот блок исполняется ПОЗЖЕ в том же setup() — и
+      // гасил бы только что выданный оберег. Его сброс стоит ДО запроса старта,
+      // см. «Сброс состояния оберега» там.
       smugglerQuoteStateRef.current = 'idle'
       smugglerQuoteRef.current = null
       smugglerDealPendingRef.current = false
