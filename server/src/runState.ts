@@ -19,7 +19,7 @@
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
 import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
 import type { RunEvent } from './runEvents.js'
-import type { ConsumableId } from './consumables.js'
+import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId } from './consumables.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -50,7 +50,7 @@ import type { ConsumableId } from './consumables.js'
 // Хранится числом, а не берётся из RUN_COST на момент закрытия: константа
 // меняется (сейчас 3, перед релизом 10), и забег, начатый до её смены, обязан
 // вернуть списанное, а не нынешнее.
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[] }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -145,6 +145,56 @@ export function readRunSpentEnergy(run: ActiveExploreRun): number | null {
   const raw: unknown = run.spentEnergy
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return null
   return raw
+}
+
+// --- Расходники, взятые в забег (POST /run/start-explore) ---
+//
+// Пишется ОДИН раз, на старте, вместе со списанием склада, и потом только
+// читается. Список id, а не количеств: повторы в гнёздах запрещены (одно гнездо
+// — один предмет), поэтому каждый взятый расходник ровно один.
+//
+// Нужен затем, чтобы эффект забега считался от того, что РЕАЛЬНО списано, а не
+// от того, что клиент прислал в очередном запросе: множитель урона живёт весь
+// забег, и пересчитывать его по телу запроса значило бы верить клиенту в том,
+// что он уже «оплатил» камнем.
+
+// Результат чтения списка — ТРИ различимых состояния, как у сделки
+// Контрабандиста (readSmugglerDeal ниже): «поля нет» и «поле испорчено» обязаны
+// различаться. Свалить их в пустой массив значило бы тихо отменить уже списанный
+// расходник — игрок заплатил, а эффекта нет.
+export type ConsumablesUsedRead =
+  | { kind: 'none' }
+  | { kind: 'used'; ids: ConsumableId[] }
+  | { kind: 'malformed' }
+
+// СТРОГИЙ разбор: любое отклонение — malformed. Требования те же, что проверял
+// старт: только id каталога с флагом runSlot, без повторов, не больше
+// RUN_CONSUMABLE_SLOTS. Проверяем повторно при чтении, а не доверяем своей же
+// записи: колонка Json схемой не проверяется, и испорченный извне список не
+// должен молча дать эффект, которого игрок не покупал.
+export function parseConsumablesUsed(raw: unknown): ConsumableId[] | null {
+  if (!Array.isArray(raw)) return null
+  if (raw.length > RUN_CONSUMABLE_SLOTS) return null
+  const out: ConsumableId[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') return null
+    const spec = runSlotConsumableById(item)
+    if (spec === null) return null
+    if (out.includes(spec.id)) return null
+    out.push(spec.id)
+  }
+  return out
+}
+
+// Взятые расходники из currentRun. Поля нет — не брали ничего (честное
+// состояние: до появления фичи его не было ни у одного забега, и брать тогда
+// было нечего).
+export function readConsumablesUsed(run: ActiveExploreRun): ConsumablesUsedRead {
+  const raw: unknown = run.consumablesUsed
+  if (raw === undefined) return { kind: 'none' }
+  const parsed = parseConsumablesUsed(raw)
+  if (parsed === null) return { kind: 'malformed' }
+  return { kind: 'used', ids: parsed }
 }
 
 // --- Сделка с Контрабандистом (POST /run/smuggler-deal) ---

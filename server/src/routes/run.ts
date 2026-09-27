@@ -4,7 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
-import { MAX_CONSUMABLES_PER_PURCHASE, consumableById, parseConsumableCount, type ConsumableId } from '../consumables.js'
+import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, runSlotConsumableById, parseConsumableCount, type Consumable, type ConsumableId } from '../consumables.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -27,6 +27,32 @@ import {
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
+
+// Фильтр «запаса каждого взятого хватает» и списание — готовыми куска́ми для
+// условной записи старта забега. Оба собираются ОДНИМ проходом по списку, чтобы
+// фильтр и декремент не могли разойтись по составу.
+//
+// switch по id, как и в consumableStockIncrement ниже, и по той же причине:
+// добавление нового расходника в ConsumableId развалит сборку, пока сюда не
+// допишут ветку, — молча забыть колонку невозможно.
+function consumableRunSpend(ids: ConsumableId[]): {
+  where: Prisma.CharacterWhereInput
+  data: Prisma.CharacterUpdateManyMutationInput
+} {
+  const where: Prisma.CharacterWhereInput = {}
+  const data: Prisma.CharacterUpdateManyMutationInput = {}
+  for (const id of ids) {
+    switch (id) {
+      case 'whetstone':
+        // gte: 1, а не gte: count — повторы в гнёздах запрещены, каждый взятый
+        // расходник ровно один (см. проверку дубликатов в старте).
+        where.whetstones = { gte: 1 }
+        data.whetstones = { decrement: 1 }
+        break
+    }
+  }
+  return { where, data }
+}
 
 // Прибавка к складу ОДНОГО расходника, готовым куском data для update.
 //
@@ -100,7 +126,12 @@ type SmugglerBody = { closedEvents?: number[] }
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
 // (App.tsx) still sends an explicit one, still validated below.
-type StartExploreBody = { mapFile?: string }
+type StartExploreBody = {
+  mapFile?: string
+  // id расходников из гнёзд подготовки. Поля НЕТ — забег без расходников: так
+  // шлёт клиент до появления гнёзд, и отказывать ему нельзя.
+  consumables?: string[]
+}
 // Body shape for POST /run/finish-explore. closedEvents — indices into the
 // ActiveExploreRun.events array (see FinishExplore route below for how
 // they're validated).
@@ -210,6 +241,47 @@ export async function runRoutes(server: FastifyInstance) {
       mapFile = requestedMapFile
     }
 
+    // --- Расходники из гнёзд подготовки ---
+    //
+    // Поля нет — забег без расходников (так шлёт клиент до появления гнёзд).
+    // Есть, но не массив — ОТКАЗ, а не «считаем, что не брали»: тихо
+    // проигнорировать значило бы начать забег без камня, который игрок
+    // положил, и списать энергию за это.
+    const rawConsumables = request.body?.consumables
+    const takenSpecs: Consumable[] = []
+    if (rawConsumables !== undefined) {
+      if (!Array.isArray(rawConsumables)) {
+        return reply.status(400).send({ error: 'consumables must be an array' })
+      }
+      if (rawConsumables.length > RUN_CONSUMABLE_SLOTS) {
+        return reply.status(400).send({ error: 'Too many consumables', slots: RUN_CONSUMABLE_SLOTS })
+      }
+      const stock = consumableStockOf(character)
+      for (const raw of rawConsumables) {
+        // Только id из каталога И только с флагом runSlot. «Нет такого id» и
+        // «есть, но в гнездо не идёт» дают один отказ намеренно (см.
+        // runSlotConsumableById).
+        const spec = typeof raw === 'string' ? runSlotConsumableById(raw) : null
+        if (spec === null) {
+          return reply.status(400).send({ error: 'Unknown consumable' })
+        }
+        // Повторы запрещены: одно гнездо — один предмет, и два одинаковых id
+        // означали бы либо два гнезда с одним камнем, либо попытку списать
+        // один раз, а получить эффект дважды.
+        if (takenSpecs.some((s) => s.id === spec.id)) {
+          return reply.status(400).send({ error: 'Duplicate consumable' })
+        }
+        // Запаса должно хватать. Проверка здесь — ради понятного текста ошибки;
+        // ГАРАНТИЮ даёт фильтр условной записи ниже (между этой проверкой и
+        // записью склад может измениться).
+        if ((stock[spec.id] ?? 0) < 1) {
+          return reply.status(400).send({ error: 'Consumable not in stock', id: spec.id })
+        }
+        takenSpecs.push(spec)
+      }
+    }
+    const takenIds = takenSpecs.map((s) => s.id)
+
     const currentEnergy = getCurrentEnergy(character.energy, character.lastEnergyUpdate)
     if (currentEnergy < RUN_COST) {
       return reply.status(400).send({ error: 'Not enough energy', energy: currentEnergy })
@@ -246,16 +318,47 @@ export async function runRoutes(server: FastifyInstance) {
     // привязка к фактической разнице переживёт и смену константы, и появление
     // любых скидок: вернуть при закрытии обязаны ровно то, что сняли.
     const spentEnergy = currentEnergy - newEnergy
-    const activeRun: ActiveExploreRun = { mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips, confirmed: false, spentEnergy }
+    // consumablesUsed кладём ТОЛЬКО когда что-то взяли: у забега без расходников
+    // поля нет вовсе, и readConsumablesUsed читает это как честное «не брали»
+    // (тот же договор, что у potionsDrunk и smugglerDeal).
+    const activeRun: ActiveExploreRun = {
+      mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
+      confirmed: false, spentEnergy,
+      ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
+    }
 
-    await prisma.character.update({
-      where: { userId },
+    // Условная запись. Раньше здесь был обычный update — его хватало, пока старт
+    // только списывал энергию. Теперь он списывает ещё и склад расходников, и
+    // проверка «хватает ли» обязана стоять В ФИЛЬТРЕ, а не только выше: между
+    // чтением персонажа и этой строкой камень мог уйти на другой забег или
+    // прийти покупкой.
+    //   currentRun пустой — та же защита, что проверка выше, но неустранимая
+    //     гонкой: два одновременных старта не откроют два забега и не спишут
+    //     камень дважды.
+    //   запас каждого взятого >= 1 — consumableRunSpend собирает фильтр и
+    //     декремент одним проходом, поэтому разойтись по составу они не могут.
+    // Склад, энергия и currentRun пишутся ОДНОЙ записью: забег либо начат с
+    // оплаченным камнем, либо не начат вовсе.
+    const spend = consumableRunSpend(takenIds)
+    const written = await prisma.character.updateMany({
+      where: {
+        userId,
+        currentRun: { equals: Prisma.DbNull },
+        ...spend.where,
+      },
       data: {
         energy: newEnergy,
         lastEnergyUpdate: new Date(),
-        currentRun: activeRun,
+        currentRun: activeRun as unknown as Prisma.InputJsonValue,
+        ...spend.data,
       },
     })
+    if (written.count === 0) {
+      // Не записано НИЧЕГО: ни энергия, ни склад, ни забег. Поэтому повтор
+      // клиентом безопасен — в отличие от прежнего update, который в такой
+      // гонке молча перезаписал бы чужой забег.
+      return reply.status(409).send({ error: 'State changed, retry' })
+    }
 
     // Rewards (trophyReward/isMimic) stay server-side — the client learns
     // them per-event, later, through a separate mechanism. Only kind/x/y
@@ -267,6 +370,34 @@ export async function runRoutes(server: FastifyInstance) {
       ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
     }))
 
+    // Множитель урона обычной атаки на ВЕСЬ забег:
+    //   attackMult = 1 + сумма attackBonus взятых расходников
+    // Ничего не взяли — ровно 1 (не 1.0-с-погрешностью: пустая сумма даёт целое).
+    // Сумма, а не «бонус камня»: со вторым предметом, дающим урон, формула
+    // останется той же, и править её не придётся.
+    // Считает СЕРВЕР и по СПИСАННОМУ списку, а не по телу запроса: клиент не
+    // должен иметь возможности включить эффект, не потратив предмет.
+    const attackMult = takenSpecs.reduce((mult, spec) => mult + spec.attackBonus, 1)
+
+    // Склад расходников ПОСЛЕ списания — ПЕРЕЧИТАННЫЙ из базы, а не посчитанный
+    // как «снимок минус взятое».
+    // Снимок для этого не годится: фильтр гарантировал только «запаса хватало»,
+    // но не «запас был равен снимку». Между чтением персонажа и записью склад мог
+    // вырасти покупкой с другого устройства — тогда снимок 1 − 1 = 0, а в базе
+    // 2, и клиент показал бы ноль при непустом складе. Decrement считала БАЗА,
+    // и единственный честный способ назвать итог — спросить её.
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      // Персонаж существовал строкой выше (updateMany нашёл его) — исчезнуть мог
+      // только удалением в ту же секунду. Подставлять правдоподобные числа
+      // нельзя: забег УЖЕ начат. Отказ здесь безопасен — забег остался
+      // неподтверждённым (confirmed: false), и вход закроет его БЕЗ штрафа с
+      // возвратом энергии (см. judgeInterruptedRun).
+      request.log.error({ userId }, 'start-explore: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Run started but stock could not be read' })
+    }
+    const consumablesAfter = consumableStockOf(updated)
+
     return reply.send({
       energy: newEnergy,
       mapFile,
@@ -276,6 +407,8 @@ export async function runRoutes(server: FastifyInstance) {
       potions: potionStock,
       sips: potionSips,
       armor: totalArmor,
+      attackMult,
+      consumables: consumablesAfter,
     })
   })
 
