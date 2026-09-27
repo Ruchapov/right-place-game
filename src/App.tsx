@@ -6,7 +6,11 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, consumableEffectLine, parseConsumableCount, type ConsumableId } from './consumables'
+import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, consumableSkillBook, parseConsumableCount, type ConsumableId, type ConsumableShopTab } from './consumables'
+// Строку механики берём ТОЛЬКО отсюда: у камня и оберега числа в общем каталоге,
+// у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
+// consumableMechanicLine).
+import { consumableMechanicLine } from './skillBooks'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
@@ -1426,6 +1430,13 @@ export default function App() {
           {activeTab === 'shop' && (() => {
             const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги', 'Обмен'] as const
             const playerLevel = player?.level ?? 1
+            // Вкладки, товары которых лежат в каталоге расходников, — их рисует
+            // ОДНА И ТА ЖЕ сетка ниже. Значение сужено до ConsumableShopTab
+            // (каталог), поэтому фильтр по c.shopTab типизирован, а не сравнение
+            // строк наугад: появится третья такая вкладка — её придётся добавить
+            // и в каталог, и здесь, молча забыть не выйдет.
+            const gridTab: ConsumableShopTab | null =
+              shopTab === 'Расходники' || shopTab === 'Книги' ? shopTab : null
             // Витрина «Расходники» = ДВА каталога, сведённые в один список
             // ячеек: сначала зелья (src/potions.ts), затем расходники
             // (src/consumables.ts). Локальных массивов товаров в компоненте нет
@@ -1441,8 +1452,11 @@ export default function App() {
               levelRequired: number
               select: () => void
             }
+            // Зелья — только в «Расходниках»: в каталоге расходников их нет, и
+            // вкладку им назначить негде. Камень с оберегом и книги разводит поле
+            // shopTab самого каталога.
             const shopCells: ShopCell[] = [
-              ...POTION_TIERS.map((p) => ({
+              ...(gridTab === 'Расходники' ? POTION_TIERS : []).map((p) => ({
                 key: `potion-${p.tier}`,
                 icon: p.icon,
                 alt: p.nameRu,
@@ -1450,7 +1464,7 @@ export default function App() {
                 levelRequired: p.levelRequired,
                 select: () => setShopSelected({ kind: 'potion' as const, tier: p.tier }),
               })),
-              ...CONSUMABLES.map((c) => ({
+              ...CONSUMABLES.filter((c) => c.shopTab === gridTab).map((c) => ({
                 key: `consumable-${c.id}`,
                 icon: c.icon,
                 alt: c.nameRu,
@@ -1508,9 +1522,10 @@ export default function App() {
                 desc: c.desc,
                 price: c.price,
                 levelRequired: c.levelRequired,
-                // Строка механики собирается ИЗ attackBonus (см.
-                // consumableEffectLine) — число не дублируется текстом.
-                mechanic: { line: consumableEffectLine(c) },
+                // Строка механики собирается ИЗ ДАННЫХ: у камня и оберега из
+                // эффекта каталога, у книги — из боевых констант скилла. Числа
+                // текстом здесь не дублируются (см. consumableMechanicLine).
+                mechanic: { line: consumableMechanicLine(c) },
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
@@ -1581,8 +1596,10 @@ export default function App() {
                 })}
               </div>
 
-              {/* Витрина */}
-              {shopTab === 'Расходники' ? (
+              {/* Витрина. Одна сетка на «Расходники» и «Книги» — различаются
+                  только товары (gridTab выше), а ячейка, ценник и замок по
+                  уровню у них общие. */}
+              {gridTab !== null ? (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
                   {shopCells.map(cell => {
                     const unlocked = playerLevel >= cell.levelRequired
@@ -2020,6 +2037,7 @@ export default function App() {
                 // ячеек нет вовсе, причину скажет note: пустая сетка и
                 // "расходников нет" не должны выглядеть одинаково.
                 cells: (player?.consumables == null ? [] : CONSUMABLES)
+                  .filter((c) => consumableSkillBook(c) === null)
                   .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
                   .map((c) => ({
                     key: `consumable-${c.id}`,
@@ -2040,11 +2058,52 @@ export default function App() {
                     ? 'Сервер не назвал запас расходников.'
                     : null,
               },
+              {
+                key: 'books',
+                // Книги ячейку сумки НЕ тратят: по docs/items.md («Правило
+                // вместимости») дроп улучшения скиллов её не тратит, в отличие
+                // от карт и камня. Признак берётся из ЭФФЕКТА каталога
+                // (consumableSkillBook), а не из вкладки магазина: вкладка — про
+                // витрину, а это правило сумки.
+                takesCell: false,
+                cells: (player?.consumables == null ? [] : CONSUMABLES)
+                  .filter((c) => consumableSkillBook(c) !== null)
+                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
+                  .map((c) => ({
+                    key: `consumable-${c.id}`,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
+                    alt: c.nameRu,
+                    qty: player?.consumables?.[c.id] ?? 0,
+                    equipped: false,
+                    // Группа 2 — после зелий (0) и расходников (1): книга в забег
+                    // не едет вовсе, ей место последней.
+                    group: 2,
+                    rank: 0,
+                    open: { kind: 'consumable' as const, consumableId: c.id },
+                  })),
+                // Тот же текст, что у расходников выше, и это НЕ копипаста по
+                // невнимательности: причина одна и та же (оба источника читают
+                // player.consumables), а инвариант «note !== null ⇔ данные
+                // источника неизвестны» обязан держаться у КАЖДОГО источника
+                // отдельно — на него смотрит счётчик сумки. От повтора на экране
+                // спасает Set ниже.
+                note: player === null
+                  ? 'Профиль не загружен — запас расходников неизвестен.'
+                  : player.consumables === null
+                    ? 'Сервер не назвал запас расходников.'
+                    : null,
+              },
             ]
             const consumableCells: InvCell[] = consumableSources.flatMap((src) => src.cells)
-            const consumableNotes: string[] = consumableSources
-              .map((src) => src.note)
-              .filter((n): n is string => n !== null)
+            // Set — потому что источники «расходники» и «книги» читают ОДНО поле
+            // player.consumables и при неизвестном складе называют одну и ту же
+            // причину. Два одинаковых текста подряд читались бы как две разные
+            // проблемы.
+            const consumableNotes: string[] = [...new Set(
+              consumableSources
+                .map((src) => src.note)
+                .filter((n): n is string => n !== null),
+            )]
 
             // Заполненность сумки для счётчика в шапке — свойство СУМКИ, а не
             // того, что сейчас на экране: не зависит ни от подвкладки, ни от
@@ -2101,9 +2160,10 @@ export default function App() {
                   kind: 'potion' as const,
                   name: spec.nameRu,
                   desc: spec.desc as string | null,
-                  // Строка механики — из каталога (число выводится из
-                  // attackBonus), не написана здесь повторно.
-                  stat: consumableEffectLine(spec),
+                  // Строка механики — ровно та же, что в витрине магазина, и из
+                  // той же функции: у камня и оберега из эффекта каталога, у книги
+                  // из боевых констант скилла.
+                  stat: consumableMechanicLine(spec),
                   qty: player?.consumables?.[spec.id] ?? 0,
                   iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
                   equipped: false,
@@ -2773,9 +2833,11 @@ export default function App() {
                       />
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:12, color:C.textMain }}>{c.nameRu}</div>
-                        {/* Эффект — из каталога (число выводится из attackBonus),
-                            не написан здесь повторно. */}
-                        <div style={{ fontSize:10, color:C.textDim }}>{consumableEffectLine(c)}</div>
+                        {/* Эффект — из данных, не написан здесь повторно. Та же
+                            функция, что в магазине и в сумке; книг в этом списке
+                            не бывает (он фильтрован по runSlot), но развилка
+                            всё равно одна на весь клиент. */}
+                        <div style={{ fontSize:10, color:C.textDim }}>{consumableMechanicLine(c)}</div>
                       </div>
                       <div style={{ fontSize:12, color:C.bone, flexShrink:0 }}>×{stock[c.id] ?? 0}</div>
                     </div>
