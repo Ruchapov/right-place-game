@@ -297,6 +297,14 @@ export type StartExploreResult = {
   attackMult?: number
   /** Склад расходников ПОСЛЕ списания взятых в забег. Разбирать через readConsumables. */
   consumables?: Record<string, number>
+  /**
+   * Какие расходники сервер РЕАЛЬНО принял в этот забег. Забег знает по ним, что
+   * у игрока на руках (например оберег), а не полагается на свой список из
+   * гнёзд: принять сервер мог не всё, и расходиться этим двум спискам нельзя.
+   * Опциональное — старый сервер поля не присылает; вызывающий обязан считать
+   * это «ничего не принято», а не догадываться.
+   */
+  consumablesTaken?: string[]
 }
 
 // mapFile необязателен — не передан → сервер сам выбирает карту (см.
@@ -381,6 +389,15 @@ export type RunResultSummary = {
   // включает этот бонус (calculateLevel на сервере складывает их), это поле
   // отдельно на будущее/аналитику, само по себе не источник истины.
   bonusLevels: number
+  /**
+   * Склад расходников по id каталога ПОСЛЕ забега — чтобы сработавший оберег
+   * сразу исчез из инвентаря и гнезда, а не ждал следующего логина.
+   * ⚠️ КОПИЯ серверного типа (`server/src/routes/run.ts`) — менять парами,
+   * сверяющего скрипта у этой пары нет (см. CLAUDE.md, таблица копий).
+   * Опциональное: старый сервер поля не присылает, и подставлять вместо него
+   * выдуманный склад нельзя — вызывающий обязан просто не обновлять его.
+   */
+  consumables?: Record<string, number>
 }
 
 // Response shape of POST /run/finish-explore (server/src/routes/run.ts).
@@ -478,8 +495,11 @@ export async function finishRunExplore(
   // индекс = тир-1. Сервер клэмпит по каждому тиру отдельно (по выданному на
   // забег) и по сумме глотков, затем вычитает из колонок potionT1..T5.
   potionsDrunkByTier?: number[],
+  // Сработал ли оберег от смерти. Сервер верит так же, как `died` (бой целиком
+  // на клиенте), но проверяет, что оберег вообще был взят в забег — иначе 400.
+  charmUsed?: boolean,
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier })
+  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0

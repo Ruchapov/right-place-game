@@ -8,9 +8,15 @@ interface HudPlateProps {
   maxHp: number
   eventClosed: boolean[]
   eventKinds: EventKind[]
+  /**
+   * Оберег от смерти взят в забег и ЕЩЁ НЕ сработал — рисуем маленькую иконку у
+   * полосы здоровья. Сработал (или не брали) — иконки нет: это единственный
+   * признак, по которому игрок знает, есть ли у него запасная жизнь.
+   */
+  charmReady: boolean
 }
 
-export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds }: HudPlateProps) {
+export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady }: HudPlateProps) {
   return (
     <>
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
@@ -64,6 +70,30 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
         >
           {maxHp}/{maxHp}
         </span>
+
+        {/* Иконка оберега — у ПРАВОГО края полосы здоровья, снаружи ниши, чтобы
+            не перекрывать ни полосу, ни число HP. Появляется только пока оберег
+            цел; после срабатывания пропадает, и это заметное событие само по
+            себе. Размер в долях плиты, как у гнёзд событий ниже — плита
+            масштабируется, и пиксельный размер разъехался бы. */}
+        {charmReady && (
+          <img
+            src={`${import.meta.env.BASE_URL}assets/icons/charm_death.png`}
+            alt="Оберег от смерти"
+            draggable={false}
+            style={{
+              position: 'absolute',
+              left: `${(C.HP_WINDOW_X + C.HP_WINDOW_W) * 100}%`,
+              top: `${(C.HP_WINDOW_Y + C.HP_WINDOW_H / 2) * 100}%`,
+              width: `${C.SOCK_SIZE * 100}%`,
+              aspectRatio: '1',
+              transform: 'translate(4%, -50%)',
+              objectFit: 'contain',
+              display: 'block',
+              filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.9))',
+            }}
+          />
+        )}
 
         {/* 3 гнезда под иконки событий — центр в (SOCK_X[i], SOCK_Y) долях
             плиты, диаметр SOCK_SIZE*ширина_плиты. aspect-ratio:1 держит круг

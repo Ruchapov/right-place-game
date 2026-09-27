@@ -306,21 +306,30 @@ const RUN_COST = 3 // DEV: держать в синхроне с серверо�
  */
 const TEMP_DEV_TROPHY_GOLD_RATE = 1
 /**
- * TEMP_DEV_WHETSTONES — ТЕСТОВЫЙ запас точильных камней для офлайн-заглушки
- * DevTester (вне Telegram, см. её в эффекте входа ниже).
+ * TEMP_DEV_CONSUMABLE_STOCK — ТЕСТОВЫЙ запас КАЖДОГО расходника из каталога для
+ * офлайн-заглушки DevTester (вне Telegram, см. её в эффекте входа ниже).
  *
- * Это НЕ настоящий склад: реальный лежит в колонке Character.whetstones и
- * приходит клиенту полем character.consumables в ответе логина. Здесь число
- * нужно ровно затем, чтобы витрину, карточку и ячейку инвентаря можно было
- * верстать в браузере, где запросов к серверу нет вообще.
+ * Это НЕ настоящий склад: реальный лежит в колонках Character (`whetstones`,
+ * `charms`) и приходит клиенту полем character.consumables в ответе логина.
+ * Здесь число нужно ровно затем, чтобы витрину, карточку, ячейку инвентаря и
+ * гнёзда можно было верстать в браузере, где запросов к серверу нет вообще.
  *
  * 2, а не 0 и не 1: ноль спрятал бы ячейку в инвентаре (она рисуется только при
  * запасе > 0), а с единицей не видно, что бейдж «×N» показывает число, а не
  * просто факт наличия.
  *
+ * Склад собирается ИЗ КАТАЛОГА (devConsumableStock ниже), а не перечислением
+ * id: новый расходник должен появляться в офлайн-отладке сам, иначе о нём
+ * забудут ровно до первого запуска в браузере.
+ *
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
-const TEMP_DEV_WHETSTONES = 2
+const TEMP_DEV_CONSUMABLE_STOCK = 2
+function devConsumableStock(): Record<ConsumableId, number> {
+  const out = {} as Record<ConsumableId, number>
+  for (const c of CONSUMABLES) out[c.id] = TEMP_DEV_CONSUMABLE_STOCK
+  return out
+}
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -590,7 +599,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0], consumables: { whetstone: TEMP_DEV_WHETSTONES } })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -724,8 +733,16 @@ export default function App() {
   // ResultsScreen (см. onClose проп ниже).
   function handleExploreRunComplete(result: RunResultSummary) {
     if (player) {
+      // consumables приходит с финиша только у нового сервера; нет поля —
+      // прежний склад остаётся как есть (readConsumables вернёт null, и мержить
+      // нечего). Подставлять выдуманный нельзя.
+      const spentStock = readConsumables(result.consumables)
+      if (spentStock !== null) {
+        setPrepSlots(prev => prev.map((id) => (id !== null && (spentStock[id] ?? 0) >= 1 ? id : null)))
+      }
       setPlayer(prev => prev ? {
         ...prev,
+        ...(spentStock !== null ? { consumables: spentStock } : {}),
         trophies: result.trophies,
         strength: result.strength,
         endurance: result.endurance,

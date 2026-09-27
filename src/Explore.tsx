@@ -44,7 +44,7 @@ import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
-import type { ConsumableId } from './consumables'
+import { consumableById, consumableReviveFrac, type ConsumableId } from './consumables'
 import { playerAttackDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
@@ -339,6 +339,17 @@ const SAVE_STATUS_VIEW: Record<SaveStatus, { text: string; color: string }> = {
 // читать её на бегу тоже должно хватать.
 const SMUGGLER_NOTICE_MS = 3500
 
+// Неуязвимость после спасения оберегом — 2 с (решение дизайнера). Нужна затем,
+// что спасение происходит В МОМЕНТ смертельного удара: без окна следующий удар
+// того же врага (или второй шип волны) убил бы сразу, и оберег ощущался бы
+// сломанным. Тикает по ticker.deltaMS, а не по кадрам — иначе на просевшем FPS
+// окно укорачивается в реальных секундах (CLAUDE.md, Critical Gotchas).
+const CHARM_IFRAME_MS = 2000
+// Период мигания героя, пока окно открыто: alpha 1 → 0.35 → 1. Мигание, а не
+// один цвет: правило дизайн-скилла «признак не только цветом» — здесь это
+// движение, читаемое и без различения оттенков.
+const CHARM_BLINK_MS = 160
+
 // Всё, что уезжает в /run/finish-explore, одним снимком — в порядке аргументов
 // finishRunExplore. "Повторить сохранение" шлёт ровно его.
 type FinishPayload = {
@@ -353,6 +364,10 @@ type FinishPayload = {
   healedAmount: number
   damageTaken: number
   potionsDrunkByTier: number[]
+  // Сработал ли оберег от смерти. Снимается тем же снимком, что остальное:
+  // «Повторить сохранение» обязано отправить ТОТ ЖЕ факт, иначе повтор списал бы
+  // оберег по-другому.
+  charmUsed: boolean
 }
 
 function ResultsScreen({
@@ -738,6 +753,25 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // (высший приоритет, проверяется первым в тикере). Не сбрасывается назад в
   // false — забег в любом случае завершается через abandon.
   const deathRef = useRef(false)
+  // --- Оберег от смерти ---
+  // Оберег взят в забег и ЕЩЁ НЕ сработал. Ставится из ответа /run/start-explore
+  // (consumablesTaken — что сервер РЕАЛЬНО принял), а не из пропа гнёзд: принять
+  // сервер мог не всё.
+  const charmReadyRef = useRef(false)
+  // Сработал в этом забеге — уезжает в финиш полем charmUsed, там оберег и
+  // списывается со склада.
+  const charmUsedRef = useRef(false)
+  // Окно неуязвимости после спасения, мс. > 0 — урон не проходит (проверяется в
+  // takeDamage, одной точкой на все источники).
+  const charmIframeRef = useRef(0)
+  // Доля maxHp, с которой оберег поднимает. Из КАТАЛОГА, не литерал: витрина
+  // обещает то же число той же функцией (consumableEffectLine).
+  const charmReviveFracRef = useRef(0)
+  // Иконка у полоски здоровья — React-состояние, а не ref: она рисуется в
+  // HudPlate, и меняется РОВНО ДВАЖДЫ за забег (появилась на старте, исчезла
+  // после срабатывания). Правило «боевое состояние в рефах» про то, что
+  // меняется каждый кадр, и на это не распространяется.
+  const [charmReady, setCharmReady] = useState(false)
   const deathHoldRef = useRef(0) // мс удержания последнего кадра death, копится ПОСЛЕ того, как анимация доиграла
   const deathAbandonFiredRef = useRef(false) // защита от повторного вызова abandon за кадры удержания
   // AnimatedSprite/кадры death недоступны из takeDamage (объявлены внутри
@@ -1010,6 +1044,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       healedAmount: healedAmountRef.current,
       damageTaken: damageTakenRef.current,
       potionsDrunkByTier: [...potionsDrunkByTierRef.current],
+      charmUsed: charmUsedRef.current,
     }
     submitFinish()
   }
@@ -1035,6 +1070,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       payload.healedAmount,
       payload.damageTaken,
       payload.potionsDrunkByTier,
+      payload.charmUsed,
     )
       .then((result) => {
         setRunResult(result)
@@ -1652,6 +1688,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // Скриптовая смерть обелиска сюда НЕ приходит (killPlayer обнуляет hp
     // напрямую, минуя эту функцию) — рывок от неё не спасает, и не должен.
     if (dashingRef.current) return
+    // Окно неуязвимости после спасения оберегом — ТА ЖЕ точка перехвата, что у
+    // рывка выше: одна на все источники урона (враг, босс, шипы, волны, мимик).
+    if (charmIframeRef.current > 0) return
     // Округление ЗДЕСЬ, в единой точке применения урона — не при отображении
     // (см. задачу "HP должно быть всегда целым"): любой источник урона
     // (шипы/мимик — доли maxHp, враг/босс — масштаб по уровню) проходит
@@ -1676,6 +1715,30 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     hpRef.current = Math.max(0, hpRef.current - armored)
     updateHpBar()
     if (hpRef.current <= 0) {
+      // Оберег от смерти: вместо смерти — подъём с доли maxHp и окно
+      // неуязвимости. Спасает ОДИН раз за забег (charmReadyRef гасится тут же),
+      // вторая смерть настоящая.
+      //
+      // ⚠️ Врезка стоит ЗДЕСЬ, в ветке «HP кончились», а НЕ в triggerDeath:
+      // через triggerDeath проходит ещё и killPlayer() — скриптовая смерть по
+      // таймеру обелиска, которая обходит и урон, и броню. Оберег по дизайну
+      // спасает от смерти ПО ЗДОРОВЬЮ, и ловить им обелиск было бы решением за
+      // дизайнера.
+      if (charmReadyRef.current) {
+        charmReadyRef.current = false
+        charmUsedRef.current = true
+        setCharmReady(false)
+        // floor — доля maxHp не должна давать игроку лишний HP (то же правило,
+        // что у healPlayer). Минимум 1: подъём в ноль означал бы смерть сразу
+        // после спасения, то есть оберег, списанный впустую.
+        hpRef.current = Math.max(1, Math.floor(maxHp * charmReviveFracRef.current))
+        charmIframeRef.current = CHARM_IFRAME_MS
+        updateHpBar()
+        // Хитстан НЕ запускаем: герой не «получил удар», он спасён — пусть
+        // сразу может двигаться, окно неуязвимости и так прикрывает.
+        showSmugglerNotice('Оберег спас')
+        return
+      }
       triggerDeath()
     } else {
       triggerHurt()
@@ -1938,6 +2001,32 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // молча отнятый у игрока предмет. Забег на сервере в этот момент уже
         // создан, но он НЕ подтверждён (confirmed: false), поэтому вход закроет
         // его без штрафа и вернёт энергию — см. judgeInterruptedRun.
+        // --- Оберег: взят ли он в этот забег ---
+        //
+        // По СПИСКУ СЕРВЕРА (consumablesTaken), а не по пропу гнёзд: сервер мог
+        // принять не всё, и давать эффект по своему списку значило бы обещать
+        // спасение, за которое сервер не поручился.
+        // Поля нет (старый сервер) — оберега нет, и это честно: списать его
+        // такой сервер на финише всё равно не смог бы.
+        const takenFromServer = startExploreResult.consumablesTaken
+        if (takenFromServer !== undefined && !Array.isArray(takenFromServer)) {
+          throw new Error('Сервер прислал негодный список расходников (consumablesTaken). Забег не показан.')
+        }
+        const charmSpec = (takenFromServer ?? [])
+          .map((id) => (typeof id === 'string' ? consumableById(id) : null))
+          .find((spec) => spec !== null && consumableReviveFrac(spec) !== null)
+        if (charmSpec) {
+          const frac = consumableReviveFrac(charmSpec)
+          // null здесь недостижим (по нему и искали), но подставлять молча
+          // что-либо нельзя — доля подъёма это цена спасения.
+          if (frac === null) {
+            throw new Error('Оберег в каталоге без доли подъёма — забег не показан.')
+          }
+          charmReviveFracRef.current = frac
+          charmReadyRef.current = true
+          setCharmReady(true)
+        }
+
         const rawMult: unknown = startExploreResult.attackMult
         if (typeof rawMult !== 'number' || !Number.isFinite(rawMult) || rawMult < 1) {
           throw new Error(
@@ -2495,6 +2584,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       finishSendCountRef.current = 0 // сброс на случай повторного запуска setup()
       // Сброс на случай повторного запуска setup() (React 19 Strict Mode
       // монтирует эффект дважды).
+      charmReadyRef.current = false
+      charmUsedRef.current = false
+      charmIframeRef.current = 0
+      charmReviveFracRef.current = 0
+      setCharmReady(false)
       smugglerQuoteStateRef.current = 'idle'
       smugglerQuoteRef.current = null
       smugglerDealPendingRef.current = false
@@ -4037,6 +4131,19 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // Считается ОДИН раз за кадр (не за врага), поэтому вынесен перед
         // циклом по врагам ниже.
         dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
+        // Окно неуязвимости от оберега + мигание героя. Ветка выполняется только
+        // пока окно открыто (2 с за весь забег), в остальное время это одно
+        // сравнение. alpha возвращается в 1 РОВНО на закрытии окна — отдельного
+        // «сбросить потом» не нужно, и объектов здесь не создаётся.
+        if (charmIframeRef.current > 0) {
+          charmIframeRef.current = Math.max(0, charmIframeRef.current - ticker.deltaMS)
+          const spriteForBlink = heroSpriteRef.current
+          if (spriteForBlink) {
+            spriteForBlink.alpha = charmIframeRef.current <= 0
+              ? 1
+              : (Math.floor(charmIframeRef.current / CHARM_BLINK_MS) % 2 === 0 ? 0.35 : 1)
+          }
+        }
         dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
           dodgePressedRef.current = false
@@ -4854,6 +4961,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         maxHp={maxHp}
         eventClosed={eventClosed}
         eventKinds={eventKinds}
+        charmReady={charmReady}
       />
 
       {/* Выход через шестерёнку = смерть по решению разработчика (трофеи
