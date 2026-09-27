@@ -83,6 +83,20 @@ function consumableStockIncrement(id: ConsumableId, count: number): Prisma.Chara
       return { whetstones: { increment: count } }
     case 'charm_death':
       return { charms: { increment: count } }
+    // Книги: только increment при покупке. Списания нет ни у одной ветки —
+    // применение книги к скиллу не реализовано (spendAt: 'apply'), а в забег
+    // книга не едет вовсе (runSlot: false), поэтому в consumableRunSpend выше её
+    // не бывает: старт принимает только runSlotConsumableById.
+    case 'book_fire':
+      return { bookFire: { increment: count } }
+    case 'book_ice':
+      return { bookIce: { increment: count } }
+    case 'book_bleed':
+      return { bookBleed: { increment: count } }
+    case 'book_heal':
+      return { bookHeal: { increment: count } }
+    case 'book_dash':
+      return { bookDash: { increment: count } }
   }
 }
 

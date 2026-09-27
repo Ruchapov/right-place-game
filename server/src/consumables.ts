@@ -22,7 +22,37 @@
 // Раскладка id → колонка живёт на сервере, в runState.ts рядом с зельями.
 
 /** Идентификаторы расходников. Новый расходник — новый вариант здесь. */
-export type ConsumableId = 'whetstone' | 'charm_death'
+export type ConsumableId =
+  | 'whetstone'
+  | 'charm_death'
+  | 'book_fire'
+  | 'book_ice'
+  | 'book_bleed'
+  | 'book_heal'
+  | 'book_dash'
+
+/**
+ * id скилла, который улучшает книга. Пять значений — РУЧНОЙ ДУБЛЬ типа SkillId
+ * (src/explore/entities/skills.ts): этот файл обязан быть байт-в-байт с
+ * серверной копией, а на сервере боевого кода нет вовсе, поэтому импортировать
+ * SkillId сюда нельзя.
+ *
+ * Дубль не молчаливый: клиентский src/skillBooks.ts сводит оба типа в одном
+ * Record, и расхождение ловится СБОРКОЙ (см. комментарий там).
+ */
+export type SkillBookSkillId = 'fireball' | 'iceball' | 'slash' | 'heal' | 'dash'
+
+/**
+ * В какой вкладке магазина стоит товар. Книг пять, и в общем ряду «Расходники»
+ * они забили бы витрину, оттеснив зелья и камень вниз, — поэтому у них своя
+ * вкладка (docs/shop.md, «РАЗДЕЛЫ МАГАЗИНА», она там значилась с самого начала).
+ *
+ * Поле КАТАЛОГА, а не вёрстки: иначе список «что показать в Книгах» жил бы в
+ * App.tsx отдельным массивом id и разошёлся бы с каталогом при добавлении
+ * шестой книги. Вкладок в магазине больше (Улучшения, Снаряжение, Обмен), но
+ * там не расходники, и в этот тип они не входят.
+ */
+export type ConsumableShopTab = 'Расходники' | 'Книги'
 
 /**
  * ЧТО расходник делает. Размеченный union, а не набор необязательных чисел:
@@ -39,18 +69,35 @@ export type ConsumableEffect =
   | { kind: 'attackBonus'; frac: number }
   /** Спасает от смерти по здоровью: поднимает с frac × maxHp. */
   | { kind: 'deathSave'; reviveFrac: number }
+  /**
+   * Книга скилла: улучшает ОДИН скилл, названный здесь.
+   *
+   * Чисел у этого эффекта в каталоге НЕТ намеренно: что именно даёт уровень
+   * скилла — ещё не решено (docs/skills.md), а само применение книги к скиллу
+   * не сделано. Строку «что делает» собирает КЛИЕНТ из боевых констант
+   * (src/skillBooks.ts → src/explore/constants.ts), потому что сервер этих
+   * констант не имеет, а копировать урон/кулдауны сюда значило бы завести
+   * третий экземпляр чисел, которые правятся при каждом балансе.
+   */
+  | { kind: 'skillBook'; skillId: SkillBookSkillId }
 
 /**
  * КОГДА расходник списывается со склада.
  *   'start'  — на старте забега, безусловно (взял — заплатил).
  *   'effect' — только когда сработал; не пригодился — остаётся на складе.
+ *   'apply'  — при применении ИЗ ИНВЕНТАРЯ, вне забега (книги скиллов).
+ *
+ * У 'apply' списания пока нет нигде: применение книги к скиллу не реализовано.
+ * Значение всё равно честное, а не заглушка 'effect': книга не едет в забег
+ * (runSlot: false), и назвать её «списывается на финише» значило бы соврать в
+ * единственном месте, где этот флаг вообще читают.
  *
  * Различать обязательно и на сервере: у 'start' списание идёт в записи
  * /run/start-explore, у 'effect' — в условной записи финиша, по слову клиента
  * (charmUsed). Свалить их в одно значило бы либо брать плату за неслучившееся
  * спасение, либо отдавать эффект бесплатно.
  */
-export type ConsumableSpendAt = 'start' | 'effect'
+export type ConsumableSpendAt = 'start' | 'effect' | 'apply'
 
 export type Consumable = {
   id: ConsumableId
@@ -72,6 +119,8 @@ export type Consumable = {
    * эндпоинта.
    */
   runSlot: boolean
+  /** В какой вкладке магазина показывать (см. ConsumableShopTab). */
+  shopTab: ConsumableShopTab
   spendAt: ConsumableSpendAt
   effect: ConsumableEffect
   desc: string
@@ -85,6 +134,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 500,
     levelRequired: 1,
     runSlot: true,
+    shopTab: 'Расходники',
     // Списывается на старте: эффект действует весь забег с первой секунды, и
     // «не пригодился» у него не бывает.
     spendAt: 'start',
@@ -98,11 +148,88 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: true,
+    shopTab: 'Расходники',
     // Списывается ТОЛЬКО если спас (решение дизайнера). Взять оберег и дойти
     // до конца живым — ничего не стоит, он остаётся на складе.
     spendAt: 'effect',
     effect: { kind: 'deathSave', reviveFrac: 0.5 },
     desc: 'Смерть не любит, когда её обманывают. Но один раз простит.',
+  },
+  // --- Книги скиллов ---
+  //
+  // Одна книга = один скилл, пять книг на пять скиллов. Общего у всех пяти
+  // больше, чем различий, поэтому перечислены они ЯВНО, а не собраны циклом по
+  // карте id→скилл: цена и уровень открытия у книг ещё будут разъезжаться
+  // (дешёвая книга рывка, дорогая книга огня — вопрос баланса), а цикл пришлось
+  // бы разворачивать обратно при первой же такой правке.
+  //
+  // runSlot: false — книга НЕ едет в забег: она улучшает скилл между забегами,
+  // из инвентаря. Флаг проверяет сервер (/run/start-explore), так что положить
+  // книгу в гнездо не сможет и модифицированный клиент.
+  //
+  // spendAt: 'apply' — списывается при применении к скиллу. Применения ещё нет
+  // (см. docs/skills.md), поэтому купленная книга просто лежит на складе.
+  {
+    id: 'book_fire',
+    nameRu: 'Книга огня',
+    icon: 'book_fire.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    effect: { kind: 'skillBook', skillId: 'fireball' },
+    desc: 'Страницы пахнут гарью, а края обуглены изнутри.',
+  },
+  {
+    id: 'book_ice',
+    nameRu: 'Книга льда',
+    icon: 'book_ice.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    effect: { kind: 'skillBook', skillId: 'iceball' },
+    desc: 'Чернила в ней замёрзли, но слова всё равно читаются.',
+  },
+  {
+    id: 'book_bleed',
+    nameRu: 'Книга крови',
+    icon: 'book_bleed.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    // Скилл называется slash («Разрез»), а книга — крови: имя книги идёт от
+    // кровотечения, которое скилл накладывает, а не от самого удара.
+    effect: { kind: 'skillBook', skillId: 'slash' },
+    desc: 'Переплёт тёмный и липкий. Лучше не спрашивать, чем писали.',
+  },
+  {
+    id: 'book_heal',
+    nameRu: 'Книга исцеления',
+    icon: 'book_heal.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    effect: { kind: 'skillBook', skillId: 'heal' },
+    desc: 'Единственная книга здесь, от которой становится теплее.',
+  },
+  {
+    id: 'book_dash',
+    nameRu: 'Книга рывка',
+    icon: 'book_dash.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    effect: { kind: 'skillBook', skillId: 'dash' },
+    desc: 'Страницы перелистываются сами — будто торопятся.',
   },
 ]
 
@@ -110,13 +237,21 @@ export const CONSUMABLES: Consumable[] = [
  * Строка механики для витрины, карточки и списка гнёзд. Числа ВЫВОДЯТСЯ из
  * эффекта, а не написаны текстом рядом: два экземпляра одного числа разошлись бы
  * при первой правке баланса, и витрина начала бы обещать не то, что делает забег.
+ *
+ * ⚠️ Возвращает null РОВНО для одного случая — книги скиллов: их числа (урон,
+ * кулдаун, длительность) живут в боевых константах, которых на сервере нет, и
+ * строку собирает клиент (consumableMechanicLine в src/skillBooks.ts). Null
+ * здесь значит «спроси у клиента», а не «эффекта нет»: тип обязывает
+ * вызывающего эту ветку обработать, тихо подставить прочерк он не может.
  */
-export function consumableEffectLine(spec: Consumable): string {
+export function consumableEffectLine(spec: Consumable): string | null {
   switch (spec.effect.kind) {
     case 'attackBonus':
       return `Урон атаки — +${Math.round(spec.effect.frac * 100)}% до конца забега`
     case 'deathSave':
       return `Спасает от смерти — поднимает с ${Math.round(spec.effect.reviveFrac * 100)}% здоровья. Тратится, только если спас`
+    case 'skillBook':
+      return null
   }
 }
 
@@ -135,6 +270,20 @@ export function consumableAttackBonus(spec: Consumable): number {
  */
 export function consumableReviveFrac(spec: Consumable): number | null {
   return spec.effect.kind === 'deathSave' ? spec.effect.reviveFrac : null
+}
+
+/**
+ * Скилл, который улучшает книга, или null — предмет не книга.
+ *
+ * Тем же приёмом, что consumableAttackBonus/consumableReviveFrac: union
+ * разбирается ОДИН раз здесь, а вызывающие (вкладка магазина, сумка, будущее
+ * применение) спрашивают готовый ответ и не могут забыть новый вид эффекта.
+ *
+ * На этом же признаке держится правило сумки: книга — «дроп улучшения скиллов»
+ * из docs/items.md, а он ячейку сумки НЕ тратит (в отличие от карт и камня).
+ */
+export function consumableSkillBook(spec: Consumable): SkillBookSkillId | null {
+  return spec.effect.kind === 'skillBook' ? spec.effect.skillId : null
 }
 
 /** Запись каталога по id, или null если id не из каталога. */

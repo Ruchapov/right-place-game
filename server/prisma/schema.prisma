@@ -61,6 +61,18 @@ model Character {
   // же UPDATE, где пишется золото. Новый расходник = новая колонка + миграция.
   whetstones          Int      @default(0)
   charms              Int      @default(0)
+  // Книги скиллов — по колонке на книгу, пять книг на пять скиллов (каталог
+  // CONSUMABLES, id book_*). Единственное отличие от расходников выше: книга не
+  // едет в забег (runSlot: false) и списываться будет при применении к скиллу,
+  // которое ещё не реализовано, — колонки пока только растут при покупке.
+  // Не Json и не таблица — по той же причине, что potionT1..T5 и whetstones:
+  // видов ровно столько, сколько в каталоге, а счётчику нужен атомарный
+  // increment в том же UPDATE, где списывается золото.
+  bookFire            Int      @default(0)
+  bookIce             Int      @default(0)
+  bookBleed           Int      @default(0)
+  bookHeal            Int      @default(0)
+  bookDash            Int      @default(0)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

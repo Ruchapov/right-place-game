@@ -476,11 +476,35 @@ export function subtractPotionStock(stock: number[], spent: number[]): number[] 
 // Новый расходник = новая колонка в схеме + миграция + строка здесь + вариант в
 // ConsumableId (consumables.ts). Забыть последнее нельзя: switch в
 // consumableStockIncrement (routes/run.ts) не скомпилируется без нового варианта.
-export type ConsumableColumns = { whetstones: number; charms: number }
+export type ConsumableColumns = {
+  whetstones: number
+  charms: number
+  bookFire: number
+  bookIce: number
+  bookBleed: number
+  bookHeal: number
+  bookDash: number
+}
 
-/** Запас расходников объектом по id каталога — форма ответов клиенту. */
+/**
+ * Запас расходников объектом по id каталога — форма ответов клиенту.
+ *
+ * ⚠️ Отдавать НУЖНО ВСЕ id каталога: клиентский readConsumables (src/api.ts)
+ * требует их все и на неполном объекте возвращает null, то есть «запас
+ * неизвестен» — прочерки вместо чисел на витрине, в сумке и в гнёздах. Поэтому
+ * колонки книг обязаны попасть сюда ОДНОВРЕМЕННО с появлением id book_* в
+ * каталоге, а сервер выкладываться раньше клиента (обычный порядок проекта).
+ */
 export function consumableStockOf(character: ConsumableColumns): Record<ConsumableId, number> {
-  return { whetstone: character.whetstones, charm_death: character.charms }
+  return {
+    whetstone: character.whetstones,
+    charm_death: character.charms,
+    book_fire: character.bookFire,
+    book_ice: character.bookIce,
+    book_bleed: character.bookBleed,
+    book_heal: character.bookHeal,
+    book_dash: character.bookDash,
+  }
 }
 
 export type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
