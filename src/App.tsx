@@ -6,7 +6,7 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, consumableById, consumableEffectLine, parseConsumableCount, type ConsumableId } from './consumables'
+import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, consumableEffectLine, parseConsumableCount, type ConsumableId } from './consumables'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
@@ -505,6 +505,15 @@ export default function App() {
     | { kind: 'consumable'; consumableId: ConsumableId }
     | null
   >(null)
+  // --- Гнёзда подготовки на вкладке «Исследовать» ---
+  // Длина фиксирована каталогом (RUN_CONSUMABLE_SLOTS), null — гнездо пусто.
+  // Один и тот же id в двух гнёздах запрещён: сервер отвергает повторы
+  // (400 Duplicate consumable), и разрешать это в UI значило бы готовить отказ.
+  const [prepSlots, setPrepSlots] = useState<(ConsumableId | null)[]>(
+    () => Array(RUN_CONSUMABLE_SLOTS).fill(null),
+  )
+  // Номер гнезда, для которого открыт список выбора. null — список закрыт.
+  const [prepPickerSlot, setPrepPickerSlot] = useState<number | null>(null)
   const [friendsLinkCopied, setFriendsLinkCopied] = useState(false)
   const [showExploreDebug, setShowExploreDebug] = useState(false)
   const [inventory, setInventory] = useState<InventoryItem[]>([])
@@ -915,6 +924,18 @@ export default function App() {
     } finally {
       setShopBuyPending(false)
     }
+  }
+
+  // Склад расходников ПОСЛЕ старта забега — из ответа сервера (Explore зовёт это
+  // ровно один раз, сразу после удачного /run/start-explore, и только если
+  // расходники реально брали).
+  //
+  // Гнездо остаётся заполненным, если запас ещё ≥ 1 — чтобы не переклад́ывать
+  // камень руками перед каждым забегом. Кончился — гнездо чистится: иначе
+  // следующий старт отправил бы предмет, которого нет, и получил бы 400.
+  function handleConsumablesSpent(stock: Record<ConsumableId, number>) {
+    setPlayer(prev => prev ? { ...prev, consumables: stock } : prev)
+    setPrepSlots(prev => prev.map((id) => (id !== null && (stock[id] ?? 0) >= 1 ? id : null)))
   }
 
   // Сверка баланса после потерянного ответа. ТОЛЬКО чтение
@@ -2652,23 +2673,99 @@ export default function App() {
           {/* 4. Подготовка */}
           <div style={{ position:'relative', zIndex:3, marginBottom:12 }}>
             <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY }}>ПОДГОТОВКА</div>
+            {/* Пять ОДИНАКОВЫХ гнёзд, без разделителя: прежние 3+2 обещали
+                деление на «зелья» и «прочее», которого нет — зелья в гнёзда не
+                кладут вовсе, они набираются автоматически (docs/items.md).
+                52×52 — больше минимальных 44×44 из дизайн-скилла. */}
             <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
-              {[0, 1, 2].map(i => (
-                <div key={`potion-${i}`} onClick={() => {}} style={{
-                  boxSizing:'border-box', width:52, height:52,
-                  background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
-                  boxShadow:'inset 0 2px 5px rgba(0,0,0,0.5)', cursor:'pointer',
-                }} />
-              ))}
-              <div style={{ width:1, height:52, background:C.stoneDark }} />
-              {[0, 1].map(i => (
-                <div key={`misc-${i}`} onClick={() => {}} style={{
-                  boxSizing:'border-box', width:52, height:52,
-                  background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
-                  boxShadow:'inset 0 2px 5px rgba(0,0,0,0.5)', cursor:'pointer',
-                }} />
-              ))}
+              {prepSlots.map((slotId, i) => {
+                const spec = slotId === null ? null : consumableById(slotId)
+                return (
+                  <div key={`slot-${i}`}
+                    onClick={() => {
+                      // Занятое гнездо — освободить. Пустое — открыть список.
+                      if (slotId !== null) {
+                        setPrepSlots(prev => prev.map((v, j) => (j === i ? null : v)))
+                        setPrepPickerSlot(null)
+                      } else {
+                        setPrepPickerSlot(prev => (prev === i ? null : i))
+                      }
+                    }}
+                    style={{
+                      boxSizing:'border-box', width:52, height:52,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep,
+                      // Занятое гнездо обведено тёплым краем — видно, что в нём
+                      // что-то есть, даже если иконка тёмная.
+                      border:`1px solid ${slotId !== null ? C.glowEdge : C.stoneDark}`,
+                      borderRadius:10,
+                      boxShadow:'inset 0 2px 5px rgba(0,0,0,0.5)', cursor:'pointer',
+                    }}>
+                    {spec !== null && (
+                      <img
+                        src={`${import.meta.env.BASE_URL}assets/icons/${spec.icon}`}
+                        alt={spec.nameRu}
+                        style={{ width:40, height:40, objectFit:'contain', display:'block' }}
+                      />
+                    )}
+                  </div>
+                )
+              })}
             </div>
+
+            {/* Список выбора для пустого гнезда. Показываются расходники с
+                флагом runSlot, которых есть на складе и которые не лежат уже в
+                другом гнезде (повторы сервер отвергает).
+                Запас неизвестен (player.consumables === null) — так и пишем, а
+                не показываем пустой список: «нечего положить» и «неизвестно,
+                что есть» это разные состояния. */}
+            {prepPickerSlot !== null && (() => {
+              const stock = player?.consumables ?? null
+              const taken = prepSlots.filter((v): v is ConsumableId => v !== null)
+              const available = stock === null ? [] : CONSUMABLES.filter(
+                (c) => c.runSlot && (stock[c.id] ?? 0) >= 1 && !taken.includes(c.id),
+              )
+              const slotIndex = prepPickerSlot
+              return (
+                <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:6 }}>
+                  {stock === null ? (
+                    <div style={{ fontSize:11, color:C.textDim, textAlign:'center' }}>
+                      Запас расходников неизвестен — профиль не загружен.
+                    </div>
+                  ) : available.length === 0 ? (
+                    <div style={{ fontSize:11, color:C.textDim, textAlign:'center' }}>
+                      Нечего положить
+                    </div>
+                  ) : available.map((c) => (
+                    <div key={c.id}
+                      onClick={() => {
+                        setPrepSlots(prev => prev.map((v, j) => (j === slotIndex ? c.id : v)))
+                        setPrepPickerSlot(null)
+                      }}
+                      style={{
+                        boxSizing:'border-box', minHeight:44,
+                        display:'flex', alignItems:'center', gap:10,
+                        padding:'0 10px',
+                        background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                        borderRadius:9, cursor:'pointer',
+                      }}>
+                      <img
+                        src={`${import.meta.env.BASE_URL}assets/icons/${c.icon}`}
+                        alt={c.nameRu}
+                        style={{ width:28, height:28, objectFit:'contain', display:'block', flexShrink:0 }}
+                      />
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, color:C.textMain }}>{c.nameRu}</div>
+                        {/* Эффект — из каталога (число выводится из attackBonus),
+                            не написан здесь повторно. */}
+                        <div style={{ fontSize:10, color:C.textDim }}>{consumableEffectLine(c)}</div>
+                      </div>
+                      <div style={{ fontSize:12, color:C.bone, flexShrink:0 }}>×{stock[c.id] ?? 0}</div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
 
           {/* 5. Главная кнопка */}
@@ -2847,7 +2944,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх

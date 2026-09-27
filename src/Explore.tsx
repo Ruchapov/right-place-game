@@ -43,7 +43,8 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import type { ConsumableId } from './consumables'
 import { playerAttackDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
@@ -64,9 +65,9 @@ const LOAD_WATCHDOG_MS = 60000
 // Старт с человеческой причиной таймаута. Отдельная обёртка, потому что зовут
 // его из двух мест (карту называет сервер / карта известна заранее), а
 // распознавать таймаут нужно ОДИНАКОВО в обоих.
-async function startRunOrExplain(token: string, mapFile?: string): Promise<StartExploreResult> {
+async function startRunOrExplain(token: string, mapFile?: string, consumables?: ConsumableId[]): Promise<StartExploreResult> {
   try {
-    return await startRunExplore(token, mapFile)
+    return await startRunExplore(token, mapFile, consumables)
   } catch (err) {
     // Только 'timeout' — ответа не было вовсе. Сетевой отказ (авиарежим) и
     // отказ сервера по существу остаются со своими прежними текстами.
@@ -122,6 +123,19 @@ type ExploreProps = {
   // задан → fallback показывает добытое за забег (как раньше, заведомо
   // заниженная, но хоть какая-то оценка).
   trophies?: number
+  /**
+   * id расходников из гнёзд подготовки (App.tsx). Уезжают в /run/start-explore,
+   * сервер их списывает и возвращает attackMult. Не задан или пуст — забег без
+   * расходников.
+   */
+  consumables?: ConsumableId[]
+  /**
+   * Склад расходников ПОСЛЕ списания на старте — из ответа сервера. Зовётся
+   * ровно один раз, сразу после удачного /run/start-explore, и только когда
+   * расходники реально брали. App.tsx по нему обновляет склад и чистит гнёзда,
+   * запас которых кончился.
+   */
+  onConsumablesSpent?: (stock: Record<ConsumableId, number>) => void
   // Суммарная броня надетых предметов (App.tsx: та же сумма
   // inventory.filter(equipped).reduce armor, что уже показывает статистика
   // "Броня" на экране "Персонаж") — тот же проброс, что у endurance/strength
@@ -683,7 +697,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, equippedSkills }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, equippedSkills, consumables, onConsumablesSpent }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1836,17 +1850,24 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       if (strength === undefined) {
         throw new Error('Сила персонажа неизвестна — профиль не загружен. Забег не начат, энергия не списана.')
       }
+      // БАЗОВЫЙ урон, без расходников. Множитель точильного камня применяется
+      // НИЖЕ, после ответа /run/start-explore: его называет сервер по СПИСАННОМУ
+      // списку, и до ответа он неизвестен.
+      let baseAttackDamage: number
       if (token) {
         if (weaponDamage === undefined || weaponDamage === null) {
           throw new Error('Урон неизвестен — снаряжение не загрузилось. Забег не начат, энергия не списана.')
         }
-        attackDamageRef.current = playerAttackDamage(strength, weaponDamage)
+        baseAttackDamage = playerAttackDamage(strength, weaponDamage)
       } else {
         // Офлайн UI-отладка без token: инвентаря нет вовсе (App.tsx:
         // inventoryStatus 'idle'), урон — без оружия. Это заглушка, и она
         // названа на оранжевой плашке ("урон без оружия"), как запас зелий.
-        attackDamageRef.current = playerAttackDamage(strength, 0)
+        baseAttackDamage = playerAttackDamage(strength, 0)
       }
+      // Офлайн множитель ровно 1 — расходники без сервера не списываются, и
+      // давать эффект бесплатно нельзя. Названо на той же оранжевой плашке.
+      attackDamageRef.current = baseAttackDamage
 
       // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
       // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
@@ -1887,7 +1908,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       let resolvedMapFile = mapFile
       let startExploreResult: StartExploreResult | null = null
       if (mapFile === '') {
-        startExploreResult = await startRunOrExplain(token!) // token точно есть, см. useState выше
+        startExploreResult = await startRunOrExplain(token!, undefined, consumables) // token точно есть, см. useState выше
         armLoadWatchdog()
         resolvedMapFile = startExploreResult.mapFile
       }
@@ -1904,11 +1925,47 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // выше не делался (mapFile !== ''), делаем его теперь для уже
       // известного имени — 1:1 прежнее поведение.
       if (token && !startExploreResult) {
-        startExploreResult = await startRunOrExplain(token, resolvedMapFile)
+        startExploreResult = await startRunOrExplain(token, resolvedMapFile, consumables)
         armLoadWatchdog()
       }
       if (startExploreResult) {
         console.log('Explore: /run/start-explore ответ сервера', startExploreResult)
+
+        // --- Множитель урона от расходников ---
+        //
+        // Поля нет или оно негодное — ГРОМКАЯ ошибка, а НЕ подстановка 1:
+        // единица здесь означала бы «камень списан, эффекта нет», то есть
+        // молча отнятый у игрока предмет. Забег на сервере в этот момент уже
+        // создан, но он НЕ подтверждён (confirmed: false), поэтому вход закроет
+        // его без штрафа и вернёт энергию — см. judgeInterruptedRun.
+        const rawMult: unknown = startExploreResult.attackMult
+        if (typeof rawMult !== 'number' || !Number.isFinite(rawMult) || rawMult < 1) {
+          throw new Error(
+            `Сервер не назвал множитель урона (attackMult=${String(rawMult)}). Забег не показан; он закроется без штрафа, энергия вернётся.`,
+          )
+        }
+        // Math.ceil — округление урона НИКОГДА не в пользу игрока… но здесь оно
+        // как раз в его пользу, и это осознанно: камень куплен за золото, и
+        // терять его эффект на округлении вниз игрок не должен. Правило
+        // «ceil для урона» (CLAUDE.md) соблюдено буквально — ceil и есть.
+        attackDamageRef.current = Math.ceil(baseAttackDamage * rawMult)
+        console.log(`Explore: урон атаки ${baseAttackDamage} × ${rawMult} = ${attackDamageRef.current}`)
+
+        // --- Склад расходников после списания ---
+        //
+        // Требуем его ТОЛЬКО если реально что-то брали: не брали — склад не
+        // менялся, и отсутствие поля ничего не искажает. Брали, а склада нет —
+        // громко: иначе App.tsx оставил бы в гнёздах предмет, которого больше
+        // нет, и следующий забег получил бы 400 от сервера.
+        if (consumables !== undefined && consumables.length > 0) {
+          const stock = readConsumables(startExploreResult.consumables)
+          if (stock === null) {
+            throw new Error(
+              'Сервер списал расходники, но не назвал остаток склада. Забег не показан; он закроется без штрафа, энергия вернётся.',
+            )
+          }
+          onConsumablesSpent?.(stock)
+        }
       }
 
       // Запас зелий на забег — ТОЛЬКО из ответа сервера (раньше здесь была
@@ -4666,7 +4723,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               whiteSpace: 'nowrap',
             }}
           >
-            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTION_STOCK.join('/')} по тирам (заглушка) · урон без оружия
+            ⚠ ЗАГЛУШКА — события офлайн, не с сервера · зелья {C.OFFLINE_POTION_STOCK.join('/')} по тирам (заглушка) · урон без оружия · множитель расходников 1
           </div>
         </div>
       )}

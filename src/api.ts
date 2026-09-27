@@ -285,6 +285,18 @@ export type StartExploreResult = {
   potions: number[]
   sips: number
   armor: number
+  /**
+   * Множитель урона обычной атаки на весь забег: 1 + сумма attackBonus взятых
+   * расходников (считает СЕРВЕР по СПИСАННОМУ списку, не по телу запроса).
+   *
+   * ОПЦИОНАЛЬНОЕ намеренно, хотя нынешний сервер поле всегда присылает:
+   * объявить его обязательным значило бы получить `undefined`, типизированный
+   * как число, на старом ответе — и молча умножить урон на NaN. Вызывающий
+   * обязан проверить явно и упасть громко (см. Explore.tsx, setup()).
+   */
+  attackMult?: number
+  /** Склад расходников ПОСЛЕ списания взятых в забег. Разбирать через readConsumables. */
+  consumables?: Record<string, number>
 }
 
 // mapFile необязателен — не передан → сервер сам выбирает карту (см.
@@ -304,7 +316,15 @@ const START_EXPLORE_TIMEOUT_MS = 45000
 // честный таймаут, дальше решает игрок.
 // Цена ошибки упала: забег, начатый и не подтверждённый через /run/ready,
 // закрывается при следующем входе БЕЗ штрафа и с возвратом энергии.
-export async function startRunExplore(token: string, mapFile?: string): Promise<StartExploreResult> {
+// consumables — id расходников из гнёзд подготовки (App.tsx). Пустой список НЕ
+// отправляется вовсе: тело тогда уходит без поля, как его слал клиент до
+// появления гнёзд, и сервер читает это как «забег без расходников».
+// Проверяет состав сервер (каталог, флаг runSlot, повторы, потолок, запас) —
+// здешние гнёзда не источник истины.
+export async function startRunExplore(token: string, mapFile?: string, consumables?: ConsumableId[]): Promise<StartExploreResult> {
+  const body: { mapFile?: string; consumables?: ConsumableId[] } = {}
+  if (mapFile !== undefined) body.mapFile = mapFile
+  if (consumables !== undefined && consumables.length > 0) body.consumables = consumables
   return requestJson<StartExploreResult>(
     `${SERVER_URL}/run/start-explore`,
     {
@@ -313,7 +333,7 @@ export async function startRunExplore(token: string, mapFile?: string): Promise<
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(mapFile !== undefined ? { mapFile } : {}),
+      body: JSON.stringify(body),
     },
     START_EXPLORE_TIMEOUT_MS,
   )
