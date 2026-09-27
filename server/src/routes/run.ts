@@ -4,7 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
-import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, runSlotConsumableById, parseConsumableCount, type Consumable, type ConsumableId } from '../consumables.js'
+import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, runSlotConsumableById, consumableAttackBonus, parseConsumableCount, type Consumable, type ConsumableId } from '../consumables.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -21,6 +21,7 @@ import {
   potionStockOf,
   potionStockToColumns,
   consumableStockOf,
+  readConsumablesUsed,
   readSmugglerDeal,
   type SmugglerDeal,
 } from '../runState.js'
@@ -35,19 +36,34 @@ const RUN_COST = 3 // DEV: снижено с 10 для тестов (верну�
 // switch по id, как и в consumableStockIncrement ниже, и по той же причине:
 // добавление нового расходника в ConsumableId развалит сборку, пока сюда не
 // допишут ветку, — молча забыть колонку невозможно.
-function consumableRunSpend(ids: ConsumableId[]): {
+function consumableRunSpend(specs: Consumable[]): {
   where: Prisma.CharacterWhereInput
   data: Prisma.CharacterUpdateManyMutationInput
 } {
   const where: Prisma.CharacterWhereInput = {}
   const data: Prisma.CharacterUpdateManyMutationInput = {}
-  for (const id of ids) {
-    switch (id) {
+  for (const spec of specs) {
+    switch (spec.id) {
       case 'whetstone':
         // gte: 1, а не gte: count — повторы в гнёздах запрещены, каждый взятый
         // расходник ровно один (см. проверку дубликатов в старте).
         where.whetstones = { gte: 1 }
+        break
+      case 'charm_death':
+        where.charms = { gte: 1 }
+        break
+    }
+    // Списывает старт ТОЛЬКО spendAt: 'start'. У 'effect' (оберег) запас
+    // проверяется фильтром выше — взять оберег без оберега нельзя, — но
+    // decrement здесь НЕ ставится: он спишется на финише, и только если
+    // сработал. Иначе игрок платил бы за спасение, которого не было.
+    if (spec.spendAt !== 'start') continue
+    switch (spec.id) {
+      case 'whetstone':
         data.whetstones = { decrement: 1 }
+        break
+      case 'charm_death':
+        data.charms = { decrement: 1 }
         break
     }
   }
@@ -65,6 +81,8 @@ function consumableStockIncrement(id: ConsumableId, count: number): Prisma.Chara
   switch (id) {
     case 'whetstone':
       return { whetstones: { increment: count } }
+    case 'charm_death':
+      return { charms: { increment: count } }
   }
 }
 
@@ -158,6 +176,11 @@ type FinishExploreBody = {
   // trusted as-is: capped per tier against what THIS run was issued
   // (currentRun.potions), then capped again against the run's sip allowance.
   potionsDrunkByTier?: number[]
+  // Сработал ли оберег от смерти в этом забеге. Спасение считает КЛИЕНТ (бой
+  // целиком на нём), и серверу остаётся тот же уровень доверия, что у `died`:
+  // проверить можно только то, что оберег вообще был взят в забег
+  // (currentRun.consumablesUsed) и что он ещё на складе.
+  charmUsed?: boolean
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
 type SipBody = { tier?: number }
@@ -208,6 +231,13 @@ export type RunResultSummary = {
   // бонус (calculateLevel складывает их), это поле для клиента/аналитики
   // отдельно, не источник истины само по себе.
   bonusLevels: number
+  /**
+   * Склад расходников по id каталога ПОСЛЕ забега. Нужен, чтобы сработавший
+   * оберег сразу исчез из инвентаря и из гнезда, а не ждал следующего логина.
+   * ⚠️ КОПИЯ этого типа живёт в src/api.ts — менять парами (см. CLAUDE.md,
+   * таблица копий клиент/сервер: у RunResultSummary сверяющего скрипта нет).
+   */
+  consumables: Record<string, number>
 }
 
 export async function runRoutes(server: FastifyInstance) {
@@ -339,7 +369,7 @@ export async function runRoutes(server: FastifyInstance) {
     //     декремент одним проходом, поэтому разойтись по составу они не могут.
     // Склад, энергия и currentRun пишутся ОДНОЙ записью: забег либо начат с
     // оплаченным камнем, либо не начат вовсе.
-    const spend = consumableRunSpend(takenIds)
+    const spend = consumableRunSpend(takenSpecs)
     const written = await prisma.character.updateMany({
       where: {
         userId,
@@ -377,7 +407,7 @@ export async function runRoutes(server: FastifyInstance) {
     // останется той же, и править её не придётся.
     // Считает СЕРВЕР и по СПИСАННОМУ списку, а не по телу запроса: клиент не
     // должен иметь возможности включить эффект, не потратив предмет.
-    const attackMult = takenSpecs.reduce((mult, spec) => mult + spec.attackBonus, 1)
+    const attackMult = takenSpecs.reduce((mult, spec) => mult + consumableAttackBonus(spec), 1)
 
     // Склад расходников ПОСЛЕ списания — ПЕРЕЧИТАННЫЙ из базы, а не посчитанный
     // как «снимок минус взятое».
@@ -409,6 +439,11 @@ export async function runRoutes(server: FastifyInstance) {
       armor: totalArmor,
       attackMult,
       consumables: consumablesAfter,
+      // Какие расходники сервер РЕАЛЬНО принял в этот забег. Клиент из них
+      // узнаёт, что у него на руках оберег (эффект считает он), а не полагается
+      // на свой же список из гнёзд: принять сервер мог не всё, и расходиться
+      // этим двум спискам нельзя.
+      consumablesTaken: takenIds,
     })
   })
 
@@ -634,6 +669,30 @@ export async function runRoutes(server: FastifyInstance) {
     // золото фильтром требует пустой currentRun, покупка зелий трофеи не
     // трогает, а /auth/login меняет их только ВМЕСТЕ с закрытием забега, после
     // которого этот обработчик получит 400/409).
+    // --- Оберег от смерти ---
+    //
+    // Списывается ТОЛЬКО если сработал (spendAt: 'effect'), поэтому единственное
+    // место, где он уходит со склада, — эта условная запись финиша.
+    //
+    // Доверие клиенту здесь ровно такое же, как у `died`: спасение происходит в
+    // бою, а бой целиком на клиенте. Что сервер ПРОВЕРЯЕТ — что оберег реально
+    // был взят в забег (свой список в currentRun.consumablesUsed, не слово
+    // клиента). Соврать «спас» без взятого оберега нельзя.
+    const charmUsed = request.body.charmUsed === true
+    const usedRead = readConsumablesUsed(run)
+    if (usedRead.kind === 'malformed') {
+      // Список взятого испорчен — проверить право на списание нечем. Молча
+      // пропустить значило бы или отобрать оберег даром, или отдать спасение
+      // бесплатно.
+      request.log.error({ userId, consumablesUsed: run.consumablesUsed }, 'finish-explore: currentRun.consumablesUsed is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+    const takenInRun = usedRead.kind === 'used' ? usedRead.ids : []
+    if (charmUsed && !takenInRun.includes('charm_death')) {
+      request.log.warn({ userId, takenInRun }, 'finish-explore: charmUsed without a charm taken into the run')
+      return reply.status(400).send({ error: 'Charm was not taken into this run' })
+    }
+
     const bank = character.trophies
     const dealRead = readSmugglerDeal(run)
     if (dealRead.kind === 'malformed') {
@@ -798,8 +857,19 @@ export async function runRoutes(server: FastifyInstance) {
     // клиенту — только warn'ы, описывающие расчёт. Поэтому отказ здесь не
     // может оставить забег закрытым наполовину.
     const written = await prisma.character.updateMany({
-      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      where: {
+        userId,
+        currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
+        // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
+        // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
+        // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
+        ...(charmUsed ? { charms: { gte: 1 } } : {}),
+      },
       data: {
+        // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
+        // зелья и закрытие забега — списание и закрытие происходят вместе либо
+        // не происходят вовсе.
+        ...(charmUsed ? { charms: { decrement: 1 } } : {}),
         trophies: died ? 0 : newTrophies,
         strength: growth.strength,
         strengthProgress: growth.strengthProgress,
@@ -836,6 +906,25 @@ export async function runRoutes(server: FastifyInstance) {
       )
     }
 
+    // Склад расходников после забега. Оберег НЕ сработал — склад не менялся, и
+    // снимок точен. Сработал — ПЕРЕЧИТЫВАЕМ из БД: фильтр гарантировал только
+    // «оберег был», но не «был ровно столько, сколько в снимке» (покупка со
+    // второго устройства между чтением и записью), а decrement считала база.
+    let consumablesAfterFinish = consumableStockOf(character)
+    if (charmUsed) {
+      const reread = await prisma.character.findUnique({ where: { userId } })
+      if (reread) {
+        consumablesAfterFinish = consumableStockOf(reread)
+      } else {
+        // Строка исчезла между записью и чтением — практически невозможно
+        // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
+        // неточного числа: забег УЖЕ закрыт, и клиент потерял бы весь экран
+        // итогов. Поэтому громкий лог и арифметика от снимка, а не тишина.
+        request.log.error({ userId }, 'finish-explore: character vanished before consumable read-back')
+        consumablesAfterFinish = { ...consumablesAfterFinish, charm_death: Math.max(0, consumablesAfterFinish.charm_death - 1) }
+      }
+    }
+
     const result: RunResultSummary = {
       interrupted: false,
       died,
@@ -856,6 +945,7 @@ export async function runRoutes(server: FastifyInstance) {
       level: growth.level,
       potions: newPotionStock,
       bonusLevels: newBonusLevels,
+      consumables: consumablesAfterFinish,
     }
     return reply.send(result)
   })

@@ -22,7 +22,35 @@
 // Раскладка id → колонка живёт на сервере, в runState.ts рядом с зельями.
 
 /** Идентификаторы расходников. Новый расходник — новый вариант здесь. */
-export type ConsumableId = 'whetstone'
+export type ConsumableId = 'whetstone' | 'charm_death'
+
+/**
+ * ЧТО расходник делает. Размеченный union, а не набор необязательных чисел:
+ * с плоскими полями (`attackBonus?`, `reviveFrac?`) любой предмет формально
+ * имел бы все эффекты сразу, а «оберег с attackBonus: 0» ещё и печатался бы в
+ * витрине как «+0% урона». Здесь каждый предмет объявляет РОВНО свой эффект,
+ * и строка механики выводится из него (см. consumableEffectLine).
+ *
+ * Новый вид эффекта — новый вариант здесь плюс ветка в consumableEffectLine;
+ * забыть вторую нельзя, switch без неё не скомпилируется.
+ */
+export type ConsumableEffect =
+  /** Множитель урона обычной атаки: frac 0.3 = +30% до конца забега. */
+  | { kind: 'attackBonus'; frac: number }
+  /** Спасает от смерти по здоровью: поднимает с frac × maxHp. */
+  | { kind: 'deathSave'; reviveFrac: number }
+
+/**
+ * КОГДА расходник списывается со склада.
+ *   'start'  — на старте забега, безусловно (взял — заплатил).
+ *   'effect' — только когда сработал; не пригодился — остаётся на складе.
+ *
+ * Различать обязательно и на сервере: у 'start' списание идёт в записи
+ * /run/start-explore, у 'effect' — в условной записи финиша, по слову клиента
+ * (charmUsed). Свалить их в одно значило бы либо брать плату за неслучившееся
+ * спасение, либо отдавать эффект бесплатно.
+ */
+export type ConsumableSpendAt = 'start' | 'effect'
 
 export type Consumable = {
   id: ConsumableId
@@ -44,12 +72,8 @@ export type Consumable = {
    * эндпоинта.
    */
   runSlot: boolean
-  /**
-   * Прибавка к урону обычной атаки, ДОЛЯ: 0.3 = +30%. Действует до конца
-   * забега. Скиллы её не используют — они бьют долей maxHp цели, это отдельное
-   * решение (см. CLAUDE.md, Stat & Leveling).
-   */
-  attackBonus: number
+  spendAt: ConsumableSpendAt
+  effect: ConsumableEffect
   desc: string
 }
 
@@ -61,18 +85,56 @@ export const CONSUMABLES: Consumable[] = [
     price: 500,
     levelRequired: 1,
     runSlot: true,
-    attackBonus: 0.3,
+    // Списывается на старте: эффект действует весь забег с первой секунды, и
+    // «не пригодился» у него не бывает.
+    spendAt: 'start',
+    effect: { kind: 'attackBonus', frac: 0.3 },
     desc: 'Шершавый брусок, сточенный до блеска. Пара движений — и клинок снова помнит, зачем его ковали.',
+  },
+  {
+    id: 'charm_death',
+    nameRu: 'Оберег от смерти',
+    icon: 'charm_death.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: true,
+    // Списывается ТОЛЬКО если спас (решение дизайнера). Взять оберег и дойти
+    // до конца живым — ничего не стоит, он остаётся на складе.
+    spendAt: 'effect',
+    effect: { kind: 'deathSave', reviveFrac: 0.5 },
+    desc: 'Смерть не любит, когда её обманывают. Но один раз простит.',
   },
 ]
 
 /**
- * Строка механики для витрины и карточки. Число ВЫВОДИТСЯ из attackBonus, а не
- * написано текстом рядом: два экземпляра одного числа разошлись бы при первой же
- * правке баланса, и витрина начала бы обещать не то, что делает забег.
+ * Строка механики для витрины, карточки и списка гнёзд. Числа ВЫВОДЯТСЯ из
+ * эффекта, а не написаны текстом рядом: два экземпляра одного числа разошлись бы
+ * при первой правке баланса, и витрина начала бы обещать не то, что делает забег.
  */
 export function consumableEffectLine(spec: Consumable): string {
-  return `Урон атаки — +${Math.round(spec.attackBonus * 100)}% до конца забега`
+  switch (spec.effect.kind) {
+    case 'attackBonus':
+      return `Урон атаки — +${Math.round(spec.effect.frac * 100)}% до конца забега`
+    case 'deathSave':
+      return `Спасает от смерти — поднимает с ${Math.round(spec.effect.reviveFrac * 100)}% здоровья. Тратится, только если спас`
+  }
+}
+
+/**
+ * Прибавка к урону обычной атаки, долей. 0 — предмет урона не касается.
+ * Отдельной функцией, чтобы суммирование множителя (сервер, /run/start-explore)
+ * не разбирало union у себя и не забыло новый вид эффекта.
+ */
+export function consumableAttackBonus(spec: Consumable): number {
+  return spec.effect.kind === 'attackBonus' ? spec.effect.frac : 0
+}
+
+/**
+ * Доля maxHp, с которой предмет поднимает после спасения от смерти, или null —
+ * предмет от смерти не спасает.
+ */
+export function consumableReviveFrac(spec: Consumable): number | null {
+  return spec.effect.kind === 'deathSave' ? spec.effect.reviveFrac : null
 }
 
 /** Запись каталога по id, или null если id не из каталога. */
@@ -112,8 +174,8 @@ export function runSlotConsumableById(id: string): Consumable | null {
  * запаса, и связывать два потолка одним числом значило бы менять баланс зелий
  * при правке камня.
  *
- * 10 — как у зелий по той же причине: реально ограничивает золото (500 × 10 =
- * 5000, заведомо безопасное произведение, до потолка int4 нужны миллионы), а
+ * 10 — как у зелий по той же причине: реально ограничивает золото (1000 × 10 =
+ * 10000, заведомо безопасное произведение, до потолка int4 нужны миллионы), а
  * двузначное число помещается в один ряд степпера на карточке.
  */
 export const MAX_CONSUMABLES_PER_PURCHASE = 10

@@ -60,6 +60,7 @@ model Character {
   // фиксированы каталогом, а счётчику нужны атомарные increment/decrement в том
   // же UPDATE, где пишется золото. Новый расходник = новая колонка + миграция.
   whetstones          Int      @default(0)
+  charms              Int      @default(0)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

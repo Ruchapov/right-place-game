@@ -476,11 +476,11 @@ export function subtractPotionStock(stock: number[], spent: number[]): number[] 
 // Новый расходник = новая колонка в схеме + миграция + строка здесь + вариант в
 // ConsumableId (consumables.ts). Забыть последнее нельзя: switch в
 // consumableStockIncrement (routes/run.ts) не скомпилируется без нового варианта.
-export type ConsumableColumns = { whetstones: number }
+export type ConsumableColumns = { whetstones: number; charms: number }
 
 /** Запас расходников объектом по id каталога — форма ответов клиенту. */
 export function consumableStockOf(character: ConsumableColumns): Record<ConsumableId, number> {
-  return { whetstone: character.whetstones }
+  return { whetstone: character.whetstones, charm_death: character.charms }
 }
 
 export type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
