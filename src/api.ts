@@ -1,3 +1,5 @@
+import { CONSUMABLES, type ConsumableId } from './consumables'
+
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
 // --- Общий запрос с таймаутом ---
@@ -112,6 +114,15 @@ export type LoginResponse = {
     // Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). Заменил
     // прежний скалярный potionCharges.
     potions: number[]
+    // Склад расходников — объектом по id каталога (`{whetstone: N}`), не
+    // массивом: у расходников нет фиксированного порядка, и позиционный массив
+    // молча съехал бы при добавлении второго вида.
+    // ОПЦИОНАЛЬНОЕ намеренно, хотя нынешний сервер поле всегда присылает:
+    // объявить его обязательным значило бы получить `undefined`,
+    // типизированный как объект, на любом старом или подменённом ответе — тот
+    // самый тихий фолбэк, который в проекте запрещён. Разбирать ТОЛЬКО через
+    // readConsumables ниже.
+    consumables?: Record<string, number>
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -911,6 +922,8 @@ export type ProfileResult = {
   gold: number
   trophies: number
   potions: number[]
+  /** null — сервер не назвал склад расходников (см. readConsumables). */
+  consumables: Record<ConsumableId, number> | null
   /** null — сервер курс не назвал (см. readTrophyGoldRate). */
   trophyGoldRate: number | null
 }
@@ -926,6 +939,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     gold: number
     trophies: number
     potions: number[]
+    consumables?: unknown
     trophyGoldRate?: unknown
   }>(
     `${SERVER_URL}/character/profile`,
@@ -936,6 +950,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     gold: raw.gold,
     trophies: raw.trophies,
     potions: raw.potions,
+    consumables: readConsumables(raw.consumables),
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
   }
 }
@@ -1057,6 +1072,63 @@ export async function smugglerQuote(token: string, closedEvents: number[]): Prom
 // поэтому повтор безопасен и вернёт ТОТ ЖЕ исход — перебросить неудачу нельзя.
 export async function smugglerDeal(token: string, closedEvents: number[]): Promise<SmugglerDealResult> {
   return smugglerRequest<SmugglerDealResult>('/run/smuggler-deal', token, closedEvents)
+}
+
+/**
+ * Разбор склада расходников из ответа сервера (логин, профиль, покупка).
+ *
+ * Возвращает null на ВСЁ, что не является полным и годным складом: поля нет, это
+ * не объект, хотя бы у одного id каталога значение не целое неотрицательное
+ * число. Null — не «расходников нет», а «запас неизвестен»: экраны в этом
+ * состоянии пишут прочерк, а не ноль. Ноль и «сервер не сказал» — РАЗНЫЕ
+ * состояния, и второе не должно маскироваться первым.
+ *
+ * Требуются ВСЕ id каталога, а не те, что пришли: частично заполненный объект
+ * означает, что сервер и клиент разошлись каталогами, и доверять остатку нельзя.
+ */
+export function readConsumables(raw: unknown): Record<ConsumableId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as Record<ConsumableId, number>
+  for (const spec of CONSUMABLES) {
+    const v = record[spec.id]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[spec.id] = v
+  }
+  return out
+}
+
+export type BuyConsumableResult = {
+  gold: number
+  /** null — сервер не назвал склад (см. readConsumables). */
+  consumables: Record<ConsumableId, number> | null
+}
+
+/**
+ * Покупка расходника (POST /character/buy-consumable).
+ *
+ * id и count — из каталога и степпера; цену, уровень открытия и потолок count
+ * сервер проверяет по СВОЕЙ копии каталога, клиент называет только что и сколько.
+ *
+ * ПОВТОРОВ НЕТ и быть не должно — ровно по той же причине, что у buyPotion:
+ * эндпоинт НЕ идемпотентен, прерванная попытка могла дойти и списать золото, а
+ * повтор списал бы второй раз. При сетевом сбое вызывающий обязан не «попробовать
+ * ещё», а СВЕРИТЬ баланс (fetchProfile).
+ */
+export async function buyConsumable(token: string, id: ConsumableId, count: number): Promise<BuyConsumableResult> {
+  const raw = await requestJson<{ gold: number; consumables?: unknown }>(
+    `${SERVER_URL}/character/buy-consumable`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id, count }),
+    },
+    SHOP_TIMEOUT_MS,
+  )
+  return { gold: raw.gold, consumables: readConsumables(raw.consumables) }
 }
 
 export type InventoryItem = {

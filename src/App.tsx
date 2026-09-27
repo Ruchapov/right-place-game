@@ -1,14 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, fetchProfile, exchangeTrophies, readTrophyGoldRate, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, saveEquippedSkills, buyPotion, buyConsumable, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
+// Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
+// server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
+// копии числа на клиенте нет и заводить её нельзя.
+import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, consumableById, consumableEffectLine, parseConsumableCount, type ConsumableId } from './consumables'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[] }
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[]
+  /**
+   * Склад расходников по id каталога (src/consumables.ts).
+   * null — сервер его НЕ НАЗВАЛ (старая версия или битое поле, см.
+   * readConsumables в api.ts). Это не «расходников нет»: экраны в этом
+   * состоянии пишут прочерк, а не ноль.
+   */
+  consumables: Record<ConsumableId, number> | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -294,6 +305,22 @@ const RUN_COST = 3 // DEV: держать в синхроне с серверо�
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
 const TEMP_DEV_TROPHY_GOLD_RATE = 1
+/**
+ * TEMP_DEV_WHETSTONES — ТЕСТОВЫЙ запас точильных камней для офлайн-заглушки
+ * DevTester (вне Telegram, см. её в эффекте входа ниже).
+ *
+ * Это НЕ настоящий склад: реальный лежит в колонке Character.whetstones и
+ * приходит клиенту полем character.consumables в ответе логина. Здесь число
+ * нужно ровно затем, чтобы витрину, карточку и ячейку инвентаря можно было
+ * верстать в браузере, где запросов к серверу нет вообще.
+ *
+ * 2, а не 0 и не 1: ноль спрятал бы ячейку в инвентаре (она рисуется только при
+ * запасе > 0), а с единицей не видно, что бейдж «×N» показывает число, а не
+ * просто факт наличия.
+ *
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
+ */
+const TEMP_DEV_WHETSTONES = 2
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -426,7 +453,11 @@ export default function App() {
   // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
   const [slotFilterOpen, setSlotFilterOpen] = useState(false)
   const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги' | 'Обмен'>('Расходники')
-  const [shopSelectedPotion, setShopSelectedPotion] = useState<string | null>(null)
+  // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
+  // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
+  const [shopSelected, setShopSelected] = useState<
+    { kind: 'potion'; tier: number } | { kind: 'consumable'; id: ConsumableId } | null
+  >(null)
   // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
   // приёмом, что "Недостаточно энергии" под кнопкой забега ниже).
   const [shopBuyError, setShopBuyError] = useState<string | null>(null)
@@ -469,7 +500,10 @@ export default function App() {
   // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
   // slot+tier на это не годилась и досталась от фейкового TEST_INVENTORY.
   const [gearSelectedItem, setGearSelectedItem] = useState<
-    { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | null
+    | { kind: 'item'; inventoryItemId: string }
+    | { kind: 'potion'; potionId: string }
+    | { kind: 'consumable'; consumableId: ConsumableId }
+    | null
   >(null)
   const [friendsLinkCopied, setFriendsLinkCopied] = useState(false)
   const [showExploreDebug, setShowExploreDebug] = useState(false)
@@ -547,7 +581,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0] })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0], consumables: { whetstone: TEMP_DEV_WHETSTONES } })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -572,7 +606,9 @@ export default function App() {
     const data: LoginResponse = await loginWithTelegram(initDataRaw)
     localStorage.setItem('jwt', data.token)
     setIsTelegramSession(true)
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions })
+    // consumables — через readConsumables, а не присваиванием: нет поля или мусор
+    // дают null, то есть «запас неизвестен», и экраны скажут это прочерком.
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
@@ -733,6 +769,8 @@ export default function App() {
       case 'Tier not unlocked': return 'Это зелье ещё не открыто по уровню.'
       case 'Invalid count': return `Количество должно быть от 1 до ${MAX_POTIONS_PER_PURCHASE}.`
       case 'Unknown potion tier': return 'Неизвестный тир зелья.'
+      case 'Unknown consumable': return 'Неизвестный расходник.'
+      case 'Not unlocked': return 'Этот предмет ещё не открыт по уровню.'
       default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
     }
   }
@@ -801,6 +839,84 @@ export default function App() {
     }
   }
 
+  // Покупка расходника. Устроена ТЕМ ЖЕ образом, что handleBuyPotion выше, и
+  // делит с ней всё состояние: shopBuyPending, shopBuyError, shopBalanceUnknown.
+  // Отдельная функция, а не ветка внутри одной: у зелий свой каталог, свой
+  // потолок и своя форма ответа сервера.
+  async function handleBuyConsumable(id: ConsumableId, count: number) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setShopBuyError('Профиль не загружен — покупка недоступна.')
+      return
+    }
+    if (shopBuyPending) return
+    // Баланс не сверен после потерянного ответа — покупать нельзя (см.
+    // shopBalanceUnknown). Кнопка в этом состоянии и так погашена, это
+    // страховка от второго пути вызова.
+    if (shopBalanceUnknown) return
+    const spec = consumableById(id)
+    if (spec === null) {
+      setShopBuyError('Неизвестный расходник.')
+      return
+    }
+    // Тем же разбором, что у сервера (общий каталог) — чтобы отказ выглядел
+    // одинаково с обеих сторон.
+    const safeCount = parseConsumableCount(count)
+    if (safeCount === null) {
+      setShopBuyError(`Количество должно быть от 1 до ${MAX_CONSUMABLES_PER_PURCHASE}.`)
+      return
+    }
+    const total = spec.price * safeCount
+    if (player.gold < total) {
+      setShopBuyError(`Недостаточно золота (нужно ${total}).`)
+      return
+    }
+    // Запас ДО покупки — с ним сверяем ответ. null значит «запас неизвестен», и
+    // тогда сверять нечем: проверку ниже пропускаем, а не считаем от нуля.
+    const before = player.consumables === null ? null : (player.consumables[id] ?? 0)
+    setShopBuyPending(true)
+    setShopBuyError(null)
+    try {
+      const result = await buyConsumable(token, id, safeCount)
+      if (result.consumables === null) {
+        // Золото сервер назвал, склад — нет. Покупка ПРОШЛА, но показывать
+        // нечего: молча оставить прежнее число значило бы соврать. Сообщаем и
+        // требуем сверку, как при потерянном ответе.
+        console.error('Buy consumable: сервер не назвал склад расходников')
+        setPlayer(prev => prev ? { ...prev, gold: result.gold, consumables: null } : prev)
+        setShopBalanceUnknown(true)
+        setShopBuyError('Покупка прошла, но сервер не назвал запас. Обнови баланс.')
+        return
+      }
+      // gold/consumables — абсолютные значения из БД, поэтому экран обновляется
+      // сразу, без перезахода.
+      const stock = result.consumables
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, consumables: stock } : prev)
+      if (before !== null) {
+        const added = (stock[id] ?? 0) - before
+        if (added !== safeCount) {
+          // Молчаливый успех здесь соврал бы: игрок просил N, а получил другое.
+          setShopBuyError(`Сервер продал ${Math.max(0, added)} из ${safeCount}.`)
+        }
+      }
+    } catch (e) {
+      console.error('Buy consumable failed', e)
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: ответа нет, но запрос МОГ дойти и
+        // примениться. Повторять нельзя (спишет второй раз), продолжать покупки
+        // тоже — сначала сверка. Ровно та же развилка, что у зелий.
+        setShopBalanceUnknown(true)
+        setShopBuyError('Ответ не пришёл — покупка могла пройти. Обнови баланс.')
+      } else if (e instanceof RequestError) {
+        setShopBuyError(describeBuyRefusal(e))
+      } else {
+        setShopBuyError('Не удалось купить — сервер отказал. Попробуй ещё раз.')
+      }
+    } finally {
+      setShopBuyPending(false)
+    }
+  }
+
   // Сверка баланса после потерянного ответа. ТОЛЬКО чтение
   // (GET /character/profile) — не полный вход: loginWithTelegram закрыл бы
   // открытый на сервере забег, а кнопка «обновить» такого права не имеет.
@@ -820,7 +936,11 @@ export default function App() {
       // trophies мержится наравне с золотом: обмен меняет ОБА числа, и сверять
       // после него только золото значило бы оставить в шапке банк, которого
       // уже нет.
-      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions } : prev)
+      // consumables мержится наравне со складом зелий: покупка камня меняет и
+      // золото, и его запас, и сверять после неё только зелья значило бы оставить
+      // на экране неверное число камней. null из профиля перезаписывает намеренно
+      // — сервер, перестав присылать поле, означает именно «запас неизвестен».
+      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions, consumables: profile.consumables } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
       // прежнее число было бы тихим фолбэком на устаревшее значение.
@@ -1268,12 +1388,99 @@ export default function App() {
           {activeTab === 'shop' && (() => {
             const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги', 'Обмен'] as const
             const playerLevel = player?.level ?? 1
-            // Витрина = каталог (src/potions.ts). Прежний локальный массив
-            // POTIONS удалён: проценты/цены/уровни жили в трёх местах и уже
-            // противоречили друг другу. shopSelectedPotion теперь хранит НОМЕР
-            // ТИРА строкой, id-шников зелий больше нет.
-            const selectedTier = shopSelectedPotion === null ? null : Number(shopSelectedPotion)
-            const selectedPotion = selectedTier === null ? null : (POTION_TIERS[selectedTier - 1] ?? null)
+            // Витрина «Расходники» = ДВА каталога, сведённые в один список
+            // ячеек: сначала зелья (src/potions.ts), затем расходники
+            // (src/consumables.ts). Локальных массивов товаров в компоненте нет
+            // и не должно быть — цены/уровни жили в трёх местах и уже
+            // противоречили друг другу.
+            // Ячейка одинаковая для обоих видов: иконка, ценник, замок по
+            // уровню. Различается только `select` — что положить в shopSelected.
+            type ShopCell = {
+              key: string
+              icon: string
+              alt: string
+              price: number
+              levelRequired: number
+              select: () => void
+            }
+            const shopCells: ShopCell[] = [
+              ...POTION_TIERS.map((p) => ({
+                key: `potion-${p.tier}`,
+                icon: p.icon,
+                alt: p.nameRu,
+                price: p.price,
+                levelRequired: p.levelRequired,
+                select: () => setShopSelected({ kind: 'potion' as const, tier: p.tier }),
+              })),
+              ...CONSUMABLES.map((c) => ({
+                key: `consumable-${c.id}`,
+                icon: c.icon,
+                alt: c.nameRu,
+                price: c.price,
+                levelRequired: c.levelRequired,
+                select: () => setShopSelected({ kind: 'consumable' as const, id: c.id }),
+              })),
+            ]
+
+            // Модель карточки — ОДНА на оба вида товара. Иначе пришлось бы
+            // дублировать ~150 строк разметки вместе со степпером, строкой
+            // ошибки, блокировкой после потерянного ответа и кнопкой сверки, и
+            // две копии разъехались бы при первой же правке.
+            //   owned: null — запас НЕИЗВЕСТЕН (профиль не загружен или сервер не
+            //     назвал склад). Не ноль: это разные состояния.
+            //   mechanic: у зелья пара «подпись — значение» (как было), у
+            //     расходника одна готовая строка из consumableEffectLine().
+            //   stepperNote: подпись под числом; у расходника её нет.
+            type ShopCardView = {
+              icon: string
+              nameRu: string
+              desc: string
+              price: number
+              levelRequired: number
+              mechanic: { label: string; value: string } | { line: string }
+              owned: number | null
+              maxPerPurchase: number
+              stepperNote: string | null
+              buy: (qty: number) => void
+            }
+            const shopCard: ShopCardView | null = shopSelected === null ? null : (() => {
+              if (shopSelected.kind === 'potion') {
+                const p = POTION_TIERS[shopSelected.tier - 1]
+                if (!p) return null
+                return {
+                  icon: p.icon,
+                  nameRu: p.nameRu,
+                  desc: p.desc,
+                  price: p.price,
+                  levelRequired: p.levelRequired,
+                  mechanic: { label: 'Восстанавливает', value: `${Math.round(p.healFrac * 100)}% от здоровья` },
+                  owned: player === null ? null : (player.potions[p.tier - 1] ?? 0),
+                  maxPerPurchase: MAX_POTIONS_PER_PURCHASE,
+                  // Склад зелий не ограничен, но в один забег больше трёх
+                  // глотков не поедет — игрок должен узнать это ДО покупки.
+                  stepperNote: `В забег берётся до ${MAX_SIPS_PER_RUN} глотков`,
+                  buy: (qty: number) => handleBuyPotion(p.tier, qty),
+                }
+              }
+              const c = consumableById(shopSelected.id)
+              if (c === null) return null
+              return {
+                icon: c.icon,
+                nameRu: c.nameRu,
+                desc: c.desc,
+                price: c.price,
+                levelRequired: c.levelRequired,
+                // Строка механики собирается ИЗ attackBonus (см.
+                // consumableEffectLine) — число не дублируется текстом.
+                mechanic: { line: consumableEffectLine(c) },
+                // player.consumables === null означает «сервер не назвал склад»,
+                // и это НЕ ноль (см. readConsumables в api.ts).
+                owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
+                maxPerPurchase: MAX_CONSUMABLES_PER_PURCHASE,
+                stepperNote: null,
+                buy: (qty: number) => handleBuyConsumable(c.id, qty),
+              }
+            })()
 
             return (
             <div style={{ padding: '0 4px' }}>
@@ -1339,11 +1546,11 @@ export default function App() {
               {/* Витрина */}
               {shopTab === 'Расходники' ? (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
-                  {POTION_TIERS.map(p => {
-                    const unlocked = playerLevel >= p.levelRequired
+                  {shopCells.map(cell => {
+                    const unlocked = playerLevel >= cell.levelRequired
                     return (
-                      <div key={p.tier}
-                        onClick={() => { setShopSelectedPotion(String(p.tier)); setShopBuyError(null); setShopQty(1) }}
+                      <div key={cell.key}
+                        onClick={() => { cell.select(); setShopBuyError(null); setShopQty(1) }}
                         style={{
                           boxSizing:'border-box',
                           position:'relative',
@@ -1356,8 +1563,8 @@ export default function App() {
                           cursor: 'pointer',
                         }}>
                         <img
-                          src={`${import.meta.env.BASE_URL}assets/icons/${p.icon}`}
-                          alt={p.nameRu}
+                          src={`${import.meta.env.BASE_URL}assets/icons/${cell.icon}`}
+                          alt={cell.alt}
                           style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }}
                         />
                         <div style={{
@@ -1367,7 +1574,7 @@ export default function App() {
                           fontSize:11, fontFamily:FONT_DISPLAY,
                           color: unlocked ? C.glowCore : C.textDim,
                         }}>
-                          {unlocked ? p.price : `ур. ${p.levelRequired}`}
+                          {unlocked ? cell.price : `ур. ${cell.levelRequired}`}
                         </div>
                       </div>
                     )
@@ -1486,9 +1693,9 @@ export default function App() {
               )}
 
               {/* Карточка предмета */}
-              {selectedPotion && (
+              {shopCard && (
                 <div
-                  onClick={() => setShopSelectedPotion(null)}
+                  onClick={() => setShopSelected(null)}
                   style={{
                     position:'fixed', top:0, left:0, right:0, bottom:0,
                     background:'rgba(0,0,0,0.55)',
@@ -1509,59 +1716,72 @@ export default function App() {
                         display:'flex', alignItems:'center', justifyContent:'center',
                       }}>
                         <img
-                          src={`${import.meta.env.BASE_URL}assets/icons/${selectedPotion.icon}`}
-                          alt={selectedPotion.nameRu}
+                          src={`${import.meta.env.BASE_URL}assets/icons/${shopCard.icon}`}
+                          alt={shopCard.nameRu}
                           style={{ width:54, height:54, objectFit:'contain', display:'block' }}
                         />
                       </div>
                       <div>
-                        <div style={{ fontSize:15, color:C.textMain }}>{selectedPotion.nameRu}</div>
+                        <div style={{ fontSize:15, color:C.textMain }}>{shopCard.nameRu}</div>
                         {/* ТОТ ЖЕ источник, что у золота в шапке — player,
-                            обновляется мержем в handleBuyPotion. Здесь раньше
-                            стоял литеральный 0 из визуального каркаса, и он
-                            неотличим от честного "зелий нет" — на этом уже
-                            потеряли время. Профиль не загружен — так и пишем,
-                            нулём не подменяем (см. правило про тихие фолбэки). */}
+                            обновляется мержем в handleBuyPotion/
+                            handleBuyConsumable. Здесь раньше стоял литеральный 0
+                            из визуального каркаса, и он неотличим от честного
+                            "нет ни одного" — на этом уже потеряли время. Запас
+                            неизвестен (профиль не загружен ИЛИ сервер не назвал
+                            склад расходников) — так и пишем, нулём не подменяем
+                            (см. правило про тихие фолбэки). */}
                         <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
-                          {player === null
-                            ? 'у тебя: — (профиль не загружен)'
-                            : `у тебя: ${player.potions[selectedPotion.tier - 1] ?? 0}`}
+                          {shopCard.owned === null
+                            ? 'у тебя: — (запас неизвестен)'
+                            : `у тебя: ${shopCard.owned}`}
                         </div>
                       </div>
                     </div>
 
                     <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
-                      {selectedPotion.desc}
+                      {shopCard.desc}
                     </div>
 
-                    <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-                      <div style={{ fontSize:12, color:C.textDim }}>Восстанавливает</div>
-                      <div style={{ fontSize:13, color:C.bone }}>{Math.round(selectedPotion.healFrac * 100)}% от здоровья</div>
+                    {/* Строка механики. У зелья это пара «подпись — значение»
+                        (как было), у расходника — одна готовая строка из
+                        каталога: разбивать её на две половины пришлось бы по
+                        тире, а это сломалось бы на первой же правке текста. */}
+                    <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginBottom:12 }}>
+                      {'line' in shopCard.mechanic ? (
+                        <div style={{ flex:1, fontSize:12, color:C.bone, textAlign:'center' }}>{shopCard.mechanic.line}</div>
+                      ) : (
+                        <>
+                          <div style={{ fontSize:12, color:C.textDim }}>{shopCard.mechanic.label}</div>
+                          <div style={{ fontSize:13, color:C.bone }}>{shopCard.mechanic.value}</div>
+                        </>
+                      )}
                     </div>
 
-                    {playerLevel >= selectedPotion.levelRequired ? (() => {
+                    {playerLevel >= shopCard.levelRequired ? (() => {
                       // Явные проверки вместо `player?.gold ?? 0`: нулём
                       // подменять неизвестное золото нельзя — не загруженный
                       // профиль и пустой кошелёк это РАЗНЫЕ состояния, и второе
                       // не должно маскировать первое (см. правило про тихие
                       // фолбэки). Строка нехватки золота выводится СРАЗУ, не
                       // после тапа — тем же приёмом, что notEnoughEnergy ниже.
-                      const canAfford = player !== null && player.gold >= selectedPotion.price
+                      const canAfford = player !== null && player.gold >= shopCard.price
                       const affordMsg =
-                        player !== null && player.gold < selectedPotion.price
-                          ? `Недостаточно золота (нужно ${selectedPotion.price}).`
+                        player !== null && player.gold < shopCard.price
+                          ? `Недостаточно золота (нужно ${shopCard.price}).`
                           : null
                       const msg = shopBuyError ?? affordMsg
                       // Потолок степпера — меньшее из двух: сколько разрешает
-                      // сервер (MAX_POTIONS_PER_PURCHASE, общий каталог) и на
-                      // сколько хватает золота. Не хватает даже на одно —
-                      // maxQty 0, степпер погашен, строка прежняя.
-                      const affordableMax = player === null ? 0 : Math.floor(player.gold / selectedPotion.price)
-                      const maxQty = Math.min(MAX_POTIONS_PER_PURCHASE, affordableMax)
+                      // сервер (потолок ИЗ ОБЩЕГО КАТАЛОГА товара — свой у зелий,
+                      // свой у расходников) и на сколько хватает золота. Не
+                      // хватает даже на одно — maxQty 0, степпер погашен, строка
+                      // прежняя.
+                      const affordableMax = player === null ? 0 : Math.floor(player.gold / shopCard.price)
+                      const maxQty = Math.min(shopCard.maxPerPurchase, affordableMax)
                       // Зажим на случай, если золото убыло после выбора N
                       // (покупка соседнего тира, сверка баланса).
                       const qty = Math.min(Math.max(1, shopQty), Math.max(1, maxQty))
-                      const totalPrice = selectedPotion.price * qty
+                      const totalPrice = shopCard.price * qty
                       const buyDisabled = shopBuyPending || !canAfford || shopBalanceUnknown
                       return (
                       <>
@@ -1582,12 +1802,15 @@ export default function App() {
                           }}>−</button>
                         <div style={{ flex:1, textAlign:'center' }}>
                           <div style={{ fontSize:18, color:C.textMain, fontFamily:FONT_DISPLAY }}>{maxQty < 1 ? 1 : qty}</div>
-                          {/* Лимит глотков — из каталога, не литерал: игрок
-                              иначе не узнает, что запас сверх этого числа в
-                              один забег не поедет. */}
-                          <div style={{ fontSize:10, color:C.textDim, marginTop:2 }}>
-                            В забег берётся до {MAX_SIPS_PER_RUN} глотков
-                          </div>
+                          {/* Подпись под числом — из модели товара, не литерал: у
+                              зелий это лимит глотков за забег (игрок иначе не
+                              узнает, что запас сверх него в забег не поедет), у
+                              расходника её нет вовсе. */}
+                          {shopCard.stepperNote !== null && (
+                            <div style={{ fontSize:10, color:C.textDim, marginTop:2 }}>
+                              {shopCard.stepperNote}
+                            </div>
+                          )}
                         </div>
                         <button
                           onClick={() => setShopQty(q => Math.min(maxQty, Math.max(1, q) + 1))}
@@ -1601,7 +1824,7 @@ export default function App() {
                           }}>+</button>
                       </div>
                       <div
-                        onClick={() => { if (!buyDisabled) handleBuyPotion(selectedPotion.tier, qty) }}
+                        onClick={() => { if (!buyDisabled) shopCard.buy(qty) }}
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                           borderRadius:9, padding:11, textAlign:'center',
@@ -1644,7 +1867,7 @@ export default function App() {
                           borderRadius:9, padding:11, textAlign:'center',
                           color:C.textDim, fontSize:14,
                         }}>
-                        Откроется на {selectedPotion.levelRequired} уровне
+                        Откроется на {shopCard.levelRequired} уровне
                       </div>
                     )}
                   </div>
@@ -1677,7 +1900,7 @@ export default function App() {
               equipped: boolean
               group: number
               rank: number
-              open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string }
+              open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | { kind: 'consumable'; consumableId: ConsumableId }
             }
             // ОДНА ячейка на ОДНУ строку InventoryItem, без бейджа "xN":
             // стакинга в БД нет (каждый предмет — своя строка), а
@@ -1748,6 +1971,37 @@ export default function App() {
                   })),
                 note: potionStock === null ? 'Профиль не загружен — склад зелий неизвестен.' : null,
               },
+              {
+                key: 'consumables',
+                // Расходники ячейку сумки ТРАТЯТ — в отличие от зелий: их берут
+                // единицами, а не десятками, и они идут в гнёзда подготовки
+                // наравне с картами (docs/items.md, "Правило вместимости").
+                takesCell: true,
+                // Показываем только то, чего реально не ноль — тем же приёмом,
+                // что тиры зелий выше. Запас неизвестен (consumables === null) —
+                // ячеек нет вовсе, причину скажет note: пустая сетка и
+                // "расходников нет" не должны выглядеть одинаково.
+                cells: (player?.consumables == null ? [] : CONSUMABLES)
+                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
+                  .map((c) => ({
+                    key: `consumable-${c.id}`,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
+                    alt: c.nameRu,
+                    qty: player?.consumables?.[c.id] ?? 0,
+                    equipped: false,
+                    // Группа 1 — ниже зелий (у тех 0): расходников мало, и они
+                    // должны стоять после расходуемых в забеге зелий, а не
+                    // вперемешку.
+                    group: 1,
+                    rank: 0,
+                    open: { kind: 'consumable' as const, consumableId: c.id },
+                  })),
+                note: player === null
+                  ? 'Профиль не загружен — запас расходников неизвестен.'
+                  : player.consumables === null
+                    ? 'Сервер не назвал запас расходников.'
+                    : null,
+              },
             ]
             const consumableCells: InvCell[] = consumableSources.flatMap((src) => src.cells)
             const consumableNotes: string[] = consumableSources
@@ -1795,6 +2049,28 @@ export default function App() {
                   // передаёт их в handleEquipItem и в порог уровня.
                   levelRequired: inv.item.levelRequired,
                   inventoryItemId: inv.inventoryItemId,
+                }
+              }
+              // Расходник — ТА ЖЕ форма карточки, что у зелья, никаких новых
+              // действий: применяется он в забеге (гнёзда подготовки), а не
+              // отсюда. Поля предмета заполнены нейтрально, как и у зелья.
+              if (gearSelectedItem.kind === 'consumable') {
+                const spec = consumableById(gearSelectedItem.consumableId)
+                // Расходника нет в каталоге — карточки нет вовсе, вместо пустой
+                // с выдуманными полями (тот же приём, что у пропавшего предмета).
+                if (spec === null) return null
+                return {
+                  kind: 'potion' as const,
+                  name: spec.nameRu,
+                  desc: spec.desc as string | null,
+                  // Строка механики — из каталога (число выводится из
+                  // attackBonus), не написана здесь повторно.
+                  stat: consumableEffectLine(spec),
+                  qty: player?.consumables?.[spec.id] ?? 0,
+                  iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
+                  equipped: false,
+                  levelRequired: null as number | null,
+                  inventoryItemId: null as string | null,
                 }
               }
               const potionTier = Number(gearSelectedItem.potionId)
