@@ -19,6 +19,7 @@
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
 import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
 import type { RunEvent } from './runEvents.js'
+import type { ConsumableId } from './consumables.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -416,6 +417,22 @@ export function subtractPotionStock(stock: number[], spent: number[]): number[] 
 // Prisma. Пять колонок вместо Json — цена за атомарные +1/-1 в общем update;
 // эти две функции держат разложение в ОДНОМ месте, чтобы номера тиров не
 // расползлись строковыми ключами по эндпоинтам.
+// --- Расходники: колонки Character <-> объект по id каталога ---
+//
+// Живёт ЗДЕСЬ, рядом с раскладкой зелий, а не в consumables.ts: тот файл обязан
+// быть байт-в-байт с клиентским, а имена колонок БД клиенту не нужны и знать их
+// ему незачем.
+//
+// Новый расходник = новая колонка в схеме + миграция + строка здесь + вариант в
+// ConsumableId (consumables.ts). Забыть последнее нельзя: switch в
+// consumableStockIncrement (routes/run.ts) не скомпилируется без нового варианта.
+export type ConsumableColumns = { whetstones: number }
+
+/** Запас расходников объектом по id каталога — форма ответов клиенту. */
+export function consumableStockOf(character: ConsumableColumns): Record<ConsumableId, number> {
+  return { whetstone: character.whetstones }
+}
+
 export type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
 
 export function potionStockOf(character: PotionColumns): number[] {

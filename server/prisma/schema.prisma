@@ -54,6 +54,12 @@ model Character {
   potionT3            Int      @default(0)
   potionT4            Int      @default(0)
   potionT5            Int      @default(0)
+  // Расходники — по одной колонке на вид (каталог: src/consumables.ts /
+  // server/src/consumables.ts, CONSUMABLES). Скаляры, а не Json и не отдельная
+  // таблица, по той же причине, что и potionT1..T5 выше: видов мало и они
+  // фиксированы каталогом, а счётчику нужны атомарные increment/decrement в том
+  // же UPDATE, где пишется золото. Новый расходник = новая колонка + миграция.
+  whetstones          Int      @default(0)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

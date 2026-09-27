@@ -4,6 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
+import { MAX_CONSUMABLES_PER_PURCHASE, consumableById, parseConsumableCount, type ConsumableId } from '../consumables.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -19,12 +20,27 @@ import {
   subtractPotionStock,
   potionStockOf,
   potionStockToColumns,
+  consumableStockOf,
   readSmugglerDeal,
   type SmugglerDeal,
 } from '../runState.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
+
+// Прибавка к складу ОДНОГО расходника, готовым куском data для update.
+//
+// switch по id, а НЕ вычисляемый ключ `{ [spec.column]: ... }`: вычисляемый
+// пришлось бы приводить кастом к Prisma-типу, и опечатка в имени колонки прошла
+// бы мимо проверки типов, проявившись только в рантайме. Здесь же добавление
+// нового расходника в ConsumableId РАЗВАЛИТ СБОРКУ, пока сюда не допишут ветку —
+// именно то, что нужно: молча забыть колонку невозможно.
+function consumableStockIncrement(id: ConsumableId, count: number): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'whetstone':
+      return { whetstones: { increment: count } }
+  }
+}
 
 // --- Общее для финиша и обеих ручек Контрабандиста ---
 
@@ -893,6 +909,81 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({ gold: updated.gold, potions: potionStockOf(updated) })
   })
 
+  // Покупка расходника (сейчас в каталоге один — точильный камень).
+  //
+  // ОТДЕЛЬНЫЙ эндпоинт, а не обобщённый buy-potion, и это осознанно: у зелий
+  // своя форма ответа (`{gold, potions[5]}`), которую клиент разбирает тем же
+  // кодом, что и GET /character/profile, и ломать её ради второго товара нельзя.
+  // Плюс у покупки нет ключа идемпотентности (открытая задача), и разветвление
+  // одного обработчика по типу товара распространило бы эту дыру на оба товара
+  // сразу. Общего кода для выноса тут на три строки — дублирование дешевле.
+  server.post<{ Body: { id?: string; count?: number } }>('/character/buy-consumable', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // id — только из каталога. Цена, уровень и эффект берутся ОТТУДА, не из тела
+    // запроса: клиент называет лишь, что покупает.
+    const rawId = request.body?.id
+    const spec = typeof rawId === 'string' ? consumableById(rawId) : null
+    if (spec === null) {
+      return reply.status(400).send({ error: 'Unknown consumable' })
+    }
+
+    // count обязателен и проверяется чистой функцией из каталога (там же
+    // потолок). Отсутствующее поле — отказ, а не «одна штука»: у этого эндпоинта
+    // нет старого клиента, чей формат надо сохранять.
+    const count = parseConsumableCount(request.body?.count)
+    if (count === null) {
+      return reply.status(400).send({ error: 'Invalid count', max: MAX_CONSUMABLES_PER_PURCHASE })
+    }
+
+    // Уровень — та же чистая функция от статов, что и везде в файле (колонка
+    // Character.level ей НЕ источник, только снимок).
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+    if (characterLevel < spec.levelRequired) {
+      return reply.status(400).send({ error: 'Not unlocked', levelRequired: spec.levelRequired })
+    }
+
+    const totalPrice = spec.price * count
+
+    // Запись АТОМАРНАЯ и сама себе проверка золота: условие `gold >= total`
+    // стоит в фильтре, а не в if выше. Поэтому между проверкой и списанием
+    // ничего не может влезть — параллельная покупка или обмен трофеев не дадут
+    // уйти в минус, потому что второй запрос просто не найдёт строку.
+    //   decrement/increment, а не вычисленные значения: иначе параллельная
+    //   запись золота была бы затёрта прочитанным снимком.
+    // ⚠️ В схеме НЕТ ограничения «не меньше нуля» на gold, так что фильтр здесь —
+    // единственное, что держит баланс неотрицательным. Убрать его нельзя.
+    const written = await prisma.character.updateMany({
+      where: { userId, gold: { gte: totalPrice } },
+      data: {
+        gold: { decrement: totalPrice },
+        ...consumableStockIncrement(spec.id, count),
+      },
+    })
+    if (written.count === 0) {
+      // Строка есть (findUnique выше её нашёл), значит не сошлось ИМЕННО золото.
+      // price — цена за штуку, total — за всю покупку: клиент показывает обе.
+      return reply.status(400).send({ error: 'Not enough gold', price: spec.price, total: totalPrice })
+    }
+
+    // Перечитываем — не вычисляем из старого снимка: decrement/increment считала
+    // БАЗА, и единственный честный способ назвать итог — спросить её.
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      // Персонаж существовал строкой выше. Исчезнуть он мог только удалением в
+      // ту же секунду. Подставлять правдоподобные числа нельзя: покупка УЖЕ
+      // применена, и соврать о балансе хуже, чем громко отказать.
+      request.log.error({ userId }, 'buy-consumable: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but balance could not be read' })
+    }
+
+    return reply.send({ gold: updated.gold, consumables: consumableStockOf(updated) })
+  })
+
   // Обмен трофеев на золото — операция МЕЖДУ забегами (из меню), не путать с
   // Контрабандистом: тот меняет трофеи на трофеи ВНУТРИ забега (SMUGGLER_MULT
   // в finish-explore выше), здесь же рискованная валюта переводится в
@@ -1014,6 +1105,11 @@ export async function runRoutes(server: FastifyInstance) {
       gold: character.gold,
       trophies: character.trophies,
       potions: potionStockOf(character),
+      // Запас расходников — объектом по id каталога (`{whetstone: N}`), а не
+      // массивом как зелья: у зелий индекс = тир-1 и порядок фиксирован
+      // каталогом, а у расходников порядка нет вовсе, и позиционный массив
+      // молча съехал бы при добавлении второго вида.
+      consumables: consumableStockOf(character),
       trophyGoldRate: TROPHY_GOLD_RATE,
     })
   })

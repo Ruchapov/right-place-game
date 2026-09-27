@@ -18,6 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
+import { consumableStockOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -331,6 +332,10 @@ export async function authRoutes(server: FastifyInstance) {
         energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate),
         equippedSkills: char.equippedSkills,
         potions: potionStockOf(char),
+        // Запас расходников — та же форма, что в GET /character/profile
+        // (объект по id каталога). Внутри character, а не верхним уровнем: это
+        // именно склад персонажа, в отличие от trophyGoldRate ниже.
+        consumables: consumableStockOf(char),
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,
