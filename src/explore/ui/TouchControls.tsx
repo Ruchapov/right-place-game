@@ -29,26 +29,29 @@ export type SkillButtonSlot = { iconSrc: string } | 'unknown' | null
 // выглядели мелкими, а ряд — неровным.
 // 26 -> кнопка 52px, заметно больше минимума 44px из дизайн-скилла.
 const BTN_R = 26
-// Минимальный зазор между соседними кнопками ПО ВИДИМЫМ кругам.
-const BTN_GAP = 8
-// Отступы от краёв панели. По X маленький намеренно: на 320px левый блок и
-// правый кластер иначе налезают друг на друга (расчёт — в комментарии к
-// раскладке ниже).
-const EDGE_X = 8
-const EDGE_Y = 12
-// Шаг «соседняя кнопка вплотную, с зазором» — им разнесены ◀/▶, прыжок и зелье.
-const BTN_STEP = 2 * BTN_R + BTN_GAP
-// Веер вокруг атаки: три позиции с шагом 45° — 180° (уклонение), 225° и 270°
-// (навыки). В экранных координатах y растёт ВНИЗ, поэтому 225° это влево-вверх,
-// а 270° — прямо вверх.
-const FAN_STEP = Math.PI / 4
-// Радиус веера ВЫВОДИТСЯ из требуемой хорды, а не подбирается руками: хорда
-// между соседними кнопками равна 2*D*sin(шаг/2) и обязана быть не меньше
-// 2*BTN_R + BTN_GAP. Отсюда D = 79 при нынешних числах. Прежняя формула считала
-// угол под хорду РОВНО 2*BTN_R, то есть кнопки веера стояли впритык.
-const FAN_D = Math.ceil((2 * BTN_R + BTN_GAP) / (2 * Math.sin(FAN_STEP / 2)))
-// Высота панели = от низа до верха самой высокой кнопки (верх веера).
-const PANEL_H = EDGE_Y + BTN_R + FAN_D + BTN_R
+// Отступ края кнопки от края экрана и от низа панели — как было до правки
+// размеров.
+const BTN_EDGE = 10
+// Зазор между кругом атаки и кольцом веера — тоже прежний.
+const FAN_GAP = 6
+// Радиус кольца веера. Формула прежняя (ATK_R + BTN_R + зазор), просто оба
+// радиуса теперь равны BTN_R.
+const FAN_D = 2 * BTN_R + FAN_GAP
+// Середина веера — влево-вверх от атаки (y растёт ВНИЗ, поэтому 225° это
+// влево-вверх). Уклонение и два навыка стоят вокруг неё.
+const FAN_MID = 225 * Math.PI / 180
+// Шаг веера — из хорды РОВНО в два радиуса, то есть соседние кнопки веера
+// КАСАЮТСЯ. Так было и раньше; расширять веер нельзя, любое увеличение шага
+// уводит навыки от атаки, а уменьшение даёт наложение (CLAUDE.md).
+const FAN_THETA = Math.acos(1 - 2 * Math.pow(BTN_R / FAN_D, 2))
+// Насколько верхняя кнопка веера поднята над центром атаки.
+const FAN_TOP_RISE = -FAN_D * Math.sin(FAN_MID + FAN_THETA)
+// Зазор между верхней кнопкой веера и зельем над ней — прежний.
+const POT_GAP = 4
+// Высота панели. 178 — прежнее значение; max с расчётным нужен, чтобы при
+// правке радиусов верхняя кнопка (зелье) не оказалась молча срезанной: расчёт —
+// это низ + атака + подъём веера + зелье над ним.
+const PANEL_H = Math.max(178, Math.ceil(BTN_EDGE + BTN_R + FAN_TOP_RISE + 2 * BTN_R + POT_GAP + BTN_R))
 // Насколько зона захвата ▲ шире видимой кнопки (см. PRESS_CSS).
 const JUMP_ZONE_PAD = 6
 
@@ -226,13 +229,30 @@ export default function TouchControls({
           (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
           refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
           dodgePressedRef) — меняется только вид, не способ ввода. */}
-      {/* Панель кнопок. bottom — НЕ 0, а нижний safe-area iOS: на айфонах с
-          жестом «домой» нижние ~34px экрана принадлежат системе, и кнопки,
-          прибитые к самому низу, попадали в полосу жеста (открытая задача в
-          CLAUDE.md). env(...) с запасным 0px — на устройствах без выреза
-          поведение прежнее. Высота — из PANEL_H, а не число рядом с числом:
-          раскладка внутри считается от той же константы. */}
-      <div data-touch-controls="" style={{ position: 'absolute', bottom: 'env(safe-area-inset-bottom, 0px)', left: 0, right: 0, height: PANEL_H, zIndex: 1001, pointerEvents: 'none' }}>
+      {/* Панель кнопок поднята над низом экрана на safe-area + 16px.
+          ⚠️ Источников отступа ЧЕТЫРЕ, и берётся МАКСИМУМ: ни один не работает
+          везде, а измеряют они одно и то же, поэтому складывать нельзя —
+          получился бы двойной отступ там, где доступны сразу два.
+            --tg-viewport-safe-area-inset-bottom и
+            --tg-viewport-content-safe-area-inset-bottom — РАБОЧИЙ источник в
+              нашем случае. Имена именно такие: их заводит @telegram-apps/sdk
+              (bindViewportCssVars в main.tsx), и без того вызова переменных нет
+              вовсе;
+            --tg-safe-area-inset-bottom — имя из собственного скрипта Telegram
+              (telegram-web-app.js). Мы его не грузим, но оставлено на случай
+              запуска в обёртке, которая его подставляет;
+            env(safe-area-inset-bottom) — у нас ВСЕГДА 0: в index.html у
+              <meta name="viewport"> нет viewport-fit=cover, а без него браузер
+              insets не отдаёт. Оставлен на случай, если cover добавят;
+            16px — собственный отступ. Он же и есть весь подъём там, где все
+              остальные нули (браузер, старый клиент Telegram).
+          Все значения приходят С ЕДИНИЦАМИ (SDK пишет `${n}px`) — иначе max()
+          стал бы невалидным и правило отвалилось бы целиком. */}
+      <div data-touch-controls="" style={{
+        position: 'absolute',
+        bottom: 'calc(16px + max(env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px), var(--tg-viewport-content-safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px)))',
+        left: 0, right: 0, height: PANEL_H, zIndex: 1001, pointerEvents: 'none',
+      }}>
         {/* Движение — левый блок */}
         <button
           aria-label="Влево"
@@ -261,7 +281,8 @@ export default function TouchControls({
             // Тот же радиус и та же базовая линия (EDGE_Y от низа), что у атаки,
             // прыжка и веера справа: раньше ◀/▶ были 52px при атаке 56px и
             // веере 44px, и нижний ряд читался неровным.
-            position: 'absolute', left: EDGE_X, bottom: EDGE_Y,
+            // Координаты прежние (left 23 / bottom 12) — их правка была лишней.
+            position: 'absolute', left: 23, bottom: 12,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -295,9 +316,8 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            // Ровно BTN_STEP правее ◀ — тот же шаг, которым разнесены прыжок и
-            // зелье, поэтому зазоры по всей панели одинаковые.
-            position: 'absolute', left: EDGE_X + BTN_STEP, bottom: EDGE_Y,
+            // Координаты прежние (left 90 / bottom 12).
+            position: 'absolute', left: 90, bottom: 12,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -322,25 +342,21 @@ export default function TouchControls({
           ref={(container) => {
             if (!container) return
             const W = window.innerWidth
-            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА (числа — для экрана 375px):
-            //   атака     (337, 105) — правый нижний угол, EDGE_X/EDGE_Y от краёв
-            //   уклонение (258, 105) — веер, 180°, на одной линии с атакой
-            //   навык 1   (281,  49) — веер, 225°
-            //   навык 2   (337,  26) — веер, 270°, прямо над атакой
-            //   прыжок    (198, 105) — BTN_STEP левее уклонения, та же линия
-            //   зелье     (198,  45) — BTN_STEP выше прыжка
-            // Слева на той же линии: ◀ (34, 105) и ▶ (94, 105).
-            // Минимальное расстояние между центрами соседей = BTN_STEP = 60 при
-            // диаметре 52, то есть зазор 8px везде; ближайшая пара «левый блок —
-            // правый кластер» на 375px это ▶ и прыжок, между ними 104px.
-            // ⚠️ На 320px правый кластер сдвигается влево на 55px, и между ▶ и
-            // прыжком остаётся 1px по видимым кругам (зоны захвата ▲ при этом
-            // пересекаются с ▶ на 5px). Это ровно та открытая задача про узкие
-            // экраны из CLAUDE.md: лечится не зазорами, а раскладкой, зависящей
-            // от ширины, — отдельным шагом.
-            const ATK = { x: W - EDGE_X - BTN_R, y: PANEL_H - EDGE_Y - BTN_R }
-            // 180° / 225° / 270°: уклонение слева от атаки, навыки выше.
-            const angles = [Math.PI, Math.PI + FAN_STEP, Math.PI + 2 * FAN_STEP]
+            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА — прежняя, веером вокруг атаки
+            // (числа — для экрана 390px):
+            //   атака     (354, 142) — правый нижний угол, BTN_EDGE от краёв
+            //   уклонение (297, 130) — веер, 171.7°
+            //   навык 1   (313, 101) — веер, 225°, вплотную к соседям
+            //   навык 2   (362,  85) — веер, 278.3°
+            //   прыжок    (240, 142) — слева от веера, на линии атаки
+            //   зелье     (362,  29) — НАД верхней кнопкой веера
+            // Слева на той же линии: ◀ (49, 142) и ▶ (116, 142).
+            // Кнопки веера КАСАЮТСЯ друг друга — так было и раньше (хорда ровно
+            // в два радиуса), это и держит навыки рядом с атакой.
+            // Ближайшая пара «левый блок — правый кластер» это ▶ и прыжок: на
+            // 390px между их кругами 72px, на 375px — 57px, на 320px — 2px.
+            const ATK = { x: W - BTN_EDGE - BTN_R, y: PANEL_H - BTN_EDGE - BTN_R }
+            const angles = [FAN_MID - FAN_THETA, FAN_MID, FAN_MID + FAN_THETA]
 
             // Веер: dodge плюс ДО ДВУХ навыков. Углы фиксированы тремя
             // позициями и НЕ пересчитываются под число кнопок — хорда между
@@ -394,10 +410,9 @@ export default function TouchControls({
             atk.style.cssText = roundButtonCss(ATK.x, ATK.y, { fontSize: 20, art: C.BTN_ART_SRC.attack })
             if (!atkEl) container.appendChild(atk)
 
-            // Прыжок — на базовой линии, BTN_STEP левее крайней кнопки веера
-            // (уклонения), а не «минус подобранные 30px» от центра атаки: шаг
-            // общий со всеми соседними парами панели.
-            const jumpX = ATK.x - FAN_D - BTN_STEP
+            // Прыжок — вплотную слева от всего веера (не от центра атаки), на
+            // высоте центра атаки. Формула прежняя.
+            const jumpX = ATK.x - FAN_D - BTN_R - 30
             const jumpY = ATK.y
 
             const jumpEl = container.querySelector('[data-btn="jump"]') as HTMLElement
@@ -407,11 +422,13 @@ export default function TouchControls({
             jump.style.cssText = roundButtonCss(jumpX, jumpY, { fontSize: 20, art: C.BTN_ART_SRC.jump })
             if (!jumpEl) container.appendChild(jump)
 
-            // Зелье — ровно над прыжком, тем же шагом. Над веером его держать
-            // больше нельзя: с равными радиусами верхняя кнопка веера уже стоит
-            // на высоте панели, и зелье вышло бы за её верх.
-            const potX = jumpX
-            const potY = ATK.y - BTN_STEP
+            // Зелье — НАД самым верхним скиллом веера (angles[2]), как и было.
+            // Высота панели (PANEL_H) посчитана так, чтобы эта кнопка в неё
+            // умещалась целиком.
+            const lastSkillX = ATK.x + FAN_D * Math.cos(angles[2])
+            const lastSkillY = ATK.y + FAN_D * Math.sin(angles[2])
+            const potX = lastSkillX
+            const potY = lastSkillY - BTN_R - BTN_R - POT_GAP
 
             const potEl = container.querySelector('[data-btn="potion"]') as HTMLElement
             const pot = (potEl || document.createElement('button')) as HTMLButtonElement
