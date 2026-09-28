@@ -1,4 +1,5 @@
 import { CONSUMABLES, consumableSkillBook, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
+import type { UpgradeCounts, UpgradeKind } from './upgrades'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
@@ -128,6 +129,9 @@ export type LoginResponse = {
     // `undefined`, типизированный как объект, на старом или подменённом ответе.
     // Разбирать ТОЛЬКО через readSkillLevels ниже.
     skillLevels?: Record<string, number>
+    // Счётчики купленных улучшений. Опциональное по той же причине, что
+    // consumables и skillLevels выше. Разбирать ТОЛЬКО через readUpgrades.
+    upgrades?: { attack?: unknown; armor?: unknown }
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -966,6 +970,8 @@ export type ProfileResult = {
   equippedSkills: string[] | null
   /** null — сервер не назвал уровни навыков (см. readSkillLevels). */
   skillLevels: Record<SkillBookSkillId, number> | null
+  /** null — сервер не назвал счётчики улучшений (см. readUpgrades). */
+  upgrades: UpgradeCounts | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -983,6 +989,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophyGoldRate?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
+    upgrades?: unknown
   }>(
     `${SERVER_URL}/character/profile`,
     { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
@@ -996,6 +1003,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
+    upgrades: readUpgrades(raw.upgrades),
   }
 }
 
@@ -1167,6 +1175,26 @@ export function readSkillLevels(raw: unknown): Record<SkillBookSkillId, number> 
 }
 
 /**
+ * Разбор счётчиков улучшений («закалок»).
+ *
+ * null — «сервер не назвал», и это НЕ нули: от счётчиков зависят урон и броня,
+ * и посчитать их с нулём значило бы показать игроку заниженные числа и увести
+ * его с ними в забег. Нужны ОБА поля: половина ответа означает, что сервер и
+ * клиент разошлись, и доверять остатку нельзя.
+ */
+export function readUpgrades(raw: unknown): UpgradeCounts | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as UpgradeCounts
+  for (const kind of ['attack', 'armor'] as const) {
+    const v = record[kind]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[kind] = v
+  }
+  return out
+}
+
+/**
  * Разбор надетых навыков. null — сервер их не назвал или назвал мусором, и это НЕ
  * «навыков нет»: пустой список — штатное состояние (герой без книг), а
  * неизвестность обязана выглядеть иначе, иначе забег молча ушёл бы без кнопок
@@ -1214,6 +1242,14 @@ export async function buyConsumable(token: string, id: ConsumableId, count: numb
 export type InventoryItem = {
   inventoryItemId: string
   equipped: boolean
+  /**
+   * Сколько золота даст продажа ЭТОЙ строки. Считает сервер (itemSellPrice,
+   * game.ts) — копии формулы на клиенте нет намеренно, иначе кнопка обещала бы
+   * не ту сумму, которую начислят.
+   * Необязательное: старый сервер поля не присылает, и тогда цена НЕИЗВЕСТНА —
+   * кнопка продажи гаснет, а не подставляет ноль.
+   */
+  sellPrice?: number
   item: {
     id: string
     slot: string
@@ -1348,4 +1384,54 @@ export function upgradeSkill(token: string, id: SkillBookId): Promise<SkillState
 /** Продать книгу: списывается, золото +цена/10 (consumableSellPrice, каталог). */
 export function sellBook(token: string, id: SkillBookId): Promise<SkillStateResult> {
   return skillBookRequest('/character/sell-book', token, { id })
+}
+
+// --- УЛУЧШЕНИЯ И ПРОДАЖА ПРЕДМЕТОВ ---
+//
+// Обе НЕ идемпотентны и обе БЕЗ ПОВТОРОВ, по той же причине, что покупка зелья:
+// повтор потерянного запроса купит второе улучшение или продаст второй предмет.
+// При потерянном ответе клиент не гадает, а требует сверки баланса.
+const UPGRADE_TIMEOUT_MS = 5000
+
+export type BuyUpgradeResult = {
+  gold: number
+  /** null — сервер не назвал счётчики (см. readUpgrades). */
+  upgrades: UpgradeCounts | null
+}
+
+/**
+ * Купить улучшение. В теле ТОЛЬКО вид: цену считает сервер по своему счётчику,
+ * и клиентское число на неё не влияет (иначе цену можно было бы назначить себе).
+ */
+export async function buyUpgrade(token: string, kind: UpgradeKind): Promise<BuyUpgradeResult> {
+  const raw = await requestJson<{ gold: number; upgrades?: unknown }>(
+    `${SERVER_URL}/character/buy-upgrade`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind }),
+    },
+    UPGRADE_TIMEOUT_MS,
+  )
+  return { gold: raw.gold, upgrades: readUpgrades(raw.upgrades) }
+}
+
+export type SellItemResult = {
+  gold: number
+  /** Сколько начислено за проданный предмет — для тоста. */
+  soldPrice: number
+  inventoryItemId: string
+}
+
+/** Продать предмет. Надетый сервер не продаст (400 Item is equipped). */
+export function sellItem(token: string, inventoryItemId: string): Promise<SellItemResult> {
+  return requestJson<SellItemResult>(
+    `${SERVER_URL}/character/sell-item`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inventoryItemId }),
+    },
+    UPGRADE_TIMEOUT_MS,
+  )
 }

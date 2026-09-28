@@ -145,6 +145,13 @@ type ExploreProps = {
   // выше. Не задан → 0 (см. armorRef ниже, как characterLevelRef откатывается
   // на C.PLAYER_LEVEL_FALLBACK при отсутствующем level).
   armor?: number
+  /**
+   * Прибавка к урону от купленных закалок клинка (см. src/upgrades.ts). Считает
+   * её App.tsx общим каталогом — тем же, что показывает «Урон» на «Персонаже».
+   * НЕ задан — в настоящей сессии это ошибка, и старт её отвергает (как и
+   * неизвестный урон оружия); в офлайн-отладке без token улучшений нет вовсе.
+   */
+  attackUpgradeBonus?: number
   // Урон надетого оружия (App.tsx: weaponDamage) — слагаемое формулы
   // playerAttackDamage. 0 — оружия не надето; null/не задан — НЕИЗВЕСТЕН
   // (инвентарь не загружен или битая строка каталога): настоящий забег с таким
@@ -715,7 +722,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, equippedSkills, consumables, onConsumablesSpent }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, consumables, onConsumablesSpent }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1949,12 +1956,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         if (weaponDamage === undefined || weaponDamage === null) {
           throw new Error('Урон неизвестен — снаряжение не загрузилось. Забег не начат, энергия не списана.')
         }
-        baseAttackDamage = playerAttackDamage(strength, weaponDamage)
+        // Улучшения — такое же обязательное слагаемое, как урон оружия: с нулём
+        // герой ушёл бы в забег слабее, чем показано на экране «Персонаж».
+        if (attackUpgradeBonus === undefined) {
+          throw new Error('Урон неизвестен — улучшения не загрузились. Забег не начат, энергия не списана.')
+        }
+        baseAttackDamage = playerAttackDamage(strength, weaponDamage, attackUpgradeBonus)
       } else {
         // Офлайн UI-отладка без token: инвентаря нет вовсе (App.tsx:
         // inventoryStatus 'idle'), урон — без оружия. Это заглушка, и она
         // названа на оранжевой плашке ("урон без оружия"), как запас зелий.
-        baseAttackDamage = playerAttackDamage(strength, 0)
+        baseAttackDamage = playerAttackDamage(strength, 0, 0)
       }
       // Офлайн множитель ровно 1 — расходники без сервера не списываются, и
       // давать эффект бесплатно нельзя. Названо на той же оранжевой плашке.

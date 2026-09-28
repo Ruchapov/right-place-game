@@ -12,6 +12,11 @@
 // Скиллы эту формулу не используют — они бьют долей maxHp цели
 // (src/explore/entities/skills.ts), это отдельное дизайнерское решение.
 // Сервер урон игрока не считает вовсе.
-export function playerAttackDamage(strength: number, weaponDamage: number): number {
-  return 15 + Math.floor(strength / 2) + weaponDamage
+// upgradeBonus — прибавка от КУПЛЕННЫХ закалок клинка (+2 за покупку). Считает
+// её общий каталог улучшений (upgradeBonus('attack', counts), src/upgrades.ts),
+// а не эта формула: то же число нужно и экрану «Персонаж», и витрине улучшений
+// («Урон 93 → 95»), и забегу. «Улучшения неизвестны» сюда, как и неизвестный
+// урон оружия, НЕ передаётся — вызывающий обязан показать прочерк.
+export function playerAttackDamage(strength: number, weaponDamage: number, upgradeBonus: number): number {
+  return 15 + Math.floor(strength / 2) + weaponDamage + upgradeBonus
 }

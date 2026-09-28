@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readSkillLevels, readEquippedSkills, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readSkillLevels, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
@@ -11,6 +11,10 @@ import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQ
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
 import { consumableMechanicLine, skillBookLine } from './skillBooks'
+// Каталог улучшений — общая пара с сервером (src/upgrades.ts ↔
+// server/src/upgrades.ts, байт-в-байт). Цена, шаг и тексты берутся ТОЛЬКО
+// оттуда: цену применяет сервер, и своя копия формулы разошлась бы с ней.
+import { UPGRADES, UPGRADE_ORDER, upgradePrice, upgradeBonus, type UpgradeCounts, type UpgradeKind } from './upgrades'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
@@ -32,6 +36,13 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * ⚠️ Ни на что в бою пока не влияет — что даёт уровень, не решено.
    */
   skillLevels: Record<SkillBookSkillId, number> | null
+  /**
+   * Сколько улучшений каждого вида куплено (колонки Character.attackUpgrades /
+   * armorUpgrades). От них зависят УРОН и БРОНЯ.
+   * null — сервер их НЕ НАЗВАЛ (см. readUpgrades в api.ts). Это не нули: с
+   * нулями экран показал бы заниженные числа, а забег ушёл бы со слабым героем.
+   */
+  upgrades: UpgradeCounts | null
   /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[]
   /**
    * Склад расходников по id каталога (src/consumables.ts).
@@ -361,6 +372,7 @@ function devConsumableStock(): Record<ConsumableId, number> {
  * Собирается ИЗ КАТАЛОГА, как и склад выше: шестой навык появится в офлайн-отладке
  * сам. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
  */
+const TEMP_DEV_UPGRADES: UpgradeCounts = { attack: 2, armor: 3 }
 const TEMP_DEV_SKILL_LEVEL = 3
 function devSkillLevels(): Record<SkillBookSkillId, number> {
   const out = {} as Record<SkillBookSkillId, number>
@@ -503,11 +515,14 @@ export default function App() {
   // Раскрыт ли выпадающий список фильтра. Чисто вёрсточный флаг: что выбрано,
   // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
   const [slotFilterOpen, setSlotFilterOpen] = useState(false)
-  const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Снаряжение' | 'Книги' | 'Обмен'>('Расходники')
+  // «Снаряжение» убрано из магазина (решение дизайнера, 29.09.2026): предметы
+  // там не продавались и продаваться не будут — они падают в забегах, а обратно
+  // уходят продажей из инвентаря.
+  const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Книги' | 'Обмен'>('Расходники')
   // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
   // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
   const [shopSelected, setShopSelected] = useState<
-    { kind: 'potion'; tier: number } | { kind: 'consumable'; id: ConsumableId } | null
+    { kind: 'potion'; tier: number } | { kind: 'consumable'; id: ConsumableId } | { kind: 'upgrade'; upgradeKind: UpgradeKind } | null
   >(null)
   // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
   // приёмом, что "Недостаточно энергии" под кнопкой забега ниже).
@@ -564,6 +579,11 @@ export default function App() {
   // Подтверждение «Забыть»: навык снимается безвозвратно и книгу не возвращает,
   // поэтому один тап этого сделать не должен.
   const [forgetConfirm, setForgetConfirm] = useState(false)
+  // Подтверждение продажи предмета: id строки инвентаря, которую вот-вот
+  // продадут. Предмет исчезает безвозвратно, поэтому одним тапом это делать
+  // нельзя — тот же приём, что у «Забыть» в карточке навыка.
+  const [sellConfirm, setSellConfirm] = useState<string | null>(null)
+  const [sellPending, setSellPending] = useState(false)
   // Одна пара состояний на все четыре действия с книгами — они никогда не идут
   // параллельно (каждое закрывает своё окно), а два счётчика «в полёте»
   // разъехались бы.
@@ -654,7 +674,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -684,7 +704,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
@@ -756,7 +776,14 @@ export default function App() {
   // 'idle') не блокируем: сервера нет вовсе, забег там — заглушка с оранжевой
   // плашкой. Отладочные кнопки карт этот гейт намеренно обходят — их страхует
   // проверка в начале setup() в Explore.tsx (экран ошибки, энергия не списана).
-  const gearNotReady = isTelegramSession && inventoryStatus !== 'ready'
+  // Счётчики улучшений. null — сервер их не назвал, и тогда НИ броня, НИ урон
+  // не известны: считать их с нулём значило бы показать игроку заниженные числа
+  // и увести его с ними в забег.
+  const upgradeCounts = player?.upgrades ?? null
+  // Улучшения входят в тот же гейт, что и снаряжение: без них неизвестны урон и
+  // броня, и забег пошёл бы с заниженными числами — ровно та беда, ради которой
+  // гейт и заводился.
+  const gearNotReady = isTelegramSession && (inventoryStatus !== 'ready' || upgradeCounts === null)
   const runBlocked = notEnoughEnergy || gearNotReady
   // Суммарная броня надетых предметов — та же формула, что уже показывает
   // статистика "Броня" на экране "Персонаж" (см. charStats ниже), вынесена
@@ -770,7 +797,20 @@ export default function App() {
   // здесь с логина, а после надевания/снятия их перезапрашивает сама
   // handleEquipItem. Фильтр по слоту — операция над уже полученным массивом,
   // сеть для неё не нужна вовсе.
-  const totalArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
+  // Броня надетых предметов — только их сумма. Купленная закалка брони
+  // прибавляется ОТДЕЛЬНО, ниже: считает её общий каталог (upgradeBonus), тот
+  // же, что применяет сервер на старте забега.
+  const equippedArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
+  // Итоговая броня. null — «неизвестна» (инвентарь не загружен ИЛИ улучшения
+  // не названы), и это НЕ ноль: экран ставит прочерк, забег не стартует.
+  const totalArmor: number | null =
+    inventoryStatus !== 'ready' || upgradeCounts === null
+      ? null
+      : equippedArmor + upgradeBonus('armor', upgradeCounts)
+  // Прибавка к урону от закалки клинка — тем же каталогом. null по той же
+  // причине, что у брони.
+  const attackUpgradeBonus: number | null =
+    upgradeCounts === null ? null : upgradeBonus('attack', upgradeCounts)
 
   // Урон надетого оружия — слагаемое формулы урона (src/playerDamage.ts), одно
   // и то же число для строки "Урон" на экране "Персонаж" и для пропа Explore.
@@ -815,6 +855,92 @@ export default function App() {
       // что полный рефетч профиля вернёт те же цифры — реприменять result
       // поверх отдельно не нужно.
       requestPlayerRefresh()
+    }
+  }
+
+  // Покупка улучшения. Цену НЕ передаём: её считает сервер по своему счётчику,
+  // клиент называет только вид. Карточка после покупки остаётся открытой —
+  // цена и строка «Урон 93 → 95» пересчитаются сами из новых счётчиков.
+  async function handleBuyUpgrade(kind: UpgradeKind) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setShopBuyError('Профиль не загружен — покупка недоступна.')
+      return
+    }
+    if (shopBuyPending || shopBalanceUnknown) return
+    setShopBuyPending(true)
+    setShopBuyError(null)
+    try {
+      const result = await buyUpgrade(token, kind)
+      // gold и upgrades — АБСОЛЮТНЫЕ значения из БД. upgrades === null значит
+      // «сервер не назвал»: покупка прошла, но урон и броня теперь неизвестны —
+      // молчать нельзя, иначе экран покажет старые числа как новые.
+      setPlayer(prev => prev ? { ...prev, gold: result.gold, upgrades: result.upgrades } : prev)
+      if (result.upgrades === null) {
+        console.error('Buy upgrade: сервер не назвал счётчики улучшений')
+        setShopBalanceUnknown(true)
+        setShopBuyError('Улучшение куплено, но сервер не назвал итог. Обнови баланс.')
+      }
+    } catch (e) {
+      console.error('Buy upgrade failed', e)
+      if (e instanceof RequestError && e.serverError === 'State changed, retry') {
+        // Либо не хватило золота, либо счётчик уже изменился (цена другая).
+        // Сервер их не различает намеренно — для игрока это одно и то же.
+        setShopBuyError('Цена или баланс изменились — обнови баланс и попробуй снова.')
+        setShopBalanceUnknown(true)
+        return
+      }
+      if (e instanceof RequestError && e.serverError !== null && !e.retryable) {
+        setShopBuyError(describeBuyRefusal(e))
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        // Ответа нет, но запрос МОГ дойти: повторять нельзя (купит второе
+        // улучшение), поэтому требуем сверки — как у покупки зелья.
+        setShopBalanceUnknown(true)
+        setShopBuyError('Ответ не пришёл — покупка могла пройти. Обнови баланс.')
+        return
+      }
+      setShopBuyError('Не удалось купить — сервер не ответил. Попробуй ещё раз.')
+    } finally {
+      setShopBuyPending(false)
+    }
+  }
+
+  // Продажа предмета из инвентаря. Цену считает сервер; клиент показывает ту,
+  // что пришла с инвентарём (sellPrice каждой строки), и своей копии формулы не
+  // держит. После успеха инвентарь перечитывается — проданной строки в нём уже
+  // нет, и карточка закрывается сама (selectedEntry не найдёт предмет).
+  async function handleSellItem(inventoryItemId: string) {
+    const token = localStorage.getItem('jwt')
+    if (!token) {
+      setGearEquipError('Нет токена сессии — продажа недоступна.')
+      return
+    }
+    if (sellPending) return
+    setSellPending(true)
+    setGearEquipError(null)
+    try {
+      const result = await sellItem(token, inventoryItemId)
+      setPlayer(prev => prev ? { ...prev, gold: result.gold } : prev)
+      showGoldToast(result.soldPrice)
+      setSellConfirm(null)
+      setGearSelectedItem(null)
+      await loadInventory()
+    } catch (e) {
+      console.error('Sell item failed', e)
+      const refusal = e instanceof RequestError && e.serverError !== null
+        ? (e.serverError === 'Item is equipped' ? 'Сначала сними предмет.'
+          : e.serverError === 'Item not found' ? 'Предмета уже нет — обнови инвентарь.'
+            : e.serverError === 'State changed, retry' ? 'Предмет успели изменить — обнови инвентарь.'
+              : `Сервер отказал: ${e.serverError}`)
+        : 'Не удалось продать — сервер не ответил. Проверь инвентарь.'
+      setGearEquipError(refusal)
+      // Ответа не было — предмет МОГ продаться. Перечитываем инвентарь: он и
+      // есть единственный честный источник того, что осталось.
+      if (e instanceof RequestError && e.retryable) await loadInventory()
+    } finally {
+      setSellPending(false)
     }
   }
 
@@ -1366,8 +1492,8 @@ export default function App() {
             // уже закрыт guard'ом "Данные персонажа недоступны" выше.
             const equipStatsKnown = inventoryStatus === 'ready'
             const charStats: { iconSrc: string; value: number | string; label: string }[] = [
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: weaponDamage === null ? '—' : playerAttackDamage(p.strength, weaponDamage), label:'Урон' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: equipStatsKnown ? totalArmor : '—', label:'Броня' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_damage.png`, value: weaponDamage === null || attackUpgradeBonus === null ? '—' : playerAttackDamage(p.strength, weaponDamage, attackUpgradeBonus), label:'Урон' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_armor.png`, value: totalArmor ?? '—', label:'Броня' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
@@ -1713,7 +1839,7 @@ export default function App() {
             )
           })()}
           {activeTab === 'shop' && (() => {
-            const SHOP_TABS = ['Расходники', 'Улучшения', 'Снаряжение', 'Книги', 'Обмен'] as const
+            const SHOP_TABS = ['Расходники', 'Улучшения', 'Книги', 'Обмен'] as const
             const playerLevel = player?.level ?? 1
             // Вкладки, товары которых лежат в каталоге расходников, — их рисует
             // ОДНА И ТА ЖЕ сетка ниже. Значение сужено до ConsumableShopTab
@@ -1749,7 +1875,7 @@ export default function App() {
                 levelRequired: p.levelRequired,
                 select: () => setShopSelected({ kind: 'potion' as const, tier: p.tier }),
               })),
-              ...CONSUMABLES.filter((c) => c.shopTab === gridTab).map((c) => ({
+              ...CONSUMABLES.filter((c) => c.shopTab === gridTab && gridTab !== null).map((c) => ({
                 key: `consumable-${c.id}`,
                 icon: c.icon,
                 alt: c.nameRu,
@@ -1758,6 +1884,29 @@ export default function App() {
                 select: () => setShopSelected({ kind: 'consumable' as const, id: c.id }),
               })),
             ]
+
+            // Улучшения — свой список ячеек: их «товар» это не запись каталога
+            // расходников, а вид закалки, и цена у каждой СВОЯ, считанная от
+            // счётчика покупок (цену показывает ячейка, поэтому считается здесь).
+            // Счётчики неизвестны — ячеек нет вовсе, причину скажет строка ниже:
+            // нарисовать цену первого улучшения для игрока, у которого их уже
+            // пять, значило бы соврать в главном числе витрины.
+            const upgradeCells: ShopCell[] = upgradeCounts === null ? [] : UPGRADE_ORDER.map((kind) => {
+              const spec = UPGRADES[kind]
+              return {
+                key: `upgrade-${kind}`,
+                icon: spec.icon,
+                alt: spec.nameRu,
+                price: upgradePrice(upgradeCounts[kind]),
+                levelRequired: 1,
+                select: () => setShopSelected({ kind: 'upgrade' as const, upgradeKind: kind }),
+              }
+            })
+            // Что рисует сетка на открытой вкладке. Улучшения и товары каталога
+            // расходников используют ОДНУ И ТУ ЖЕ ячейку (иконка, ценник, замок
+            // по уровню) — различаются только источником списка.
+            const gridCells: ShopCell[] = shopTab === 'Улучшения' ? upgradeCells : shopCells
+            const showGrid = gridTab !== null || shopTab === 'Улучшения'
 
             // Модель карточки — ОДНА на оба вида товара. Иначе пришлось бы
             // дублировать ~150 строк разметки вместе со степпером, строкой
@@ -1775,12 +1924,54 @@ export default function App() {
               price: number
               levelRequired: number
               mechanic: { label: string; value: string } | { line: string }
-              owned: number | null
-              maxPerPurchase: number
-              stepperNote: string | null
-              buy: (qty: number) => void
+              /**
+               * Сколько такого уже есть. null — запас НЕИЗВЕСТЕН (профиль не
+               * загружен), undefined — у товара запаса нет ВООБЩЕ: у улучшений
+               * счётчика по решению дизайнера нет, и «у тебя: 0» врало бы.
+               */
+              owned: number | null | undefined
+              /**
+               * Покупка. У зелий и расходников — степпер количества, у улучшения
+               * одна кнопка: купить два улучшения разом нельзя, у второго уже
+               * другая цена.
+               */
+              purchase:
+                | { kind: 'stepper'; maxPerPurchase: number; stepperNote: string | null; buy: (qty: number) => void }
+                | { kind: 'single'; label: string; buy: () => void }
             }
             const shopCard: ShopCardView | null = shopSelected === null ? null : (() => {
+              if (shopSelected.kind === 'upgrade') {
+                const spec = UPGRADES[shopSelected.upgradeKind]
+                // Цена следующего — от СВОЕГО счётчика. Счётчиков нет (сервер не
+                // назвал) — карточку не строим вовсе: цена была бы выдумана, а
+                // цену применяет сервер.
+                if (upgradeCounts === null) return null
+                const price = upgradePrice(upgradeCounts[spec.kind])
+                // Строка механики — ТЕКУЩЕЕ значение стата и то, что станет
+                // после покупки. Оба числа из тех же источников, что «Персонаж»:
+                // урон — playerAttackDamage, броня — totalArmor. Неизвестен хоть
+                // один — пишем прочерк, а не считаем от нуля.
+                const current: number | null = spec.kind === 'attack'
+                  ? (player === null || weaponDamage === null || attackUpgradeBonus === null
+                      ? null
+                      : playerAttackDamage(player.strength, weaponDamage, attackUpgradeBonus))
+                  : totalArmor
+                const line = current === null
+                  ? `${spec.statLabel}: данные не загружены`
+                  : `${spec.statLabel} ${current} → ${current + spec.step}`
+                return {
+                  icon: spec.icon,
+                  nameRu: spec.nameRu,
+                  desc: spec.desc,
+                  price,
+                  // Улучшения открыты с первого уровня: ограничение здесь —
+                  // только цена, и она растёт сама.
+                  levelRequired: 1,
+                  mechanic: { line },
+                  owned: undefined,
+                  purchase: { kind: 'single' as const, label: 'Улучшить', buy: () => handleBuyUpgrade(spec.kind) },
+                }
+              }
               if (shopSelected.kind === 'potion') {
                 const p = POTION_TIERS[shopSelected.tier - 1]
                 if (!p) return null
@@ -1792,11 +1983,14 @@ export default function App() {
                   levelRequired: p.levelRequired,
                   mechanic: { label: 'Восстанавливает', value: `${Math.round(p.healFrac * 100)}% от здоровья` },
                   owned: player === null ? null : (player.potions[p.tier - 1] ?? 0),
-                  maxPerPurchase: MAX_POTIONS_PER_PURCHASE,
-                  // Склад зелий не ограничен, но в один забег больше трёх
-                  // глотков не поедет — игрок должен узнать это ДО покупки.
-                  stepperNote: `В забег берётся до ${MAX_SIPS_PER_RUN} глотков`,
-                  buy: (qty: number) => handleBuyPotion(p.tier, qty),
+                  purchase: {
+                    kind: 'stepper',
+                    maxPerPurchase: MAX_POTIONS_PER_PURCHASE,
+                    // Склад зелий не ограничен, но в один забег больше трёх
+                    // глотков не поедет — игрок должен узнать это ДО покупки.
+                    stepperNote: `В забег берётся до ${MAX_SIPS_PER_RUN} глотков`,
+                    buy: (qty: number) => handleBuyPotion(p.tier, qty),
+                  },
                 }
               }
               const c = consumableById(shopSelected.id)
@@ -1814,9 +2008,12 @@ export default function App() {
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
-                maxPerPurchase: MAX_CONSUMABLES_PER_PURCHASE,
-                stepperNote: null,
-                buy: (qty: number) => handleBuyConsumable(c.id, qty),
+                purchase: {
+                  kind: 'stepper',
+                  maxPerPurchase: MAX_CONSUMABLES_PER_PURCHASE,
+                  stepperNote: null,
+                  buy: (qty: number) => handleBuyConsumable(c.id, qty),
+                },
               }
             })()
 
@@ -1896,9 +2093,21 @@ export default function App() {
                   С minmax(0, ...) минимум трека равен нулю, авто-минимум
                   элемента не применяется вовсе, и иконка сжимается вместе с
                   ячейкой (на 375px — 84px). */}
-              {gridTab !== null ? (
+              {/* Ветки покрывают ВСЕ четыре вкладки магазина: сетка товаров
+                  (Расходники, Книги, Улучшения) и Обмен. Прежней заглушки
+                  «скоро» больше нет — она осталась от вкладки «Снаряжение»,
+                  которую убрали. */}
+              {showGrid ? (
+                <>
+                {/* Цены улучшений считаются от счётчиков покупок. Нет счётчиков —
+                    нет и цен: говорим об этом, а не рисуем пустую витрину. */}
+                {shopTab === 'Улучшения' && upgradeCounts === null && (
+                  <div style={{ margin:'0 8px 10px', padding:'8px 10px', borderRadius:8, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, fontSize:11, color:C.textDim }}>
+                    Профиль не загружен — цены улучшений неизвестны.
+                  </div>
+                )}
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
-                  {shopCells.map(cell => {
+                  {gridCells.map(cell => {
                     const unlocked = playerLevel >= cell.levelRequired
                     return (
                       <div key={cell.key}
@@ -1932,6 +2141,7 @@ export default function App() {
                     )
                   })}
                 </div>
+                </>
               ) : shopTab === 'Обмен' ? (() => {
                 // Банк. player === null недостижим, но нулём его подменять
                 // нельзя: "банк неизвестен" и "банк пуст" выглядели бы одинаково
@@ -2043,9 +2253,7 @@ export default function App() {
                   )}
                 </div>
                 )
-              })() : (
-                <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>скоро</div>
-              )}
+              })() : null}
 
               {/* Карточка предмета */}
               {shopCard && (
@@ -2086,11 +2294,17 @@ export default function App() {
                             неизвестен (профиль не загружен ИЛИ сервер не назвал
                             склад расходников) — так и пишем, нулём не подменяем
                             (см. правило про тихие фолбэки). */}
-                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
-                          {shopCard.owned === null
-                            ? 'у тебя: — (запас неизвестен)'
-                            : `у тебя: ${shopCard.owned}`}
-                        </div>
+                        {/* undefined — у товара запаса нет как понятия (улучшение
+                            покупается навсегда, счётчика по решению дизайнера
+                            нет), и строка не рисуется совсем. null — запас есть,
+                            но НЕИЗВЕСТЕН, и это надо сказать словами. */}
+                        {shopCard.owned !== undefined && (
+                          <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
+                            {shopCard.owned === null
+                              ? 'у тебя: — (запас неизвестен)'
+                              : `у тебя: ${shopCard.owned}`}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -2126,18 +2340,70 @@ export default function App() {
                           ? `Недостаточно золота (нужно ${shopCard.price}).`
                           : null
                       const msg = shopBuyError ?? affordMsg
+                      const buyBlocked = shopBuyPending || !canAfford || shopBalanceUnknown
+                      // Строка ошибки и кнопка сверки — общие для обоих видов
+                      // покупки, поэтому вынесены сюда, а не продублированы.
+                      const tail = (
+                        <>
+                          {msg && (
+                            <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                              {msg}
+                            </div>
+                          )}
+                          {shopBalanceUnknown && (
+                            <div
+                              onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
+                              style={{
+                                marginTop:8, background:C.nicheDeep,
+                                border:`1px solid ${C.stoneDark}`, borderRadius:9,
+                                padding:'9px 11px', textAlign:'center',
+                                color:C.textMain, fontSize:13,
+                                cursor: shopBalancePending ? 'default' : 'pointer',
+                                opacity: shopBalancePending ? 0.5 : 1,
+                              }}>
+                              {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
+                            </div>
+                          )}
+                        </>
+                      )
+                      // Улучшение — ОДНА кнопка без степпера: два улучшения разом
+                      // купить нельзя, у второго уже другая цена (она считается
+                      // от счётчика). Цена в подписи — из модели карточки, то же
+                      // число применит сервер.
+                      if (shopCard.purchase.kind === 'single') {
+                        const single = shopCard.purchase
+                        return (
+                          <>
+                            <div
+                              onClick={() => { if (!buyBlocked) single.buy() }}
+                              style={{
+                                boxSizing:'border-box', minHeight:44,
+                                display:'flex', alignItems:'center', justifyContent:'center',
+                                background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                                borderRadius:9, padding:11, textAlign:'center',
+                                color:C.glowCore, fontSize:14,
+                                cursor: buyBlocked ? 'default' : 'pointer',
+                                opacity: buyBlocked ? 0.5 : 1,
+                                boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+                              }}>
+                              {shopBuyPending ? 'Покупка...' : `${single.label} — ${shopCard.price}`}
+                            </div>
+                            {tail}
+                          </>
+                        )
+                      }
+                      const stepper = shopCard.purchase
                       // Потолок степпера — меньшее из двух: сколько разрешает
                       // сервер (потолок ИЗ ОБЩЕГО КАТАЛОГА товара — свой у зелий,
                       // свой у расходников) и на сколько хватает золота. Не
                       // хватает даже на одно — maxQty 0, степпер погашен, строка
                       // прежняя.
                       const affordableMax = player === null ? 0 : Math.floor(player.gold / shopCard.price)
-                      const maxQty = Math.min(shopCard.maxPerPurchase, affordableMax)
+                      const maxQty = Math.min(stepper.maxPerPurchase, affordableMax)
                       // Зажим на случай, если золото убыло после выбора N
                       // (покупка соседнего тира, сверка баланса).
                       const qty = Math.min(Math.max(1, shopQty), Math.max(1, maxQty))
                       const totalPrice = shopCard.price * qty
-                      const buyDisabled = shopBuyPending || !canAfford || shopBalanceUnknown
                       return (
                       <>
                       {/* Цена — из каталога, она же применяется сервером: с
@@ -2161,9 +2427,9 @@ export default function App() {
                               зелий это лимит глотков за забег (игрок иначе не
                               узнает, что запас сверх него в забег не поедет), у
                               расходника её нет вовсе. */}
-                          {shopCard.stepperNote !== null && (
+                          {stepper.stepperNote !== null && (
                             <div style={{ fontSize:10, color:C.textDim, marginTop:2 }}>
-                              {shopCard.stepperNote}
+                              {stepper.stepperNote}
                             </div>
                           )}
                         </div>
@@ -2179,40 +2445,18 @@ export default function App() {
                           }}>+</button>
                       </div>
                       <div
-                        onClick={() => { if (!buyDisabled) shopCard.buy(qty) }}
+                        onClick={() => { if (!buyBlocked) stepper.buy(qty) }}
                         style={{
                           background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
                           borderRadius:9, padding:11, textAlign:'center',
                           color:C.glowCore, fontSize:14,
-                          cursor: buyDisabled ? 'default' : 'pointer',
-                          opacity: buyDisabled ? 0.5 : 1,
+                          cursor: buyBlocked ? 'default' : 'pointer',
+                          opacity: buyBlocked ? 0.5 : 1,
                           boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
                         }}>
                         {shopBuyPending ? 'Покупка...' : `Купить ×${qty} — ${totalPrice}`}
                       </div>
-                      {msg && (
-                        <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
-                          {msg}
-                        </div>
-                      )}
-                      {/* Появляется только когда баланс под вопросом (ответа
-                          на покупку не было). Пока сверка не прошла, покупка
-                          погашена — иначе второй запрос спишет золото ещё раз
-                          поверх, возможно, уже применённого первого. */}
-                      {shopBalanceUnknown && (
-                        <div
-                          onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
-                          style={{
-                            marginTop:8, background:C.nicheDeep,
-                            border:`1px solid ${C.stoneDark}`, borderRadius:9,
-                            padding:'9px 11px', textAlign:'center',
-                            color:C.textMain, fontSize:13,
-                            cursor: shopBalancePending ? 'default' : 'pointer',
-                            opacity: shopBalancePending ? 0.5 : 1,
-                          }}>
-                          {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
-                        </div>
-                      )}
+                      {tail}
                       </>
                       )
                     })() : (
@@ -2454,6 +2698,10 @@ export default function App() {
                   // передаёт их в handleEquipItem и в порог уровня.
                   levelRequired: inv.item.levelRequired,
                   inventoryItemId: inv.inventoryItemId,
+                  // Цена продажи ПРИХОДИТ С СЕРВЕРА строкой инвентаря. undefined
+                  // — старый сервер её не прислал: кнопка тогда гаснет, а не
+                  // показывает выдуманное число (формулы на клиенте нет).
+                  sellPrice: inv.sellPrice,
                 }
               }
               // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
@@ -2735,7 +2983,7 @@ export default function App() {
               {/* Карточка предмета */}
               {selectedEntry && (
                 <div
-                  onClick={() => { setGearSelectedItem(null); setGearEquipError(null) }}
+                  onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null) }}
                   style={{
                     position:'fixed', top:0, left:0, right:0, bottom:0,
                     background:'rgba(0,0,0,0.55)',
@@ -2884,21 +3132,100 @@ export default function App() {
                           </div>
                         )
                       })()}
-                      {/* Продажа не реализована: ни эндпоинта, ни цены продажи у
-                          предметов и зелий нет. Явная заглушка — без onClick и
-                          без cursor:pointer, пунктирная рамка и "скоро", чтобы
-                          тап ничего не обещал. */}
-                      <div style={{
-                        flex:1, boxSizing:'border-box', minHeight:44,
-                        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-                        border:`1px dashed ${C.stoneDark}`, borderRadius:9, padding:'6px 11px',
-                        textAlign:'center', color:C.textDim, opacity:0.7,
-                      }}>
-                        <div style={{ fontSize:14 }}>Продать</div>
-                        <div style={{ fontSize:10 }}>скоро</div>
-                      </div>
+                      {selectedEntry.kind === 'item' ? (() => {
+                        const { inventoryItemId, equipped, sellPrice } = selectedEntry
+                        // Три причины, по которым продать нельзя, и у каждой свой
+                        // текст прямо на кнопке: надетый предмет (сервер тоже
+                        // откажет), неизвестная цена (старый сервер) и уже идущая
+                        // продажа.
+                        const blocked: string | null =
+                          equipped ? 'Сначала сними'
+                            : sellPrice === undefined ? 'Цена неизвестна'
+                              : null
+                        if (blocked !== null) {
+                          return (
+                            <div style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.textDim, fontSize:13, opacity:0.5,
+                            }}>
+                              {blocked}
+                            </div>
+                          )
+                        }
+                        return (
+                          <div
+                            onClick={() => { setSellConfirm(inventoryItemId); setGearEquipError(null) }}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.textMain, fontSize:14, cursor:'pointer',
+                            }}>
+                            Продать за {sellPrice}
+                          </div>
+                        )
+                      })() : (
+                        /* У зелий, расходников и книг продажи из этой карточки
+                           нет: книги продаются своей кнопкой выше, а зелья и
+                           расходники не продаются вовсе. Явная заглушка — без
+                           onClick и без cursor:pointer, чтобы тап ничего не
+                           обещал. */
+                        <div style={{
+                          flex:1, boxSizing:'border-box', minHeight:44,
+                          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                          border:`1px dashed ${C.stoneDark}`, borderRadius:9, padding:'6px 11px',
+                          textAlign:'center', color:C.textDim, opacity:0.7,
+                        }}>
+                          <div style={{ fontSize:14 }}>Продать</div>
+                          <div style={{ fontSize:10 }}>скоро</div>
+                        </div>
+                      )}
                     </div>
                     )}
+
+                    {/* Подтверждение продажи. Предмет исчезает безвозвратно,
+                        поэтому спрашиваем — тем же приёмом, что «Забыть» у
+                        навыка: цена действия названа словами до, а не после. */}
+                    {selectedEntry.kind === 'item' && sellConfirm === selectedEntry.inventoryItemId && (() => {
+                      const { inventoryItemId, sellPrice } = selectedEntry
+                      return (
+                      <div style={{ marginTop:10 }}>
+                        <div style={{ fontSize:12, lineHeight:1.5, color:C.danger, marginBottom:10, textAlign:'center' }}>
+                          Предмет пропадёт навсегда. Взамен {sellPrice} золота.
+                        </div>
+                        <div style={{ display:'flex', gap:8 }}>
+                          <div
+                            onClick={() => { if (!sellPending) void handleSellItem(inventoryItemId) }}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.danger}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.danger, fontSize:14,
+                              cursor: sellPending ? 'default' : 'pointer',
+                              opacity: sellPending ? 0.5 : 1,
+                            }}>
+                            {sellPending ? 'Продаю...' : 'Продать'}
+                          </div>
+                          <div
+                            onClick={() => setSellConfirm(null)}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.textMain, fontSize:14, cursor:'pointer',
+                            }}>
+                            Отмена
+                          </div>
+                        </div>
+                      </div>
+                      )
+                    })()}
                     {/* Отказ — видимой строкой под кнопками, не только в консоль. */}
                     {selectedEntry.kind === 'item' && gearEquipError !== null && (
                       <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
@@ -3449,7 +3776,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх
