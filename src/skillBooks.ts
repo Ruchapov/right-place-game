@@ -18,7 +18,7 @@ import {
   DASH_DAMAGE_FRAC, DASH_COOLDOWN_MS,
 } from './explore/constants'
 import type { SkillId } from './explore/entities/skills'
-import { consumableEffectLine, type Consumable, type SkillBookSkillId } from './consumables'
+import { consumableEffectLine, consumableSkillBook, type Consumable, type SkillBookSkillId } from './consumables'
 
 /** Доля → целые проценты, как в consumableEffectLine. */
 function pct(frac: number): string {
@@ -89,7 +89,10 @@ export function skillBookLine(skillId: SkillBookSkillId): string {
  * не то, что другой.
  */
 export function consumableMechanicLine(spec: Consumable): string {
-  if (spec.effect.kind === 'skillBook') return skillBookLine(spec.effect.skillId)
+  // Через consumableSkillBook, а не прямым разбором union: каталог разбирает свой
+  // эффект сам, один раз (там же это делают consumableAttackBonus/ReviveFrac).
+  const skillId = consumableSkillBook(spec)
+  if (skillId !== null) return skillBookLine(skillId)
   const line = consumableEffectLine(spec)
   if (line === null) {
     // Недостижимо: null каталог отдаёт только на skillBook, а он разобран выше.

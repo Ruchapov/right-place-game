@@ -6,7 +6,7 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, consumableSkillBook, parseConsumableCount, type ConsumableId, type ConsumableShopTab } from './consumables'
+import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, parseConsumableCount, type ConsumableId, type ConsumableShopTab } from './consumables'
 // Строку механики берём ТОЛЬКО отсюда: у камня и оберега числа в общем каталоге,
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
@@ -2001,9 +2001,13 @@ export default function App() {
             // Инвариант: note !== null ⇔ данные источника неизвестны — на него
             // опирается и счётчик сумки ниже (bagKnown).
             // takesCell — тратит ли источник ячейки сумки (docs/items.md,
-            // "Правило вместимости"): зелья и дроп улучшений скиллов — нет,
-            // карты — да. Решается ОДИН раз на источник, счётчик в шапке
-            // подхватывает сам.
+            // "Правило вместимости"): НЕ тратят только зелья; всё остальное —
+            // расходники, книги, будущие карты — тратит. Решается ОДИН раз на
+            // источник, счётчик в шапке подхватывает сам.
+            // ⚠️ Исключение из "дропа улучшения скиллов" в том правиле — это
+            // СТРАНИЦЫ (scroll_*), а не книги: страницы копятся по три на книгу
+            // и выпадают в забегах, поэтому ячейку тратить не будут. Их в
+            // каталоге ещё нет; появятся — своим источником с takesCell: false.
             const consumableSources: { key: string; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
               {
                 key: 'potions',
@@ -2029,15 +2033,20 @@ export default function App() {
               {
                 key: 'consumables',
                 // Расходники ячейку сумки ТРАТЯТ — в отличие от зелий: их берут
-                // единицами, а не десятками, и они идут в гнёзда подготовки
-                // наравне с картами (docs/items.md, "Правило вместимости").
+                // единицами, а не десятками (docs/items.md, "Правило
+                // вместимости").
+                // ⚠️ КНИГИ СЧИТАЮТСЯ ЗДЕСЬ ЖЕ, по тому же правилу, что камень и
+                // оберег: одна ячейка на вид с бейджем "×N". Отдельный источник
+                // с takesCell: false у них был (28.09.2026) и СНЯТ —
+                // правило "не тратит" относится к страницам (scroll_*), не к
+                // книгам. Поэтому фильтра по виду эффекта здесь нет: источник
+                // берёт ВЕСЬ каталог расходников.
                 takesCell: true,
                 // Показываем только то, чего реально не ноль — тем же приёмом,
                 // что тиры зелий выше. Запас неизвестен (consumables === null) —
                 // ячеек нет вовсе, причину скажет note: пустая сетка и
                 // "расходников нет" не должны выглядеть одинаково.
                 cells: (player?.consumables == null ? [] : CONSUMABLES)
-                  .filter((c) => consumableSkillBook(c) === null)
                   .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
                   .map((c) => ({
                     key: `consumable-${c.id}`,
@@ -2058,52 +2067,11 @@ export default function App() {
                     ? 'Сервер не назвал запас расходников.'
                     : null,
               },
-              {
-                key: 'books',
-                // Книги ячейку сумки НЕ тратят: по docs/items.md («Правило
-                // вместимости») дроп улучшения скиллов её не тратит, в отличие
-                // от карт и камня. Признак берётся из ЭФФЕКТА каталога
-                // (consumableSkillBook), а не из вкладки магазина: вкладка — про
-                // витрину, а это правило сумки.
-                takesCell: false,
-                cells: (player?.consumables == null ? [] : CONSUMABLES)
-                  .filter((c) => consumableSkillBook(c) !== null)
-                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
-                  .map((c) => ({
-                    key: `consumable-${c.id}`,
-                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
-                    alt: c.nameRu,
-                    qty: player?.consumables?.[c.id] ?? 0,
-                    equipped: false,
-                    // Группа 2 — после зелий (0) и расходников (1): книга в забег
-                    // не едет вовсе, ей место последней.
-                    group: 2,
-                    rank: 0,
-                    open: { kind: 'consumable' as const, consumableId: c.id },
-                  })),
-                // Тот же текст, что у расходников выше, и это НЕ копипаста по
-                // невнимательности: причина одна и та же (оба источника читают
-                // player.consumables), а инвариант «note !== null ⇔ данные
-                // источника неизвестны» обязан держаться у КАЖДОГО источника
-                // отдельно — на него смотрит счётчик сумки. От повтора на экране
-                // спасает Set ниже.
-                note: player === null
-                  ? 'Профиль не загружен — запас расходников неизвестен.'
-                  : player.consumables === null
-                    ? 'Сервер не назвал запас расходников.'
-                    : null,
-              },
             ]
             const consumableCells: InvCell[] = consumableSources.flatMap((src) => src.cells)
-            // Set — потому что источники «расходники» и «книги» читают ОДНО поле
-            // player.consumables и при неизвестном складе называют одну и ту же
-            // причину. Два одинаковых текста подряд читались бы как две разные
-            // проблемы.
-            const consumableNotes: string[] = [...new Set(
-              consumableSources
-                .map((src) => src.note)
-                .filter((n): n is string => n !== null),
-            )]
+            const consumableNotes: string[] = consumableSources
+              .map((src) => src.note)
+              .filter((n): n is string => n !== null)
 
             // Заполненность сумки для счётчика в шапке — свойство СУМКИ, а не
             // того, что сейчас на экране: не зависит ни от подвкладки, ни от
