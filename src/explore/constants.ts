@@ -927,6 +927,30 @@ export const POTION_GULP_FRAME = 6 // кадр глотка (0-based) в drink.p
 export const POTION_ICON_SRC: string[] = POTION_TIERS.map(
   (t) => `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
 )
+
+/**
+ * Арт экранных кнопок управления: каменные диски 256×256 (public/assets/icons).
+ * Каждая картинка — ГОТОВАЯ кнопка: камень и символ уже нарисованы вместе,
+ * поэтому под ней не рисуется ни рамка, ни фон (см. roundButtonCss).
+ *
+ * `move` ОДИН на обе стороны: стрелка на нём смотрит ВПРАВО, кнопка ◀ зеркалит
+ * его через CSS (см. data-flip в TouchControls). Второго файла для левой
+ * стрелки в наборе нет намеренно — зеркало точнее и не расходится по стилю.
+ *
+ * `blank` — пустой диск, ПОДЛОЖКА для кнопок без своего арта: зелья (иконка
+ * тира рисуется поверх, её меняет updatePotionButton) и «?» у неизвестного
+ * навыка. Печатям навыков он НЕ нужен — у них свой камень.
+ */
+export const BTN_ART_SRC = {
+  move: `${import.meta.env.BASE_URL}assets/icons/btn_move.png`,
+  attack: `${import.meta.env.BASE_URL}assets/icons/btn_attack.png`,
+  jump: `${import.meta.env.BASE_URL}assets/icons/btn_jump.png`,
+  dodge: `${import.meta.env.BASE_URL}assets/icons/btn_dodge.png`,
+  blank: `${import.meta.env.BASE_URL}assets/icons/btn_blank.png`,
+} as const
+
+/** Доля кнопки под иконку, которая лежит ПОВЕРХ подложки btn_blank. */
+export const BTN_OVERLAY_PCT = 58
 // Запас зелий на забег в ОФЛАЙН-отладке (нет token, DevTester вне Telegram —
 // /run/start-explore не звался, брать числа неоткуда): по одному зелью трёх
 // младших тиров, чтобы было видно и смену иконки на кнопке, и разную силу

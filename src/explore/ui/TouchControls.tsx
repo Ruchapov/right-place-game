@@ -1,4 +1,5 @@
 import type { MutableRefObject } from 'react'
+import * as C from '../constants'
 
 /**
  * Состояние ОДНОГО гнезда навыка для кнопки в бою.
@@ -61,28 +62,30 @@ const JUMP_ZONE_PAD = 6
  * на 1px БОЛЬШЕ константы»). С border-box номинал и факт совпадают, и все
  * зазоры ниже честные.
  *
- * iconSrc — арт кнопки фоном, а не <img>: у кнопок есть textContent (цифра
+ * art — картинка кнопки фоном, а не <img>: у кнопок есть textContent (цифра
  * глотков, «?»), и вложенную картинку он бы затирал.
+ *
+ * ⚠️ Арт рисуется ВО ВСЮ кнопку и ЗАМЕНЯЕТ CSS-круг: у каждой картинки каменный
+ * диск уже нарисован, и оставить под ней прежний тёмный круг с рамкой значило бы
+ * камень внутри камня. Поэтому при art рамки и фона нет вовсе. Подсветку нажатия
+ * в таком виде даёт яркость, а не заливка (см. PRESS_CSS).
  */
-function roundButtonCss(x: number, y: number, opts: { fontSize: number; iconSrc?: string | null; dimmed?: boolean }): string {
+function roundButtonCss(x: number, y: number, opts: { fontSize: number; art?: string | null; dimmed?: boolean }): string {
   return `
     position:absolute;
     box-sizing:border-box;
     left:${x - BTN_R}px; top:${y - BTN_R}px;
     width:${BTN_R * 2}px; height:${BTN_R * 2}px;
-    border-radius:50%; border:1px solid #3A3344;
-    background:#221E2B; color:#EDE7F2; font-size:${opts.fontSize}px;
+    border-radius:50%;
+    ${opts.art ? 'border:none; background:transparent;' : 'border:1px solid #3A3344; background:#221E2B;'}
+    color:#EDE7F2; font-size:${opts.fontSize}px;
     display:flex; align-items:center; justify-content:center;
     touch-action:none; user-select:none; -webkit-user-select:none;
     -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
     text-shadow:0 1px 2px rgba(0,0,0,0.9);
     opacity:${opts.dimmed ? '0.5' : '1'};
-    /* Раскладка фоновой картинки ставится ВСЕГДА, даже когда картинки тут нет:
-       у кнопки зелья сам URL подставляет updatePotionButton (иконка меняется по
-       ходу забега — какой тир выпьется следующим), и без этих трёх свойств она
-       легла бы в натуральный размер и повторами. */
-    background-repeat:no-repeat; background-position:center; background-size:74%;
-    ${opts.iconSrc ? `background-image:url("${opts.iconSrc}");` : ''}
+    background-repeat:no-repeat; background-position:center; background-size:100%;
+    ${opts.art ? `background-image:url("${opts.art}");` : ''}
     transition:${PRESS_TRANSITION};
   `
 }
@@ -90,10 +93,21 @@ function roundButtonCss(x: number, y: number, opts: { fontSize: number; iconSrc?
 const PRESS_MIN_VISIBLE_MS = 120
 const PRESS_TRANSITION = 'transform 70ms ease-out, background-color 70ms ease-out, border-color 70ms ease-out'
 const PRESS_CSS = `
+  /* Нажатие: сжатие + подсветка ЯРКОСТЬЮ. Прежняя заливка фона и подсветка
+     рамки сняты вместе с CSS-кругом: у кнопок теперь картинка во всю площадь,
+     заливка светилась бы квадратом в прозрачных углах, а рамки нет вовсе. */
   [data-touch-controls] [data-pressed="1"] {
     transform: scale(0.88) !important;
-    background-color: #3A3344 !important;
-    border-color: #E8B23A !important;
+    filter: brightness(1.5) !important;
+  }
+  /* ◀ — тот же файл стрелки, что у ▶, зеркально. Зеркало ПРАВИЛОМ, а не инлайном:
+     иначе подсветка нажатия (transform выше, с !important) перетёрла бы его и
+     стрелка на нажатие разворачивалась бы вправо. */
+  [data-touch-controls] [data-flip="1"] {
+    transform: scaleX(-1);
+  }
+  [data-touch-controls] [data-flip="1"][data-pressed="1"] {
+    transform: scaleX(-1) scale(0.88) !important;
   }
   /* Зона захвата ▲ шире видимой кнопки на JUMP_ZONE_PAD во все стороны
      (радиус 26 -> 32). Промах мимо прыжка стоит жизни — шипы или яма, — а лишнее
@@ -222,6 +236,9 @@ export default function TouchControls({
         {/* Движение — левый блок */}
         <button
           aria-label="Влево"
+          // Зеркалит стрелку: файл арта один на обе стороны и смотрит вправо.
+          // Атрибутом, а не инлайновым transform — см. правило в PRESS_CSS.
+          data-flip="1"
           onPointerDown={(e) => {
             e.preventDefault()
             e.currentTarget.setPointerCapture(e.pointerId)
@@ -247,17 +264,16 @@ export default function TouchControls({
             position: 'absolute', left: EDGE_X, bottom: EDGE_Y,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
-            borderRadius: '50%', border: '1px solid #3A3344',
-            background: '#221E2B', color: '#EDE7F2', fontSize: 20,
+            borderRadius: '50%', border: 'none', background: 'transparent',
+            backgroundImage: `url(${C.BTN_ART_SRC.move})`,
+            backgroundRepeat: 'no-repeat', backgroundPosition: 'center', backgroundSize: '100%',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
             WebkitTouchCallout: 'none',
             pointerEvents: 'all',
             transition: PRESS_TRANSITION,
           }}
-        >
-          ◀
-        </button>
+        />
         <button
           aria-label="Вправо"
           onPointerDown={(e) => {
@@ -284,17 +300,16 @@ export default function TouchControls({
             position: 'absolute', left: EDGE_X + BTN_STEP, bottom: EDGE_Y,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
-            borderRadius: '50%', border: '1px solid #3A3344',
-            background: '#221E2B', color: '#EDE7F2', fontSize: 20,
+            borderRadius: '50%', border: 'none', background: 'transparent',
+            backgroundImage: `url(${C.BTN_ART_SRC.move})`,
+            backgroundRepeat: 'no-repeat', backgroundPosition: 'center', backgroundSize: '100%',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
             WebkitTouchCallout: 'none',
             pointerEvents: 'all',
             transition: PRESS_TRANSITION,
           }}
-        >
-          ▶
-        </button>
+        />
 
         {/* Правый блок — атака/dodge/скиллы/прыжок/зелье через JS в
             ref-колбэке, та же техника и геометрия, что в Battle.tsx.
@@ -337,12 +352,15 @@ export default function TouchControls({
             // картинку он затирал бы (та же причина, что у кнопки зелья).
             // background-size 74% — как у зелья, чтобы круглые иконки на кнопках
             // выглядели одним набором.
+            // «?» — на пустом каменном диске (btn_blank): своего арта у этого
+            // состояния нет, а без подложки от кнопки остался бы голый знак.
+            // Печати навыков подложки не требуют — камень у них свой.
             const skillFan = (slot: SkillButtonSlot) =>
               slot === null ? null
-                : slot === 'unknown' ? { label: '?', iconSrc: null, dimmed: true }
-                  : { label: '', iconSrc: slot.iconSrc, dimmed: false }
-            const fanButtons: { id: string; angle: number; spec: { label: string; iconSrc: string | null; dimmed: boolean } | null }[] = [
-              { id: 'dodge', angle: angles[0], spec: { label: '🔄', iconSrc: null, dimmed: false } },
+                : slot === 'unknown' ? { label: '?', art: C.BTN_ART_SRC.blank, dimmed: true }
+                  : { label: '', art: slot.iconSrc, dimmed: false }
+            const fanButtons: { id: string; angle: number; spec: { label: string; art: string | null; dimmed: boolean } | null }[] = [
+              { id: 'dodge', angle: angles[0], spec: { label: '', art: C.BTN_ART_SRC.dodge, dimmed: false } },
               { id: 'skill1', angle: angles[1], spec: skillFan(skillSlots[0]) },
               { id: 'skill2', angle: angles[2], spec: skillFan(skillSlots[1]) },
             ]
@@ -363,7 +381,7 @@ export default function TouchControls({
               el.textContent = b.spec.label
               el.style.cssText = roundButtonCss(x, y, {
                 fontSize: 20,
-                iconSrc: b.spec.iconSrc,
+                art: b.spec.art,
                 dimmed: b.spec.dimmed,
               })
               if (!existing) container.appendChild(el)
@@ -372,8 +390,8 @@ export default function TouchControls({
             const atkEl = container.querySelector('[data-btn="atk"]') as HTMLElement
             const atk = atkEl || document.createElement('button')
             atk.dataset.btn = 'atk'
-            atk.textContent = '⚔'
-            atk.style.cssText = roundButtonCss(ATK.x, ATK.y, { fontSize: 20 })
+            atk.textContent = ''
+            atk.style.cssText = roundButtonCss(ATK.x, ATK.y, { fontSize: 20, art: C.BTN_ART_SRC.attack })
             if (!atkEl) container.appendChild(atk)
 
             // Прыжок — на базовой линии, BTN_STEP левее крайней кнопки веера
@@ -385,8 +403,8 @@ export default function TouchControls({
             const jumpEl = container.querySelector('[data-btn="jump"]') as HTMLElement
             const jump = jumpEl || document.createElement('button')
             jump.dataset.btn = 'jump'
-            jump.textContent = '▲'
-            jump.style.cssText = roundButtonCss(jumpX, jumpY, { fontSize: 20 })
+            jump.textContent = ''
+            jump.style.cssText = roundButtonCss(jumpX, jumpY, { fontSize: 20, art: C.BTN_ART_SRC.jump })
             if (!jumpEl) container.appendChild(jump)
 
             // Зелье — ровно над прыжком, тем же шагом. Над веером его держать
@@ -402,7 +420,10 @@ export default function TouchControls({
             // какой тир выпьется следующим), здесь только раскладка. Число
             // глотков рисуется ТЕКСТОМ поверх фона: <img> нельзя, textContent
             // затирает детей. fontSize меньше прочих — цифра поверх картинки.
-            pot.style.cssText = roundButtonCss(potX, potY, { fontSize: 12 })
+            // Подложка — пустой диск; иконку тира кладёт ПОВЕРХ неё
+            // updatePotionButton вторым слоем фона (он же вызывается сразу
+            // ниже, после установки cssText).
+            pot.style.cssText = roundButtonCss(potX, potY, { fontSize: 12, art: C.BTN_ART_SRC.blank })
             if (!potEl) container.appendChild(pot)
             // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
             // "🧪 ×N"/opacity без React-состояния (см. updatePotionButton).

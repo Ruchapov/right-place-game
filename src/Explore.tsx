@@ -1403,7 +1403,18 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     const tier = highestAvailableTier(potionStockRef.current)
     const usable = tier !== null && potionSipsLeftRef.current > 0
     btn.textContent = `×${potionSipsLeftRef.current}`
-    btn.style.backgroundImage = tier === null ? 'none' : `url(${C.POTION_ICON_SRC[tier - 1]})`
+    // ДВА слоя фона: сверху иконка тира, снизу каменный диск btn_blank. Диск
+    // задаётся и в cssText кнопки, но backgroundImage переписывает ВЕСЬ список
+    // слоёв, поэтому подложку приходится называть здесь заново — иначе кнопка
+    // зелья осталась бы без камня, в отличие от всех соседних.
+    // background-size тоже ставится здесь: у одного слоя и у двух он разный.
+    if (tier === null) {
+      btn.style.backgroundImage = `url(${C.BTN_ART_SRC.blank})`
+      btn.style.backgroundSize = '100%'
+    } else {
+      btn.style.backgroundImage = `url(${C.POTION_ICON_SRC[tier - 1]}), url(${C.BTN_ART_SRC.blank})`
+      btn.style.backgroundSize = `${C.BTN_OVERLAY_PCT}%, 100%`
+    }
     btn.style.opacity = usable ? '1' : '0.5'
   }
 
