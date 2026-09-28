@@ -73,6 +73,21 @@ model Character {
   bookBleed           Int      @default(0)
   bookHeal            Int      @default(0)
   bookDash            Int      @default(0)
+  // Уровень КАЖДОГО навыка, по колонке на навык. Растёт на 1 за применённую
+  // книгу (POST /character/upgrade-skill) и НИКОГДА не убывает: «забыть» навык
+  // снимает его из equippedSkills, но уровень остаётся — так решено дизайном.
+  // Старт 1, а не 0: навык существует с первого уровня, ноль означал бы «навыка
+  // нет», а это выражено отсутствием в equippedSkills и пустым складом книг.
+  // ⚠️ Уровень пока НИ НА ЧТО не влияет в бою — что он даёт, не решено
+  // (docs/skills.md). Он хранится и показывается, и это осознанно.
+  // Колонка на навык, а не Json — та же причина, что у potionT1..T5 и книг:
+  // навыков ровно пять по каталогу, а счётчику нужен атомарный increment в том
+  // же UPDATE, где списывается книга.
+  skillLevelFireball  Int      @default(1)
+  skillLevelIceball   Int      @default(1)
+  skillLevelSlash     Int      @default(1)
+  skillLevelHeal      Int      @default(1)
+  skillLevelDash      Int      @default(1)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

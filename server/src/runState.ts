@@ -19,7 +19,7 @@
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
 import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
 import type { RunEvent } from './runEvents.js'
-import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId } from './consumables.js'
+import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -504,6 +504,41 @@ export function consumableStockOf(character: ConsumableColumns): Record<Consumab
     book_bleed: character.bookBleed,
     book_heal: character.bookHeal,
     book_dash: character.bookDash,
+  }
+}
+
+// --- Уровни навыков: колонки Character <-> объект по id навыка ---
+//
+// Рядом с раскладкой расходников и по тем же причинам: имена колонок клиенту не
+// нужны, а форма ответа — объект по id навыка, не позиционный массив (порядка у
+// навыков нет, и массив молча съехал бы при добавлении шестого).
+//
+// Новый навык = новая колонка + миграция + строка здесь + ветка в
+// skillLevelIncrement (routes/run.ts). Забыть последнюю нельзя — switch по
+// SkillBookSkillId не скомпилируется.
+export type SkillLevelColumns = {
+  skillLevelFireball: number
+  skillLevelIceball: number
+  skillLevelSlash: number
+  skillLevelHeal: number
+  skillLevelDash: number
+}
+
+/**
+ * Уровни навыков объектом по id навыка — форма ответов клиенту (логин, профиль,
+ * все четыре ручки книг).
+ *
+ * ⚠️ Отдавать НУЖНО ВСЕ пять: клиентский readSkillLevels требует их все и на
+ * неполном объекте возвращает null, то есть «уровни неизвестны» — прочерк вместо
+ * числа в карточке навыка. Та же дисциплина, что у consumableStockOf выше.
+ */
+export function skillLevelsOf(character: SkillLevelColumns): Record<SkillBookSkillId, number> {
+  return {
+    fireball: character.skillLevelFireball,
+    iceball: character.skillLevelIceball,
+    slash: character.skillLevelSlash,
+    heal: character.skillLevelHeal,
+    dash: character.skillLevelDash,
   }
 }
 

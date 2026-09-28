@@ -21,15 +21,27 @@
 // схемы в файле, который обязан быть байт-в-байт, — лишний повод его тронуть.
 // Раскладка id → колонка живёт на сервере, в runState.ts рядом с зельями.
 
+/**
+ * id книг скиллов — ОТДЕЛЬНЫЙ тип, подмножество ConsumableId.
+ *
+ * Нужен серверу: у книги ДВЕ колонки (склад книги и уровень её навыка), и обе
+ * выбираются switch'ем, который обязан быть исчерпывающим ИМЕННО по книгам.
+ * Switch по всему ConsumableId заставлял бы писать заведомо недостижимые ветки
+ * для камня и оберега, а без сужения шестая книга добавилась бы молча, без
+ * колонки.
+ *
+ * Рантайм-список рядом с типом (а не только тип) — по нему работает
+ * parseSkillBookId ниже: тип в рантайме не существует, а проверять id из тела
+ * запроса надо именно там.
+ */
+export const SKILL_BOOK_IDS = ['book_fire', 'book_ice', 'book_bleed', 'book_heal', 'book_dash'] as const
+export type SkillBookId = typeof SKILL_BOOK_IDS[number]
+
 /** Идентификаторы расходников. Новый расходник — новый вариант здесь. */
 export type ConsumableId =
   | 'whetstone'
   | 'charm_death'
-  | 'book_fire'
-  | 'book_ice'
-  | 'book_bleed'
-  | 'book_heal'
-  | 'book_dash'
+  | SkillBookId
 
 /**
  * id скилла, который улучшает книга. Пять значений — РУЧНОЙ ДУБЛЬ типа SkillId
@@ -345,4 +357,82 @@ export function parseConsumableCount(raw: unknown): number | null {
   if (typeof raw !== 'number' || !Number.isInteger(raw)) return null
   if (raw < 1 || raw > MAX_CONSUMABLES_PER_PURCHASE) return null
   return raw
+}
+
+/**
+ * Сколько навыков герой носит одновременно. ДВА — как было и в прежнем
+ * POST /character/skills, и в гнёздах на экране «Персонаж».
+ *
+ * Живёт в общем каталоге, а не на одной стороне: потолок проверяет СЕРВЕР (иначе
+ * модифицированный клиент наденет пять), а рисует по нему гнёзда клиент. Своя
+ * константа, НЕ общая с RUN_CONSUMABLE_SLOTS (5 гнёзд расходников на забег): это
+ * разные правила, и связывать их одним числом нельзя.
+ */
+export const MAX_EQUIPPED_SKILLS = 2
+
+/**
+ * Во сколько раз продажа дешевле покупки. 10 — решение дизайнера: книга за 1000
+ * продаётся за 100.
+ *
+ * Делитель, а не готовая цена продажи у каждой записи: иначе два числа (цена и
+ * выкуп) разошлись бы при первой правке баланса, и магазин начал бы выкупать
+ * дороже или дешевле, чем задумано.
+ */
+export const SELL_PRICE_DIVISOR = 10
+
+/**
+ * Сколько золота даёт продажа ОДНОЙ штуки. Считается от цены покупки, `floor` —
+ * округление НЕ в пользу игрока, как и весь урон в проекте.
+ *
+ * Одна функция на клиент и сервер: на кнопке написано то же число, которое
+ * начислит сервер. Отдельная копия арифметики на любой из сторон означала бы
+ * ценник, расходящийся с выплатой.
+ */
+export function consumableSellPrice(spec: Consumable): number {
+  return Math.floor(spec.price / SELL_PRICE_DIVISOR)
+}
+
+/**
+ * id книги из тела запроса или из вёрстки, либо null — это не книга.
+ *
+ * Отдельно от consumableById: тот вернёт любую запись каталога, включая камень и
+ * оберег, а ручкам книг (надеть / улучшить / продать) нужен именно узкий тип
+ * SkillBookId — по нему выбираются колонки склада и уровня.
+ */
+export function parseSkillBookId(raw: unknown): SkillBookId | null {
+  if (typeof raw !== 'string') return null
+  return (SKILL_BOOK_IDS as readonly string[]).includes(raw) ? (raw as SkillBookId) : null
+}
+
+/**
+ * id навыка из тела запроса или из equippedSkills, либо null — такого навыка
+ * нет.
+ *
+ * Нужен и серверу (ручка «забыть навык» принимает навык, а не книгу: книги в ней
+ * нет вовсе), и клиенту (equippedSkills приходит как string[], и превращать его
+ * элементы в SkillBookSkillId догадкой нельзя).
+ */
+export function parseSkillBookSkillId(raw: unknown): SkillBookSkillId | null {
+  if (typeof raw !== 'string') return null
+  for (const spec of CONSUMABLES) {
+    const skillId = consumableSkillBook(spec)
+    if (skillId === raw) return skillId
+  }
+  return null
+}
+
+/**
+ * Книга, которая улучшает этот навык, или null — навык без книги.
+ *
+ * Обратное к consumableSkillBook, и нужно ровно там, где надетый навык надо
+ * ПОКАЗАТЬ: в гнёздах «Персонажа» стоит обложка книги, а не эмодзи. Поиском по
+ * каталогу, а не второй захардкоженной картой навык→книга: карта разошлась бы с
+ * каталогом при добавлении шестой книги.
+ *
+ * null возможен по построению (навык, для которого книгу ещё не завели), поэтому
+ * тип это признаёт — вызывающий обязан решить, что рисовать, а не получить
+ * выдуманную обложку.
+ */
+export function bookBySkillId(skillId: SkillBookSkillId): Consumable | null {
+  return CONSUMABLES.find((c) => consumableSkillBook(c) === skillId) ?? null
 }

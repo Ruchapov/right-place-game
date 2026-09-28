@@ -1,10 +1,10 @@
-import { FastifyInstance, FastifyRequest } from 'fastify'
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
-import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, runSlotConsumableById, consumableAttackBonus, parseConsumableCount, type Consumable, type ConsumableId } from '../consumables.js'
+import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -21,6 +21,7 @@ import {
   potionStockOf,
   potionStockToColumns,
   consumableStockOf,
+  skillLevelsOf,
   readConsumablesUsed,
   readSmugglerDeal,
   type SmugglerDeal,
@@ -98,6 +99,84 @@ function consumableStockIncrement(id: ConsumableId, count: number): Prisma.Chara
     case 'book_dash':
       return { bookDash: { increment: count } }
   }
+}
+
+// Фильтр «книга на складе есть» и её списание — готовыми куска́ми для условной
+// записи трёх ручек (надеть / улучшить / продать). Обе функции switch'ат по
+// УЗКОМУ типу SkillBookId, а не по всему ConsumableId: иначе пришлось бы писать
+// заведомо недостижимые ветки для камня и оберега, а шестая книга добавилась бы
+// молча, без колонки. Здесь же она развалит сборку.
+function bookStockFilter(id: SkillBookId): Prisma.CharacterWhereInput {
+  switch (id) {
+    case 'book_fire': return { bookFire: { gte: 1 } }
+    case 'book_ice': return { bookIce: { gte: 1 } }
+    case 'book_bleed': return { bookBleed: { gte: 1 } }
+    case 'book_heal': return { bookHeal: { gte: 1 } }
+    case 'book_dash': return { bookDash: { gte: 1 } }
+  }
+}
+
+function bookStockDecrement(id: SkillBookId): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'book_fire': return { bookFire: { decrement: 1 } }
+    case 'book_ice': return { bookIce: { decrement: 1 } }
+    case 'book_bleed': return { bookBleed: { decrement: 1 } }
+    case 'book_heal': return { bookHeal: { decrement: 1 } }
+    case 'book_dash': return { bookDash: { decrement: 1 } }
+  }
+}
+
+// Фильтр «набор навыков не изменился с момента чтения» — для условной записи
+// ручек «надеть» и «забыть».
+//
+// ⚠️ Пустой набор проверяется isEmpty, а НЕ equals: [] — это документированный
+// способ Prisma сравнить скалярный список с пустым, и именно этот случай самый
+// частый (первая книга у героя без навыков). Полагаться здесь на равенство с
+// пустым массивом нельзя: промах фильтра означал бы 409 на КАЖДОЙ первой книге,
+// то есть «надеть навык невозможно» у нового игрока.
+function equippedSkillsUnchanged(prev: string[]): Prisma.StringNullableListFilter<'Character'> {
+  return prev.length === 0 ? { isEmpty: true } : { equals: prev }
+}
+
+// +1 к уровню навыка, готовым куском data. Тот же приём и та же причина, что
+// выше: switch по SkillBookSkillId, шестой навык без ветки не скомпилируется.
+function skillLevelIncrement(skillId: SkillBookSkillId): Prisma.CharacterUpdateManyMutationInput {
+  switch (skillId) {
+    case 'fireball': return { skillLevelFireball: { increment: 1 } }
+    case 'iceball': return { skillLevelIceball: { increment: 1 } }
+    case 'slash': return { skillLevelSlash: { increment: 1 } }
+    case 'heal': return { skillLevelHeal: { increment: 1 } }
+    case 'dash': return { skillLevelDash: { increment: 1 } }
+  }
+}
+
+/**
+ * Ответ ВСЕХ четырёх ручек книг: состояние, которое они могут изменить, целиком.
+ *
+ * Один ответ на четыре ручки намеренно. Каждая меняет своё подмножество (надеть —
+ * набор и склад, продать — склад и золото, улучшить — склад и уровень), но клиент
+ * рисует эти четыре поля в трёх местах сразу («Персонаж», сумка, шапка с золотом),
+ * и отдавать каждой ручке свой огрызок значило бы разложить по клиенту четыре
+ * разных мержа, три из которых оставляли бы часть экрана устаревшей.
+ *
+ * Всё ПЕРЕЧИТАНО из БД после записи, а не вычислено из прочитанного до неё:
+ * decrement/increment считала база.
+ */
+async function sendSkillState(request: FastifyRequest, reply: FastifyReply, userId: number) {
+  const updated = await prisma.character.findUnique({ where: { userId } })
+  if (!updated) {
+    // Персонаж существовал строкой выше, исчезнуть мог только удалением в ту же
+    // секунду. Запись УЖЕ применена, поэтому подставлять правдоподобные числа
+    // нельзя: соврать о складе и золоте хуже, чем громко отказать.
+    request.log.error({ userId }, 'skill book action applied but character could not be read back')
+    return reply.status(500).send({ error: 'Action applied but state could not be read' })
+  }
+  return reply.send({
+    gold: updated.gold,
+    consumables: consumableStockOf(updated),
+    equippedSkills: updated.equippedSkills,
+    skillLevels: skillLevelsOf(updated),
+  })
 }
 
 // --- Общее для финиша и обеих ручек Контрабандиста ---
@@ -1073,24 +1152,156 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({ outcome, stake, after })
   })
 
-  server.post<{ Body: { skills: string[] } }>('/character/skills', async (request, reply) => {
+  // --- КНИГИ НАВЫКОВ: надеть / забыть / улучшить / продать ---
+  //
+  // ⚠️ Прежний POST /character/skills УДАЛЁН вместе с этой четвёркой (29.09.2026).
+  // Он принимал любой набор из пяти id и записывал его без всяких условий, то есть
+  // выдавал навык БЕСПЛАТНО — а по решению дизайнера навык бывает только от книги.
+  // Заводить вместо него «правильный» обобщённый setter нельзя по той же причине:
+  // клиент не должен называть итоговый набор, он называет ДЕЙСТВИЕ (надел эту
+  // книгу / забыл этот навык), а набор считает сервер.
+  //
+  // Общее у всех четырёх:
+  //   • запись УСЛОВНАЯ (updateMany с фильтром), как у buy-consumable, и она же
+  //     сама себе проверка: «книга на складе» и «набор навыков не менялся» стоят
+  //     в where, а не в if выше, поэтому между проверкой и записью ничего не
+  //     влезет. 0 строк → отказ, и не записано НИЧЕГО (списание книги, уровень и
+  //     equippedSkills всегда в одном UPDATE);
+  //   • ответ перечитывается из БД (gold/consumables/equippedSkills/skillLevels)
+  //     — decrement/increment считала база, и единственный честный способ назвать
+  //     итог — спросить её;
+  //   • ключа идемпотентности нет ни у одной: повтор спишет вторую книгу. Клиент
+  //     повторов не делает (см. таблицу таймаутов в CLAUDE.md).
+
+  // Надеть навык из книги. Книга УХОДИТ со склада: она не «экипирована», а
+  // потрачена — снять навык («забыть») её не вернёт, это решение дизайнера.
+  server.post<{ Body: { id?: string } }>('/character/equip-book', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
-    const { skills } = request.body
-    const VALID_SKILLS = ['heal', 'dash', 'fireball', 'slash', 'iceball']
-    const MAX_SKILLS = 2
+    const bookId = parseSkillBookId(request.body?.id)
+    if (bookId === null) return reply.status(400).send({ error: 'Unknown book' })
+    const spec = consumableById(bookId)
+    const skillId = spec === null ? null : consumableSkillBook(spec)
+    if (skillId === null) {
+      // Недостижимо: parseSkillBookId пропускает только id книг, а у книги эффект
+      // skillBook по построению каталога. Но молча продолжать нельзя — это
+      // означало бы, что каталог разъехался сам с собой.
+      request.log.error({ bookId }, 'equip-book: книга без навыка в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
 
-    if (!Array.isArray(skills)) return reply.status(400).send({ error: 'skills must be an array' })
-    if (skills.length > MAX_SKILLS) return reply.status(400).send({ error: `Max ${MAX_SKILLS} skills allowed` })
-    if (skills.some(s => !VALID_SKILLS.includes(s))) return reply.status(400).send({ error: 'Invalid skill name' })
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    await prisma.character.update({
-      where: { userId },
-      data: { equippedSkills: skills },
+    const equipped = character.equippedSkills
+    if (equipped.includes(skillId)) return reply.status(400).send({ error: 'Skill already equipped' })
+    if (equipped.length >= MAX_EQUIPPED_SKILLS) {
+      return reply.status(400).send({ error: 'No free skill slot', max: MAX_EQUIPPED_SKILLS })
+    }
+
+    // Фильтр по ПРОЧИТАННОМУ набору (equals), а не по «нет такого навыка»: так
+    // ловится и параллельное надевание второго навыка, которое иначе прошло бы
+    // мимо потолка и дало бы три навыка в двух гнёздах.
+    const written = await prisma.character.updateMany({
+      where: { userId, equippedSkills: equippedSkillsUnchanged(equipped), ...bookStockFilter(bookId) },
+      data: { equippedSkills: [...equipped, skillId], ...bookStockDecrement(bookId) },
     })
+    if (written.count === 0) {
+      // Две причины неразличимы по числу строк: книга кончилась ИЛИ набор навыков
+      // изменился. Обе — «попробуй ещё раз с актуальными данными», и клиент в
+      // обоих случаях перечитывает профиль, поэтому отдаём один код.
+      return reply.status(409).send({ error: 'State changed, retry' })
+    }
 
-    return reply.send({ equippedSkills: skills })
+    return await sendSkillState(request, reply, userId)
+  })
+
+  // Забыть навык: снимается из equippedSkills, книга НЕ возвращается, уровень
+  // навыка СОХРАНЯЕТСЯ (решение дизайнера — оба пункта).
+  server.post<{ Body: { skillId?: string } }>('/character/forget-skill', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const skillId = parseSkillBookSkillId(request.body?.skillId)
+    if (skillId === null) return reply.status(400).send({ error: 'Unknown skill' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const equipped = character.equippedSkills
+    if (!equipped.includes(skillId)) return reply.status(400).send({ error: 'Skill not equipped' })
+
+    const written = await prisma.character.updateMany({
+      where: { userId, equippedSkills: equippedSkillsUnchanged(equipped) },
+      data: { equippedSkills: equipped.filter((s) => s !== skillId) },
+    })
+    if (written.count === 0) return reply.status(409).send({ error: 'State changed, retry' })
+
+    return await sendSkillState(request, reply, userId)
+  })
+
+  // Улучшить навык книгой: книга списывается, уровень +1. Работает и для
+  // НЕнадетого навыка — уровень принадлежит герою, а не гнезду.
+  server.post<{ Body: { id?: string } }>('/character/upgrade-skill', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const bookId = parseSkillBookId(request.body?.id)
+    if (bookId === null) return reply.status(400).send({ error: 'Unknown book' })
+    const spec = consumableById(bookId)
+    const skillId = spec === null ? null : consumableSkillBook(spec)
+    if (skillId === null) {
+      request.log.error({ bookId }, 'upgrade-skill: книга без навыка в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    // Персонажа читать НЕ НУЖНО: ни одной проверки от его состояния здесь нет —
+    // потолка уровня нет (что даёт уровень, ещё не решено), надетость роли не
+    // играет, а «книга есть» проверяет сам фильтр записи. Лишнее чтение только
+    // добавило бы окно между проверкой и записью.
+    const written = await prisma.character.updateMany({
+      where: { userId, ...bookStockFilter(bookId) },
+      data: { ...bookStockDecrement(bookId), ...skillLevelIncrement(skillId) },
+    })
+    if (written.count === 0) {
+      // Персонажа не читали, поэтому 0 строк значит ЛИБО «нет книги», ЛИБО «нет
+      // персонажа». Второе — у авторизованного пользователя аномалия, и
+      // притворяться, что дело в книге, не стоит: различаем одним чтением.
+      const exists = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
+      if (!exists) return reply.status(404).send({ error: 'Character not found' })
+      return reply.status(400).send({ error: 'No book in stock' })
+    }
+
+    return await sendSkillState(request, reply, userId)
+  })
+
+  // Продать книгу: списывается, золото +consumableSellPrice (цена/10 из каталога,
+  // одна функция на клиент и сервер — на кнопке то же число, что начислит сервер).
+  server.post<{ Body: { id?: string } }>('/character/sell-book', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const bookId = parseSkillBookId(request.body?.id)
+    if (bookId === null) return reply.status(400).send({ error: 'Unknown book' })
+    const spec = consumableById(bookId)
+    if (spec === null) {
+      request.log.error({ bookId }, 'sell-book: id книги нет в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+    const payout = consumableSellPrice(spec)
+
+    const written = await prisma.character.updateMany({
+      where: { userId, ...bookStockFilter(bookId) },
+      data: { ...bookStockDecrement(bookId), gold: { increment: payout } },
+    })
+    if (written.count === 0) {
+      const exists = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
+      if (!exists) return reply.status(404).send({ error: 'Character not found' })
+      return reply.status(400).send({ error: 'No book in stock' })
+    }
+
+    return await sendSkillState(request, reply, userId)
   })
 
   // Покупка ОДНОГО зелья указанного тира. Цена и уровень открытия берутся из
@@ -1347,6 +1558,13 @@ export async function runRoutes(server: FastifyInstance) {
       // каталогом, а у расходников порядка нет вовсе, и позиционный массив
       // молча съехал бы при добавлении второго вида.
       consumables: consumableStockOf(character),
+      // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
+      // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
+      // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
+      // имеет права. Без этих двух полей после продажи или улучшения книги в
+      // другой вкладке экран «Персонаж» остался бы с устаревшими числами.
+      equippedSkills: character.equippedSkills,
+      skillLevels: skillLevelsOf(character),
       trophyGoldRate: TROPHY_GOLD_RATE,
     })
   })
