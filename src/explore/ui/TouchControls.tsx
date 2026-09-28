@@ -21,6 +21,72 @@ export type SkillButtonSlot = { iconSrc: string } | 'unknown' | null
 // инлайн-подсветка удерживаемой кнопки стёрлась бы. Атрибут cssText не трогает.
 // !important — чтобы правило перебило инлайновые background/border. Только
 // background-color, не background целиком: у 🧪 фоном идёт иконка тира.
+// --- ГЕОМЕТРИЯ ЭКРАННЫХ КНОПОК — одно место на весь файл ---
+//
+// Все круглые кнопки ОДНОГО радиуса. Раньше их было четыре разных (атака и
+// прыжок 28, ◀/▶ 26, веер 22, зелье 20), и печати навыков рядом с атакой
+// выглядели мелкими, а ряд — неровным.
+// 26 -> кнопка 52px, заметно больше минимума 44px из дизайн-скилла.
+const BTN_R = 26
+// Минимальный зазор между соседними кнопками ПО ВИДИМЫМ кругам.
+const BTN_GAP = 8
+// Отступы от краёв панели. По X маленький намеренно: на 320px левый блок и
+// правый кластер иначе налезают друг на друга (расчёт — в комментарии к
+// раскладке ниже).
+const EDGE_X = 8
+const EDGE_Y = 12
+// Шаг «соседняя кнопка вплотную, с зазором» — им разнесены ◀/▶, прыжок и зелье.
+const BTN_STEP = 2 * BTN_R + BTN_GAP
+// Веер вокруг атаки: три позиции с шагом 45° — 180° (уклонение), 225° и 270°
+// (навыки). В экранных координатах y растёт ВНИЗ, поэтому 225° это влево-вверх,
+// а 270° — прямо вверх.
+const FAN_STEP = Math.PI / 4
+// Радиус веера ВЫВОДИТСЯ из требуемой хорды, а не подбирается руками: хорда
+// между соседними кнопками равна 2*D*sin(шаг/2) и обязана быть не меньше
+// 2*BTN_R + BTN_GAP. Отсюда D = 79 при нынешних числах. Прежняя формула считала
+// угол под хорду РОВНО 2*BTN_R, то есть кнопки веера стояли впритык.
+const FAN_D = Math.ceil((2 * BTN_R + BTN_GAP) / (2 * Math.sin(FAN_STEP / 2)))
+// Высота панели = от низа до верха самой высокой кнопки (верх веера).
+const PANEL_H = EDGE_Y + BTN_R + FAN_D + BTN_R
+// Насколько зона захвата ▲ шире видимой кнопки (см. PRESS_CSS).
+const JUMP_ZONE_PAD = 6
+
+/**
+ * Общий вид круглой кнопки. ОДНА функция на все пять видов — иначе размеры
+ * снова разъедутся по пяти копиям cssText, как это уже случилось.
+ *
+ * ⚠️ box-sizing: border-box ОБЯЗАТЕЛЕН. Без него рамка 1px делает кнопку на 2px
+ * шире номинала, и реальный радиус равен BTN_R + 1 — на этом в проекте уже
+ * ошибались при расчёте зазоров (см. CLAUDE.md, «Реальный радиус боевой кнопки
+ * на 1px БОЛЬШЕ константы»). С border-box номинал и факт совпадают, и все
+ * зазоры ниже честные.
+ *
+ * iconSrc — арт кнопки фоном, а не <img>: у кнопок есть textContent (цифра
+ * глотков, «?»), и вложенную картинку он бы затирал.
+ */
+function roundButtonCss(x: number, y: number, opts: { fontSize: number; iconSrc?: string | null; dimmed?: boolean }): string {
+  return `
+    position:absolute;
+    box-sizing:border-box;
+    left:${x - BTN_R}px; top:${y - BTN_R}px;
+    width:${BTN_R * 2}px; height:${BTN_R * 2}px;
+    border-radius:50%; border:1px solid #3A3344;
+    background:#221E2B; color:#EDE7F2; font-size:${opts.fontSize}px;
+    display:flex; align-items:center; justify-content:center;
+    touch-action:none; user-select:none; -webkit-user-select:none;
+    -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+    text-shadow:0 1px 2px rgba(0,0,0,0.9);
+    opacity:${opts.dimmed ? '0.5' : '1'};
+    /* Раскладка фоновой картинки ставится ВСЕГДА, даже когда картинки тут нет:
+       у кнопки зелья сам URL подставляет updatePotionButton (иконка меняется по
+       ходу забега — какой тир выпьется следующим), и без этих трёх свойств она
+       легла бы в натуральный размер и повторами. */
+    background-repeat:no-repeat; background-position:center; background-size:74%;
+    ${opts.iconSrc ? `background-image:url("${opts.iconSrc}");` : ''}
+    transition:${PRESS_TRANSITION};
+  `
+}
+
 const PRESS_MIN_VISIBLE_MS = 120
 const PRESS_TRANSITION = 'transform 70ms ease-out, background-color 70ms ease-out, border-color 70ms ease-out'
 const PRESS_CSS = `
@@ -29,11 +95,13 @@ const PRESS_CSS = `
     background-color: #3A3344 !important;
     border-color: #E8B23A !important;
   }
-  /* Зона захвата ▲ шире видимой кнопки на 6px во все стороны (радиус 29 -> 34).
-     Промах мимо прыжка стоит жизни — шипы или яма, — а лишнее уклонение стоит
-     секунды кулдауна, поэтому спорный зазор между ▲ и 🔄 отдан прыжку. После
-     расширения между их зонами остаётся ~1px, пересечения нет (числа — в
-     комментарии к раскладке ниже).
+  /* Зона захвата ▲ шире видимой кнопки на JUMP_ZONE_PAD во все стороны
+     (радиус 26 -> 32). Промах мимо прыжка стоит жизни — шипы или яма, — а лишнее
+     уклонение стоит секунды кулдауна, поэтому спорный зазор отдан прыжку.
+     Считается это теперь ЧЕСТНО: с box-sizing:border-box номинальный радиус и
+     фактический совпадают (раньше рамка добавляла 1px, см. CLAUDE.md). Соседи
+     прыжка — уклонение и зелье, оба на расстоянии BTN_STEP = 60px, то есть
+     между зоной прыжка (32) и их кругами (26) остаётся 2px.
      Почему правилом, а не инлайном: cssText скриптовых кнопок переписывается
      ЦЕЛИКОМ на каждом рендере (см. ref-колбэк ниже), инлайн-зона стёрлась бы —
      ровно та же причина, по которой подсветка выше живёт правилом.
@@ -44,7 +112,7 @@ const PRESS_CSS = `
   [data-touch-controls] [data-btn="jump"]::after {
     content: '';
     position: absolute;
-    inset: -6px;
+    inset: -${JUMP_ZONE_PAD}px;
     border-radius: 50%;
     background: transparent;
   }
@@ -144,7 +212,13 @@ export default function TouchControls({
           (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
           refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
           dodgePressedRef) — меняется только вид, не способ ввода. */}
-      <div data-touch-controls="" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 178, zIndex: 1001, pointerEvents: 'none' }}>
+      {/* Панель кнопок. bottom — НЕ 0, а нижний safe-area iOS: на айфонах с
+          жестом «домой» нижние ~34px экрана принадлежат системе, и кнопки,
+          прибитые к самому низу, попадали в полосу жеста (открытая задача в
+          CLAUDE.md). env(...) с запасным 0px — на устройствах без выреза
+          поведение прежнее. Высота — из PANEL_H, а не число рядом с числом:
+          раскладка внутри считается от той же константы. */}
+      <div data-touch-controls="" style={{ position: 'absolute', bottom: 'env(safe-area-inset-bottom, 0px)', left: 0, right: 0, height: PANEL_H, zIndex: 1001, pointerEvents: 'none' }}>
         {/* Движение — левый блок */}
         <button
           aria-label="Влево"
@@ -167,7 +241,12 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            position: 'absolute', left: 23, bottom: 12, width: 52, height: 52,
+            // Тот же радиус и та же базовая линия (EDGE_Y от низа), что у атаки,
+            // прыжка и веера справа: раньше ◀/▶ были 52px при атаке 56px и
+            // веере 44px, и нижний ряд читался неровным.
+            position: 'absolute', left: EDGE_X, bottom: EDGE_Y,
+            boxSizing: 'border-box',
+            width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: '1px solid #3A3344',
             background: '#221E2B', color: '#EDE7F2', fontSize: 20,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -200,7 +279,11 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            position: 'absolute', left: 90, bottom: 12, width: 52, height: 52,
+            // Ровно BTN_STEP правее ◀ — тот же шаг, которым разнесены прыжок и
+            // зелье, поэтому зазоры по всей панели одинаковые.
+            position: 'absolute', left: EDGE_X + BTN_STEP, bottom: EDGE_Y,
+            boxSizing: 'border-box',
+            width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: '1px solid #3A3344',
             background: '#221E2B', color: '#EDE7F2', fontSize: 20,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -224,15 +307,25 @@ export default function TouchControls({
           ref={(container) => {
             if (!container) return
             const W = window.innerWidth
-            const H = 178
-            const ATK_R = 28
-            const BTN_R = 22
-            const ATK = { x: W - ATK_R - 10, y: H - ATK_R - 10 }
-            const D = ATK_R + BTN_R + 6
-            const cosT = 1 - 2 * Math.pow(BTN_R / D, 2)
-            const theta = Math.acos(cosT)
-            const midAngle = 225 * Math.PI / 180
-            const angles = [midAngle - theta, midAngle, midAngle + theta]
+            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА (числа — для экрана 375px):
+            //   атака     (337, 105) — правый нижний угол, EDGE_X/EDGE_Y от краёв
+            //   уклонение (258, 105) — веер, 180°, на одной линии с атакой
+            //   навык 1   (281,  49) — веер, 225°
+            //   навык 2   (337,  26) — веер, 270°, прямо над атакой
+            //   прыжок    (198, 105) — BTN_STEP левее уклонения, та же линия
+            //   зелье     (198,  45) — BTN_STEP выше прыжка
+            // Слева на той же линии: ◀ (34, 105) и ▶ (94, 105).
+            // Минимальное расстояние между центрами соседей = BTN_STEP = 60 при
+            // диаметре 52, то есть зазор 8px везде; ближайшая пара «левый блок —
+            // правый кластер» на 375px это ▶ и прыжок, между ними 104px.
+            // ⚠️ На 320px правый кластер сдвигается влево на 55px, и между ▶ и
+            // прыжком остаётся 1px по видимым кругам (зоны захвата ▲ при этом
+            // пересекаются с ▶ на 5px). Это ровно та открытая задача про узкие
+            // экраны из CLAUDE.md: лечится не зазорами, а раскладкой, зависящей
+            // от ширины, — отдельным шагом.
+            const ATK = { x: W - EDGE_X - BTN_R, y: PANEL_H - EDGE_Y - BTN_R }
+            // 180° / 225° / 270°: уклонение слева от атаки, навыки выше.
+            const angles = [Math.PI, Math.PI + FAN_STEP, Math.PI + 2 * FAN_STEP]
 
             // Веер: dodge плюс ДО ДВУХ навыков. Углы фиксированы тремя
             // позициями и НЕ пересчитываются под число кнопок — хорда между
@@ -263,24 +356,16 @@ export default function TouchControls({
                 existing?.remove()
                 return
               }
-              const x = ATK.x + D * Math.cos(b.angle)
-              const y = ATK.y + D * Math.sin(b.angle)
+              const x = ATK.x + FAN_D * Math.cos(b.angle)
+              const y = ATK.y + FAN_D * Math.sin(b.angle)
               const el = existing || document.createElement('button')
               el.dataset.btn = b.id
               el.textContent = b.spec.label
-              el.style.cssText = `
-                position:absolute;
-                left:${x - BTN_R}px; top:${y - BTN_R}px;
-                width:${BTN_R * 2}px; height:${BTN_R * 2}px;
-                border-radius:50%; border:1px solid #3A3344;
-                background:#221E2B; color:#EDE7F2; font-size:16px;
-                display:flex; align-items:center; justify-content:center;
-                touch-action:none; user-select:none; -webkit-user-select:none;
-                -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
-                opacity:${b.spec.dimmed ? '0.5' : '1'};
-                ${b.spec.iconSrc === null ? '' : `background-image:url("${b.spec.iconSrc}"); background-repeat:no-repeat; background-position:center; background-size:74%;`}
-              transition:${PRESS_TRANSITION};
-              `
+              el.style.cssText = roundButtonCss(x, y, {
+                fontSize: 20,
+                iconSrc: b.spec.iconSrc,
+                dimmed: b.spec.dimmed,
+              })
               if (!existing) container.appendChild(el)
             })
 
@@ -288,71 +373,36 @@ export default function TouchControls({
             const atk = atkEl || document.createElement('button')
             atk.dataset.btn = 'atk'
             atk.textContent = '⚔'
-            atk.style.cssText = `
-              position:absolute;
-              left:${ATK.x - ATK_R}px; top:${ATK.y - ATK_R}px;
-              width:${ATK_R * 2}px; height:${ATK_R * 2}px;
-              border-radius:50%; border:1px solid #3A3344;
-              background:#221E2B; color:#EDE7F2; font-size:20px;
-              display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; -webkit-user-select:none;
-              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
-              transition:${PRESS_TRANSITION};
-            `
+            atk.style.cssText = roundButtonCss(ATK.x, ATK.y, { fontSize: 20 })
             if (!atkEl) container.appendChild(atk)
 
-            // Прыжок — вплотную слева от всего веера (не от центра атаки),
-            // на высоте центра атаки, размер как у атаки.
-            const JMP_R = ATK_R
-            const jumpX = ATK.x - D - JMP_R - 30
+            // Прыжок — на базовой линии, BTN_STEP левее крайней кнопки веера
+            // (уклонения), а не «минус подобранные 30px» от центра атаки: шаг
+            // общий со всеми соседними парами панели.
+            const jumpX = ATK.x - FAN_D - BTN_STEP
             const jumpY = ATK.y
 
             const jumpEl = container.querySelector('[data-btn="jump"]') as HTMLElement
             const jump = jumpEl || document.createElement('button')
             jump.dataset.btn = 'jump'
             jump.textContent = '▲'
-            jump.style.cssText = `
-              position:absolute;
-              left:${jumpX - JMP_R}px; top:${jumpY - JMP_R}px;
-              width:${JMP_R * 2}px; height:${JMP_R * 2}px;
-              border-radius:50%; border:1px solid #3A3344;
-              background:#221E2B; color:#EDE7F2; font-size:20px;
-              display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; -webkit-user-select:none;
-              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
-              transition:${PRESS_TRANSITION};
-            `
+            jump.style.cssText = roundButtonCss(jumpX, jumpY, { fontSize: 20 })
             if (!jumpEl) container.appendChild(jump)
 
-            // Зелье — над самым правым скиллом веера (angles[2]).
-            const lastSkillX = ATK.x + D * Math.cos(angles[2])
-            const lastSkillY = ATK.y + D * Math.sin(angles[2])
-            const POT_R = 20
-            const potX = lastSkillX
-            const potY = lastSkillY - BTN_R - POT_R - 4
+            // Зелье — ровно над прыжком, тем же шагом. Над веером его держать
+            // больше нельзя: с равными радиусами верхняя кнопка веера уже стоит
+            // на высоте панели, и зелье вышло бы за её верх.
+            const potX = jumpX
+            const potY = ATK.y - BTN_STEP
 
             const potEl = container.querySelector('[data-btn="potion"]') as HTMLElement
             const pot = (potEl || document.createElement('button')) as HTMLButtonElement
             pot.dataset.btn = 'potion'
-            pot.style.cssText = `
-              position:absolute;
-              left:${potX - POT_R}px; top:${potY - POT_R}px;
-              width:${POT_R * 2}px; height:${POT_R * 2}px;
-              border-radius:50%; border:1px solid #3A3344;
-              background:#221E2B; color:#EDE7F2; font-size:11px;
-              /* Статика фона-иконки тира: сам URL ставит updatePotionButton
-                 (меняется по ходу забега — какой тир выпьется следующим).
-                 Здесь только раскладка, чтобы функции оставалось одно
-                 свойство. Число глотков рисуется ТЕКСТОМ поверх фона —
-                 <img> нельзя, textContent затирает детей. */
-              background-repeat:no-repeat; background-position:center;
-              background-size:74%;
-              text-shadow:0 1px 2px rgba(0,0,0,0.9);
-              display:flex; align-items:center; justify-content:center;
-              touch-action:none; user-select:none; -webkit-user-select:none;
-              -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
-              transition:${PRESS_TRANSITION};
-            `
+            // Иконку тира ставит updatePotionButton (меняется по ходу забега —
+            // какой тир выпьется следующим), здесь только раскладка. Число
+            // глотков рисуется ТЕКСТОМ поверх фона: <img> нельзя, textContent
+            // затирает детей. fontSize меньше прочих — цифра поверх картинки.
+            pot.style.cssText = roundButtonCss(potX, potY, { fontSize: 12 })
             if (!potEl) container.appendChild(pot)
             // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
             // "🧪 ×N"/opacity без React-состояния (см. updatePotionButton).
