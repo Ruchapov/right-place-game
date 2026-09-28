@@ -1369,7 +1369,12 @@ export default function App() {
               {/* Скиллы */}
               <div style={{ margin:'0 8px 16px' }}>
                 <div style={sectionHeaderStyle}>СКИЛЛЫ</div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:7 }}>
+                {/* minmax(0, 1fr) — то же правило, что у витрины магазина: у
+                    сетки с фиксированным числом колонок трек не должен получать
+                    авто-минимум по содержимому. Здесь картинок пока нет (гнёзда
+                    скиллов — заглушки), и вылета нет, но исключений из правила
+                    держать в голове не нужно. */}
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:7 }}>
                   {heroSkillSlots.map((skillId, i) => {
                     const name = skillId ? HERO_SKILL_NAMES[skillId] : null
                     return (
@@ -1391,7 +1396,10 @@ export default function App() {
               {/* Характеристики */}
               <div style={{ margin:'0 8px 16px' }}>
                 <div style={sectionHeaderStyle}>ХАРАКТЕРИСТИКИ</div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:6 }}>
+                {/* minmax(0, 1fr) — то же правило. Иконки статов здесь мелкие
+                    (16×16 явными width/height), поэтому вылета не было; правило
+                    всё равно одно на все сетки. */}
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:6 }}>
                   {charStats.map((stat, i) => (
                     <div key={i} style={{
                       background:C.nicheDeep,
@@ -1598,9 +1606,21 @@ export default function App() {
 
               {/* Витрина. Одна сетка на «Расходники» и «Книги» — различаются
                   только товары (gridTab выше), а ячейка, ценник и замок по
-                  уровню у них общие. */}
+                  уровню у них общие.
+                  Колонки — minmax(0, 1fr), а НЕ 1fr: иначе сетка вылезает за
+                  экран на узком телефоне. `1fr` это `minmax(auto, 1fr)`, а у
+                  трека с авто-минимумом грид-элемент получает min-width по
+                  СОДЕРЖИМОМУ: иконка внутри 128×128, и её `width:100%` при
+                  расчёте min-content считается за `auto`, то есть за 128px —
+                  плюс padding 6 и рамка 1, ячейка требует 142px, три колонки с
+                  зазорами 442px. На 375px колонкам достаётся 311px (вьюпорт
+                  минус padding 20 контейнера прокрутки, 4 обёртки вкладки и 8
+                  самой сетки) — третья колонка уезжала за правый край на 131px.
+                  С minmax(0, ...) минимум трека равен нулю, авто-минимум
+                  элемента не применяется вовсе, и иконка сжимается вместе с
+                  ячейкой (на 375px — 84px). */}
               {gridTab !== null ? (
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, padding:'0 8px' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
                   {shopCells.map(cell => {
                     const unlocked = playerLevel >= cell.levelRequired
                     return (
@@ -1670,7 +1690,10 @@ export default function App() {
                     background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
                     borderRadius:10, padding:'16px 12px',
                     boxShadow:'inset 0 2px 6px rgba(0,0,0,0.55)',
-                    display:'grid', gridTemplateColumns:'1fr auto 1fr', alignItems:'center', gap:8,
+                    // minmax(0, 1fr) по краям — то же правило, что у витрины:
+                    // иконки здесь 56×56 явными width/height, поэтому вылета не
+                    // было, но трек с авто-минимумом в сетке не нужен нигде.
+                    display:'grid', gridTemplateColumns:'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems:'center', gap:8,
                     marginBottom:14,
                   }}>
                     <div style={{ display:'flex', justifyContent:'center' }}>

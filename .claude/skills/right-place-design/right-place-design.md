@@ -38,6 +38,14 @@ Currencies (keep distinct and consistent across all screens):
 - Never put long text in the display font. Phones + WebView = readability first.
 
 ## Mobile-first rules (Telegram WebView)
+- **Check every layout at 375px wide** (iPhone) before calling it done — the
+  project's real bugs of this class were invisible at desktop widths.
+- **Fixed-column grids use `minmax(0, 1fr)`, never plain `1fr`.** With `1fr` the
+  track takes an automatic minimum from its content, and an `<img>` contributes
+  its intrinsic width (128px for this project's icons) even when styled
+  `width:100%` — the row then overflows the screen and the last column is cut
+  off. Same rule for flex children that must shrink: `min-width: 0`.
+  See CLAUDE.md, Critical Gotchas — this one was hit twice.
 - Touch targets: minimum ~44×44 px. Combat buttons larger.
 - Keep primary actions in the thumb zone (bottom half of the screen).
 - Respect safe areas; don't put tappable UI under the Telegram top bar or home indicator.
