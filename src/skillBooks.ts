@@ -74,6 +74,31 @@ const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, string> = {
     + `Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
 }
 
+/**
+ * Печать навыка — иконка для кнопки в бою (public/assets/icons/skill_*.png,
+ * 128×128, круглая каменная печать).
+ *
+ * Здесь, а не в src/explore/constants.ts: это иконка МЕНЮ-набора (та же партия,
+ * что обложки книг), и связка «навык → его арт» должна лежать в одном месте с
+ * остальным про навыки. Имена файлов идут от стихии (skill_fire), а id навыка —
+ * от снаряда (fireball), поэтому карта нужна явная.
+ *
+ * Ключ — то же пересечение двух типов, что у строк ниже: разъедутся id книг и
+ * боевые id — сборка упадёт.
+ */
+const SKILL_SEAL_FILE: Record<SkillBookSkillId & SkillId, string> = {
+  fireball: 'skill_fire.png',
+  iceball: 'skill_ice.png',
+  slash: 'skill_bleed.png',
+  heal: 'skill_heal.png',
+  dash: 'skill_dash.png',
+}
+
+/** Путь к печати навыка. BASE_URL обязателен — сайт живёт в подкаталоге. */
+export function skillSealSrc(skillId: SkillBookSkillId): string {
+  return `${import.meta.env.BASE_URL}assets/icons/${SKILL_SEAL_FILE[skillId]}`
+}
+
 /** Что делает скилл, который улучшает книга. */
 export function skillBookLine(skillId: SkillBookSkillId): string {
   return SKILL_BOOK_LINES[skillId]

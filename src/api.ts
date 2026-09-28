@@ -1,4 +1,4 @@
-import { CONSUMABLES, type ConsumableId } from './consumables'
+import { CONSUMABLES, consumableSkillBook, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
@@ -123,6 +123,11 @@ export type LoginResponse = {
     // самый тихий фолбэк, который в проекте запрещён. Разбирать ТОЛЬКО через
     // readConsumables ниже.
     consumables?: Record<string, number>
+    // Уровни навыков — объектом по id навыка (`{fireball: 1, …}`). Опциональное
+    // по той же причине, что consumables выше: обязательное поле дало бы
+    // `undefined`, типизированный как объект, на старом или подменённом ответе.
+    // Разбирать ТОЛЬКО через readSkillLevels ниже.
+    skillLevels?: Record<string, number>
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -888,21 +893,12 @@ export async function recordProgress(token: string, snapshot: RunProgressSnapsho
   })
 }
 
-export async function saveEquippedSkills(token: string, skills: string[]): Promise<{ equippedSkills: string[] }> {
-  const response = await fetch(`${SERVER_URL}/character/skills`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ skills }),
-  })
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(`Save skills failed: ${response.status} ${JSON.stringify(err)}`)
-  }
-  return await response.json()
-}
+// saveEquippedSkills УДАЛЁН 29.09.2026 вместе с серверным POST /character/skills:
+// тот принимал любой набор навыков и записывал его без условий, то есть выдавал
+// навык бесплатно. Теперь навык бывает только от книги — см. четыре ручки книг в
+// конце файла (equipBook/forgetSkill/upgradeSkill/sellBook). Это была ЕДИНСТВЕННАЯ
+// функция в файле без таймаута (на голом fetch), так что заодно закрылась и
+// соответствующая открытая задача.
 
 export type BuyPotionResult = {
   gold: number
@@ -966,6 +962,10 @@ export type ProfileResult = {
   consumables: Record<ConsumableId, number> | null
   /** null — сервер курс не назвал (см. readTrophyGoldRate). */
   trophyGoldRate: number | null
+  /** null — сервер не назвал надетые навыки (см. readEquippedSkills). */
+  equippedSkills: string[] | null
+  /** null — сервер не назвал уровни навыков (см. readSkillLevels). */
+  skillLevels: Record<SkillBookSkillId, number> | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -981,6 +981,8 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     potions: number[]
     consumables?: unknown
     trophyGoldRate?: unknown
+    equippedSkills?: unknown
+    skillLevels?: unknown
   }>(
     `${SERVER_URL}/character/profile`,
     { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
@@ -992,6 +994,8 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     potions: raw.potions,
     consumables: readConsumables(raw.consumables),
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
+    equippedSkills: readEquippedSkills(raw.equippedSkills),
+    skillLevels: readSkillLevels(raw.skillLevels),
   }
 }
 
@@ -1138,6 +1142,42 @@ export function readConsumables(raw: unknown): Record<ConsumableId, number> | nu
   return out
 }
 
+/**
+ * Разбор уровней навыков из ответа сервера (логин, профиль, четыре ручки книг).
+ *
+ * Требуются ВСЕ навыки каталога, как и у readConsumables: частично заполненный
+ * объект значит, что сервер и клиент разошлись каталогами, и доверять остатку
+ * нельзя. null — «уровни неизвестны», НЕ «уровень 1»: в карточке навыка при null
+ * стоит прочерк, а не выдуманная единица.
+ */
+export function readSkillLevels(raw: unknown): Record<SkillBookSkillId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const spec of CONSUMABLES) {
+    const skillId = consumableSkillBook(spec)
+    if (skillId === null) continue
+    const v = record[skillId]
+    // Уровень начинается с 1, поэтому ноль и отрицательное — тоже негодные
+    // данные, а не «просто мало».
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return null
+    out[skillId] = v
+  }
+  return out
+}
+
+/**
+ * Разбор надетых навыков. null — сервер их не назвал или назвал мусором, и это НЕ
+ * «навыков нет»: пустой список — штатное состояние (герой без книг), а
+ * неизвестность обязана выглядеть иначе, иначе забег молча ушёл бы без кнопок
+ * навыков, которые игроку положены.
+ */
+export function readEquippedSkills(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null
+  if (!raw.every((s) => typeof s === 'string')) return null
+  return raw as string[]
+}
+
 export type BuyConsumableResult = {
   gold: number
   /** null — сервер не назвал склад (см. readConsumables). */
@@ -1237,4 +1277,75 @@ export async function equipItem(token: string, inventoryItemId: string, equip: b
     },
     EQUIP_TIMEOUT_MS,
   )
+}
+
+// --- КНИГИ НАВЫКОВ: надеть / забыть / улучшить / продать ---
+//
+// Все четыре меняют одно и то же состояние и потому отдают ОДИН ответ целиком
+// (см. sendSkillState на сервере): золото, склад расходников, набор навыков и их
+// уровни. Клиент мержит все четыре поля разом — иначе после продажи книги шапка с
+// золотом или счётчик сумки остались бы с прежними числами.
+//
+// ⚠️ ПОВТОРОВ НЕТ НИ У ОДНОЙ, и это осознанно: ключа идемпотентности на сервере
+// нет, а каждая из трёх списывает книгу — повтор потерянного запроса потратил бы
+// ВТОРУЮ. При потерянном ответе клиент не гадает, а просит сверить профиль
+// (handleSkillAction в App.tsx), ровно как equipItem выше.
+const SKILL_BOOK_TIMEOUT_MS = 5000
+
+/**
+ * Состояние после любого действия с книгой. Все четыре поля АБСОЛЮТНЫЕ и
+ * перечитаны сервером из БД — считать что-либо из них на клиенте не нужно.
+ * `consumables`/`skillLevels` — null, если сервер их не назвал (см. их разборщики).
+ */
+export type SkillStateResult = {
+  gold: number
+  consumables: Record<ConsumableId, number> | null
+  equippedSkills: string[] | null
+  skillLevels: Record<SkillBookSkillId, number> | null
+}
+
+async function skillBookRequest(path: string, token: string, body: object): Promise<SkillStateResult> {
+  const raw = await requestJson<{
+    gold: number
+    consumables?: unknown
+    equippedSkills?: unknown
+    skillLevels?: unknown
+  }>(
+    `${SERVER_URL}${path}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    },
+    SKILL_BOOK_TIMEOUT_MS,
+  )
+  return {
+    gold: raw.gold,
+    consumables: readConsumables(raw.consumables),
+    equippedSkills: readEquippedSkills(raw.equippedSkills),
+    skillLevels: readSkillLevels(raw.skillLevels),
+  }
+}
+
+/** Надеть навык из книги. Книга УХОДИТ со склада — «забыть» её не вернёт. */
+export function equipBook(token: string, id: SkillBookId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/equip-book', token, { id })
+}
+
+/** Забыть навык: снимается из гнезда, книга не возвращается, уровень остаётся. */
+export function forgetSkill(token: string, skillId: SkillBookSkillId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/forget-skill', token, { skillId })
+}
+
+/** Улучшить навык книгой: книга списывается, уровень +1. Надетость не нужна. */
+export function upgradeSkill(token: string, id: SkillBookId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/upgrade-skill', token, { id })
+}
+
+/** Продать книгу: списывается, золото +цена/10 (consumableSellPrice, каталог). */
+export function sellBook(token: string, id: SkillBookId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/sell-book', token, { id })
 }

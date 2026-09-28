@@ -3,7 +3,7 @@ import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sp
 import { renderMapToCanvas, backdropPaths } from './mapRenderer'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
-import TouchControls from './explore/ui/TouchControls'
+import TouchControls, { type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
   Grid,
@@ -37,6 +37,9 @@ import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier } from './potions'
 import { clamp, pickRandom } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
+// Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
+import { parseSkillBookSkillId } from './consumables'
+import { skillSealSrc } from './skillBooks'
 import { loadExploreAssets } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
@@ -1412,21 +1415,35 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   //   слот пуст   -> приглушено (как зелье на нуле зарядов);
   //   данных нет  -> "?" и приглушено, состояние ЯВНО отличимо от пустого
   //                  слота, плюс ошибка в консоль (см. equippedSkillsKnown).
+  // Гнёзда кнопок навыков для TouchControls: что рисовать в веере.
+  // ⚠️ Пустое гнездо = КНОПКИ НЕТ ВОВСЕ (решение дизайнера: нет надетых навыков —
+  // нет и кнопок). Прежняя приглушённая кнопка-заглушка убрана: навык теперь
+  // бывает только от книги, и пустая кнопка обещала бы то, чего у героя нет.
+  const skillButtonSlots: [SkillButtonSlot, SkillButtonSlot] = [
+    skillButtonSlot(equippedSlots[0]),
+    skillButtonSlot(equippedSlots[1]),
+  ]
+
+  function skillButtonSlot(raw: string | null): SkillButtonSlot {
+    // Профиль не загружен — это НЕ пустое гнездо (см. equippedSkillsKnown выше).
+    if (!equippedSkillsKnown) return 'unknown'
+    if (raw === null) return null
+    const skillId = parseSkillBookSkillId(raw)
+    // Навык надет, но каталог его не знает: печати взять негде, а спрятать кнопку
+    // значило бы молча лишить игрока надетого навыка — рисуем «?». Возможно это
+    // только при расхождении каталогов клиента и сервера.
+    if (skillId === null) return 'unknown'
+    return { iconSrc: skillSealSrc(skillId) }
+  }
+
+  // Осталась только диагностика: вид кнопки (печать / «?» / отсутствие) целиком
+  // задаётся при её создании в TouchControls, восстанавливать после перезаписи
+  // cssText здесь больше нечего. Функция всё равно вызывается оттуда — точка для
+  // будущего индикатора кулдауна (открытая задача) сохранена.
   function updateSkillButtons() {
-    const btns = [skill1BtnRef.current, skill2BtnRef.current]
     if (!equippedSkillsKnown && !equippedUnknownLoggedRef.current) {
       equippedUnknownLoggedRef.current = true
       console.error('Explore: проп equippedSkills не задан — что экипировано, неизвестно (профиль ещё не загружен?)')
-    }
-    for (let i = 0; i < btns.length; i++) {
-      const btn = btns[i]
-      if (!btn) continue
-      if (!equippedSkillsKnown) {
-        btn.textContent = '?'
-        btn.style.opacity = '0.5'
-        continue
-      }
-      btn.style.opacity = equippedSlots[i] ? '1' : '0.5'
     }
   }
 
@@ -4994,6 +5011,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             updatePotionButton={updatePotionButton}
             skill1BtnRef={skill1BtnRef}
             skill2BtnRef={skill2BtnRef}
+            skillSlots={skillButtonSlots}
             updateSkillButtons={updateSkillButtons}
           />
         </>

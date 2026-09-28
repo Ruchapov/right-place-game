@@ -1,22 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, saveEquippedSkills, buyPotion, buyConsumable, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, fetchInventory, equipItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readSkillLevels, readEquippedSkills, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, consumableById, parseConsumableCount, type ConsumableId, type ConsumableShopTab } from './consumables'
+import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
 // Строку механики берём ТОЛЬКО отсюда: у камня и оберега числа в общем каталоге,
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
-import { consumableMechanicLine } from './skillBooks'
+import { consumableMechanicLine, skillBookLine } from './skillBooks'
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import './App.css'
 
-type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number; equippedSkills: string[]; /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[]
+type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number
+  /**
+   * Надетые навыки, максимум MAX_EQUIPPED_SKILLS.
+   * null — сервер их НЕ НАЗВАЛ (см. readEquippedSkills в api.ts). Это НЕ «навыков
+   * нет»: пустой список — штатное состояние героя без книг, и путать его с
+   * неизвестностью нельзя (в забег ушли бы кнопки, которых игрок не заслужил, или
+   * наоборот).
+   */
+  equippedSkills: string[] | null
+  /**
+   * Уровень каждого навыка, старт 1 (колонки Character.skillLevel*).
+   * null — сервер не назвал (см. readSkillLevels). Прочерк, не единица: уровень
+   * растёт за книги, и соврать в нём значит соврать про потраченное.
+   * ⚠️ Ни на что в бою пока не влияет — что даёт уровень, не решено.
+   */
+  skillLevels: Record<SkillBookSkillId, number> | null
+  /** Склад зелий по тирам, индекс = тир-1 (см. src/potions.ts). */ potions: number[]
   /**
    * Склад расходников по id каталога (src/consumables.ts).
    * null — сервер его НЕ НАЗВАЛ (старая версия или битое поле, см.
@@ -334,6 +350,26 @@ function devConsumableStock(): Record<ConsumableId, number> {
   for (const c of CONSUMABLES) out[c.id] = TEMP_DEV_CONSUMABLE_STOCK
   return out
 }
+/**
+ * TEMP_DEV_SKILL_LEVEL — ТЕСТОВЫЙ уровень каждого навыка для офлайн-заглушки
+ * DevTester. Настоящий лежит в колонках Character.skillLevel* и приходит полем
+ * character.skillLevels в ответе логина.
+ *
+ * 3, а не 1: с единицей не видно, что «Уровень N» в карточке показывает число из
+ * данных, а не нарисованную константу.
+ *
+ * Собирается ИЗ КАТАЛОГА, как и склад выше: шестой навык появится в офлайн-отладке
+ * сам. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
+ */
+const TEMP_DEV_SKILL_LEVEL = 3
+function devSkillLevels(): Record<SkillBookSkillId, number> {
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const c of CONSUMABLES) {
+    const skillId = consumableSkillBook(c)
+    if (skillId !== null) out[skillId] = TEMP_DEV_SKILL_LEVEL
+  }
+  return out
+}
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -447,16 +483,18 @@ export default function App() {
   // из-под DevTester, и реальный забег в Telegram стало бы нечем начать.
   const [isTelegramSession, setIsTelegramSession] = useState(false)
   const [activeTab, setActiveTab] = useState<'hero' | 'shop' | 'explore' | 'gear' | 'friends'>('explore')
-  const [savingSkills, setSavingSkills] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  // Подвкладка "Инвентаря". ДВЕ ветки, обе с настоящим рендером:
+  // Подвкладка "Инвентаря". ТРИ ветки, у каждой настоящий рендер:
   //   'equipment'   — предметы шести слотов (источник: inventory с сервера)
-  //   'consumables' — всё применяемое (источник: player.potions; позже обереги,
-  //                   карты, книги скиллов — см. consumableSources в разметке)
-  // Это НЕ прежнее трёхзначное состояние с 'skills': скиллы живут на экране
-  // "Персонаж", на этой вкладке их нет.
-  const [gearTab, setGearTab] = useState<'equipment' | 'consumables'>('equipment')
+  //   'consumables' — применяемое в забеге: зелья, камень, оберег; позже карты
+  //   'books'       — книги навыков (29.09.2026): свой раздел, потому что они
+  //                   НЕ применяются в забеге вовсе, а надеваются/улучшаются
+  //                   между забегами, и их действия («Надеть», «Улучшить»,
+  //                   «Продать») не имеют смысла ни для зелья, ни для камня
+  // Это НЕ прежнее трёхзначное состояние с 'skills': надетые навыки живут на
+  // экране "Персонаж", здесь только книги как предметы.
+  const [gearTab, setGearTab] = useState<'equipment' | 'consumables' | 'books'>('equipment')
   // Выбранный пункт фильтра по слоту внутри "Экипировки": null — "Всё".
   // Ставится тапом по гнезду на экране "Персонаж" (см. ниже), сбрасывается
   // пунктом "Всё" в выпадающем списке и тапом по "Инвентарь" в навбаре — иначе
@@ -518,6 +556,19 @@ export default function App() {
     | { kind: 'consumable'; consumableId: ConsumableId }
     | null
   >(null)
+  // --- Книги навыков ---
+  // Какой НАДЕТЫЙ навык открыт карточкой на экране "Персонаж" (тап по гнезду).
+  // Хранится id навыка, а не индекс гнезда: гнёзда — это просто позиции в
+  // equippedSkills, и после «забыть» второй навык съезжает на первое место.
+  const [heroSkillSelected, setHeroSkillSelected] = useState<SkillBookSkillId | null>(null)
+  // Подтверждение «Забыть»: навык снимается безвозвратно и книгу не возвращает,
+  // поэтому один тап этого сделать не должен.
+  const [forgetConfirm, setForgetConfirm] = useState(false)
+  // Одна пара состояний на все четыре действия с книгами — они никогда не идут
+  // параллельно (каждое закрывает своё окно), а два счётчика «в полёте»
+  // разъехались бы.
+  const [skillActionPending, setSkillActionPending] = useState(false)
+  const [skillActionError, setSkillActionError] = useState<string | null>(null)
   // --- Гнёзда подготовки на вкладке «Исследовать» ---
   // Длина фиксирована каталогом (RUN_CONSUMABLE_SLOTS), null — гнездо пусто.
   // Один и тот же id в двух гнёздах запрещён: сервер отвергает повторы
@@ -603,7 +654,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -630,7 +681,10 @@ export default function App() {
     setIsTelegramSession(true)
     // consumables — через readConsumables, а не присваиванием: нет поля или мусор
     // дают null, то есть «запас неизвестен», и экраны скажут это прочерком.
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: data.character.equippedSkills ?? [], potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
+    // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
+    // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
+    // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
@@ -764,30 +818,93 @@ export default function App() {
     }
   }
 
-  async function handleSkillToggle(skillId: string) {
-    if (!player) return
-    const current = player.equippedSkills ?? []
-    let next: string[]
-    if (current.includes(skillId)) {
-      next = current.filter(s => s !== skillId)
-    } else {
-      if (current.length >= 2) return
-      next = [...current, skillId]
+  // --- Книги навыков: надеть / забыть / улучшить / продать ---
+  //
+  // ОДИН обработчик на четыре действия, а не четыре почти одинаковых: у них
+  // совпадает всё, кроме запроса — блокировка на время полёта, мерж ответа,
+  // разбор отказа и развилка «ответа не было». Прежний handleSkillToggle
+  // (свободная смена навыков через удалённый POST /character/skills) удалён:
+  // навык теперь бывает только от книги.
+  type SkillAction =
+    | { kind: 'equip'; bookId: SkillBookId }
+    | { kind: 'forget'; skillId: SkillBookSkillId }
+    | { kind: 'upgrade'; bookId: SkillBookId }
+    | { kind: 'sell'; bookId: SkillBookId }
+
+  // Отказы сервера — словами игрока. Коды из server/src/routes/run.ts, четыре
+  // ручки книг.
+  function describeSkillRefusal(e: RequestError): string {
+    switch (e.serverError) {
+      case 'Skill already equipped': return 'Навык уже надет.'
+      case 'No free skill slot': return 'Обе ячейки навыков заняты — сначала забудь один.'
+      case 'Skill not equipped': return 'Этот навык не надет.'
+      case 'No book in stock': return 'Книги нет на складе — обнови баланс.'
+      case 'Unknown book': return 'Сервер не знает такой книги.'
+      case 'Unknown skill': return 'Сервер не знает такого навыка.'
+      // Книга кончилась ИЛИ набор навыков изменился — сервер эти два случая не
+      // различает (см. equip-book), и для игрока они значат одно и то же.
+      case 'State changed, retry': return 'Данные успели измениться — обнови баланс и попробуй снова.'
+      default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
     }
+  }
+
+  async function handleSkillAction(action: SkillAction) {
     const token = localStorage.getItem('jwt')
-    if (!token) return
-    setSavingSkills(true)
+    if (!token || !player) {
+      setSkillActionError('Профиль не загружен — действие недоступно.')
+      return
+    }
+    if (skillActionPending) return
+    setSkillActionPending(true)
+    setSkillActionError(null)
     try {
-      const result = await saveEquippedSkills(token, next)
-      if (player) {
-        setPlayer(prev => prev ? { ...prev, equippedSkills: result.equippedSkills } : prev)
+      const result: SkillStateResult =
+        action.kind === 'equip' ? await equipBook(token, action.bookId)
+          : action.kind === 'forget' ? await forgetSkill(token, action.skillId)
+            : action.kind === 'upgrade' ? await upgradeSkill(token, action.bookId)
+              : await sellBook(token, action.bookId)
+      // Все четыре поля АБСОЛЮТНЫЕ и перечитаны сервером из БД — мержим как
+      // есть, включая null. null здесь значит «сервер не назвал», и подставлять
+      // вместо него прежнее значение нельзя: книга уже списана, и старые числа
+      // на экране были бы враньём (см. правило про тихие фолбэки).
+      setPlayer(prev => prev ? {
+        ...prev,
+        gold: result.gold,
+        consumables: result.consumables,
+        equippedSkills: result.equippedSkills,
+        skillLevels: result.skillLevels,
+      } : prev)
+      if (result.consumables === null || result.equippedSkills === null || result.skillLevels === null) {
+        console.error('Skill action: сервер ответил не полностью', action.kind, result)
+        setShopBalanceUnknown(true)
+        setSkillActionError('Действие прошло, но сервер назвал не всё. Обнови баланс.')
+        return
+      }
+      // Успех — закрываем то окно, из которого действие пришло. «Забыть» живёт
+      // в карточке навыка на «Персонаже», остальные три — в карточке книги.
+      if (action.kind === 'forget') {
+        setHeroSkillSelected(null)
+        setForgetConfirm(false)
       } else {
-        requestPlayerRefresh()
+        setGearSelectedItem(null)
       }
     } catch (e) {
-      console.error('Save skills failed', e)
+      console.error('Skill action failed', action.kind, e)
+      if (e instanceof RequestError && e.serverError !== null && !e.retryable) {
+        setSkillActionError(describeSkillRefusal(e))
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: ответа нет, но запрос МОГ дойти и
+        // примениться — книга списана, навык надет. Повторять НЕЛЬЗЯ (потратит
+        // вторую книгу), поэтому требуем сверку, как у покупки.
+        setShopBalanceUnknown(true)
+        setSkillActionError('Ответ не пришёл — действие могло пройти. Обнови баланс.')
+        return
+      }
+      setSkillActionError('Не удалось — сервер не ответил или отказал. Попробуй ещё раз.')
     } finally {
-      setSavingSkills(false)
+      setSkillActionPending(false)
     }
   }
 
@@ -1151,8 +1268,6 @@ export default function App() {
   // использует: нужны только чтобы TS (noUnusedLocals) не считал этот код
   // мёртвым.
   void SlotIcon
-  void savingSkills
-  void handleSkillToggle
 
   if (loading) return <div style={{ padding: 20 }}>⏳ Загрузка...</div>
   // Вход не удался после всех повторов (см. runInitialLogin). Раньше здесь
@@ -1232,7 +1347,16 @@ export default function App() {
             const HERO_SKILL_NAMES: Record<string, string> = {
               heal:'Лечение', dash:'Рывок-удар', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар',
             }
-            const heroSkillSlots = [0, 1].map(i => p.equippedSkills[i] ?? null)
+            // Гнёзда навыков: MAX_EQUIPPED_SKILLS позиций из общего каталога, а
+            // не литеральные [0, 1] — число слотов проверяет ещё и сервер, и двум
+            // копиям расходиться нельзя.
+            // equippedSkills === null значит «сервер не назвал» (см. PlayerData) —
+            // это НЕ пустые гнёзда, и подпись в слоте будет другая.
+            const heroSkillsKnown = p.equippedSkills !== null
+            const heroSkillSlots: (string | null)[] = Array.from(
+              { length: MAX_EQUIPPED_SKILLS },
+              (_, i) => p.equippedSkills?.[i] ?? null,
+            )
             // Броня, Удача и Урон (слагаемое надетого оружия) считаются по
             // НАДЕТЫМ предметам, то есть по inventory — и врали бы нулём, пока
             // он не загружен (см. inventoryStatus). Ноль здесь неотличим от
@@ -1375,18 +1499,58 @@ export default function App() {
                     скиллов — заглушки), и вылета нет, но исключений из правила
                     держать в голове не нужно. */}
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:7 }}>
-                  {heroSkillSlots.map((skillId, i) => {
-                    const name = skillId ? HERO_SKILL_NAMES[skillId] : null
+                  {heroSkillSlots.map((raw, i) => {
+                    // raw — строка из equippedSkills. Сужаем её каталогом: обложку
+                    // и карточку можно рисовать только для известного навыка.
+                    const skillId = parseSkillBookSkillId(raw)
+                    const book = skillId === null ? null : bookBySkillId(skillId)
+                    // Подпись слота, четыре разных случая — и ни один не
+                    // притворяется другим:
+                    //   известный навык        -> его имя;
+                    //   строка есть, каталог её не знает -> сама строка (это
+                    //     расхождение каталогов клиента и сервера, прятать нельзя);
+                    //   навыки известны, слот пуст -> «пусто»;
+                    //   навыки НЕ известны     -> «неизвестно».
+                    const label = skillId !== null ? (HERO_SKILL_NAMES[skillId] ?? skillId)
+                      : raw !== null ? raw
+                        : heroSkillsKnown ? 'пусто' : 'неизвестно'
+                    const filled = skillId !== null
                     return (
-                      <div key={i} style={{
-                        boxSizing:'border-box',
-                        background:C.nicheDeep, borderRadius:8, padding:9,
-                        display:'flex', alignItems:'center', gap:9,
-                        border: `1px solid ${skillId ? C.glowEdge : C.stoneDark}`,
-                        boxShadow: skillId ? 'inset 0 0 12px rgba(209,151,68,0.30)' : 'none',
-                      }}>
-                        <div style={{ width:30, height:30, flexShrink:0, background:C.outline, borderRadius:6 }} />
-                        <div style={{ fontSize:12, color: name ? C.textMain : C.stoneDark }}>{name ?? 'пусто'}</div>
+                      <div key={i}
+                        // Тап открывает карточку навыка (обложка, «что делает»,
+                        // уровень, «Забыть»). Пустое гнездо не нажимается: надеть
+                        // навык можно только из книги в сумке, и отправлять отсюда
+                        // в «Инвентарь» значило бы обещать действие, которого на
+                        // этом экране нет.
+                        onClick={() => {
+                          if (skillId === null) return
+                          setHeroSkillSelected(skillId)
+                          setForgetConfirm(false)
+                          setSkillActionError(null)
+                        }}
+                        style={{
+                          boxSizing:'border-box', minHeight:44,
+                          background:C.nicheDeep, borderRadius:8, padding:9,
+                          display:'flex', alignItems:'center', gap:9,
+                          border: `1px solid ${filled ? C.glowEdge : C.stoneDark}`,
+                          boxShadow: filled ? 'inset 0 0 12px rgba(209,151,68,0.30)' : 'none',
+                          cursor: filled ? 'pointer' : 'default',
+                        }}>
+                        {/* Обложка книги, которая дала навык (каталог, bookBySkillId).
+                            Книги для навыка нет — остаётся прежний тёмный квадрат:
+                            выдумывать картинку не из чего. */}
+                        {book !== null ? (
+                          <img
+                            src={`${import.meta.env.BASE_URL}assets/icons/${book.icon}`}
+                            alt={book.nameRu}
+                            width={30}
+                            height={30}
+                            style={{ display:'block', objectFit:'contain', flexShrink:0 }}
+                          />
+                        ) : (
+                          <div style={{ width:30, height:30, flexShrink:0, background:C.outline, borderRadius:6 }} />
+                        )}
+                        <div style={{ fontSize:12, minWidth:0, color: filled ? C.textMain : C.stoneDark }}>{label}</div>
                       </div>
                     )
                   })}
@@ -1431,6 +1595,119 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {/* Карточка НАДЕТОГО навыка (тап по гнезду выше). Оверлей той же
+                  вёрстки, что карточка предмета в «Инвентаре»: тёмная подложка,
+                  тап мимо закрывает, maxWidth 290.
+                  Показывает обложку книги, имя навыка, «что делает» (та же строка
+                  из боевых констант, что в магазине, — src/skillBooks.ts) и
+                  уровень. Действие одно: «Забыть». */}
+              {heroSkillSelected !== null && (() => {
+                const skillId = heroSkillSelected
+                const book = bookBySkillId(skillId)
+                // Уровень: null значит «сервер не назвал» — прочерк, а не 1.
+                const level = p.skillLevels?.[skillId] ?? null
+                return (
+                <div
+                  onClick={() => { setHeroSkillSelected(null); setForgetConfirm(false); setSkillActionError(null) }}
+                  style={{
+                    position:'fixed', top:0, left:0, right:0, bottom:0,
+                    background:'rgba(0,0,0,0.55)',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    zIndex:1000,
+                  }}>
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                      maxWidth:290, width:'100%',
+                      background:C.appBg, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:14, padding:16,
+                    }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+                      <div style={{
+                        width:64, height:64, flexShrink:0, background:C.nicheDeep, borderRadius:8,
+                        boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                      }}>
+                        {book !== null && (
+                          <img
+                            src={`${import.meta.env.BASE_URL}assets/icons/${book.icon}`}
+                            alt={book.nameRu}
+                            style={{ width:54, height:54, objectFit:'contain', display:'block' }}
+                          />
+                        )}
+                      </div>
+                      <div style={{ minWidth:0 }}>
+                        <div style={{ fontSize:15, color:C.textMain }}>{HERO_SKILL_NAMES[skillId] ?? skillId}</div>
+                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
+                          {level === null ? 'Уровень — (неизвестен)' : `Уровень ${level}`}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* «Что делает» — из боевых констант, не текстом. Та же
+                        функция, что в карточке книги в магазине и в сумке. */}
+                    <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
+                      <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId)}</div>
+                    </div>
+
+                    {forgetConfirm ? (
+                      <>
+                        {/* Цена действия названа ДО подтверждения, оба её пункта:
+                            книга не вернётся, уровень останется. */}
+                        <div style={{ fontSize:12, lineHeight:1.5, color:C.danger, marginBottom:10, textAlign:'center' }}>
+                          Книга пропадёт. Уровень навыка сохранится.
+                        </div>
+                        <div style={{ display:'flex', gap:8 }}>
+                          <div
+                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'forget', skillId }) }}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.danger}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.danger, fontSize:14,
+                              cursor: skillActionPending ? 'default' : 'pointer',
+                              opacity: skillActionPending ? 0.5 : 1,
+                            }}>
+                            {skillActionPending ? 'Забываю...' : 'Забыть'}
+                          </div>
+                          <div
+                            onClick={() => setForgetConfirm(false)}
+                            style={{
+                              flex:1, boxSizing:'border-box', minHeight:44,
+                              display:'flex', alignItems:'center', justifyContent:'center',
+                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                              borderRadius:9, padding:'8px 11px', textAlign:'center',
+                              color:C.textMain, fontSize:14, cursor:'pointer',
+                            }}>
+                            Отмена
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div
+                        onClick={() => setForgetConfirm(true)}
+                        style={{
+                          boxSizing:'border-box', minHeight:44,
+                          display:'flex', alignItems:'center', justifyContent:'center',
+                          background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                          borderRadius:9, padding:'8px 11px', textAlign:'center',
+                          color:C.textMain, fontSize:14, cursor:'pointer',
+                        }}>
+                        Забыть
+                      </div>
+                    )}
+
+                    {skillActionError !== null && (
+                      <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                        {skillActionError}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                )
+              })()}
 
             </div>
             )
@@ -2031,9 +2308,16 @@ export default function App() {
             // СТРАНИЦЫ (scroll_*), а не книги: страницы копятся по три на книгу
             // и выпадают в забегах, поэтому ячейку тратить не будут. Их в
             // каталоге ещё нет; появятся — своим источником с takesCell: false.
-            const consumableSources: { key: string; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
+            // section — в КАКОМ разделе сумки показывать источник. Появилось
+            // вместе с книгами: раньше «всё, что не экипировка» рисовалось одной
+            // подвкладкой, а у книг свои действия («Надеть», «Улучшить»,
+            // «Продать»), бессмысленные для зелья и камня.
+            // Заполненность сумки при этом считается по ВСЕМ разделам (см. bagUsed):
+            // вместимость — свойство сумки, а не открытой подвкладки.
+            const consumableSources: { key: string; section: 'consumables' | 'books'; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
               {
                 key: 'potions',
+                section: 'consumables',
                 // Зелий копятся десятки — забивать ими сумку и терять их при
                 // переполнении было бы несоразмерным наказанием.
                 takesCell: false,
@@ -2055,21 +2339,19 @@ export default function App() {
               },
               {
                 key: 'consumables',
+                section: 'consumables',
                 // Расходники ячейку сумки ТРАТЯТ — в отличие от зелий: их берут
                 // единицами, а не десятками (docs/items.md, "Правило
                 // вместимости").
-                // ⚠️ КНИГИ СЧИТАЮТСЯ ЗДЕСЬ ЖЕ, по тому же правилу, что камень и
-                // оберег: одна ячейка на вид с бейджем "×N". Отдельный источник
-                // с takesCell: false у них был (28.09.2026) и СНЯТ —
-                // правило "не тратит" относится к страницам (scroll_*), не к
-                // книгам. Поэтому фильтра по виду эффекта здесь нет: источник
-                // берёт ВЕСЬ каталог расходников.
                 takesCell: true,
                 // Показываем только то, чего реально не ноль — тем же приёмом,
                 // что тиры зелий выше. Запас неизвестен (consumables === null) —
                 // ячеек нет вовсе, причину скажет note: пустая сетка и
                 // "расходников нет" не должны выглядеть одинаково.
+                // Только НЕ книги: книги — свой раздел ниже. Признак берётся из
+                // эффекта каталога, а не из вкладки магазина.
                 cells: (player?.consumables == null ? [] : CONSUMABLES)
+                  .filter((c) => consumableSkillBook(c) === null)
                   .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
                   .map((c) => ({
                     key: `consumable-${c.id}`,
@@ -2090,9 +2372,44 @@ export default function App() {
                     ? 'Сервер не назвал запас расходников.'
                     : null,
               },
+              {
+                key: 'books',
+                section: 'books',
+                // Книга ячейку сумки ТРАТИТ — как камень и оберег (docs/items.md,
+                // «ПРАВИЛО ВМЕСТИМОСТИ»: не тратят её только зелья и будущие
+                // страницы scroll_*). Отдельный раздел — не про вместимость, а
+                // про действия: книгу надевают, улучшают ею навык или продают.
+                takesCell: true,
+                cells: (player?.consumables == null ? [] : CONSUMABLES)
+                  .filter((c) => consumableSkillBook(c) !== null)
+                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
+                  .map((c) => ({
+                    key: `consumable-${c.id}`,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
+                    alt: c.nameRu,
+                    qty: player?.consumables?.[c.id] ?? 0,
+                    equipped: false,
+                    group: 2,
+                    rank: 0,
+                    open: { kind: 'consumable' as const, consumableId: c.id },
+                  })),
+                // Тот же текст и та же причина, что у расходников выше: оба
+                // источника читают одно поле player.consumables. Повтора на
+                // экране нет — заметки показываются только своего раздела.
+                note: player === null
+                  ? 'Профиль не загружен — запас книг неизвестен.'
+                  : player.consumables === null
+                    ? 'Сервер не назвал запас книг.'
+                    : null,
+              },
             ]
-            const consumableCells: InvCell[] = consumableSources.flatMap((src) => src.cells)
-            const consumableNotes: string[] = consumableSources
+            // Что показывает сетка и какие заметки видны — ТОЛЬКО открытый
+            // раздел. Заметку чужого раздела показывать нельзя не из экономии:
+            // «склад зелий неизвестен» на вкладке «Книги» читалось бы как
+            // поломка книг.
+            const sectionSources = consumableSources.filter((src) => src.section === gearTab)
+            const consumableCells: InvCell[] = sectionSources.flatMap((src) => src.cells)
+            const consumableNotes: string[] = sectionSources
               .map((src) => src.note)
               .filter((n): n is string => n !== null)
 
@@ -2139,10 +2456,38 @@ export default function App() {
                   inventoryItemId: inv.inventoryItemId,
                 }
               }
-              // Расходник — ТА ЖЕ форма карточки, что у зелья, никаких новых
-              // действий: применяется он в забеге (гнёзда подготовки), а не
-              // отсюда. Поля предмета заполнены нейтрально, как и у зелья.
+              // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
+              // навык», «Продать»), которых нет ни у зелья, ни у камня. Поля
+              // общей формы заполнены так же, плюс своё: id книги (им адресуются
+              // все три ручки), навык и цена продажи из каталога.
               if (gearSelectedItem.kind === 'consumable') {
+                const bookId = parseSkillBookId(gearSelectedItem.consumableId)
+                if (bookId !== null) {
+                  const spec = consumableById(bookId)
+                  const skillId = spec === null ? null : consumableSkillBook(spec)
+                  // Книги нет в каталоге или у неё нет навыка — карточки нет вовсе
+                  // (тот же приём, что у пропавшего предмета): рисовать книгу без
+                  // навыка значило бы обещать действия, которых сервер не примет.
+                  if (spec === null || skillId === null) return null
+                  return {
+                    kind: 'book' as const,
+                    name: spec.nameRu,
+                    desc: spec.desc as string | null,
+                    // «Что делает» — из боевых констант, та же строка, что в
+                    // магазине и в карточке навыка на «Персонаже».
+                    stat: consumableMechanicLine(spec),
+                    qty: player?.consumables?.[spec.id] ?? 0,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
+                    equipped: false,
+                    levelRequired: null as number | null,
+                    inventoryItemId: null as string | null,
+                    bookId,
+                    skillId,
+                    // Цена продажи — из каталога (цена/10), одной функцией с
+                    // сервером: на кнопке то же число, которое начислят.
+                    sellPrice: consumableSellPrice(spec),
+                  }
+                }
                 const spec = consumableById(gearSelectedItem.consumableId)
                 // Расходника нет в каталоге — карточки нет вовсе, вместо пустой
                 // с выдуманными полями (тот же приём, что у пропавшего предмета).
@@ -2203,6 +2548,7 @@ export default function App() {
                 {([
                   { id: 'equipment' as const, label: 'Экипировка' },
                   { id: 'consumables' as const, label: 'Расходники' },
+                  { id: 'books' as const, label: 'Книги' },
                 ]).map((t) => {
                   const active = gearTab === t.id
                   return (
@@ -2331,7 +2677,7 @@ export default function App() {
               {/* То же для расходников: источник, который пуст НЕ по-настоящему,
                   объясняет себя строкой (сейчас такой один — зелья при
                   незагруженном профиле). */}
-              {gearTab === 'consumables' && consumableNotes.map((note) => (
+              {gearTab !== 'equipment' && consumableNotes.map((note) => (
                 <div key={note} style={{
                   margin:'0 8px 10px', padding:'8px 10px', borderRadius:8,
                   background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
@@ -2348,7 +2694,13 @@ export default function App() {
                 // плашка выше, и повторять здесь "пусто" было бы тем же тихим
                 // фолбэком. При активном фильтре сумка не пуста — пуст только
                 // выбранный слот, так и пишем.
-                (gearTab === 'equipment' ? inventoryStatus === 'ready' : potionStock !== null) ? (
+                // «Пусто» утверждаем только там, где данные реально есть:
+                // экипировка — загруженный inventory, расходники — известный
+                // склад зелий (у камня с оберегом свой note), книги — известный
+                // склад расходников.
+                (gearTab === 'equipment' ? inventoryStatus === 'ready'
+                  : gearTab === 'books' ? player?.consumables != null
+                    : potionStock !== null) ? (
                   <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>
                     {gearTab === 'equipment' && slotFilter !== null ? 'Для этого слота ничего нет' : 'Пусто'}
                   </div>
@@ -2424,6 +2776,72 @@ export default function App() {
                       <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
                     </div>
 
+                    {/* Действия. У книги их три и своя раскладка; у предмета —
+                        «Надеть»/«Снять», у зелья и расходника — только заглушка
+                        продажи. */}
+                    {selectedEntry.kind === 'book' ? (() => {
+                      const { bookId, skillId, sellPrice } = selectedEntry
+                      // Почему «Надеть» недоступна — ТРИ разных причины, и у
+                      // каждой свой текст на самой кнопке (решение дизайнера).
+                      // null в equippedSkills значит «сервер не назвал»: гадать
+                      // нельзя, иначе кнопка обещала бы то, что сервер отвергнет.
+                      const equippedNow = player?.equippedSkills ?? null
+                      const equipBlocked: string | null =
+                        equippedNow === null ? 'Навыки неизвестны'
+                          : equippedNow.includes(skillId) ? 'Навык уже надет'
+                            : equippedNow.length >= MAX_EQUIPPED_SKILLS ? 'Обе ячейки заняты'
+                              : null
+                      // Общий вид кнопки действия: рамка тёплая у основного,
+                      // серая у второстепенных. minHeight 44 — палец.
+                      const actionStyle = (primary: boolean, disabled: boolean) => ({
+                        flex:1, boxSizing:'border-box' as const, minHeight:44,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        background:C.nicheDeep,
+                        border:`1px solid ${primary ? C.glowEdge : C.stoneDark}`,
+                        borderRadius:9, padding:'8px 11px', textAlign:'center' as const,
+                        color: primary ? C.glowCore : C.textMain, fontSize:14,
+                        cursor: disabled ? 'default' as const : 'pointer' as const,
+                        opacity: disabled ? 0.5 : 1,
+                        ...(primary ? { boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)' } : {}),
+                      })
+                      return (
+                      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                        {/* «Надеть» — основное действие, своей строкой во всю
+                            ширину: три кнопки в один ряд на 375px дали бы по ~100px
+                            на кнопку с русской подписью. */}
+                        {equipBlocked !== null ? (
+                          <div style={{ ...actionStyle(false, true), cursor:'default' }}>
+                            {equipBlocked}
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'equip', bookId }) }}
+                            style={actionStyle(true, skillActionPending)}>
+                            {skillActionPending ? 'Надеваю...' : 'Надеть'}
+                          </div>
+                        )}
+                        <div style={{ display:'flex', gap:8 }}>
+                          {/* «Улучшить навык» работает и для НЕнадетого навыка:
+                              уровень принадлежит герою, а не гнезду. */}
+                          <div
+                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'upgrade', bookId }) }}
+                            style={actionStyle(false, skillActionPending)}>
+                            Улучшить навык
+                          </div>
+                          <div
+                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sell', bookId }) }}
+                            style={actionStyle(false, skillActionPending)}>
+                            Продать за {sellPrice}
+                          </div>
+                        </div>
+                        {skillActionError !== null && (
+                          <div style={{ fontSize:11, color:C.danger, textAlign:'center' }}>
+                            {skillActionError}
+                          </div>
+                        )}
+                      </div>
+                      )
+                    })() : (
                     <div style={{ display:'flex', gap:8 }}>
                       {selectedEntry.kind === 'item' && (() => {
                         const { inventoryItemId, equipped, levelRequired } = selectedEntry
@@ -2480,6 +2898,7 @@ export default function App() {
                         <div style={{ fontSize:10 }}>скоро</div>
                       </div>
                     </div>
+                    )}
                     {/* Отказ — видимой строкой под кнопками, не только в консоль. */}
                     {selectedEntry.kind === 'item' && gearEquipError !== null && (
                       <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
@@ -3014,7 +3433,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor} weaponDamage={weaponDamage} equippedSkills={player?.equippedSkills ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх

@@ -1,5 +1,15 @@
 import type { MutableRefObject } from 'react'
 
+/**
+ * Состояние ОДНОГО гнезда навыка для кнопки в бою.
+ *   null        — навык не надет: кнопки нет;
+ *   'unknown'   — что надето, неизвестно: кнопка «?» приглушённая;
+ *   { iconSrc } — навык надет: кнопка с печатью навыка.
+ * Собирает это Explore.tsx (единственный источник — проп equippedSkills), здесь
+ * только рисуется.
+ */
+export type SkillButtonSlot = { iconSrc: string } | 'unknown' | null
+
 // Подсветка нажатия боевых кнопок. Горит ТОЛЬКО по решению кода: атрибут
 // data-pressed ставится в том же обработчике pointerdown, где пишется реф
 // нажатия, и снимается там же, где нажатие отпускается (у ◀/▶ — там же, где
@@ -93,6 +103,18 @@ interface TouchControlsProps {
   // пустого слота через style.opacity, без React-состояния.
   skill1BtnRef: MutableRefObject<HTMLButtonElement | null>
   skill2BtnRef: MutableRefObject<HTMLButtonElement | null>
+  /**
+   * Что в двух гнёздах навыков. ТРИ различимых состояния на гнездо, и схлопывать
+   * их нельзя:
+   *   null        — навык НЕ надет: кнопки нет вовсе (решение дизайнера — нет
+   *                 надетых навыков, нет и кнопок; пустая кнопка обещала бы
+   *                 действие, которого у героя нет);
+   *   'unknown'   — что надето, неизвестно (профиль не загружен): кнопка есть,
+   *                 но с «?» и приглушённая — это состояние ошибки, и оно обязано
+   *                 быть видно, а не выглядеть как пустое гнездо;
+   *   { iconSrc } — навык надет: кнопка с печатью навыка (skill_*.png).
+   */
+  skillSlots: [SkillButtonSlot, SkillButtonSlot]
   // Ставит кнопкам скиллов opacity (и значок "?", если данных нет) — по той же
   // причине, что updatePotionButton: cssText в ref-колбэке ниже стирает
   // opacity при каждом ре-рендере, вид переустанавливается сразу после.
@@ -111,6 +133,7 @@ export default function TouchControls({
   updatePotionButton,
   skill1BtnRef,
   skill2BtnRef,
+  skillSlots,
   updateSkillButtons,
 }: TouchControlsProps) {
   return (
@@ -211,19 +234,40 @@ export default function TouchControls({
             const midAngle = 225 * Math.PI / 180
             const angles = [midAngle - theta, midAngle, midAngle + theta]
 
-            const fanButtons = [
-              { id: 'dodge', emoji: '🔄', angle: angles[0] },
-              { id: 'skill1', emoji: '⚡', angle: angles[1] },
-              { id: 'skill2', emoji: '🔥', angle: angles[2] },
+            // Веер: dodge плюс ДО ДВУХ навыков. Углы фиксированы тремя
+            // позициями и НЕ пересчитываются под число кнопок — хорда между
+            // соседними кнопками веера ровно 2·BTN_R, и любое сближение даёт
+            // наложение (CLAUDE.md, Critical Gotchas про радиусы кнопок). Нет
+            // навыка — позиция просто пустует, соседи не двигаются.
+            //
+            // Печать навыка — ФОНОМ, а не <img>: у кнопки textContent, и вложенную
+            // картинку он затирал бы (та же причина, что у кнопки зелья).
+            // background-size 74% — как у зелья, чтобы круглые иконки на кнопках
+            // выглядели одним набором.
+            const skillFan = (slot: SkillButtonSlot) =>
+              slot === null ? null
+                : slot === 'unknown' ? { label: '?', iconSrc: null, dimmed: true }
+                  : { label: '', iconSrc: slot.iconSrc, dimmed: false }
+            const fanButtons: { id: string; angle: number; spec: { label: string; iconSrc: string | null; dimmed: boolean } | null }[] = [
+              { id: 'dodge', angle: angles[0], spec: { label: '🔄', iconSrc: null, dimmed: false } },
+              { id: 'skill1', angle: angles[1], spec: skillFan(skillSlots[0]) },
+              { id: 'skill2', angle: angles[2], spec: skillFan(skillSlots[1]) },
             ]
 
             fanButtons.forEach(b => {
+              const existing = container.querySelector(`[data-btn="${b.id}"]`) as HTMLElement | null
+              if (b.spec === null) {
+                // Гнездо пусто. Кнопку не создаём, а уже созданную (перерисовка
+                // с другими пропами) убираем — иначе она осталась бы висеть
+                // нажимаемой.
+                existing?.remove()
+                return
+              }
               const x = ATK.x + D * Math.cos(b.angle)
               const y = ATK.y + D * Math.sin(b.angle)
-              const existing = container.querySelector(`[data-btn="${b.id}"]`) as HTMLElement
               const el = existing || document.createElement('button')
               el.dataset.btn = b.id
-              el.textContent = b.emoji
+              el.textContent = b.spec.label
               el.style.cssText = `
                 position:absolute;
                 left:${x - BTN_R}px; top:${y - BTN_R}px;
@@ -233,6 +277,8 @@ export default function TouchControls({
                 display:flex; align-items:center; justify-content:center;
                 touch-action:none; user-select:none; -webkit-user-select:none;
                 -webkit-touch-callout:none; pointer-events:all; cursor:pointer;
+                opacity:${b.spec.dimmed ? '0.5' : '1'};
+                ${b.spec.iconSrc === null ? '' : `background-image:url("${b.spec.iconSrc}"); background-repeat:no-repeat; background-position:center; background-size:74%;`}
               transition:${PRESS_TRANSITION};
               `
               if (!existing) container.appendChild(el)
