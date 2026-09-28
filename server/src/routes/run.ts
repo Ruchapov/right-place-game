@@ -1,10 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, applyStatGrowth, calculateLevel, TROPHY_GOLD_RATE } from '../game.js'
+import { getCurrentEnergy, applyStatGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -22,6 +23,7 @@ import {
   potionStockToColumns,
   consumableStockOf,
   skillLevelsOf,
+  upgradesOf,
   readConsumablesUsed,
   readSmugglerDeal,
   type SmugglerDeal,
@@ -421,7 +423,12 @@ export async function runRoutes(server: FastifyInstance) {
       where: { characterId: character.id, equipped: true },
       include: { item: true },
     })
+    // Броня = надетые предметы + КУПЛЕННАЯ закалка брони. Прибавку считает общий
+    // каталог (upgradeBonus), тот же, что на клиенте: два умножения count на шаг
+    // разошлись бы, и сервер начал бы считать забег не той бронёй, что показана
+    // игроку на экране «Персонаж».
     const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
+      + upgradeBonus('armor', upgradesOf(character))
 
     // level больше не колонка в БД — вычисляется на месте из статов+бонуса
     // (см. game.ts calculateLevel), никогда не читается напрямую.
@@ -1565,8 +1572,117 @@ export async function runRoutes(server: FastifyInstance) {
       // другой вкладке экран «Персонаж» остался бы с устаревшими числами.
       equippedSkills: character.equippedSkills,
       skillLevels: skillLevelsOf(character),
+      // Счётчики улучшений — от них зависят и урон, и броня на экране
+      // «Персонаж», значит «Обновить баланс» обязан их обновлять: иначе после
+      // покупки улучшения во второй вкладке экран остался бы со старыми числами.
+      upgrades: upgradesOf(character),
       trophyGoldRate: TROPHY_GOLD_RATE,
     })
+  })
+
+  // Покупка улучшения («закалки»). Цену считает СЕРВЕР по своему счётчику: в теле
+  // только вид улучшения, число оттуда не читается вовсе.
+  //
+  // Запись АТОМАРНАЯ и сама себе проверка, как у buy-consumable: условия «золота
+  // хватает» И «счётчик тот же, что прочитан» стоят в фильтре, а не в if выше.
+  // Второе обязательно — иначе две параллельные покупки прошли бы обе по цене
+  // первой, то есть игрок получил бы второе улучшение дешевле прейскуранта.
+  server.post<{ Body: { kind?: string } }>('/character/buy-upgrade', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const kind = parseUpgradeKind(request.body?.kind)
+    if (kind === null) return reply.status(400).send({ error: 'Unknown upgrade' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const bought = upgradesOf(character)[kind]
+    const price = upgradePrice(bought)
+
+    // Колонка выбирается switch'ем по виду, а не вычисляемым ключом: вычисляемый
+    // пришлось бы приводить кастом к типу Prisma, и опечатка в имени колонки
+    // прошла бы мимо проверки типов. Новый вид улучшения без ветки здесь не
+    // скомпилируется — ровно то, что нужно.
+    const where: Prisma.CharacterWhereInput = { userId, gold: { gte: price } }
+    const data: Prisma.CharacterUpdateManyMutationInput = { gold: { decrement: price } }
+    switch (kind) {
+      case 'attack':
+        where.attackUpgrades = bought
+        data.attackUpgrades = { increment: 1 }
+        break
+      case 'armor':
+        where.armorUpgrades = bought
+        data.armorUpgrades = { increment: 1 }
+        break
+    }
+
+    const written = await prisma.character.updateMany({ where, data })
+    if (written.count === 0) {
+      // Не сошлось ЛИБО золото, ЛИБО счётчик (кто-то купил это же улучшение
+      // параллельно, и цена уже другая). Для игрока это одно и то же действие —
+      // обновить данные и решить заново, поэтому код один.
+      return reply.status(409).send({ error: 'State changed, retry', price })
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'buy-upgrade: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but balance could not be read' })
+    }
+    return reply.send({ gold: updated.gold, upgrades: upgradesOf(updated) })
+  })
+
+  // Продажа предмета из инвентаря. Цену считает сервер (itemSellPrice), клиент
+  // называет только строку инвентаря.
+  //
+  // ⚠️ ЕДИНСТВЕННОЕ место в server/src, где нужна ТРАНЗАКЦИЯ: записей две —
+  // удаление строки инвентаря и начисление золота, — и порознь они дают либо
+  // предмет, проданный бесплатно, либо золото из воздуха. Везде в проекте
+  // атомарность держится на том, что запись одна; здесь это невозможно.
+  //
+  // Условие «не надет» стоит и в проверке до транзакции (чтобы ответить по
+  // существу), и в самом deleteMany (чтобы выдержать гонку с надеванием).
+  server.post<{ Body: { inventoryItemId?: string } }>('/character/sell-item', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const inventoryItemId = request.body?.inventoryItemId
+    if (typeof inventoryItemId !== 'string' || inventoryItemId === '') {
+      return reply.status(400).send({ error: 'Invalid inventoryItemId' })
+    }
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const row = await prisma.inventoryItem.findFirst({
+      where: { id: inventoryItemId, characterId: character.id },
+      include: { item: true },
+    })
+    // Чужая или несуществующая строка — один ответ намеренно: различать их
+    // значило бы подсказывать, какие id существуют у других игроков.
+    if (!row) return reply.status(404).send({ error: 'Item not found' })
+    if (row.equipped) return reply.status(400).send({ error: 'Item is equipped' })
+
+    const price = itemSellPrice(row.item.tier)
+
+    const goldAfter = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.inventoryItem.deleteMany({
+        where: { id: inventoryItemId, characterId: character.id, equipped: false },
+      })
+      // 0 строк — предмет уже продали или успели надеть между чтением и записью.
+      // Возвращаем null, золото НЕ начисляем; ничего отменять не нужно, потому
+      // что до этого момента транзакция не писала ничего.
+      if (deleted.count === 0) return null
+      const updated = await tx.character.update({
+        where: { id: character.id },
+        data: { gold: { increment: price } },
+      })
+      return updated.gold
+    })
+    if (goldAfter === null) return reply.status(409).send({ error: 'State changed, retry' })
+
+    return reply.send({ gold: goldAfter, soldPrice: price, inventoryItemId })
   })
 
   server.get('/character/inventory', async (request, reply) => {
@@ -1586,6 +1702,10 @@ export async function runRoutes(server: FastifyInstance) {
       inventory: inventoryItems.map((inv) => ({
         inventoryItemId: inv.id,
         equipped: inv.equipped,
+        // Цена продажи — ГОТОВЫМ числом с сервера (itemSellPrice, game.ts), а не
+        // формулой на клиенте: копия арифметики разошлась бы с тем, что реально
+        // начислит POST /character/sell-item, и кнопка обещала бы не ту сумму.
+        sellPrice: itemSellPrice(inv.item.tier),
         item: {
           id: inv.item.id,
           slot: inv.item.slot,

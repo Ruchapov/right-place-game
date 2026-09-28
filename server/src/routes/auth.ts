@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, skillLevelsOf } from '../runState.js'
+import { consumableStockOf, skillLevelsOf, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -347,6 +347,9 @@ export async function authRoutes(server: FastifyInstance) {
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).
         skillLevels: skillLevelsOf(char),
+        // Счётчики улучшений: от них зависят урон и броня, которые клиент
+        // показывает на «Персонаже» и с которыми уходит в забег.
+        upgrades: upgradesOf(char),
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,

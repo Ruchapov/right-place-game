@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PAIRS = [
     ("каталог зелий", Path("src/potions.ts"), Path("server/src/potions.ts")),
     ("каталог расходников", Path("src/consumables.ts"), Path("server/src/consumables.ts")),
+    ("каталог улучшений", Path("src/upgrades.ts"), Path("server/src/upgrades.ts")),
 ]
 
 

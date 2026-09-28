@@ -180,4 +180,19 @@ export function scaledBossMaxHp(level: number): number {
 // обработчике: Math.floor округляет вниз, и мелкий остаток трофеев сгорит за
 // ноль золота. Сейчас такой ветки нет намеренно — при курсе >= 1 она
 // недостижима (trophies >= 1 всегда даёт goldGained >= 1).
+/**
+ * Сколько золота даёт продажа предмета: 50 за тир (тир 1 -> 50, тир 6 -> 300).
+ *
+ * Живёт ТОЛЬКО здесь, копии на клиенте НЕТ: цену каждой строки инвентаря сервер
+ * присылает готовым полем sellPrice (GET /character/inventory), а клиент её
+ * рисует. Тот же приём, что у TROPHY_GOLD_RATE ниже, и по той же причине —
+ * передать значением дешевле, чем держать ещё одну ручную копию без сверяющего
+ * скрипта.
+ */
+export const ITEM_SELL_PRICE_PER_TIER = 50
+
+export function itemSellPrice(tier: number): number {
+  return ITEM_SELL_PRICE_PER_TIER * tier
+}
+
 export const TROPHY_GOLD_RATE = 1

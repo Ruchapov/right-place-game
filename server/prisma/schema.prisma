@@ -83,6 +83,13 @@ model Character {
   // Колонка на навык, а не Json — та же причина, что у potionT1..T5 и книг:
   // навыков ровно пять по каталогу, а счётчику нужен атомарный increment в том
   // же UPDATE, где списывается книга.
+  // Купленные улучшения («закалки»), по счётчику на вид (каталог:
+  // src/upgrades.ts / server/src/upgrades.ts). Цена следующего считается ОТ
+  // счётчика (round(300 × 1.2^N)), потолка нет, поэтому хранится именно
+  // количество, а не готовая прибавка: прибавку даёт каталог (upgradeBonus), и
+  // правка шага не требует переливки данных.
+  attackUpgrades      Int      @default(0)
+  armorUpgrades       Int      @default(0)
   skillLevelFireball  Int      @default(1)
   skillLevelIceball   Int      @default(1)
   skillLevelSlash     Int      @default(1)

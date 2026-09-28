@@ -20,6 +20,7 @@ import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } f
 import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
 import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
+import type { UpgradeCounts } from './upgrades.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -540,6 +541,17 @@ export function skillLevelsOf(character: SkillLevelColumns): Record<SkillBookSki
     heal: character.skillLevelHeal,
     dash: character.skillLevelDash,
   }
+}
+
+// --- Улучшения: колонки Character <-> счётчики каталога ---
+//
+// Рядом с раскладкой расходников и уровней навыков, по той же причине: имена
+// колонок клиенту не нужны, а форма ответа — объект по виду улучшения.
+export type UpgradeColumns = { attackUpgrades: number; armorUpgrades: number }
+
+/** Счётчики улучшений в форме каталога — ответы клиенту и расчёт прибавок. */
+export function upgradesOf(character: UpgradeColumns): UpgradeCounts {
+  return { attack: character.attackUpgrades, armor: character.armorUpgrades }
 }
 
 export type PotionColumns = { potionT1: number; potionT2: number; potionT3: number; potionT4: number; potionT5: number }
