@@ -4,16 +4,24 @@
 // шансы и доли дропа (одним местом, по условию задачи) и сам розыгрыш; тот, кто
 // превращает выпавшее в записи БД, — POST /run/finish-explore (routes/run.ts).
 //
-// ⚠️ Дроп разыгрывает СЕРВЕР и только он. Клиент о нём не знает до ответа
-// финиша и своей копии шансов не имеет — в отличие от всплывашек с трофеями,
-// которые клиент бросает сам и которые поэтому расходятся с начисленным (см.
-// CLAUDE.md, задача «[НАГРАДЫ, расхождение]»). Новую механику заводить с тем же
-// расхождением было бы сознательной ошибкой.
+// ⚠️ Дроп разыгрывает СЕРВЕР и только он. Своей копии шансов у клиента нет и
+// быть не должно — иначе получилось бы то же расхождение, что было у всплывашек
+// с трофеями: клиент показывал одно, сервер начислял другое.
 //
-// Почему дроп считается на ФИНИШЕ, а не в момент закрытия события: закрытые
-// события сервер узнаёт только из closedEvents на финише (отдельной ручки
-// «событие закрыто» в проекте нет), и добыча обязана начисляться в ТОЙ ЖЕ
-// записи, что закрывает забег, — иначе повтор финиша выдал бы её дважды.
+// ⚠️ БРОСОК ПЕРЕЕХАЛ НА СТАРТ ЗАБЕГА (30.09.2026). Раньше он делался на финише,
+// и клиенту до конца забега показывать было нечего. Теперь /run/start-explore
+// разыгрывает добычу КАЖДОГО события сразу, кладёт её в currentRun.events и
+// отдаёт клиенту — чтобы в момент закрытия события всплыли РЕАЛЬНЫЕ трофеи и
+// РЕАЛЬНЫЙ предмет, а не клиентская выдумка. Решение дизайнера: взломанный
+// клиент может узнать добычу заранее, и это принято.
+//
+// ⚠️ Предмет снаряжения ВЫБИРАЕТСЯ ИМЕННО НА СТАРТЕ, конкретной строкой каталога,
+// а не «слотом, который доберут на финише». Иначе иконка во всплывашке (она
+// зависит от слота И ТИРА) могла бы не совпасть с тем, что реально выдадут.
+//
+// Начисление при этом осталось на финише и в ТОЙ ЖЕ записи, что закрывает
+// забег: только там известно, какие события закрыты, и только так повтор финиша
+// не выдаёт добычу дважды.
 
 import type { RunEvent, RunEventKind } from './runEvents.js'
 import { POTION_TIERS } from './potions.js'
@@ -110,16 +118,33 @@ export type EquipmentSlot = typeof EQUIPMENT_SLOTS[number]
 export const ITEM_DROP_FLOOR_TIER = 1
 
 /**
- * Что выпало, ДО превращения в записи БД. Снаряжение названо только слотом:
- * конкретную строку каталога выбирает тот, у кого есть БД (routes/run.ts), по
- * уровню героя — иначе правило «тир не выше открытого по уровню» пришлось бы
- * повторить здесь вторым экземпляром levelRequired.
+ * Что выпало, ДО выбора конкретной строки каталога. Снаряжение названо только
+ * слотом: строку выбирает тот, у кого есть БД (resolveDropIntents в
+ * routes/run.ts), по уровню героя — иначе правило «тир не выше открытого по
+ * уровню» пришлось бы повторить здесь вторым экземпляром levelRequired.
+ *
+ * Промежуточный тип: наружу (в currentRun и клиенту) уезжает уже EventDrop.
  */
 export type DropIntent =
   | { category: 'equipment'; slot: EquipmentSlot }
   | { category: 'scroll'; scrollId: ScrollId }
   | { category: 'potion'; tier: number }
   | { category: 'book'; bookId: SkillBookId }
+
+/**
+ * Что выпало, УЖЕ разрешённое до конкретной вещи. Это форма, которая живёт в
+ * `currentRun.events[i].drop` и (без itemId) уезжает клиенту.
+ *
+ * `itemId` — строка таблицы Item, выбранная НА СТАРТЕ. Клиенту она не нужна и не
+ * отдаётся: ему хватает slot+tier, чтобы собрать путь к иконке (itemIconSrc), а
+ * имя нужно только экрану итогов. Финишу она нужна, чтобы создать
+ * InventoryItem РОВНО ТОТ, что показали игроку.
+ */
+export type EventDrop =
+  | { category: 'equipment'; itemId: string; nameRu: string; slot: string; tier: number }
+  | { category: 'scroll'; id: ScrollId }
+  | { category: 'potion'; tier: number }
+  | { category: 'book'; id: SkillBookId }
 
 /** Равновероятный выбор одного элемента. Пустой список — null, не исключение. */
 function pickOne<T>(items: readonly T[]): T | null {
@@ -189,6 +214,69 @@ function rollWithinCategory(category: DropCategory, level: number): DropIntent |
 }
 
 /**
+ * Два броска для ОДНОГО события: выпало ли вообще и что именно.
+ *
+ * Контрабандист исключается ПО ВИДУ события, а не по индексу: у него свой
+ * обмен, и добыча с него дизайном не предусмотрена. Загадке шанс 0 назначен в
+ * таблице выше — это решение, а не пропуск.
+ *
+ * null — ничего не выпало. Самый частый исход (с группы врагов — половина
+ * бросков), и вызывающий обязан считать его нормой, а не сбоем.
+ */
+export function rollEventDrop(kind: RunEventKind, level: number, luck: number): DropIntent | null {
+  if (kind === 'smuggler') return null
+  if (!(Math.random() < dropChanceFor(kind, luck))) return null
+  const weights = kind === 'boss' ? DROP_WEIGHTS_BOSS : DROP_WEIGHTS_COMMON
+  const category = pickCategory(weights)
+  if (category === null) return null
+  return rollWithinCategory(category, level)
+}
+
+/**
+ * Разбор добычи, ПРОЧИТАННОЙ из currentRun.events[i].drop.
+ *
+ * Колонка currentRun объявлена `Json?`, схема её содержимое не проверяет ничем,
+ * поэтому сохранённая добыча перепроверяется по каталогам — ровно та же
+ * дисциплина, что у readConsumablesUsed и readSmugglerDeal (runState.ts):
+ * испорченное извне поле не должно дать предмет, которого игрок не выбивал.
+ *
+ * Три состояния, и они РАЗНЫЕ:
+ *   'none'      — поле есть и равно null: бросок был, ничего не выпало;
+ *   'drop'      — годная добыча;
+ *   'malformed' — поле есть, но не разбирается.
+ * Отсутствие поля (`undefined`) — НЕ состояние этой функции: оно означает забег,
+ * начатый старым сервером, и решается выше по стеку (см. storedEventDrops).
+ */
+export function parseEventDrop(raw: unknown): { kind: 'none' } | { kind: 'drop'; drop: EventDrop } | { kind: 'malformed' } {
+  if (raw === null) return { kind: 'none' }
+  if (typeof raw !== 'object') return { kind: 'malformed' }
+  const d = raw as Record<string, unknown>
+  switch (d.category) {
+    case 'equipment':
+      if (typeof d.itemId !== 'string' || d.itemId === '') return { kind: 'malformed' }
+      if (typeof d.nameRu !== 'string' || typeof d.slot !== 'string') return { kind: 'malformed' }
+      if (!Number.isInteger(d.tier)) return { kind: 'malformed' }
+      return { kind: 'drop', drop: { category: 'equipment', itemId: d.itemId, nameRu: d.nameRu, slot: d.slot, tier: d.tier as number } }
+    case 'scroll': {
+      // По КАТАЛОГУ, а не «строка непустая»: подменённый id иначе дал бы
+      // страницу, которой нет, и свалил бы switch по колонкам на финише.
+      const spec = typeof d.id === 'string' ? SCROLLS.find((x) => x.id === d.id) : undefined
+      return spec === undefined ? { kind: 'malformed' } : { kind: 'drop', drop: { category: 'scroll', id: spec.id } }
+    }
+    case 'book': {
+      const known = typeof d.id === 'string' && (SKILL_BOOK_IDS as readonly string[]).includes(d.id)
+      return known ? { kind: 'drop', drop: { category: 'book', id: d.id as SkillBookId } } : { kind: 'malformed' }
+    }
+    case 'potion': {
+      const spec = POTION_TIERS.find((t) => t.tier === d.tier)
+      return spec === undefined ? { kind: 'malformed' } : { kind: 'drop', drop: { category: 'potion', tier: spec.tier } }
+    }
+    default:
+      return { kind: 'malformed' }
+  }
+}
+
+/**
  * Розыгрыш добычи за забег: по два броска на КАЖДОЕ закрытое событие.
  *
  * `closed` — уже провалидированные индексы событий (parseClosedEventIndices в
@@ -202,6 +290,13 @@ function rollWithinCategory(category: DropCategory, level: number): DropIntent |
  * начисляется и при died (решение дизайнера: сгорают только трофеи, см.
  * docs/items.md, «ВЫПАДЕНИЕ ПРЕДМЕТОВ»). Отсутствие параметра здесь и есть
  * гарантия, что кто-то не начнёт «учитывать смерть» по месту.
+ *
+ * ⚠️ ЭТО ЗАПАСНОЙ ПУТЬ (с 30.09.2026). Забеги, начатые новым сервером, несут
+ * добычу в самих событиях (`drop`), и финиш берёт её оттуда — иначе он бросил бы
+ * кости второй раз и выдал НЕ ТО, что игрок видел во всплывашках. Эта функция
+ * остаётся для забегов, НАЧАТЫХ СТАРЫМ СЕРВЕРОМ: у их событий поля `drop` нет
+ * вовсе, и другого способа что-то им начислить нет. Удалять её можно будет
+ * только когда такие забеги заведомо закончились.
  */
 export function rollRunDrops(
   events: RunEvent[],
@@ -213,12 +308,7 @@ export function rollRunDrops(
   for (const index of closed) {
     const event = events[index]
     if (!event) continue
-    if (event.kind === 'smuggler') continue
-    if (!(Math.random() < dropChanceFor(event.kind, luck))) continue
-    const weights = event.kind === 'boss' ? DROP_WEIGHTS_BOSS : DROP_WEIGHTS_COMMON
-    const category = pickCategory(weights)
-    if (category === null) continue
-    const intent = rollWithinCategory(category, level)
+    const intent = rollEventDrop(event.kind, level, luck)
     if (intent !== null) out.push(intent)
   }
   return out

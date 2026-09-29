@@ -2,12 +2,12 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE } from '../game.js'
-import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
+import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
-import { ITEM_DROP_FLOOR_TIER, rollRunDrops, type DropIntent } from '../runDrops.js'
+import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -259,8 +259,110 @@ export type RunDrop =
   | { category: 'potion'; tier: number }
   | { category: 'book'; id: string }
 
+/**
+ * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
+ *
+ * Зовётся на СТАРТЕ забега (чтобы всплывашка в бою показала ту же иконку, что
+ * потом ляжет в сумку) и запасным путём на финише — для забегов, начатых старым
+ * сервером, у которых добычи в событиях нет.
+ *
+ * null — вещь выбрать не удалось; вызывающий обязан считать это «ничего не
+ * выпало». Такое возможно только при незасеянном каталоге предметов, и об этом
+ * пишется error: молча терять пятую часть всей добычи нельзя.
+ */
+async function resolveDropIntent(
+  intent: DropIntent,
+  characterLevel: number,
+  log: FastifyRequest['log'],
+): Promise<EventDrop | null> {
+  switch (intent.category) {
+    case 'equipment': {
+      // Какие тиры «открыты», решает САМА БД по levelRequired — второго
+      // экземпляра правила «тир × 5» на сервере нет. ITEM_DROP_FLOOR_TIER
+      // добавлен через OR, а не через max(): до 5 уровня открытых тиров нет
+      // вовсе, и без пола каждый пятый бросок уходил бы в пустоту (см.
+      // комментарий к константе в runDrops.ts).
+      const pool = await prisma.item.findMany({
+        where: {
+          slot: intent.slot,
+          OR: [{ levelRequired: { lte: characterLevel } }, { tier: ITEM_DROP_FLOOR_TIER }],
+        },
+        select: { id: true, nameRu: true, slot: true, tier: true },
+      })
+      if (pool.length === 0) {
+        log.error({ slot: intent.slot, characterLevel }, 'run drops: no catalog item for slot')
+        return null
+      }
+      const item = pool[Math.floor(Math.random() * pool.length)]
+      return { category: 'equipment', itemId: item.id, nameRu: item.nameRu, slot: item.slot, tier: item.tier }
+    }
+    case 'scroll':
+      return { category: 'scroll', id: intent.scrollId }
+    case 'book':
+      return { category: 'book', id: intent.bookId }
+    case 'potion':
+      return { category: 'potion', tier: intent.tier }
+  }
+}
+
+/**
+ * Разыгрывает добычу КАЖДОГО события и вешает её на сами события — это и есть
+ * то, что /run/start-explore кладёт в currentRun и отдаёт клиенту.
+ *
+ * Поле `drop` ставится ВСЕГДА, в том числе `null` («бросок был, не выпало»):
+ * по наличию ключа финиш отличает такой забег от начатого старым сервером, где
+ * добычи нет вовсе и её надо бросать запасным путём.
+ */
+async function attachEventDrops(
+  events: RunEvent[],
+  characterLevel: number,
+  luck: number,
+  log: FastifyRequest['log'],
+): Promise<RunEvent[]> {
+  const out: RunEvent[] = []
+  for (const event of events) {
+    const intent = rollEventDrop(event.kind, characterLevel, luck)
+    const drop = intent === null ? null : await resolveDropIntent(intent, characterLevel, log)
+    out.push({ ...event, drop })
+  }
+  return out
+}
+
+/**
+ * Добыча закрытых событий, ПРОЧИТАННАЯ из currentRun.
+ *
+ * null — забег начат СТАРЫМ сервером (ни у одного события нет ключа `drop`), и
+ * вызывающий обязан бросить кости запасным путём. Пустой массив — забег новый,
+ * но не выпало ничего: это РАЗНЫЕ вещи, и свести их значило бы либо бросать
+ * второй раз поверх уже показанного игроку, либо молча лишать добычи забеги
+ * старого сервера.
+ *
+ * Испорченная запись (колонка Json? схемой не проверяется) — НЕ повод завалить
+ * весь финиш, в отличие от smugglerDeal и consumablesUsed рядом. Те решают,
+ * сколько трофеев начислить и списывать ли оберег, и ошибиться там дороже, чем
+ * отказать. Здесь же цена — одна строка добычи: завалив финиш, мы отняли бы у
+ * игрока ещё и трофеи со статами за весь забег. Поэтому громкий error, и эта
+ * запись пропускается.
+ */
+function storedEventDrops(run: ActiveExploreRun, closed: number[], log: FastifyRequest['log']): EventDrop[] | null {
+  const anyStored = run.events.some((ev) => ev !== null && typeof ev === 'object' && 'drop' in ev)
+  if (!anyStored) return null
+  const out: EventDrop[] = []
+  for (const index of closed) {
+    const event = run.events[index]
+    if (!event) continue
+    const parsed = parseEventDrop(event.drop ?? null)
+    if (parsed.kind === 'malformed') {
+      log.error({ index, drop: event.drop }, 'finish-explore: currentRun.events[].drop is malformed')
+      continue
+    }
+    if (parsed.kind === 'drop') out.push(parsed.drop)
+  }
+  return out
+}
+
 /** Добыча, разложенная по тому, как её применять и что показать игроку. */
-type ResolvedDrops = {
+type AppliedDrops = {
   /** Что игрок получил. */
   gained: RunDrop[]
   /** Что выпало, но не влезло в сумку — показывается отдельной строкой. */
@@ -274,14 +376,19 @@ type ResolvedDrops = {
 }
 
 /**
- * Превращает брошенные костями интенты в записи БД и в список для экрана итогов,
- * применяя по дороге ПРАВИЛО ВМЕСТИМОСТИ (docs/items.md).
+ * Применяет уже выбранную добычу: считает вместимость и собирает куски записи.
  *
- * Ячейку тратят: снаряжение — ВСЕГДА (в БД каждый предмет отдельная строка,
- * стакинга нет), книга — ТОЛЬКО если её вида ещё нет в сумке (одна ячейка на вид
- * с бейджем «×N»). Страницы и зелья — никогда. Не влезло — пропало, это решение
- * дизайнера, и игрок об этом узнаёт строкой «Сумка полна, пропало: …», а не
- * тишиной.
+ * ПРАВИЛО ВМЕСТИМОСТИ (docs/items.md). Ячейку тратят: снаряжение — ВСЕГДА (в БД
+ * каждый предмет отдельная строка, стакинга нет), книга — ТОЛЬКО если её вида
+ * ещё нет в сумке (одна ячейка на вид с бейджем «×N»). Страницы и зелья —
+ * никогда. Не влезло — пропало, это решение дизайнера, и игрок узнаёт об этом
+ * строкой «Сумка полна, пропало: …», а не тишиной.
+ *
+ * ⚠️ Вместимость считается ЗДЕСЬ, на финише, а не на старте вместе с броском —
+ * и это осознанно: за забег сумка меняется (выпало снаряжение, докупили книгу),
+ * и решать судьбу добычи по вместимости получасовой давности было бы неверно.
+ * Поэтому всплывашка в бою показывает предмет ВСЕГДА, а «не влезло» игрок видит
+ * только на экране итогов.
  *
  * ⚠️ Гонка с вместимостью НЕ ЗАКРЫТА и закрыта быть не может одним фильтром:
  * занятость сумки — это COUNT по другой таблице, в Prisma-фильтр записи она не
@@ -290,24 +397,22 @@ type ResolvedDrops = {
  * сверх тридцати; клиент такое переполнение показывает КРАСНЫМ и как есть, а не
  * обрезает (см. счётчик «N / 30» в App.tsx).
  */
-async function resolveRunDrops(
-  intents: DropIntent[],
+async function applyDrops(
+  drops: EventDrop[],
   character: { id: number } & ConsumableColumns,
-  characterLevel: number,
-  log: FastifyRequest['log'],
-): Promise<ResolvedDrops> {
+): Promise<AppliedDrops> {
   const gained: RunDrop[] = []
   const lost: RunDrop[] = []
   const itemIds: string[] = []
   const potionGain = new Array(POTION_TIER_COUNT).fill(0) as number[]
-  // Ничего не выпало — самый частый исход (шанс с группы врагов 50%), и он не
-  // должен стоить лишнего запроса к БД: подсчёт занятых ячеек ниже нужен только
-  // тогда, когда есть что в них класть.
-  if (intents.length === 0) {
-    return { gained, lost, itemIds, stockData: {}, potionGain }
-  }
   const scrollGain = {} as Record<ScrollId, number>
   const bookGain = {} as Record<SkillBookId, number>
+  // Ничего не выпало — самый частый исход, и он не должен стоить лишнего
+  // запроса к БД: подсчёт занятых ячеек ниже нужен только тогда, когда есть что
+  // в них класть.
+  if (drops.length === 0) {
+    return { gained, lost, itemIds, stockData: {}, potionGain }
+  }
 
   // Занятые ячейки ДО добычи — ровно та же сумма, что считает клиент (bagUsed в
   // App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника,
@@ -319,64 +424,44 @@ async function resolveRunDrops(
   const bookStock = { ...consumableStockOf(character) }
   let cellsUsed = equipmentCells + Object.values(bookStock).filter((n) => n > 0).length
 
-  for (const intent of intents) {
-    switch (intent.category) {
+  for (const drop of drops) {
+    switch (drop.category) {
       case 'equipment': {
-        // Какие тиры «открыты», решает САМА БД по levelRequired — второго
-        // экземпляра правила «тир × 5» на сервере нет. ITEM_DROP_FLOOR_TIER
-        // добавлен через OR, а не через max(): до 5 уровня открытых тиров нет
-        // вовсе, и без пола каждый пятый бросок уходил бы в пустоту (см.
-        // комментарий к константе в runDrops.ts).
-        const pool = await prisma.item.findMany({
-          where: {
-            slot: intent.slot,
-            OR: [{ levelRequired: { lte: characterLevel } }, { tier: ITEM_DROP_FLOOR_TIER }],
-          },
-          select: { id: true, nameRu: true, slot: true, tier: true },
-        })
-        if (pool.length === 0) {
-          // Каталог предметов не засеян или у слота нет ни одной записи. Молча
-          // проглотить нельзя: это значит, что пятая часть всей добычи в игре
-          // исчезает, и узнать об этом больше неоткуда.
-          log.error({ slot: intent.slot, characterLevel }, 'run drops: no catalog item for slot')
-          continue
-        }
-        const item = pool[Math.floor(Math.random() * pool.length)]
-        const view: RunDrop = { category: 'equipment', nameRu: item.nameRu, slot: item.slot, tier: item.tier }
+        const view: RunDrop = { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
         if (cellsUsed >= BAG_CAPACITY) {
           lost.push(view)
           continue
         }
         cellsUsed++
-        itemIds.push(item.id)
+        itemIds.push(drop.itemId)
         gained.push(view)
         break
       }
       case 'book': {
-        const view: RunDrop = { category: 'book', id: intent.bookId }
+        const view: RunDrop = { category: 'book', id: drop.id }
         // Ячейка нужна только под ПЕРВУЮ книгу этого вида: вторая ложится
         // бейджем «×2» в ту же ячейку. bookStock — изменяемая копия, поэтому
         // две книги одного вида за один забег тоже занимают одну ячейку.
-        const needsCell = bookStock[intent.bookId] === 0
+        const needsCell = bookStock[drop.id] === 0
         if (needsCell && cellsUsed >= BAG_CAPACITY) {
           lost.push(view)
           continue
         }
         if (needsCell) cellsUsed++
-        bookStock[intent.bookId]++
-        bookGain[intent.bookId] = (bookGain[intent.bookId] ?? 0) + 1
+        bookStock[drop.id]++
+        bookGain[drop.id] = (bookGain[drop.id] ?? 0) + 1
         gained.push(view)
         break
       }
       case 'scroll': {
         // Страницы ячейку не тратят — проверять вместимость нечего.
-        scrollGain[intent.scrollId] = (scrollGain[intent.scrollId] ?? 0) + 1
-        gained.push({ category: 'scroll', id: intent.scrollId })
+        scrollGain[drop.id] = (scrollGain[drop.id] ?? 0) + 1
+        gained.push({ category: 'scroll', id: drop.id })
         break
       }
       case 'potion': {
-        potionGain[intent.tier - 1] = (potionGain[intent.tier - 1] ?? 0) + 1
-        gained.push({ category: 'potion', tier: intent.tier })
+        potionGain[drop.tier - 1] = (potionGain[drop.tier - 1] ?? 0) + 1
+        gained.push({ category: 'potion', tier: drop.tier })
         break
       }
     }
@@ -525,9 +610,12 @@ export type RunResultSummary = {
   eventsClosed: number
   eventsTotal: number
   /**
-   * Добыча забега — что РЕАЛЬНО начислено этой же записью (см. resolveRunDrops).
+   * Добыча забега — что РЕАЛЬНО начислено этой же записью (см. applyDrops).
    * Пустой список — законный и частый исход: ни одно закрытое событие не
    * прошло первый бросок.
+   * ⚠️ Это НЕ повтор броска: с 30.09.2026 добыча разыграна на старте, лежит в
+   * currentRun.events[i].drop и уже показана игроку всплывашкой. Здесь она
+   * только начисляется.
    */
   drops: RunDrop[]
   /**
@@ -668,7 +756,12 @@ export async function runRoutes(server: FastifyInstance) {
     // level больше не колонка в БД — вычисляется на месте из статов+бонуса
     // (см. game.ts calculateLevel), никогда не читается напрямую.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-    const events = rollRunEvents(mapFile, characterLevel)
+    const events = await attachEventDrops(
+      rollRunEvents(mapFile, characterLevel),
+      characterLevel,
+      character.luck,
+      request.log,
+    )
 
     // confirmed: false — забег создан, но игрок его ещё не видел. Снимет флаг
     // POST /run/ready, когда клиент построит мир (а также первый глоток или
@@ -725,14 +818,32 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(409).send({ error: 'State changed, retry' })
     }
 
-    // Rewards (trophyReward/isMimic) stay server-side — the client learns
-    // them per-event, later, through a separate mechanism. Only kind/x/y
-    // (and clusterPoints, needed to spawn the whole enemy group) go out.
+    // ⚠️ НАГРАДЫ ТЕПЕРЬ УЕЗЖАЮТ КЛИЕНТУ (30.09.2026), и это смена решения, а не
+    // недосмотр. Раньше trophyReward намеренно оставался на сервере, чтобы игрок
+    // не видел награду через DevTools до того, как её заработал. Цена была в
+    // другом: всплывашку в бою клиент рисовал СВОИМ броском, и она не сходилась
+    // с тем, что сервер потом начислял. Дизайнер выбрал честные числа в бою;
+    // «взломанный клиент может узнать добычу заранее» принято сознательно.
+    //
+    // ⚠️ isMimic по-прежнему НЕ отдаётся — но по trophyReward мимик ВЫЧИСЛЯЕТСЯ:
+    // у него он ровно 0, а у обычного сундука всегда больше нуля. Это известная
+    // и ПРИНЯТАЯ утечка (решение дизайнера 30.09.2026), а не упущение. Цена —
+    // взломанный клиент может не открывать сундук-ловушку. Закрыть её можно
+    // только дав мимику настоящие трофеи, то есть правкой баланса.
+    //
+    // itemId выпавшего снаряжения клиенту НЕ отдаётся: ему хватает slot+tier,
+    // чтобы собрать путь к иконке, а строка таблицы Item нужна только финишу.
     const clientEvents = events.map((ev) => ({
       kind: ev.kind,
       x: ev.x,
       y: ev.y,
       ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
+      trophyReward: ev.trophyReward,
+      drop: ev.drop === undefined || ev.drop === null
+        ? null
+        : ev.drop.category === 'equipment'
+          ? { category: 'equipment' as const, nameRu: ev.drop.nameRu, slot: ev.drop.slot, tier: ev.drop.tier }
+          : ev.drop,
     }))
 
     // Множитель урона обычной атаки на ВЕСЬ забег:
@@ -1174,20 +1285,37 @@ export async function runRoutes(server: FastifyInstance) {
 
     // --- Добыча забега ---
     //
-    // Два броска на каждое закрытое событие (runDrops.ts: выпало ли вообще —
-    // и что именно). Набор событий — ТОТ ЖЕ closedEvents, по которому выше
-    // посчитаны трофеи: два разных набора дали бы добычу с события, за которое
-    // трофеев не начислено.
+    // ⚠️ КОСТИ ЗДЕСЬ БОЛЬШЕ НЕ БРОСАЮТСЯ (30.09.2026). Добыча каждого события
+    // разыграна на СТАРТЕ и лежит в currentRun.events[i].drop — игрок уже видел
+    // её всплывашкой в момент закрытия события. Бросить второй раз значило бы
+    // выдать НЕ ТО, что показали.
     //
-    // died в розыгрыш НЕ передаётся вовсе: добыча начисляется и при смерти
+    // Набор событий — ТОТ ЖЕ closedEvents, по которому выше посчитаны трофеи:
+    // два разных набора дали бы добычу с события, за которое трофеев не
+    // начислено.
+    //
+    // ЗАПАСНОЙ ПУТЬ: забег, начатый СТАРЫМ сервером, добычи в событиях не имеет
+    // (поля `drop` нет вовсе) — для него кости бросаются здесь, как и раньше.
+    // Отличить его от «нового забега, где ничего не выпало» можно только по
+    // наличию ключа, поэтому storedEventDrops и возвращает null, а не пустой
+    // список (см. его комментарий).
+    //
+    // died в этот расчёт НЕ передаётся вовсе: добыча начисляется и при смерти
     // (решение дизайнера — сгорают только трофеи, см. docs/items.md). Отсутствие
     // параметра и есть гарантия, что смерть сюда не просочится.
-    //
-    // ⚠️ Бросок идёт ДО условной записи, и на 409 он пропадает вместе со всей
-    // записью: клиент повторит финиш, и кости будут брошены заново. Это верно —
-    // при 409 не записано НИЧЕГО, в том числе добыча.
-    const dropIntents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck)
-    const resolvedDrops = await resolveRunDrops(dropIntents, character, characterLevel, request.log)
+    const storedDrops = storedEventDrops(run, closedEvents, request.log)
+    const eventDrops = storedDrops ?? await (async () => {
+      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck)
+      const resolved: EventDrop[] = []
+      for (const intent of intents) {
+        const drop = await resolveDropIntent(intent, characterLevel, request.log)
+        if (drop !== null) resolved.push(drop)
+      }
+      return resolved
+    })()
+    // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
+    // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
+    const resolvedDrops = await applyDrops(eventDrops, character)
 
     // Выпавшие зелья складываются со складом ДО превращения в колонки, а не
     // отдельным increment: potionStockToColumns пишет АБСОЛЮТНЫЕ значения, и

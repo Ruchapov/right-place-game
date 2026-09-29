@@ -90,6 +90,8 @@ export const SMUGGLER_STEAL_CHANCE = 0.2 // constants.ts:790
 
 // --- Типы ---
 
+import type { EventDrop } from './runDrops.js'
+
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
 // Кандидат из пула — эквивалент EventCandidate на клиенте (src/explore/types.ts:12).
@@ -111,6 +113,22 @@ export type RunEvent = {
   clusterPoints?: [number, number][]
   trophyReward: number
   isMimic?: boolean // только для kind === 'chest'
+  /**
+   * Что выпадет с этого события, разыгранное НА СТАРТЕ (30.09.2026).
+   *
+   *   EventDrop — выпало вот это;
+   *   null      — бросок был, не выпало ничего (самый частый исход);
+   *   поля НЕТ  — забег НАЧАТ СТАРЫМ СЕРВЕРОМ, добыча в нём не разыграна вовсе.
+   *
+   * Три состояния, а не два, и свести их нельзя: «не выпало» и «сервер тогда
+   * этого не умел» требуют РАЗНОГО поведения на финише — в первом случае не
+   * начислять ничего, во втором бросить кости запасным путём (rollRunDrops).
+   *
+   * Импорт типа — только типовой (`import type`), поэтому цикла с runDrops.ts
+   * (он импортирует отсюда RunEvent/RunEventKind, тоже типами) в рантайме нет:
+   * оба импорта стираются при компиляции.
+   */
+  drop?: EventDrop | null
 }
 
 type SlotsFile = {
