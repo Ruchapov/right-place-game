@@ -3191,11 +3191,15 @@ export default function App() {
                         поэтому спрашиваем — тем же приёмом, что «Забыть» у
                         навыка: цена действия названа словами до, а не после. */}
                     {selectedEntry.kind === 'item' && sellConfirm === selectedEntry.inventoryItemId && (() => {
-                      const { inventoryItemId, sellPrice } = selectedEntry
+                      const { inventoryItemId } = selectedEntry
                       return (
                       <div style={{ marginTop:10 }}>
+                        {/* Только необратимость. Сумму называть здесь не нужно:
+                            она уже написана на кнопке «Продать за N», с которой
+                            игрок сюда и пришёл, а повтор делает из предупреждения
+                            рекламу выгоды. */}
                         <div style={{ fontSize:12, lineHeight:1.5, color:C.danger, marginBottom:10, textAlign:'center' }}>
-                          Предмет пропадёт навсегда. Взамен {sellPrice} золота.
+                          Предмет пропадёт навсегда.
                         </div>
                         <div style={{ display:'flex', gap:8 }}>
                           <div
