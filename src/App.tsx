@@ -768,6 +768,130 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // --- Заполненность сумки ---
+  // Свойство САМОЙ СУМКИ, а не открытого экрана: не зависит ни от вкладки, ни от
+  // фильтра, и нужно в двух местах сразу — счётчику «N / 30» в «Инвентаре» и
+  // кнопке «Снять» в карточке предмета (снимать некуда, если сумка полна).
+  // Поэтому считается ЗДЕСЬ, один раз: две копии этого числа разошлись бы.
+  //
+  // Что тратит ячейку (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»): НЕнадетые предметы
+  // и расходники с книгами. Зелья — нет, поэтому их здесь и не видно: они
+  // копятся десятками, и терять их при переполнении было бы несоразмерно.
+  // Надетое ячейку не тратит и в сумке больше не показывается вовсе — оно живёт
+  // в гнёздах на экране «Персонаж».
+  const bagConsumableCells: number | null = player === null || player.consumables === null
+    ? null
+    : CONSUMABLES.filter((c) => (player.consumables?.[c.id] ?? 0) > 0).length
+  const bagUsed = inventory.filter((i) => !i.equipped).length + (bagConsumableCells ?? 0)
+  // Неизвестно хоть одно слагаемое — счётчик не врёт числом, а ставит прочерк, и
+  // «Сумка полна» в карточке не утверждается.
+  const bagKnown = inventoryStatus === 'ready' && bagConsumableCells !== null
+  const bagFull = bagKnown && bagUsed >= BAG_CAPACITY
+
+  // Карточка предмета/зелья/расходника/книги. Живёт ЗДЕСЬ, а не внутри вкладки
+  // «Инвентарь»: ту же карточку открывает тап по гнезду снаряжения на экране
+  // «Персонаж». Разметка одна на оба экрана — копия разъехалась бы с оригиналом
+  // при первой правке.
+  const potionStock = player?.potions ?? null
+  const selectedEntry = gearSelectedItem ? (() => {
+    if (gearSelectedItem.kind === 'item') {
+      const inv = inventory.find((i) => i.inventoryItemId === gearSelectedItem.inventoryItemId)
+      // Предмета уже нет в inventory (рефетч после надевания вернул
+      // другой набор) — карточки нет вовсе, вместо пустой с нулями.
+      if (!inv) return null
+      return {
+        kind: 'item' as const,
+        name: inv.item.nameRu,
+        // Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок текста
+        // просто не рисуется (см. разметку), выдуманной строки здесь
+        // не появляется.
+        desc: ITEM_FLAVOR[inv.item.slot]?.[inv.item.tier - 1] ?? null,
+        stat: itemStatLine(inv.item),
+        // "у тебя: N" — реальный подсчёт строк того же предмета в
+        // ответе сервера, а не выдуманный qty.
+        qty: inventory.filter((i) => i.item.id === inv.item.id).length,
+        iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
+        equipped: inv.equipped,
+        // Без расширяющих приведений к "| null": в ветке kind === 'item'
+        // оба поля обязаны сузиться до числа и строки — карточка
+        // передаёт их в handleEquipItem и в порог уровня.
+        levelRequired: inv.item.levelRequired,
+        inventoryItemId: inv.inventoryItemId,
+        // Цена продажи ПРИХОДИТ С СЕРВЕРА строкой инвентаря. undefined
+        // — старый сервер её не прислал: кнопка тогда гаснет, а не
+        // показывает выдуманное число (формулы на клиенте нет).
+        sellPrice: inv.sellPrice,
+      }
+    }
+    // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
+    // навык», «Продать»), которых нет ни у зелья, ни у камня. Поля
+    // общей формы заполнены так же, плюс своё: id книги (им адресуются
+    // все три ручки), навык и цена продажи из каталога.
+    if (gearSelectedItem.kind === 'consumable') {
+      const bookId = parseSkillBookId(gearSelectedItem.consumableId)
+      if (bookId !== null) {
+        const spec = consumableById(bookId)
+        const skillId = spec === null ? null : consumableSkillBook(spec)
+        // Книги нет в каталоге или у неё нет навыка — карточки нет вовсе
+        // (тот же приём, что у пропавшего предмета): рисовать книгу без
+        // навыка значило бы обещать действия, которых сервер не примет.
+        if (spec === null || skillId === null) return null
+        return {
+          kind: 'book' as const,
+          name: spec.nameRu,
+          desc: spec.desc as string | null,
+          // «Что делает» — из боевых констант, та же строка, что в
+          // магазине и в карточке навыка на «Персонаже».
+          stat: consumableMechanicLine(spec),
+          qty: player?.consumables?.[spec.id] ?? 0,
+          iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
+          equipped: false,
+          levelRequired: null as number | null,
+          inventoryItemId: null as string | null,
+          bookId,
+          skillId,
+          // Цена продажи — из каталога (цена/10), одной функцией с
+          // сервером: на кнопке то же число, которое начислят.
+          sellPrice: consumableSellPrice(spec),
+        }
+      }
+      const spec = consumableById(gearSelectedItem.consumableId)
+      // Расходника нет в каталоге — карточки нет вовсе, вместо пустой
+      // с выдуманными полями (тот же приём, что у пропавшего предмета).
+      if (spec === null) return null
+      return {
+        kind: 'potion' as const,
+        name: spec.nameRu,
+        desc: spec.desc as string | null,
+        // Строка механики — ровно та же, что в витрине магазина, и из
+        // той же функции: у камня и оберега из эффекта каталога, у книги
+        // из боевых констант скилла.
+        stat: consumableMechanicLine(spec),
+        qty: player?.consumables?.[spec.id] ?? 0,
+        iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
+        equipped: false,
+        levelRequired: null as number | null,
+        inventoryItemId: null as string | null,
+      }
+    }
+    const potionTier = Number(gearSelectedItem.potionId)
+    const potion = POTION_TIERS[potionTier - 1]
+    return {
+      kind: 'potion' as const,
+      name: potion.nameRu,
+      desc: potion.desc as string | null,
+      stat: `Восстанавливает ${Math.round(potion.healFrac * 100)}% от здоровья`,
+      qty: potionStock?.[potionTier - 1] ?? 0,
+      iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}` as string | null,
+      // Поля ниже осмысленны только у предметов — у зелья заполнены
+      // нейтрально, чтобы у обеих ветвей была одна форма (кнопка
+      // "Надеть" в разметке всё равно стоит за kind === 'item').
+      equipped: false,
+      levelRequired: null as number | null,
+      inventoryItemId: null as string | null,
+    }
+  })() : null
+
   const energy = liveEnergy(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
   // Снаряжение не готово — в НАСТОЯЩЕЙ сессии забег из меню не стартует: броня
@@ -1565,9 +1689,20 @@ export default function App() {
                     const equippedItem = inventory.find(i => i.equipped && i.item.slot === slot)
                     return (
                       <div key={slot}
-                        // Открываем "Инвентарь" на подвкладке "Экипировка" с уже
-                        // выбранной кнопкой этого слота.
-                        onClick={() => { setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot) }}
+                        // Занятое гнездо — ТА ЖЕ карточка предмета, что в
+                        // «Инвентаре» (она вынесена на уровень компонента именно
+                        // ради этого), с кнопкой «Снять». Пустое — прежний путь:
+                        // «Инвентарь» с фильтром по этому слоту, потому что
+                        // надеть предмет можно только оттуда.
+                        onClick={() => {
+                          if (equippedItem) {
+                            setGearSelectedItem({ kind: 'item', inventoryItemId: equippedItem.inventoryItemId })
+                            setGearEquipError(null)
+                            setSellConfirm(null)
+                            return
+                          }
+                          setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot)
+                        }}
                         style={{
                           width:'100%', aspectRatio:'1', boxSizing:'border-box',
                           background: C.nicheDeep,
@@ -2478,6 +2613,8 @@ export default function App() {
             )
           })()}
           {activeTab === 'gear' && (() => {
+            // potionStock объявлен на уровне компонента (его же читает карточка
+            // предмета, вынесенная туда же) — здесь повторно не считается.
             // Зелья берутся из ОБЩЕГО каталога (src/potions.ts) и из РЕАЛЬНОГО
             // склада player.potions. Предметы — из РЕАЛЬНОГО inventory
             // (GET /character/inventory, грузится при логине): фейковый
@@ -2485,8 +2622,6 @@ export default function App() {
             // (ITEM_CATALOG с именами и строками статов) удалены. Имя, числа
             // статов и требуемый уровень теперь приходят с сервера, на клиенте
             // остался только флейвор — см. ITEM_FLAVOR и itemStatLine.
-            const potionStock = player?.potions ?? null
-
             type InvCell = {
               key: string
               /** null — неизвестный слот, картинки нет (см. itemIconSrc). */
@@ -2510,7 +2645,15 @@ export default function App() {
             // Sort стабильный, поэтому одинаковые предметы внутри группы
             // сохраняют порядок ответа сервера (он отдаёт инвентарь по
             // acquiredAt).
+            // ⚠️ НАДЕТОЕ В СУМКЕ НЕ ПОКАЗЫВАЕТСЯ (29.09.2026, решение дизайнера):
+            // надетый предмет живёт в гнезде на экране «Персонаж», и оттуда же
+            // снимается. Раньше он оставался и в сетке (с рамкой), потому что
+            // снять его было больше неоткуда; теперь тап по гнезду открывает ту
+            // же карточку с кнопкой «Снять», и дублировать предмет в двух местах
+            // незачем. Счётчик «N / 30» надетое не считал и раньше — расхождение
+            // сетки и счётчика этой правкой как раз и ушло.
             const buildEquipmentCells = (rows: InventoryItem[]): InvCell[] => rows
+              .filter((inv) => !inv.equipped)
               .map((inv) => ({
                 key: inv.inventoryItemId,
                 iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
@@ -2657,121 +2800,8 @@ export default function App() {
               .map((src) => src.note)
               .filter((n): n is string => n !== null)
 
-            // Заполненность сумки для счётчика в шапке — свойство СУМКИ, а не
-            // того, что сейчас на экране: не зависит ни от подвкладки, ни от
-            // фильтра. Экипировка: одна строка InventoryItem = одна ячейка
-            // (стакинга нет, см. buildEquipmentCells), но НАДЕТЫЕ НЕ считаются:
-            // по docs/items.md надетое ячейку сумки не тратит. В сетке они при
-            // этом остаются (с рамкой) — иначе снять предмет было бы неоткуда,
-            // поэтому ячеек в сетке может быть больше, чем N, и это не ошибка.
-            // Расходники — только источники с takesCell. Неизвестно хоть что-то
-            // из учитываемого — счётчик не врёт числом, а ставит прочерк.
-            const bagUsed = inventory.filter((i) => !i.equipped).length + consumableSources
-              .filter((src) => src.takesCell)
-              .reduce((sum, src) => sum + src.cells.length, 0)
-            const bagKnown = inventoryStatus === 'ready'
-              && consumableSources.every((src) => !src.takesCell || src.note === null)
-
             // Что показывает сетка прямо сейчас — зависит от подвкладки.
             const shownCells = gearTab === 'equipment' ? equipmentCells : consumableCells
-            const selectedEntry = gearSelectedItem ? (() => {
-              if (gearSelectedItem.kind === 'item') {
-                const inv = inventory.find((i) => i.inventoryItemId === gearSelectedItem.inventoryItemId)
-                // Предмета уже нет в inventory (рефетч после надевания вернул
-                // другой набор) — карточки нет вовсе, вместо пустой с нулями.
-                if (!inv) return null
-                return {
-                  kind: 'item' as const,
-                  name: inv.item.nameRu,
-                  // Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок текста
-                  // просто не рисуется (см. разметку), выдуманной строки здесь
-                  // не появляется.
-                  desc: ITEM_FLAVOR[inv.item.slot]?.[inv.item.tier - 1] ?? null,
-                  stat: itemStatLine(inv.item),
-                  // "у тебя: N" — реальный подсчёт строк того же предмета в
-                  // ответе сервера, а не выдуманный qty.
-                  qty: inventory.filter((i) => i.item.id === inv.item.id).length,
-                  iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
-                  equipped: inv.equipped,
-                  // Без расширяющих приведений к "| null": в ветке kind === 'item'
-                  // оба поля обязаны сузиться до числа и строки — карточка
-                  // передаёт их в handleEquipItem и в порог уровня.
-                  levelRequired: inv.item.levelRequired,
-                  inventoryItemId: inv.inventoryItemId,
-                  // Цена продажи ПРИХОДИТ С СЕРВЕРА строкой инвентаря. undefined
-                  // — старый сервер её не прислал: кнопка тогда гаснет, а не
-                  // показывает выдуманное число (формулы на клиенте нет).
-                  sellPrice: inv.sellPrice,
-                }
-              }
-              // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
-              // навык», «Продать»), которых нет ни у зелья, ни у камня. Поля
-              // общей формы заполнены так же, плюс своё: id книги (им адресуются
-              // все три ручки), навык и цена продажи из каталога.
-              if (gearSelectedItem.kind === 'consumable') {
-                const bookId = parseSkillBookId(gearSelectedItem.consumableId)
-                if (bookId !== null) {
-                  const spec = consumableById(bookId)
-                  const skillId = spec === null ? null : consumableSkillBook(spec)
-                  // Книги нет в каталоге или у неё нет навыка — карточки нет вовсе
-                  // (тот же приём, что у пропавшего предмета): рисовать книгу без
-                  // навыка значило бы обещать действия, которых сервер не примет.
-                  if (spec === null || skillId === null) return null
-                  return {
-                    kind: 'book' as const,
-                    name: spec.nameRu,
-                    desc: spec.desc as string | null,
-                    // «Что делает» — из боевых констант, та же строка, что в
-                    // магазине и в карточке навыка на «Персонаже».
-                    stat: consumableMechanicLine(spec),
-                    qty: player?.consumables?.[spec.id] ?? 0,
-                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
-                    equipped: false,
-                    levelRequired: null as number | null,
-                    inventoryItemId: null as string | null,
-                    bookId,
-                    skillId,
-                    // Цена продажи — из каталога (цена/10), одной функцией с
-                    // сервером: на кнопке то же число, которое начислят.
-                    sellPrice: consumableSellPrice(spec),
-                  }
-                }
-                const spec = consumableById(gearSelectedItem.consumableId)
-                // Расходника нет в каталоге — карточки нет вовсе, вместо пустой
-                // с выдуманными полями (тот же приём, что у пропавшего предмета).
-                if (spec === null) return null
-                return {
-                  kind: 'potion' as const,
-                  name: spec.nameRu,
-                  desc: spec.desc as string | null,
-                  // Строка механики — ровно та же, что в витрине магазина, и из
-                  // той же функции: у камня и оберега из эффекта каталога, у книги
-                  // из боевых констант скилла.
-                  stat: consumableMechanicLine(spec),
-                  qty: player?.consumables?.[spec.id] ?? 0,
-                  iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
-                  equipped: false,
-                  levelRequired: null as number | null,
-                  inventoryItemId: null as string | null,
-                }
-              }
-              const potionTier = Number(gearSelectedItem.potionId)
-              const potion = POTION_TIERS[potionTier - 1]
-              return {
-                kind: 'potion' as const,
-                name: potion.nameRu,
-                desc: potion.desc as string | null,
-                stat: `Восстанавливает ${Math.round(potion.healFrac * 100)}% от здоровья`,
-                qty: potionStock?.[potionTier - 1] ?? 0,
-                iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}` as string | null,
-                // Поля ниже осмысленны только у предметов — у зелья заполнены
-                // нейтрально, чтобы у обеих ветвей была одна форма (кнопка
-                // "Надеть" в разметке всё равно стоит за kind === 'item').
-                equipped: false,
-                levelRequired: null as number | null,
-                inventoryItemId: null as string | null,
-              }
-            })() : null
 
             return (
             <div style={{ padding: '0 4px' }}>
@@ -2961,8 +2991,12 @@ export default function App() {
                       style={{
                         boxSizing:'border-box', position:'relative', aspectRatio:'1',
                         background:C.nicheDeep,
-                        // Надетый предмет — та же рамка со свечением, что у
-                        // занятого гнезда на экране "Персонаж".
+                        // Рамка со свечением у занятой ячейки. С 29.09.2026 в
+                        // сетке экипировки её не видно никогда: надетое в сумку
+                        // больше не попадает (см. buildEquipmentCells), а у
+                        // расходников и книг equipped всегда false. Правило
+                        // оставлено как есть — оно верно по построению, а не
+                        // случайно: уберут фильтр — подсветка снова заработает.
                         border:`1px solid ${cell.equipped ? C.glowEdge : C.stoneDark}`,
                         borderRadius:8,
                         boxShadow: cell.equipped
@@ -2981,264 +3015,6 @@ export default function App() {
               )}
 
               {/* Карточка предмета */}
-              {selectedEntry && (
-                <div
-                  onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null) }}
-                  style={{
-                    position:'fixed', top:0, left:0, right:0, bottom:0,
-                    background:'rgba(0,0,0,0.55)',
-                    display:'flex', alignItems:'center', justifyContent:'center',
-                    zIndex:1000,
-                  }}>
-                  <div
-                    onClick={e => e.stopPropagation()}
-                    style={{
-                      maxWidth:290, width:'100%',
-                      background:C.appBg, border:`1px solid ${C.stoneDark}`,
-                      borderRadius:14, padding:16,
-                    }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
-                      <div style={{
-                        width:64, height:64, flexShrink:0, background:C.nicheDeep, borderRadius:8,
-                        boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
-                        display:'flex', alignItems:'center', justifyContent:'center',
-                      }}>
-                        {/* null (неизвестный слот) и провал загрузки — в ItemIcon. */}
-                        <ItemIcon src={selectedEntry.iconSrc} name={selectedEntry.name} size={54} />
-                      </div>
-                      <div>
-                        <div style={{ fontSize:15, color:C.textMain }}>{selectedEntry.name}</div>
-                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>у тебя: {selectedEntry.qty}</div>
-                      </div>
-                    </div>
-
-                    {/* Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок просто
-                        не рисуется, заглушкой вроде "—" не заполняем. */}
-                    {selectedEntry.desc !== null && (
-                      <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
-                        {selectedEntry.desc}
-                      </div>
-                    )}
-
-                    <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
-                      <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
-                    </div>
-
-                    {/* Действия. У книги их три и своя раскладка; у предмета —
-                        «Надеть»/«Снять», у зелья и расходника — только заглушка
-                        продажи. */}
-                    {selectedEntry.kind === 'book' ? (() => {
-                      const { bookId, skillId, sellPrice } = selectedEntry
-                      // Почему «Надеть» недоступна — ТРИ разных причины, и у
-                      // каждой свой текст на самой кнопке (решение дизайнера).
-                      // null в equippedSkills значит «сервер не назвал»: гадать
-                      // нельзя, иначе кнопка обещала бы то, что сервер отвергнет.
-                      const equippedNow = player?.equippedSkills ?? null
-                      const equipBlocked: string | null =
-                        equippedNow === null ? 'Навыки неизвестны'
-                          : equippedNow.includes(skillId) ? 'Навык уже надет'
-                            : equippedNow.length >= MAX_EQUIPPED_SKILLS ? 'Обе ячейки заняты'
-                              : null
-                      // Общий вид кнопки действия: рамка тёплая у основного,
-                      // серая у второстепенных. minHeight 44 — палец.
-                      const actionStyle = (primary: boolean, disabled: boolean) => ({
-                        flex:1, boxSizing:'border-box' as const, minHeight:44,
-                        display:'flex', alignItems:'center', justifyContent:'center',
-                        background:C.nicheDeep,
-                        border:`1px solid ${primary ? C.glowEdge : C.stoneDark}`,
-                        borderRadius:9, padding:'8px 11px', textAlign:'center' as const,
-                        color: primary ? C.glowCore : C.textMain, fontSize:14,
-                        cursor: disabled ? 'default' as const : 'pointer' as const,
-                        opacity: disabled ? 0.5 : 1,
-                        ...(primary ? { boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)' } : {}),
-                      })
-                      return (
-                      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                        {/* «Надеть» — основное действие, своей строкой во всю
-                            ширину: три кнопки в один ряд на 375px дали бы по ~100px
-                            на кнопку с русской подписью. */}
-                        {equipBlocked !== null ? (
-                          <div style={{ ...actionStyle(false, true), cursor:'default' }}>
-                            {equipBlocked}
-                          </div>
-                        ) : (
-                          <div
-                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'equip', bookId }) }}
-                            style={actionStyle(true, skillActionPending)}>
-                            {skillActionPending ? 'Надеваю...' : 'Надеть'}
-                          </div>
-                        )}
-                        <div style={{ display:'flex', gap:8 }}>
-                          {/* «Улучшить навык» работает и для НЕнадетого навыка:
-                              уровень принадлежит герою, а не гнезду. */}
-                          <div
-                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'upgrade', bookId }) }}
-                            style={actionStyle(false, skillActionPending)}>
-                            Улучшить навык
-                          </div>
-                          <div
-                            onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sell', bookId }) }}
-                            style={actionStyle(false, skillActionPending)}>
-                            Продать за {sellPrice}
-                          </div>
-                        </div>
-                        {skillActionError !== null && (
-                          <div style={{ fontSize:11, color:C.danger, textAlign:'center' }}>
-                            {skillActionError}
-                          </div>
-                        )}
-                      </div>
-                      )
-                    })() : (
-                    <div style={{ display:'flex', gap:8 }}>
-                      {selectedEntry.kind === 'item' && (() => {
-                        const { inventoryItemId, equipped, levelRequired } = selectedEntry
-                        // Снять можно ВСЕГДА: сервер при снятии уровень не
-                        // проверяет, и запирать надетое на теле нельзя. Порог —
-                        // только для "Надеть", и это подсказка, а не защита:
-                        // решает сервер по своим статам, устаревший player.level
-                        // кончится красной строкой ниже. Профиль не загружен
-                        // (player === null) — уровень неизвестен, порог не
-                        // выдумываем и кнопку не прячем: пусть ответит сервер.
-                        if (!equipped && player !== null && player.level < levelRequired) {
-                          return (
-                            <div style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.textDim, fontSize:13,
-                            }}>
-                              Откроется на {levelRequired} уровне
-                            </div>
-                          )
-                        }
-                        return (
-                          <div
-                            onClick={() => { void handleEquipItem(inventoryItemId, !equipped) }}
-                            style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.glowCore, fontSize:14,
-                              cursor: equipping ? 'default' : 'pointer',
-                              opacity: equipping ? 0.5 : 1,
-                              boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
-                            }}>
-                            {equipping
-                              ? (equipped ? 'Снимаю...' : 'Надеваю...')
-                              : (equipped ? 'Снять' : 'Надеть')}
-                          </div>
-                        )
-                      })()}
-                      {selectedEntry.kind === 'item' ? (() => {
-                        const { inventoryItemId, equipped, sellPrice } = selectedEntry
-                        // Три причины, по которым продать нельзя, и у каждой свой
-                        // текст прямо на кнопке: надетый предмет (сервер тоже
-                        // откажет), неизвестная цена (старый сервер) и уже идущая
-                        // продажа.
-                        const blocked: string | null =
-                          equipped ? 'Сначала сними'
-                            : sellPrice === undefined ? 'Цена неизвестна'
-                              : null
-                        if (blocked !== null) {
-                          return (
-                            <div style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.textDim, fontSize:13, opacity:0.5,
-                            }}>
-                              {blocked}
-                            </div>
-                          )
-                        }
-                        return (
-                          <div
-                            onClick={() => { setSellConfirm(inventoryItemId); setGearEquipError(null) }}
-                            style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.textMain, fontSize:14, cursor:'pointer',
-                            }}>
-                            Продать за {sellPrice}
-                          </div>
-                        )
-                      })() : (
-                        /* У зелий, расходников и книг продажи из этой карточки
-                           нет: книги продаются своей кнопкой выше, а зелья и
-                           расходники не продаются вовсе. Явная заглушка — без
-                           onClick и без cursor:pointer, чтобы тап ничего не
-                           обещал. */
-                        <div style={{
-                          flex:1, boxSizing:'border-box', minHeight:44,
-                          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-                          border:`1px dashed ${C.stoneDark}`, borderRadius:9, padding:'6px 11px',
-                          textAlign:'center', color:C.textDim, opacity:0.7,
-                        }}>
-                          <div style={{ fontSize:14 }}>Продать</div>
-                          <div style={{ fontSize:10 }}>скоро</div>
-                        </div>
-                      )}
-                    </div>
-                    )}
-
-                    {/* Подтверждение продажи. Предмет исчезает безвозвратно,
-                        поэтому спрашиваем — тем же приёмом, что «Забыть» у
-                        навыка: цена действия названа словами до, а не после. */}
-                    {selectedEntry.kind === 'item' && sellConfirm === selectedEntry.inventoryItemId && (() => {
-                      const { inventoryItemId } = selectedEntry
-                      return (
-                      <div style={{ marginTop:10 }}>
-                        {/* Только необратимость. Сумму называть здесь не нужно:
-                            она уже написана на кнопке «Продать за N», с которой
-                            игрок сюда и пришёл, а повтор делает из предупреждения
-                            рекламу выгоды. */}
-                        <div style={{ fontSize:12, lineHeight:1.5, color:C.danger, marginBottom:10, textAlign:'center' }}>
-                          Предмет пропадёт навсегда.
-                        </div>
-                        <div style={{ display:'flex', gap:8 }}>
-                          <div
-                            onClick={() => { if (!sellPending) void handleSellItem(inventoryItemId) }}
-                            style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.danger}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.danger, fontSize:14,
-                              cursor: sellPending ? 'default' : 'pointer',
-                              opacity: sellPending ? 0.5 : 1,
-                            }}>
-                            {sellPending ? 'Продаю...' : 'Продать'}
-                          </div>
-                          <div
-                            onClick={() => setSellConfirm(null)}
-                            style={{
-                              flex:1, boxSizing:'border-box', minHeight:44,
-                              display:'flex', alignItems:'center', justifyContent:'center',
-                              background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                              borderRadius:9, padding:'8px 11px', textAlign:'center',
-                              color:C.textMain, fontSize:14, cursor:'pointer',
-                            }}>
-                            Отмена
-                          </div>
-                        </div>
-                      </div>
-                      )
-                    })()}
-                    {/* Отказ — видимой строкой под кнопками, не только в консоль. */}
-                    {selectedEntry.kind === 'item' && gearEquipError !== null && (
-                      <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
-                        {gearEquipError}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
 
             </div>
             )
@@ -3781,6 +3557,287 @@ export default function App() {
       </div>
 
       {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+
+      {/* Карточка предмета — ПОСЛЕДНИМ в дереве, а не внутри вкладки: её
+          открывают и «Инвентарь», и гнёзда снаряжения на «Персонаже».
+          Во время забега не показывается: Explore перекрывает меню целиком, и
+          карточка под ним была бы недостижимой ловушкой для тапа. */}
+      {!showExploreTest && selectedEntry && (
+        <div
+          onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null) }}
+          style={{
+            position:'fixed', top:0, left:0, right:0, bottom:0,
+            background:'rgba(0,0,0,0.55)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            zIndex:1000,
+          }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              maxWidth:290, width:'100%',
+              background:C.appBg, border:`1px solid ${C.stoneDark}`,
+              borderRadius:14, padding:16,
+            }}>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+              <div style={{
+                width:64, height:64, flexShrink:0, background:C.nicheDeep, borderRadius:8,
+                boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
+                display:'flex', alignItems:'center', justifyContent:'center',
+              }}>
+                {/* null (неизвестный слот) и провал загрузки — в ItemIcon. */}
+                <ItemIcon src={selectedEntry.iconSrc} name={selectedEntry.name} size={54} />
+              </div>
+              <div>
+                <div style={{ fontSize:15, color:C.textMain }}>{selectedEntry.name}</div>
+                <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>у тебя: {selectedEntry.qty}</div>
+              </div>
+            </div>
+
+            {/* Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок просто
+                не рисуется, заглушкой вроде "—" не заполняем. */}
+            {selectedEntry.desc !== null && (
+              <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
+                {selectedEntry.desc}
+              </div>
+            )}
+
+            <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
+              <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
+            </div>
+
+            {/* Действия. У книги их три и своя раскладка; у предмета —
+                «Надеть»/«Снять», у зелья и расходника — только заглушка
+                продажи. */}
+            {selectedEntry.kind === 'book' ? (() => {
+              const { bookId, skillId, sellPrice } = selectedEntry
+              // Почему «Надеть» недоступна — ТРИ разных причины, и у
+              // каждой свой текст на самой кнопке (решение дизайнера).
+              // null в equippedSkills значит «сервер не назвал»: гадать
+              // нельзя, иначе кнопка обещала бы то, что сервер отвергнет.
+              const equippedNow = player?.equippedSkills ?? null
+              const equipBlocked: string | null =
+                equippedNow === null ? 'Навыки неизвестны'
+                  : equippedNow.includes(skillId) ? 'Навык уже надет'
+                    : equippedNow.length >= MAX_EQUIPPED_SKILLS ? 'Обе ячейки заняты'
+                      : null
+              // Общий вид кнопки действия: рамка тёплая у основного,
+              // серая у второстепенных. minHeight 44 — палец.
+              const actionStyle = (primary: boolean, disabled: boolean) => ({
+                flex:1, boxSizing:'border-box' as const, minHeight:44,
+                display:'flex', alignItems:'center', justifyContent:'center',
+                background:C.nicheDeep,
+                border:`1px solid ${primary ? C.glowEdge : C.stoneDark}`,
+                borderRadius:9, padding:'8px 11px', textAlign:'center' as const,
+                color: primary ? C.glowCore : C.textMain, fontSize:14,
+                cursor: disabled ? 'default' as const : 'pointer' as const,
+                opacity: disabled ? 0.5 : 1,
+                ...(primary ? { boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)' } : {}),
+              })
+              return (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {/* «Надеть» — основное действие, своей строкой во всю
+                    ширину: три кнопки в один ряд на 375px дали бы по ~100px
+                    на кнопку с русской подписью. */}
+                {equipBlocked !== null ? (
+                  <div style={{ ...actionStyle(false, true), cursor:'default' }}>
+                    {equipBlocked}
+                  </div>
+                ) : (
+                  <div
+                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'equip', bookId }) }}
+                    style={actionStyle(true, skillActionPending)}>
+                    {skillActionPending ? 'Надеваю...' : 'Надеть'}
+                  </div>
+                )}
+                <div style={{ display:'flex', gap:8 }}>
+                  {/* «Улучшить навык» работает и для НЕнадетого навыка:
+                      уровень принадлежит герою, а не гнезду. */}
+                  <div
+                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'upgrade', bookId }) }}
+                    style={actionStyle(false, skillActionPending)}>
+                    Улучшить навык
+                  </div>
+                  <div
+                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sell', bookId }) }}
+                    style={actionStyle(false, skillActionPending)}>
+                    Продать за {sellPrice}
+                  </div>
+                </div>
+                {skillActionError !== null && (
+                  <div style={{ fontSize:11, color:C.danger, textAlign:'center' }}>
+                    {skillActionError}
+                  </div>
+                )}
+              </div>
+              )
+            })() : (
+            <div style={{ display:'flex', gap:8 }}>
+              {selectedEntry.kind === 'item' && (() => {
+                const { inventoryItemId, equipped, levelRequired } = selectedEntry
+                // Снять можно ВСЕГДА: сервер при снятии уровень не
+                // проверяет, и запирать надетое на теле нельзя. Порог —
+                // только для "Надеть", и это подсказка, а не защита:
+                // решает сервер по своим статам, устаревший player.level
+                // кончится красной строкой ниже. Профиль не загружен
+                // (player === null) — уровень неизвестен, порог не
+                // выдумываем и кнопку не прячем: пусть ответит сервер.
+                // Снять некуда: сумка полна. Сервер вместимость не
+                // проверяет вовсе (правило клиентское, см. BAG_CAPACITY), поэтому
+                // эту дверь держит клиент. Размер сумки НЕИЗВЕСТЕН (bagKnown
+                // false) — не утверждаем «полна» и не блокируем: неизвестность не
+                // повод запрещать.
+                if (equipped && bagFull) {
+                  return (
+                    <div style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.textDim, fontSize:13, opacity:0.5,
+                    }}>
+                      Сумка полна
+                    </div>
+                  )
+                }
+                if (!equipped && player !== null && player.level < levelRequired) {
+                  return (
+                    <div style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.textDim, fontSize:13,
+                    }}>
+                      Откроется на {levelRequired} уровне
+                    </div>
+                  )
+                }
+                return (
+                  <div
+                    onClick={() => { void handleEquipItem(inventoryItemId, !equipped) }}
+                    style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.glowCore, fontSize:14,
+                      cursor: equipping ? 'default' : 'pointer',
+                      opacity: equipping ? 0.5 : 1,
+                      boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+                    }}>
+                    {equipping
+                      ? (equipped ? 'Снимаю...' : 'Надеваю...')
+                      : (equipped ? 'Снять' : 'Надеть')}
+                  </div>
+                )
+              })()}
+              {selectedEntry.kind === 'item' ? (() => {
+                const { inventoryItemId, equipped, sellPrice } = selectedEntry
+                // Три причины, по которым продать нельзя, и у каждой свой
+                // текст прямо на кнопке: надетый предмет (сервер тоже
+                // откажет), неизвестная цена (старый сервер) и уже идущая
+                // продажа.
+                const blocked: string | null =
+                  equipped ? 'Сначала сними'
+                    : sellPrice === undefined ? 'Цена неизвестна'
+                      : null
+                if (blocked !== null) {
+                  return (
+                    <div style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.textDim, fontSize:13, opacity:0.5,
+                    }}>
+                      {blocked}
+                    </div>
+                  )
+                }
+                return (
+                  <div
+                    onClick={() => { setSellConfirm(inventoryItemId); setGearEquipError(null) }}
+                    style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.textMain, fontSize:14, cursor:'pointer',
+                    }}>
+                    Продать за {sellPrice}
+                  </div>
+                )
+              })() : (
+                /* У зелий, расходников и книг продажи из этой карточки
+                   нет: книги продаются своей кнопкой выше, а зелья и
+                   расходники не продаются вовсе. Явная заглушка — без
+                   onClick и без cursor:pointer, чтобы тап ничего не
+                   обещал. */
+                <div style={{
+                  flex:1, boxSizing:'border-box', minHeight:44,
+                  display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                  border:`1px dashed ${C.stoneDark}`, borderRadius:9, padding:'6px 11px',
+                  textAlign:'center', color:C.textDim, opacity:0.7,
+                }}>
+                  <div style={{ fontSize:14 }}>Продать</div>
+                  <div style={{ fontSize:10 }}>скоро</div>
+                </div>
+              )}
+            </div>
+            )}
+
+            {/* Подтверждение продажи. Предмет исчезает безвозвратно,
+                поэтому спрашиваем — тем же приёмом, что «Забыть» у
+                навыка: цена действия названа словами до, а не после. */}
+            {selectedEntry.kind === 'item' && sellConfirm === selectedEntry.inventoryItemId && (() => {
+              const { inventoryItemId } = selectedEntry
+              return (
+              <div style={{ marginTop:10 }}>
+                {/* Только необратимость. Сумму называть здесь не нужно:
+                    она уже написана на кнопке «Продать за N», с которой
+                    игрок сюда и пришёл, а повтор делает из предупреждения
+                    рекламу выгоды. */}
+                <div style={{ fontSize:12, lineHeight:1.5, color:C.danger, marginBottom:10, textAlign:'center' }}>
+                  Предмет пропадёт навсегда.
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <div
+                    onClick={() => { if (!sellPending) void handleSellItem(inventoryItemId) }}
+                    style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.danger}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.danger, fontSize:14,
+                      cursor: sellPending ? 'default' : 'pointer',
+                      opacity: sellPending ? 0.5 : 1,
+                    }}>
+                    {sellPending ? 'Продаю...' : 'Продать'}
+                  </div>
+                  <div
+                    onClick={() => setSellConfirm(null)}
+                    style={{
+                      flex:1, boxSizing:'border-box', minHeight:44,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+                      borderRadius:9, padding:'8px 11px', textAlign:'center',
+                      color:C.textMain, fontSize:14, cursor:'pointer',
+                    }}>
+                    Отмена
+                  </div>
+                </div>
+              </div>
+              )
+            })()}
+            {/* Отказ — видимой строкой под кнопками, не только в консоль. */}
+            {selectedEntry.kind === 'item' && gearEquipError !== null && (
+              <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
+                {gearEquipError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх
