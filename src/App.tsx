@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readSkillLevels, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readSkillLevels, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { BAG_CAPACITY, CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
+// Каталог СТРАНИЦ книг — тоже общая пара (src/scrolls.ts ↔ server/src/scrolls.ts).
+// Страницы не продаются в магазине: они только выпадают в забегах.
+import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
+// Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
+// (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
+import { itemIconSrc } from './itemIcons'
 // Строку механики берём ТОЛЬКО отсюда: у камня и оберега числа в общем каталоге,
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
@@ -50,7 +56,15 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * readConsumables в api.ts). Это не «расходников нет»: экраны в этом
    * состоянии пишут прочерк, а не ноль.
    */
-  consumables: Record<ConsumableId, number> | null }
+  consumables: Record<ConsumableId, number> | null
+  /**
+   * Склад СТРАНИЦ книг по id каталога (src/scrolls.ts).
+   * null — сервер его НЕ НАЗВАЛ (см. readScrolls в api.ts), то же трёхзначное
+   * состояние, что у consumables выше: прочерк, а не ноль.
+   * Отдельным полем от consumables намеренно: страницы ячейку сумки НЕ тратят,
+   * и один объект заставил бы различать это по id.
+   */
+  scrolls: Record<ScrollId, number> | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -71,53 +85,18 @@ const HERO_SLOTS: { slot: string; label: string }[] = [
 // в файле.
 const SLOT_ORDER: string[] = HERO_SLOTS.map((s) => s.slot)
 
-// Вместимость сумки — ПРОЕКТНОЕ число из docs/items.md ("Правило
-// вместимости"): 30 ячеек стартово, расширение за золото в будущем. Сервер его
-// НЕ знает и не проверяет — ни в схеме, ни в одном эндпоинте вместимости нет.
-// Поэтому переполнение (например, после debug-give-all-items: 36 предметов)
-// показывается как есть, красным, а не обрезается до 30. Появится вместимость
-// на сервере — брать оттуда, эту константу удалить.
-const BAG_CAPACITY = 30
+// Вместимость сумки переехала в ОБЩУЮ пару каталогов (src/consumables.ts ↔
+// server/src/consumables.ts) 30.09.2026 — ровно по плану, который стоял в
+// прежнем комментарии здесь: «появится вместимость на сервере — брать оттуда».
+// Она появилась: сервер решает судьбу добычи на финише («не влезло, значит
+// пропало»), и применять он обязан ТО ЖЕ число, которое показывает счётчик
+// «N / 30». Переполнение по-прежнему показывается как есть, красным, а не
+// обрезается до 30 (например, после debug-give-all-items: 36 предметов).
 
-// Код слота в именах файлов иконок предметов — assets/icons/items/, 36 файлов
-// wpn_t1…amu_t6.
-const SLOT_CODE: Record<string, string> = {
-  weapon: 'wpn', helmet: 'hlm', armor: 'arm', gloves: 'glv', boots: 'bts', amulet: 'amu',
-}
-
-// Иконка предмета ВЫВОДИТСЯ из слота и тира, а НЕ берётся из item.iconPath,
-// который сервер честно присылает в ответе инвентаря. Это сделано НАМЕРЕННО,
-// не забыто — НЕ "починить" обратно на iconPath:
-//
-//   item.iconPath указывает в assets/equipment/processed/<папка слота>/, где
-//   лежит арт СТАРОГО каталога (10 тиров оружие/броня, 5 тиров у остальных
-//   слотов). Под нынешние 6 тиров он НЕПОЛОН — четырёх файлов физически нет
-//   на диске: amulets/amulet_06.png, boots/boots_06.png, gloves/gloves_06.png,
-//   helmets/helmet_06.png. Предмет 6 тира этих слотов дал бы битую картинку.
-//   Набор assets/icons/items/ полный (все 36) и нарисован как раз под
-//   инвентарь.
-//
-// Развязка — перегенерировать арт под iconPath ЛИБО переписать iconPath в
-// сиде на существующий набор — отдельная задача, она требует правки сида и
-// миграции, то есть серверной стороны. Пока она не сделана, iconPath читать
-// нельзя.
-//
-// ОТСЮДА берут иконку ОБА экрана с предметами: вкладка "Инвентарь" (ячейки и
-// карточка) и экран "Персонаж" (гнёзда надетого) — и рисуют её через ItemIcon
-// ниже. "Персонаж" читал iconPath
-// дольше всех и ровно на этом ломался: надетые шлем/перчатки/сапоги/амулет
-// 6 тира отдавали 404 на GitHub Pages (проверено запросами), WebView рисовал
-// "?". Не возвращать ни один из экранов на iconPath; новому экрану с иконкой
-// предмета — тоже сюда.
-//
-// null — неизвестный слот (в схеме Item.slot это свободная строка, не enum):
-// ItemIcon рисует название текстом вместо картинки, а не тянет
-// ".../undefined_t3.png".
-function itemIconSrc(slot: string, tier: number): string | null {
-  const code = SLOT_CODE[slot]
-  if (!code) return null
-  return `${import.meta.env.BASE_URL}assets/icons/items/${code}_t${tier}.png`
-}
+// Иконка предмета (слот+тир → путь) переехала в src/itemIcons.ts 30.09.2026:
+// её читает ещё и экран итогов забега (Explore.tsx, блок «ДОБЫЧА»), а импорт
+// App.tsx оттуда дал бы цикл. Там же разбор, почему путь НЕ берётся из
+// Item.iconPath, — если возникнет соблазн «починить», читать надо тот файл.
 
 // Иконка в ячейке — ОДНА точка на все места, где она рисуется: гнездо
 // "Персонажа", ячейка и карточка "Инвентаря". Разбирает оба нештатных случая:
@@ -362,6 +341,26 @@ function devConsumableStock(): Record<ConsumableId, number> {
   return out
 }
 /**
+ * TEMP_DEV_SCROLL_STOCK — ТЕСТОВЫЙ запас КАЖДОЙ страницы для офлайн-заглушки
+ * DevTester (вне Telegram). Настоящий лежит в колонках Character.scroll* и
+ * приходит полем character.scrolls в ответе логина.
+ *
+ * Ровно SCROLLS_PER_BOOK (3), а не 1 и не 10: при трёх кнопка «Собрать книгу
+ * (3/3)» в браузере АКТИВНА — то есть видно и её рабочее состояние, и то, что
+ * счётчик берётся из данных. С единицей была бы видна только погашенная кнопка,
+ * и проверить сборку в браузере было бы нечем.
+ *
+ * Собирается ИЗ КАТАЛОГА, как склад расходников выше: шестая страница появится
+ * в офлайн-отладке сама. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*
+ * (см. чеклист в CLAUDE.md).
+ */
+const TEMP_DEV_SCROLL_STOCK = SCROLLS_PER_BOOK
+function devScrollStock(): Record<ScrollId, number> {
+  const out = {} as Record<ScrollId, number>
+  for (const s of SCROLLS) out[s.id] = TEMP_DEV_SCROLL_STOCK
+  return out
+}
+/**
  * TEMP_DEV_SKILL_LEVEL — ТЕСТОВЫЙ уровень каждого навыка для офлайн-заглушки
  * DevTester. Настоящий лежит в колонках Character.skillLevel* и приходит полем
  * character.skillLevels в ответе логина.
@@ -506,7 +505,7 @@ export default function App() {
   //                   «Продать») не имеют смысла ни для зелья, ни для камня
   // Это НЕ прежнее трёхзначное состояние с 'skills': надетые навыки живут на
   // экране "Персонаж", здесь только книги как предметы.
-  const [gearTab, setGearTab] = useState<'equipment' | 'consumables' | 'books'>('equipment')
+  const [gearTab, setGearTab] = useState<'equipment' | 'consumables' | 'books' | 'scrolls'>('equipment')
   // Выбранный пункт фильтра по слоту внутри "Экипировки": null — "Всё".
   // Ставится тапом по гнезду на экране "Персонаж" (см. ниже), сбрасывается
   // пунктом "Всё" в выпадающем списке и тапом по "Инвентарь" в навбаре — иначе
@@ -569,6 +568,7 @@ export default function App() {
     | { kind: 'item'; inventoryItemId: string }
     | { kind: 'potion'; potionId: string }
     | { kind: 'consumable'; consumableId: ConsumableId }
+    | { kind: 'scroll'; scrollId: ScrollId }
     | null
   >(null)
   // --- Книги навыков ---
@@ -674,7 +674,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock() })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -704,7 +704,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls) })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
@@ -821,6 +821,48 @@ export default function App() {
         // — старый сервер её не прислал: кнопка тогда гаснет, а не
         // показывает выдуманное число (формулы на клиенте нет).
         sellPrice: inv.sellPrice,
+      }
+    }
+    // Страница — СВОЯ ветка: у неё два действия («Собрать книгу» и
+    // «Продать»), и оба адресуются id страницы, а не книги.
+    if (gearSelectedItem.kind === 'scroll') {
+      const spec = scrollById(gearSelectedItem.scrollId)
+      // Страницы нет в каталоге — карточки нет вовсе (тот же приём, что
+      // у пропавшего предмета): рисовать её значило бы обещать действия,
+      // которых сервер не примет.
+      if (spec === null) return null
+      // Книга, в которую складываются страницы. null — каталоги
+      // разошлись (книги у страницы нет); тогда строка «что делает»
+      // говорит это прямо, а не выдумывает название.
+      const book = consumableById(spec.bookId)
+      const have = player?.scrolls?.[spec.id] ?? 0
+      return {
+        kind: 'scroll' as const,
+        name: spec.nameRu,
+        desc: spec.desc as string | null,
+        stat: book === null
+          ? `${SCROLLS_PER_BOOK} страницы складываются в книгу навыка`
+          : `${SCROLLS_PER_BOOK} страницы складываются в «${book.nameRu}»`,
+        qty: have,
+        iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
+        equipped: false,
+        levelRequired: null as number | null,
+        inventoryItemId: null as string | null,
+        scrollId: spec.id,
+        have,
+        // Нужна ли СВОБОДНАЯ ячейка под собранную книгу. То же правило, что
+        // применяет сервер (resolveRunDrops и assemble-book): книга тратит
+        // ячейку, только если её вида ещё нет в сумке — вторая ложится
+        // бейджем «×2» в ту же. Без этой проверки кнопка говорила бы «Сумка
+        // полна» там, где сервер собрал бы книгу без возражений.
+        // Книги нет в каталоге или склад неизвестен — считаем, что ячейка
+        // НУЖНА: это осторожная сторона, и она совпадает с поведением сервера
+        // на пустом складе.
+        needsBagCell: book === null || (player?.consumables?.[book.id] ?? 0) === 0,
+        // Склад страниц неизвестен (сервер не назвал) — собирать НЕЛЬЗЯ:
+        // have тогда 0, и кнопка гаснет сама. Отдельного состояния здесь
+        // не нужно, заметку про неизвестный склад показывает сама вкладка.
+        sellPrice: SCROLL_SELL_PRICE,
       }
     }
     // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
@@ -962,9 +1004,14 @@ export default function App() {
       if (spentStock !== null) {
         setPrepSlots(prev => prev.map((id) => (id !== null && (spentStock[id] ?? 0) >= 1 ? id : null)))
       }
+      // Склад страниц после забега — тем же приёмом, что расходники: поля нет
+      // (старый сервер) — прежний остаётся как есть, выдуманный не подставляем.
+      // Без этого выпавшая страница не появилась бы в сумке до логина.
+      const scrollStockAfter = readScrolls(result.scrolls)
       setPlayer(prev => prev ? {
         ...prev,
         ...(spentStock !== null ? { consumables: spentStock } : {}),
+        ...(scrollStockAfter !== null ? { scrolls: scrollStockAfter } : {}),
         trophies: result.trophies,
         strength: result.strength,
         endurance: result.endurance,
@@ -1080,6 +1127,11 @@ export default function App() {
     | { kind: 'forget'; skillId: SkillBookSkillId }
     | { kind: 'upgrade'; bookId: SkillBookId }
     | { kind: 'sell'; bookId: SkillBookId }
+    // Страницы ходят тем же обработчиком: у них тот же ответ сервера
+    // (SkillStateResult), та же блокировка на время полёта и тот же разбор
+    // отказа. Свой обработчик был бы копией на две трети.
+    | { kind: 'assemble'; scrollId: ScrollId }
+    | { kind: 'sellScroll'; scrollId: ScrollId }
 
   // Отказы сервера — словами игрока. Коды из server/src/routes/run.ts, четыре
   // ручки книг.
@@ -1090,6 +1142,11 @@ export default function App() {
       case 'Skill not equipped': return 'Этот навык не надет.'
       case 'No book in stock': return 'Книги нет на складе — обнови баланс.'
       case 'Unknown book': return 'Сервер не знает такой книги.'
+      case 'Unknown scroll': return 'Сервер не знает такой страницы.'
+      // Сборка книги упирается в вместимость: сервер проверяет её тем же
+      // правилом, что клиент гасит кнопку, — эта строка видна, только если
+      // сумка заполнилась в другой вкладке уже после отрисовки карточки.
+      case 'Bag is full': return 'Сумка полна — освободи ячейку.'
       case 'Unknown skill': return 'Сервер не знает такого навыка.'
       // Книга кончилась ИЛИ набор навыков изменился — сервер эти два случая не
       // различает (см. equip-book), и для игрока они значат одно и то же.
@@ -1112,19 +1169,22 @@ export default function App() {
         action.kind === 'equip' ? await equipBook(token, action.bookId)
           : action.kind === 'forget' ? await forgetSkill(token, action.skillId)
             : action.kind === 'upgrade' ? await upgradeSkill(token, action.bookId)
-              : await sellBook(token, action.bookId)
-      // Все четыре поля АБСОЛЮТНЫЕ и перечитаны сервером из БД — мержим как
+              : action.kind === 'assemble' ? await assembleBook(token, action.scrollId)
+                : action.kind === 'sellScroll' ? await sellScroll(token, action.scrollId)
+                  : await sellBook(token, action.bookId)
+      // Все пять полей АБСОЛЮТНЫЕ и перечитаны сервером из БД — мержим как
       // есть, включая null. null здесь значит «сервер не назвал», и подставлять
-      // вместо него прежнее значение нельзя: книга уже списана, и старые числа
-      // на экране были бы враньём (см. правило про тихие фолбэки).
+      // вместо него прежнее значение нельзя: книга или страницы уже списаны, и
+      // старые числа на экране были бы враньём (см. правило про тихие фолбэки).
       setPlayer(prev => prev ? {
         ...prev,
         gold: result.gold,
         consumables: result.consumables,
+        scrolls: result.scrolls,
         equippedSkills: result.equippedSkills,
         skillLevels: result.skillLevels,
       } : prev)
-      if (result.consumables === null || result.equippedSkills === null || result.skillLevels === null) {
+      if (result.consumables === null || result.scrolls === null || result.equippedSkills === null || result.skillLevels === null) {
         console.error('Skill action: сервер ответил не полностью', action.kind, result)
         setShopBalanceUnknown(true)
         setSkillActionError('Действие прошло, но сервер назвал не всё. Обнови баланс.')
@@ -1349,7 +1409,7 @@ export default function App() {
       // золото, и его запас, и сверять после неё только зелья значило бы оставить
       // на экране неверное число камней. null из профиля перезаписывает намеренно
       // — сервер, перестав присылать поле, означает именно «запас неизвестен».
-      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions, consumables: profile.consumables } : prev)
+      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions, consumables: profile.consumables, scrolls: profile.scrolls } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
       // прежнее число было бы тихим фолбэком на устаревшее значение.
@@ -2634,7 +2694,7 @@ export default function App() {
               equipped: boolean
               group: number
               rank: number
-              open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | { kind: 'consumable'; consumableId: ConsumableId }
+              open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | { kind: 'consumable'; consumableId: ConsumableId } | { kind: 'scroll'; scrollId: ScrollId }
             }
             // ОДНА ячейка на ОДНУ строку InventoryItem, без бейджа "xN":
             // стакинга в БД нет (каждый предмет — своя строка), а
@@ -2701,7 +2761,7 @@ export default function App() {
             // «Продать»), бессмысленные для зелья и камня.
             // Заполненность сумки при этом считается по ВСЕМ разделам (см. bagUsed):
             // вместимость — свойство сумки, а не открытой подвкладки.
-            const consumableSources: { key: string; section: 'consumables' | 'books'; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
+            const consumableSources: { key: string; section: 'consumables' | 'books' | 'scrolls'; cells: InvCell[]; note: string | null; takesCell: boolean }[] = [
               {
                 key: 'potions',
                 section: 'consumables',
@@ -2789,6 +2849,36 @@ export default function App() {
                     ? 'Сервер не назвал запас книг.'
                     : null,
               },
+              {
+                key: 'scrolls',
+                section: 'scrolls',
+                // Страница ячейку сумки НЕ ТРАТИТ — единственный источник
+                // наравне с зельями (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»):
+                // страницы копятся десятками, по три на книгу, и терять их при
+                // переполнении было бы несоразмерно. Это же правило применяет
+                // сервер, начисляя добычу (см. resolveRunDrops).
+                takesCell: false,
+                // Читает СВОЁ поле player.scrolls, а не consumables: склад
+                // страниц приходит отдельным полем именно потому, что вместимость
+                // у них другая.
+                cells: (player?.scrolls == null ? [] : SCROLLS)
+                  .filter((s) => (player?.scrolls?.[s.id] ?? 0) > 0)
+                  .map((s) => ({
+                    key: `scroll-${s.id}`,
+                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${s.icon}`,
+                    alt: s.nameRu,
+                    qty: player?.scrolls?.[s.id] ?? 0,
+                    equipped: false,
+                    group: 3,
+                    rank: 0,
+                    open: { kind: 'scroll' as const, scrollId: s.id },
+                  })),
+                note: player === null
+                  ? 'Профиль не загружен — запас страниц неизвестен.'
+                  : player.scrolls === null
+                    ? 'Сервер не назвал запас страниц.'
+                    : null,
+              },
             ]
             // Что показывает сетка и какие заметки видны — ТОЛЬКО открытый
             // раздел. Заметку чужого раздела показывать нельзя не из экономии:
@@ -2820,21 +2910,42 @@ export default function App() {
               </div>
 
               {/* Подвкладки. Тот же приём, что у разделов магазина выше
-                  (SHOP_TABS): чипы в строку, активный обведён C.glowEdge.
-                  Высота 44px — минимум тап-зоны из дизайн-системы. */}
-              <div style={{ display:'flex', gap:6, marginBottom:10, padding:'0 8px' }}>
+                  (SHOP_TABS), и с 30.09.2026 — ТА ЖЕ раскладка, не только тот же
+                  вид: чипов стало ЧЕТЫРЕ («Страницы»), и прежний ряд с
+                  padding:'0 14px' у каждого перестал влезать на узкий экран.
+                  Прикидка по метрикам: подписи 11px требуют ~60/60/30/48px
+                  текста, со старыми отступами ряд просил ~352px — на 375 и 390
+                  ещё влезал, на 360 впритык, на 320 (iPhone SE) вылезал за край.
+                  Сжимать себя такие чипы не умеют: whiteSpace:'nowrap' даёт им
+                  авто-минимум по содержимому, и лишнее просто уехало бы вправо —
+                  ровно тот отказ, из-за которого в магазине терялся третий
+                  столбец (см. CLAUDE.md, Critical Gotchas).
+                  Решение взято готовым у ряда магазина: горизонтальная прокрутка
+                  (className='no-scrollbar' прячет саму полосу, src/App.css) плюс
+                  flex:'1 1 auto' на чипах — на широких экранах они растягиваются
+                  на всю ширину, на узких ряд честно прокручивается, а не калечит
+                  подписи и не делает документ шире экрана.
+                  Высота 44px — минимум тап-зоны из дизайн-системы — СОХРАНЕНА
+                  явным minHeight: padding по вертикали её больше не задаёт. */}
+              <div className="no-scrollbar" style={{ display:'flex', gap:6, overflowX:'auto', marginBottom:10, padding:'0 8px' }}>
                 {([
                   { id: 'equipment' as const, label: 'Экипировка' },
                   { id: 'consumables' as const, label: 'Расходники' },
                   { id: 'books' as const, label: 'Книги' },
+                  // Четвёртая подвкладка. Страницы выделены НЕ по вместимости
+                  // (ячейку они не тратят вовсе), а по действиям: «Собрать
+                  // книгу» и «Продать» бессмысленны и для зелья, и для книги.
+                  // Ряд из четырёх чипов на 360px влезает: подписи короткие,
+                  // а контейнер прокручивается горизонтально не хуже трёх.
+                  { id: 'scrolls' as const, label: 'Страницы' },
                 ]).map((t) => {
                   const active = gearTab === t.id
                   return (
                     <div key={t.id} onClick={() => setGearTab(t.id)}
                       style={{
-                        boxSizing:'border-box', height:44,
+                        boxSizing:'border-box', minHeight:44, flex:'1 1 auto',
                         display:'flex', alignItems:'center', justifyContent:'center',
-                        background:C.nicheDeep, borderRadius:6, padding:'0 14px',
+                        background:C.nicheDeep, borderRadius:6, padding:'0 6px',
                         fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
                         border:`1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
@@ -2978,7 +3089,8 @@ export default function App() {
                 // склад расходников.
                 (gearTab === 'equipment' ? inventoryStatus === 'ready'
                   : gearTab === 'books' ? player?.consumables != null
-                    : potionStock !== null) ? (
+                    : gearTab === 'scrolls' ? player?.scrolls != null
+                      : potionStock !== null) ? (
                   <div style={{ padding:'40px 0', textAlign:'center', fontSize:13, color:C.textDim }}>
                     {gearTab === 'equipment' && slotFilter !== null ? 'Для этого слота ничего нет' : 'Пусто'}
                   </div>
@@ -3605,10 +3717,71 @@ export default function App() {
               <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
             </div>
 
-            {/* Действия. У книги их три и своя раскладка; у предмета —
-                «Надеть»/«Снять», у зелья и расходника — только заглушка
-                продажи. */}
-            {selectedEntry.kind === 'book' ? (() => {
+            {/* Действия. У страницы их две, у книги три и своя раскладка;
+                у предмета — «Надеть»/«Снять» (+ «Продать за N», если он не
+                надет), у зелья и расходника — только заглушка продажи. */}
+            {selectedEntry.kind === 'scroll' ? (() => {
+              const { scrollId, have, needsBagCell, sellPrice } = selectedEntry
+              // Почему «Собрать книгу» недоступна — ДВЕ причины, и показаны они
+              // по-разному. Нехватка страниц уже написана на самой кнопке
+              // счётчиком «(N/3)», поэтому отдельного текста ей не нужно —
+              // кнопка просто приглушена. Полная сумка на кнопке не видна ничем,
+              // поэтому у неё свой текст ВМЕСТО кнопки, как у книги ниже.
+              // Полная сумка мешает, только если книге нужна НОВАЯ ячейка (см.
+              // needsBagCell) — то же правило применяет сервер.
+              // bagFull утверждается только при известном размере сумки (см.
+              // bagKnown): неизвестность не повод запрещать — ответит сервер.
+              const assembleBlocked: string | null =
+                have < SCROLLS_PER_BOOK ? null
+                  : needsBagCell && bagFull ? 'Сумка полна'
+                    : null
+              const enoughScrolls = have >= SCROLLS_PER_BOOK
+              const actionStyle = (primary: boolean, disabled: boolean) => ({
+                flex:1, boxSizing:'border-box' as const, minHeight:44,
+                display:'flex', alignItems:'center', justifyContent:'center',
+                background:C.nicheDeep,
+                border:`1px solid ${primary ? C.glowEdge : C.stoneDark}`,
+                borderRadius:9, padding:'8px 11px', textAlign:'center' as const,
+                color: primary ? C.glowCore : C.textMain, fontSize:14,
+                cursor: disabled ? 'default' as const : 'pointer' as const,
+                opacity: disabled ? 0.5 : 1,
+                ...(primary ? { boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)' } : {}),
+              })
+              return (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {/* «Собрать книгу (N/3)» — основное действие, своей строкой
+                    во всю ширину: счётчик делает подпись длинной, и в паре с
+                    «Продать за 30» на 375px обеим осталось бы ~100px. */}
+                {assembleBlocked !== null ? (
+                  <div style={{ ...actionStyle(false, true), cursor:'default' }}>
+                    {assembleBlocked}
+                  </div>
+                ) : (
+                  <div
+                    onClick={() => {
+                      if (!enoughScrolls || skillActionPending) return
+                      void handleSkillAction({ kind: 'assemble', scrollId })
+                    }}
+                    style={actionStyle(true, !enoughScrolls || skillActionPending)}>
+                    {skillActionPending ? 'Собираю...' : `Собрать книгу (${have}/${SCROLLS_PER_BOOK})`}
+                  </div>
+                )}
+                {/* Продажа БЕЗ подтверждения — как у книги: страница не
+                    уникальна, их копятся десятки, и окно на каждую было бы
+                    помехой, а не защитой. Уходит ОДНА за нажатие. */}
+                <div
+                  onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sellScroll', scrollId }) }}
+                  style={actionStyle(false, skillActionPending)}>
+                  Продать за {sellPrice}
+                </div>
+                {skillActionError !== null && (
+                  <div style={{ fontSize:11, color:C.danger, textAlign:'center' }}>
+                    {skillActionError}
+                  </div>
+                )}
+              </div>
+              )
+            })() : selectedEntry.kind === 'book' ? (() => {
               const { bookId, skillId, sellPrice } = selectedEntry
               // Почему «Надеть» недоступна — ТРИ разных причины, и у
               // каждой свой текст на самой кнопке (решение дизайнера).

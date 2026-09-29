@@ -1,4 +1,5 @@
 import { CONSUMABLES, consumableSkillBook, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { SCROLLS, type ScrollId } from './scrolls'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
@@ -129,6 +130,12 @@ export type LoginResponse = {
     // `undefined`, типизированный как объект, на старом или подменённом ответе.
     // Разбирать ТОЛЬКО через readSkillLevels ниже.
     skillLevels?: Record<string, number>
+    // Склад СТРАНИЦ книг — объектом по id каталога (`{scroll_fire: N}`).
+    // Отдельным полем от consumables намеренно: страницы ячейку сумки НЕ
+    // тратят, и свалить их в один объект значило бы различать это по id.
+    // Опциональное по той же причине, что consumables выше. Разбирать ТОЛЬКО
+    // через readScrolls.
+    scrolls?: Record<string, number>
     // Счётчики купленных улучшений. Опциональное по той же причине, что
     // consumables и skillLevels выше. Разбирать ТОЛЬКО через readUpgrades.
     upgrades?: { attack?: unknown; armor?: unknown }
@@ -372,6 +379,24 @@ export async function startRunExplore(token: string, mapFile?: string, consumabl
 // but with best-effort numbers that are never actually consumed — the
 // player-state merge (App.tsx handleExploreRunComplete) only ever fires
 // from the real server response, not the client-only estimate.
+/**
+ * Одна единица добычи в ответе финиша.
+ *
+ * ⚠️ КОПИЯ серверного типа (`server/src/routes/run.ts`, RunDrop) — менять
+ * парами, сверяющего скрипта у этой пары нет (см. CLAUDE.md, таблица копий).
+ *
+ * Размеченный union: имя и иконку клиент берёт из СВОИХ каталогов по id
+ * (scrolls.ts, potions.ts, consumables.ts), а не из ответа. Снаряжение —
+ * исключение: его названия лежат только в БД, клиентского каталога предметов
+ * нет вовсе. Слот и тир едут рядом, потому что иконку предмета клиент собирает
+ * из них (itemIconSrc), а не из Item.iconPath.
+ */
+export type RunDrop =
+  | { category: 'equipment'; nameRu: string; slot: string; tier: number }
+  | { category: 'scroll'; id: string }
+  | { category: 'potion'; tier: number }
+  | { category: 'book'; id: string }
+
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
@@ -379,7 +404,15 @@ export type RunResultSummary = {
   trophiesLost: number
   eventsClosed: number
   eventsTotal: number
-  items: never[]
+  /**
+   * Добыча забега: что РЕАЛЬНО начислено сервером. Пустой список — законный и
+   * частый исход (ни одно событие не прошло первый бросок).
+   * ⚠️ Прежнее поле `items: never[]` УДАЛЕНО 30.09.2026: оно было заготовкой
+   * под дроп и по типу не могло нести ничего.
+   */
+  drops: RunDrop[]
+  /** Что выпало, но пропало из-за полной сумки — отдельным списком. */
+  dropsLost: RunDrop[]
   bonuses: never[]
   strengthGained: number
   enduranceGained: number
@@ -407,6 +440,12 @@ export type RunResultSummary = {
    * выдуманный склад нельзя — вызывающий обязан просто не обновлять его.
    */
   consumables?: Record<string, number>
+  /**
+   * Склад СТРАНИЦ после забега — чтобы выпавшая страница появилась в сумке
+   * сразу, а не ждала следующего логина. Опциональное по той же причине, что
+   * consumables выше.
+   */
+  scrolls?: Record<string, number>
 }
 
 // Response shape of POST /run/finish-explore (server/src/routes/run.ts).
@@ -574,7 +613,10 @@ export async function finishRunExplore(
       try {
         const data = await response.json() as FinishExploreResult
         clearTimeout(timer)
-        return data
+        // Ответ финиша разбирается кастом (единственный такой эндпоинт в файле,
+        // см. комментарий к readRunDrops). Добыча — новое поле, и её проверяем
+        // здесь, чтобы ниже по коду это всегда были массивы, а не «что пришло».
+        return { ...data, drops: readRunDrops(data.drops), dropsLost: readRunDrops(data.dropsLost) }
       } catch (e) {
         clearTimeout(timer)
         lastKind = timedOut ? 'timeout' : 'network'
@@ -964,6 +1006,8 @@ export type ProfileResult = {
   potions: number[]
   /** null — сервер не назвал склад расходников (см. readConsumables). */
   consumables: Record<ConsumableId, number> | null
+  /** null — сервер не назвал склад страниц (см. readScrolls). */
+  scrolls: Record<ScrollId, number> | null
   /** null — сервер курс не назвал (см. readTrophyGoldRate). */
   trophyGoldRate: number | null
   /** null — сервер не назвал надетые навыки (см. readEquippedSkills). */
@@ -986,6 +1030,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophies: number
     potions: number[]
     consumables?: unknown
+    scrolls?: unknown
     trophyGoldRate?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
@@ -1000,6 +1045,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophies: raw.trophies,
     potions: raw.potions,
     consumables: readConsumables(raw.consumables),
+    scrolls: readScrolls(raw.scrolls),
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
@@ -1143,6 +1189,65 @@ export function readConsumables(raw: unknown): Record<ConsumableId, number> | nu
   const record = raw as Record<string, unknown>
   const out = {} as Record<ConsumableId, number>
   for (const spec of CONSUMABLES) {
+    const v = record[spec.id]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[spec.id] = v
+  }
+  return out
+}
+
+/**
+ * Разбор списка добычи из ответа финиша.
+ *
+ * Нужен потому, что ответ финиша разбирается КАСТОМ (`as FinishExploreResult`,
+ * см. finishRunExplore) — единственный эндпоинт в файле без разбора полей, и
+ * переписывать его целиком ради дропа нельзя: он проверен живыми забегами.
+ * Поэтому проверяется ровно новое поле, и ровно там, где оно возвращается.
+ *
+ * Негодная ЗАПИСЬ выбрасывается поштучно, а весь список — нет: одна кривая
+ * строка не повод спрятать остальную добычу, которую сервер УЖЕ начислил. Это
+ * не тихий фолбэк: начисление от показа не зависит, и потерять здесь можно
+ * только строчку на экране, а не предмет. Поля нет вовсе (старый сервер) —
+ * пустой список, и это честно: добычи у такого сервера и не было.
+ */
+export function readRunDrops(raw: unknown): RunDrop[] {
+  if (!Array.isArray(raw)) return []
+  const out: RunDrop[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    if (e.category === 'equipment') {
+      if (typeof e.nameRu !== 'string' || typeof e.slot !== 'string' || typeof e.tier !== 'number') continue
+      out.push({ category: 'equipment', nameRu: e.nameRu, slot: e.slot, tier: e.tier })
+    } else if (e.category === 'potion') {
+      if (typeof e.tier !== 'number') continue
+      out.push({ category: 'potion', tier: e.tier })
+    } else if (e.category === 'scroll' || e.category === 'book') {
+      if (typeof e.id !== 'string') continue
+      out.push({ category: e.category, id: e.id })
+    }
+  }
+  return out
+}
+
+/**
+ * Разбор склада СТРАНИЦ из ответа сервера (логин, профиль, обе ручки страниц,
+ * финиш забега).
+ *
+ * Тот же контракт и те же причины, что у readConsumables выше: null на всё, что
+ * не является полным и годным складом, и это значит «запас неизвестен», а не
+ * «страниц нет». Требуются ВСЕ id каталога — частично заполненный объект значит,
+ * что сервер и клиент разошлись каталогами, и доверять остатку нельзя.
+ *
+ * Отдельная функция, а не вызов readConsumables с другим каталогом: у страниц
+ * свой тип id, и общая функция вернула бы Record<ConsumableId | ScrollId, …>,
+ * где вызывающий уже не различит, чего именно не хватает.
+ */
+export function readScrolls(raw: unknown): Record<ScrollId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as Record<ScrollId, number>
+  for (const spec of SCROLLS) {
     const v = record[spec.id]
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
     out[spec.id] = v
@@ -1336,6 +1441,8 @@ const SKILL_BOOK_TIMEOUT_MS = 5000
 export type SkillStateResult = {
   gold: number
   consumables: Record<ConsumableId, number> | null
+  /** null — сервер не назвал склад страниц (см. readScrolls). */
+  scrolls: Record<ScrollId, number> | null
   equippedSkills: string[] | null
   skillLevels: Record<SkillBookSkillId, number> | null
 }
@@ -1344,6 +1451,7 @@ async function skillBookRequest(path: string, token: string, body: object): Prom
   const raw = await requestJson<{
     gold: number
     consumables?: unknown
+    scrolls?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
   }>(
@@ -1361,6 +1469,7 @@ async function skillBookRequest(path: string, token: string, body: object): Prom
   return {
     gold: raw.gold,
     consumables: readConsumables(raw.consumables),
+    scrolls: readScrolls(raw.scrolls),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
   }
@@ -1384,6 +1493,24 @@ export function upgradeSkill(token: string, id: SkillBookId): Promise<SkillState
 /** Продать книгу: списывается, золото +цена/10 (consumableSellPrice, каталог). */
 export function sellBook(token: string, id: SkillBookId): Promise<SkillStateResult> {
   return skillBookRequest('/character/sell-book', token, { id })
+}
+
+// --- СТРАНИЦЫ КНИГ ---
+//
+// Обе ходят тем же skillBookRequest и возвращают тот же SkillStateResult: они
+// меняют ровно те же поля (склад страниц, склад книг, золото), и заводить им
+// свой ответ значило бы развести по клиенту два мержа для одного экрана.
+// Таймаут и отсутствие повторов — тоже общие: ключа идемпотентности на сервере
+// нет, и повтор потерянного запроса потратил бы ВТОРЫЕ страницы.
+
+/** Собрать книгу из SCROLLS_PER_BOOK страниц: страницы списываются, книга в сумку. */
+export function assembleBook(token: string, id: ScrollId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/assemble-book', token, { id })
+}
+
+/** Продать ОДНУ страницу за SCROLL_SELL_PRICE золота. */
+export function sellScroll(token: string, id: ScrollId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/sell-scroll', token, { id })
 }
 
 // --- УЛУЧШЕНИЯ И ПРОДАЖА ПРЕДМЕТОВ ---

@@ -46,8 +46,12 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, RequestError, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, type ConsumableId } from './consumables'
+// Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
+// итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
+import { scrollById } from './scrolls'
+import { itemIconSrc } from './itemIcons'
 import { playerAttackDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
@@ -380,6 +384,50 @@ type FinishPayload = {
   charmUsed: boolean
 }
 
+/**
+ * Как показать одну единицу добычи: название и путь к иконке.
+ *
+ * Имя и иконку берём из СВОИХ каталогов по id, а не из ответа сервера — иначе
+ * те же строки жили бы в четвёртом экземпляре (каталоги страниц, зелий и
+ * расходников и так байт-в-байт копии). Снаряжение — исключение и единственное,
+ * что приезжает текстом: его названия лежат только в БД, клиентского каталога
+ * предметов нет вовсе.
+ *
+ * Неизвестный id — НЕ повод спрятать строку: сервер уже начислил предмет, и
+ * пропажа его со списка выглядела бы как потеря. Показываем сам id и пустую
+ * иконку — видно, что это сбой каталога, а не невезение.
+ */
+function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string | null } {
+  switch (drop.category) {
+    case 'equipment':
+      return { key: `${drop.slot}-${drop.tier}`, name: drop.nameRu, iconSrc: itemIconSrc(drop.slot, drop.tier) }
+    case 'scroll': {
+      const spec = scrollById(drop.id)
+      return {
+        key: drop.id,
+        name: spec?.nameRu ?? drop.id,
+        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+      }
+    }
+    case 'book': {
+      const spec = consumableById(drop.id)
+      return {
+        key: drop.id,
+        name: spec?.nameRu ?? drop.id,
+        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+      }
+    }
+    case 'potion': {
+      const spec = POTION_TIERS[drop.tier - 1]
+      return {
+        key: `potion-${drop.tier}`,
+        name: spec?.nameRu ?? `Зелье ${drop.tier} тира`,
+        iconSrc: spec === undefined ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+      }
+    }
+  }
+}
+
 function ResultsScreen({
   result,
   eventKinds,
@@ -649,25 +697,70 @@ function ResultsScreen({
             </div>
           )}
 
-          {/* 5. Сумка — одна секция (заголовок+содержимое держатся вплотную
-              своим fixed gap). items/bonuses с сервера ВСЕГДА пустые
-              (дроп-система ещё не реализована, см. CLAUDE.md), так что
-              здесь только заглушка "пусто"; секция готова принять реальные
-              предметы, когда появится тип для них. */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-              <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
-                В СУМКЕ
+          {/* 5. Добыча — ТОЛЬКО когда она есть. Пустой блок с «пусто» убран
+              30.09.2026 вместе с появлением настоящего дропа: ничего не выпало —
+              это самый частый исход (шанс с группы врагов 50%), и постоянная
+              строка «пусто» читалась бы как поломка, а не как невезение. Тем же
+              приёмом, что секция «ПРОКАЧКА» выше, которая тоже не рисуется без
+              прибавок.
+              ⚠️ Числа и состав здесь ВСЕГДА серверные: клиентская оценка
+              (buildClientResult) отдаёт пустые списки, потому что дроп бросает
+              только сервер. Поэтому до ответа блока не будет вовсе — и это
+              честно, в отличие от трофеев, которые клиент оценивает сам. */}
+          {(result.drops.length > 0 || result.dropsLost.length > 0) && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+                <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                  ДОБЫЧА
+                </div>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
               </div>
-              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+              {result.drops.map((drop, i) => {
+                const view = dropView(drop)
+                return (
+                  <div key={`${view.key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+                    {/* Иконка 128×128 в строке 24px: objectFit contain, чтобы
+                        вытянутая страница не растянулась (см. docs/art-pipeline,
+                        «Вытянутые предметы»; поворот уже запечён в сам файл).
+                        iconSrc === null — каталог не знает id (см. dropView):
+                        место под иконку остаётся пустым, чтобы строки не
+                        разъезжались, а название рядом скажет, что именно
+                        пришло. */}
+                    {view.iconSrc === null ? (
+                      <div style={{ width: 24, height: 24, flexShrink: 0 }} />
+                    ) : (
+                      <img
+                        src={view.iconSrc}
+                        alt=""
+                        draggable={false}
+                        style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
+                      />
+                    )}
+                    <div style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain, minWidth: 0 }}>
+                      {view.name}
+                    </div>
+                  </div>
+                )
+              })}
+              {/* Пропавшее — ОДНОЙ строкой и словами, без иконок: это плохая
+                  новость, и перечислять её теми же нарядными рядами, что добычу,
+                  значило бы прятать разницу. Правило вместимости названо прямо,
+                  иначе пропажа выглядит как сбой. */}
+              {result.dropsLost.length > 0 && (
+                <div
+                  style={{
+                    fontSize: 'clamp(10px, 2.9vw, 12px)',
+                    color: Theme.danger,
+                    textAlign: 'center',
+                    lineHeight: 1.45,
+                  }}
+                >
+                  Сумка полна, пропало: {result.dropsLost.map((d) => dropView(d).name).join(', ')}
+                </div>
+              )}
             </div>
-            {result.items.length === 0 && (
-              <div style={{ fontSize: 'clamp(10px, 3vw, 12px)', color: Theme.stoneDark, fontStyle: 'italic' }}>
-                пусто
-              </div>
-            )}
-          </div>
+          )}
 
           {/* 6. Кнопки. "В меню" — единственный способ закрыть этот экран,
               onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
@@ -985,7 +1078,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       trophiesLost: died ? lost : 0,
       eventsClosed: eventsRef.current.filter((e) => e.closed).length,
       eventsTotal: eventsRef.current.length,
-      items: [],
+      // Дроп бросает ТОЛЬКО сервер, и до его ответа клиенту сказать нечего.
+      // Пустые списки здесь — не заглушка «пока не реализовано», а честное
+      // «добычи я не знаю»: блок «ДОБЫЧА» при них просто не рисуется, и
+      // придуманных предметов игрок не увидит ни на секунду.
+      drops: [],
+      dropsLost: [],
       bonuses: [],
       // Прирост статов клиент оценить не может (пороги/progress — только в
       // БД) — нули-заглушки до ответа сервера, тем же приёмом, что items/
