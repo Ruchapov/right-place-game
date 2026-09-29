@@ -4,8 +4,10 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { getCurrentEnergy, applyStatGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
-import { MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
+import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
+import { ITEM_DROP_FLOOR_TIER, rollRunDrops, type DropIntent } from '../runDrops.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -22,6 +24,8 @@ import {
   potionStockOf,
   potionStockToColumns,
   consumableStockOf,
+  scrollStockOf,
+  type ConsumableColumns,
   skillLevelsOf,
   upgradesOf,
   readConsumablesUsed,
@@ -128,6 +132,46 @@ function bookStockDecrement(id: SkillBookId): Prisma.CharacterUpdateManyMutation
   }
 }
 
+// Фильтр «страниц на складе хватает», их списание и их начисление — готовыми
+// куска́ми для условных записей (собрать книгу / продать страницу / дроп на
+// финише). Switch по ScrollId по той же причине, что у книг выше: вычисляемый
+// ключ `{ [column]: … }` пришлось бы приводить кастом к Prisma-типу, и опечатка
+// в имени колонки прошла бы мимо проверки типов, а шестая страница без ветки
+// здесь не скомпилируется вовсе.
+//
+// `min` параметром, а не константой: у сборки книги порог SCROLLS_PER_BOOK, у
+// продажи — 1, и два почти одинаковых switch'а разъехались бы при добавлении
+// страницы.
+function scrollStockFilter(id: ScrollId, min: number): Prisma.CharacterWhereInput {
+  switch (id) {
+    case 'scroll_fire': return { scrollFire: { gte: min } }
+    case 'scroll_ice': return { scrollIce: { gte: min } }
+    case 'scroll_bleed': return { scrollBleed: { gte: min } }
+    case 'scroll_heal': return { scrollHeal: { gte: min } }
+    case 'scroll_dash': return { scrollDash: { gte: min } }
+  }
+}
+
+function scrollStockDecrement(id: ScrollId, count: number): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'scroll_fire': return { scrollFire: { decrement: count } }
+    case 'scroll_ice': return { scrollIce: { decrement: count } }
+    case 'scroll_bleed': return { scrollBleed: { decrement: count } }
+    case 'scroll_heal': return { scrollHeal: { decrement: count } }
+    case 'scroll_dash': return { scrollDash: { decrement: count } }
+  }
+}
+
+function scrollStockIncrement(id: ScrollId, count: number): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'scroll_fire': return { scrollFire: { increment: count } }
+    case 'scroll_ice': return { scrollIce: { increment: count } }
+    case 'scroll_bleed': return { scrollBleed: { increment: count } }
+    case 'scroll_heal': return { scrollHeal: { increment: count } }
+    case 'scroll_dash': return { scrollDash: { increment: count } }
+  }
+}
+
 // Фильтр «набор навыков не изменился с момента чтения» — для условной записи
 // ручек «надеть» и «забыть».
 //
@@ -153,9 +197,11 @@ function skillLevelIncrement(skillId: SkillBookSkillId): Prisma.CharacterUpdateM
 }
 
 /**
- * Ответ ВСЕХ четырёх ручек книг: состояние, которое они могут изменить, целиком.
+ * Ответ ВСЕХ ШЕСТИ ручек книг и страниц: состояние, которое они могут изменить,
+ * целиком (надеть / забыть / улучшить / продать книгу, собрать книгу / продать
+ * страницу).
  *
- * Один ответ на четыре ручки намеренно. Каждая меняет своё подмножество (надеть —
+ * Один ответ на шесть ручек намеренно. Каждая меняет своё подмножество (надеть —
  * набор и склад, продать — склад и золото, улучшить — склад и уровень), но клиент
  * рисует эти четыре поля в трёх местах сразу («Персонаж», сумка, шапка с золотом),
  * и отдавать каждой ручке свой огрызок значило бы разложить по клиенту четыре
@@ -176,9 +222,178 @@ async function sendSkillState(request: FastifyRequest, reply: FastifyReply, user
   return reply.send({
     gold: updated.gold,
     consumables: consumableStockOf(updated),
+    // Склад страниц — в том же ответе, хотя четыре ручки книг его не меняют:
+    // ручки СТРАНИЦ (собрать книгу / продать страницу) отвечают этой же
+    // функцией, и отдавать им свой огрызок значило бы развести по клиенту два
+    // разных мержа для одного и того же экрана сумки.
+    scrolls: scrollStockOf(updated),
     equippedSkills: updated.equippedSkills,
     skillLevels: skillLevelsOf(updated),
   })
+}
+
+// --- Дроп за забег: из брошенных костей (runDrops.ts) в записи БД и в ответ ---
+
+/**
+ * Одна единица добычи в ответе финиша.
+ *
+ * Размеченный union, а не плоское `{ icon, nameRu }`: ИМЯ и ИКОНКУ клиент берёт
+ * из СВОИХ каталогов (scrolls.ts, potions.ts, consumables.ts) по id, а не из
+ * ответа сервера. Присылать готовый путь к картинке нельзя — он зависит от
+ * BASE_URL (GitHub Pages живёт в подкаталоге), которого на сервере нет;
+ * присылать готовое имя можно было бы, но тогда оно стало бы ЧЕТВЁРТЫМ
+ * экземпляром названий, живущих в байт-в-байт каталогах.
+ *
+ * Снаряжение — исключение и единственное поле с текстом: его названия лежат
+ * ТОЛЬКО в БД (таблица Item), клиентского каталога предметов нет вовсе
+ * (удалён 20.09.2026). Слот и тир едут рядом, потому что иконку предмета клиент
+ * собирает из них (itemIconSrc), а не из Item.iconPath — тот указывает в
+ * неполный набор и клиентом не читается (см. комментарий в App.tsx).
+ *
+ * ⚠️ КОПИЯ этого типа живёт в src/api.ts — менять парами (сверяющего скрипта у
+ * RunResultSummary нет, см. CLAUDE.md, таблица копий клиент/сервер).
+ */
+export type RunDrop =
+  | { category: 'equipment'; nameRu: string; slot: string; tier: number }
+  | { category: 'scroll'; id: string }
+  | { category: 'potion'; tier: number }
+  | { category: 'book'; id: string }
+
+/** Добыча, разложенная по тому, как её применять и что показать игроку. */
+type ResolvedDrops = {
+  /** Что игрок получил. */
+  gained: RunDrop[]
+  /** Что выпало, но не влезло в сумку — показывается отдельной строкой. */
+  lost: RunDrop[]
+  /** Строки Item, которые надо создать в инвентаре (снаряжение). */
+  itemIds: string[]
+  /** Прибавки к колонкам страниц и книг — готовым куском data условной записи. */
+  stockData: Prisma.CharacterUpdateManyMutationInput
+  /** Прибавка зелий ПО ТИРАМ (индекс = тир-1) — складывается со складом ДО записи. */
+  potionGain: number[]
+}
+
+/**
+ * Превращает брошенные костями интенты в записи БД и в список для экрана итогов,
+ * применяя по дороге ПРАВИЛО ВМЕСТИМОСТИ (docs/items.md).
+ *
+ * Ячейку тратят: снаряжение — ВСЕГДА (в БД каждый предмет отдельная строка,
+ * стакинга нет), книга — ТОЛЬКО если её вида ещё нет в сумке (одна ячейка на вид
+ * с бейджем «×N»). Страницы и зелья — никогда. Не влезло — пропало, это решение
+ * дизайнера, и игрок об этом узнаёт строкой «Сумка полна, пропало: …», а не
+ * тишиной.
+ *
+ * ⚠️ Гонка с вместимостью НЕ ЗАКРЫТА и закрыта быть не может одним фильтром:
+ * занятость сумки — это COUNT по другой таблице, в Prisma-фильтр записи она не
+ * выражается. Между подсчётом здесь и записью ниже игрок со второго устройства
+ * может купить книгу и занять последнюю ячейку. Цена промаха — одна ячейка
+ * сверх тридцати; клиент такое переполнение показывает КРАСНЫМ и как есть, а не
+ * обрезает (см. счётчик «N / 30» в App.tsx).
+ */
+async function resolveRunDrops(
+  intents: DropIntent[],
+  character: { id: number } & ConsumableColumns,
+  characterLevel: number,
+  log: FastifyRequest['log'],
+): Promise<ResolvedDrops> {
+  const gained: RunDrop[] = []
+  const lost: RunDrop[] = []
+  const itemIds: string[] = []
+  const potionGain = new Array(POTION_TIER_COUNT).fill(0) as number[]
+  // Ничего не выпало — самый частый исход (шанс с группы врагов 50%), и он не
+  // должен стоить лишнего запроса к БД: подсчёт занятых ячеек ниже нужен только
+  // тогда, когда есть что в них класть.
+  if (intents.length === 0) {
+    return { gained, lost, itemIds, stockData: {}, potionGain }
+  }
+  const scrollGain = {} as Record<ScrollId, number>
+  const bookGain = {} as Record<SkillBookId, number>
+
+  // Занятые ячейки ДО добычи — ровно та же сумма, что считает клиент (bagUsed в
+  // App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника,
+  // которого не ноль. Расхождение здесь означало бы, что игрок видит «28 / 30»,
+  // а сервер считает сумку полной.
+  const equipmentCells = await prisma.inventoryItem.count({
+    where: { characterId: character.id, equipped: false },
+  })
+  const bookStock = { ...consumableStockOf(character) }
+  let cellsUsed = equipmentCells + Object.values(bookStock).filter((n) => n > 0).length
+
+  for (const intent of intents) {
+    switch (intent.category) {
+      case 'equipment': {
+        // Какие тиры «открыты», решает САМА БД по levelRequired — второго
+        // экземпляра правила «тир × 5» на сервере нет. ITEM_DROP_FLOOR_TIER
+        // добавлен через OR, а не через max(): до 5 уровня открытых тиров нет
+        // вовсе, и без пола каждый пятый бросок уходил бы в пустоту (см.
+        // комментарий к константе в runDrops.ts).
+        const pool = await prisma.item.findMany({
+          where: {
+            slot: intent.slot,
+            OR: [{ levelRequired: { lte: characterLevel } }, { tier: ITEM_DROP_FLOOR_TIER }],
+          },
+          select: { id: true, nameRu: true, slot: true, tier: true },
+        })
+        if (pool.length === 0) {
+          // Каталог предметов не засеян или у слота нет ни одной записи. Молча
+          // проглотить нельзя: это значит, что пятая часть всей добычи в игре
+          // исчезает, и узнать об этом больше неоткуда.
+          log.error({ slot: intent.slot, characterLevel }, 'run drops: no catalog item for slot')
+          continue
+        }
+        const item = pool[Math.floor(Math.random() * pool.length)]
+        const view: RunDrop = { category: 'equipment', nameRu: item.nameRu, slot: item.slot, tier: item.tier }
+        if (cellsUsed >= BAG_CAPACITY) {
+          lost.push(view)
+          continue
+        }
+        cellsUsed++
+        itemIds.push(item.id)
+        gained.push(view)
+        break
+      }
+      case 'book': {
+        const view: RunDrop = { category: 'book', id: intent.bookId }
+        // Ячейка нужна только под ПЕРВУЮ книгу этого вида: вторая ложится
+        // бейджем «×2» в ту же ячейку. bookStock — изменяемая копия, поэтому
+        // две книги одного вида за один забег тоже занимают одну ячейку.
+        const needsCell = bookStock[intent.bookId] === 0
+        if (needsCell && cellsUsed >= BAG_CAPACITY) {
+          lost.push(view)
+          continue
+        }
+        if (needsCell) cellsUsed++
+        bookStock[intent.bookId]++
+        bookGain[intent.bookId] = (bookGain[intent.bookId] ?? 0) + 1
+        gained.push(view)
+        break
+      }
+      case 'scroll': {
+        // Страницы ячейку не тратят — проверять вместимость нечего.
+        scrollGain[intent.scrollId] = (scrollGain[intent.scrollId] ?? 0) + 1
+        gained.push({ category: 'scroll', id: intent.scrollId })
+        break
+      }
+      case 'potion': {
+        potionGain[intent.tier - 1] = (potionGain[intent.tier - 1] ?? 0) + 1
+        gained.push({ category: 'potion', tier: intent.tier })
+        break
+      }
+    }
+  }
+
+  // Прибавки собираются в ОДИН кусок data — это часть той же условной записи,
+  // что закрывает забег, а не отдельный update: иначе повтор финиша мог бы
+  // выдать добычу второй раз.
+  let stockData: Prisma.CharacterUpdateManyMutationInput = {}
+  for (const [id, count] of Object.entries(scrollGain) as [ScrollId, number][]) {
+    stockData = { ...stockData, ...scrollStockIncrement(id, count) }
+  }
+  for (const [id, count] of Object.entries(bookGain) as [SkillBookId, number][]) {
+    stockData = { ...stockData, ...consumableStockIncrement(id, count) }
+  }
+
+  return { gained, lost, itemIds, stockData, potionGain }
 }
 
 // --- Общее для финиша и обеих ручек Контрабандиста ---
@@ -284,9 +499,12 @@ type SipBody = { tier?: number }
 // or the server finding a stale one still open on the NEXT login (POST
 // /auth/login, see auth.ts) and closing it as a death. `interrupted`
 // distinguishes the two (false = client-reported finish, true = server
-// found it abandoned). `items`/`bonuses` are always empty for now — the
-// item-drop and boss "choose a stat" systems don't exist yet; the shape is
-// here so those can slot in later without another response-shape change.
+// found it abandoned).
+// ⚠️ Поля `items` здесь БОЛЬШЕ НЕТ (30.09.2026). Оно было заготовкой под дроп и
+// типом `never[]`, то есть не могло нести ничего; дроп приехал смешанный
+// (снаряжение + страницы + зелья + книги), и вместо мёртвой заготовки теперь
+// два честных поля — `drops` и `dropsLost`. `bonuses` осталось: система
+// «сердца босса» (выбор стата предметом) по-прежнему не начата.
 // strengthGained/enduranceGained/agilityGained/leveledUp — added for the
 // results-screen stat growth display (see /run/finish-explore); an
 // interrupted run (auth.ts) never calls applyStatGrowth, so it always
@@ -306,7 +524,18 @@ export type RunResultSummary = {
   trophiesLost: number
   eventsClosed: number
   eventsTotal: number
-  items: never[]
+  /**
+   * Добыча забега — что РЕАЛЬНО начислено этой же записью (см. resolveRunDrops).
+   * Пустой список — законный и частый исход: ни одно закрытое событие не
+   * прошло первый бросок.
+   */
+  drops: RunDrop[]
+  /**
+   * Что выпало, но пропало из-за полной сумки. Отдельным списком, а не флагом
+   * внутри drops: игрок должен увидеть ИМЕННО то, что потерял, — иначе правило
+   * «не влезло, значит пропало» выглядит как пропажа без причины.
+   */
+  dropsLost: RunDrop[]
   bonuses: never[]
   strengthGained: number
   enduranceGained: number
@@ -333,6 +562,12 @@ export type RunResultSummary = {
    * таблица копий клиент/сервер: у RunResultSummary сверяющего скрипта нет).
    */
   consumables: Record<string, number>
+  /**
+   * Склад СТРАНИЦ по id каталога после забега. Нужен по той же причине, что
+   * consumables рядом: выпавшая страница обязана появиться в сумке сразу, а не
+   * ждать следующего логина.
+   */
+  scrolls: Record<string, number>
 }
 
 export async function runRoutes(server: FastifyInstance) {
@@ -935,7 +1170,29 @@ export async function runRoutes(server: FastifyInstance) {
 
     // Никогда не в минус, даже если склад сдвинулся между стартом и финишем
     // (например, покупка посреди забега) — см. subtractPotionStock.
-    const newPotionStock = subtractPotionStock(potionStockOf(character), potionsSpent)
+    const spentPotionStock = subtractPotionStock(potionStockOf(character), potionsSpent)
+
+    // --- Добыча забега ---
+    //
+    // Два броска на каждое закрытое событие (runDrops.ts: выпало ли вообще —
+    // и что именно). Набор событий — ТОТ ЖЕ closedEvents, по которому выше
+    // посчитаны трофеи: два разных набора дали бы добычу с события, за которое
+    // трофеев не начислено.
+    //
+    // died в розыгрыш НЕ передаётся вовсе: добыча начисляется и при смерти
+    // (решение дизайнера — сгорают только трофеи, см. docs/items.md). Отсутствие
+    // параметра и есть гарантия, что смерть сюда не просочится.
+    //
+    // ⚠️ Бросок идёт ДО условной записи, и на 409 он пропадает вместе со всей
+    // записью: клиент повторит финиш, и кости будут брошены заново. Это верно —
+    // при 409 не записано НИЧЕГО, в том числе добыча.
+    const dropIntents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck)
+    const resolvedDrops = await resolveRunDrops(dropIntents, character, characterLevel, request.log)
+
+    // Выпавшие зелья складываются со складом ДО превращения в колонки, а не
+    // отдельным increment: potionStockToColumns пишет АБСОЛЮТНЫЕ значения, и
+    // increment на ту же колонку в том же data просто затёрся бы одним из двух.
+    const newPotionStock = spentPotionStock.map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
 
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
@@ -953,47 +1210,74 @@ export async function runRoutes(server: FastifyInstance) {
     // игрок убил приложение, не дождавшись "Сохраняем итоги...", и зашёл
     // заново. Без фильтра финиш писал бы поверх результата входа от своего,
     // уже устаревшего снимка статов и трофеев.
-    // Одна запись на весь обработчик: до неё нет ни записей в БД, ни ответа
-    // клиенту — только warn'ы, описывающие расчёт. Поэтому отказ здесь не
-    // может оставить забег закрытым наполовину.
-    const written = await prisma.character.updateMany({
-      where: {
-        userId,
-        currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
-        // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
-        // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
-        // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
-        ...(charmUsed ? { charms: { gte: 1 } } : {}),
-      },
-      data: {
-        // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
-        // зелья и закрытие забега — списание и закрытие происходят вместе либо
-        // не происходят вовсе.
-        ...(charmUsed ? { charms: { decrement: 1 } } : {}),
-        trophies: died ? 0 : newTrophies,
-        strength: growth.strength,
-        strengthProgress: growth.strengthProgress,
-        endurance: growth.endurance,
-        enduranceProgress: growth.enduranceProgress,
-        agility: growth.agility,
-        agilityProgress: growth.agilityProgress,
-        bonusLevels: newBonusLevels,
-        level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
-        // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
-        // не должна становиться способом сэкономить склад (та же логика, что у
-        // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
-        // разные колонки, один атомарный update.
-        ...potionStockToColumns(newPotionStock),
-        currentRun: Prisma.DbNull,
-      },
+    // До неё нет ни записей в БД, ни ответа клиенту — только warn'ы, описывающие
+    // расчёт. Поэтому отказ здесь не может оставить забег закрытым наполовину.
+    //
+    // ⚠️ ТРАНЗАКЦИЯ, а не одиночный updateMany, как было до 30.09.2026. Причина
+    // ровно одна и та же, что у POST /character/sell-item (второе и последнее
+    // место с транзакцией в server/src): записей стало ДВЕ — колонки персонажа
+    // и строки инвентаря под выпавшее снаряжение, — а порознь они дают либо
+    // предмет, выданный за незакрытый забег, либо закрытый забег без обещанной
+    // добычи. Везде, где записей одна, проект по-прежнему обходится условным
+    // updateMany: транзакция дороже и блокирует строки.
+    //
+    // Транзакция берётся ВСЕГДА, даже когда снаряжение не выпало и запись опять
+    // одна. Развилка «есть предмет — транзакция, нет — просто update» дала бы
+    // два пути закрытия забега, которые обязаны совпадать во всём остальном, и
+    // разъехались бы при первой же правке одного из них.
+    const written = await prisma.$transaction(async (tx) => {
+      const result = await tx.character.updateMany({
+        where: {
+          userId,
+          currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
+          // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
+          // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
+          // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
+          ...(charmUsed ? { charms: { gte: 1 } } : {}),
+        },
+        data: {
+          // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
+          // зелья и закрытие забега — списание и закрытие происходят вместе либо
+          // не происходят вовсе.
+          ...(charmUsed ? { charms: { decrement: 1 } } : {}),
+          trophies: died ? 0 : newTrophies,
+          strength: growth.strength,
+          strengthProgress: growth.strengthProgress,
+          endurance: growth.endurance,
+          enduranceProgress: growth.enduranceProgress,
+          agility: growth.agility,
+          agilityProgress: growth.agilityProgress,
+          bonusLevels: newBonusLevels,
+          level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
+          // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
+          // не должна становиться способом сэкономить склад (та же логика, что у
+          // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
+          // разные колонки, один атомарный update.
+          ...potionStockToColumns(newPotionStock),
+          // Выпавшие страницы и книги — increment'ами В ЭТОЙ ЖЕ записи. Поэтому
+          // повтор финиша не может выдать добычу дважды: второй запрос либо
+          // упрётся в пустой currentRun (400 выше), либо не найдёт строку по
+          // фильтру и получит 409, ничего не записав.
+          ...resolvedDrops.stockData,
+          currentRun: Prisma.DbNull,
+        },
+      })
+      // 0 строк — забег закрыли между чтением и записью. Возвращаемся ДО
+      // создания предметов: иначе снаряжение легло бы в сумку за забег, который
+      // закрыл кто-то другой.
+      if (result.count === 0) return 0
+      for (const itemId of resolvedDrops.itemIds) {
+        await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
+      }
+      return result.count
     })
-    if (written.count === 0) {
+    if (written === 0) {
       // Тот же код и текст, что у /run/sip и /run/progress: клиент уже умеет
       // повторять финиш на 409 теми же данными (api.ts, finishRunExplore).
       // Повтор безопасен именно потому, что здесь НИЧЕГО не записано.
       return reply.status(409).send({ error: 'Run state changed, retry' })
     }
-    if (written.count !== 1) {
+    if (written !== 1) {
       // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
       // фильтр по нему может дать только 0 или 1 строку. Если это всё же
       // случилось, откатить уже нечего: запись применена к нескольким
@@ -1001,27 +1285,33 @@ export async function runRoutes(server: FastifyInstance) {
       // проглотить такое нельзя, но и врать клиенту, что забег не сохранён,
       // тоже: его собственная строка записана верно.
       request.log.error(
-        { userId, count: written.count },
+        { userId, count: written },
         'finish-explore: conditional write matched an unexpected number of characters',
       )
     }
 
-    // Склад расходников после забега. Оберег НЕ сработал — склад не менялся, и
-    // снимок точен. Сработал — ПЕРЕЧИТЫВАЕМ из БД: фильтр гарантировал только
-    // «оберег был», но не «был ровно столько, сколько в снимке» (покупка со
-    // второго устройства между чтением и записью), а decrement считала база.
+    // Склад расходников и страниц после забега. Ничего из этих колонок не
+    // менялось (оберег не спасал, книг и страниц не выпало) — снимок точен.
+    // Менялось — ПЕРЕЧИТЫВАЕМ из БД: фильтр гарантировал только «оберег был», но
+    // не «был ровно столько, сколько в снимке» (покупка со второго устройства
+    // между чтением и записью), а decrement/increment считала база.
     let consumablesAfterFinish = consumableStockOf(character)
-    if (charmUsed) {
+    let scrollsAfterFinish = scrollStockOf(character)
+    const stockChanged = charmUsed || Object.keys(resolvedDrops.stockData).length > 0
+    if (stockChanged) {
       const reread = await prisma.character.findUnique({ where: { userId } })
       if (reread) {
         consumablesAfterFinish = consumableStockOf(reread)
+        scrollsAfterFinish = scrollStockOf(reread)
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
         // неточного числа: забег УЖЕ закрыт, и клиент потерял бы весь экран
         // итогов. Поэтому громкий лог и арифметика от снимка, а не тишина.
         request.log.error({ userId }, 'finish-explore: character vanished before consumable read-back')
-        consumablesAfterFinish = { ...consumablesAfterFinish, charm_death: Math.max(0, consumablesAfterFinish.charm_death - 1) }
+        if (charmUsed) {
+          consumablesAfterFinish = { ...consumablesAfterFinish, charm_death: Math.max(0, consumablesAfterFinish.charm_death - 1) }
+        }
       }
     }
 
@@ -1032,7 +1322,8 @@ export async function runRoutes(server: FastifyInstance) {
       trophiesLost,
       eventsClosed: closedEvents.length,
       eventsTotal: run.events.length,
-      items: [],
+      drops: resolvedDrops.gained,
+      dropsLost: resolvedDrops.lost,
       bonuses: [],
       strengthGained: growth.strength - character.strength,
       enduranceGained: growth.endurance - character.endurance,
@@ -1046,6 +1337,7 @@ export async function runRoutes(server: FastifyInstance) {
       potions: newPotionStock,
       bonusLevels: newBonusLevels,
       consumables: consumablesAfterFinish,
+      scrolls: scrollsAfterFinish,
     }
     return reply.send(result)
   })
@@ -1311,6 +1603,99 @@ export async function runRoutes(server: FastifyInstance) {
     return await sendSkillState(request, reply, userId)
   })
 
+  // --- СТРАНИЦЫ КНИГ: собрать книгу / продать страницу ---
+  //
+  // Третьего действия у страницы нет: в магазине страниц НЕТ и быть не должно
+  // (решение дизайнера — они только выпадают в забегах), а применять их к навыку
+  // напрямую нельзя, только через собранную книгу.
+  //
+  // Общее с четвёркой книг выше: запись УСЛОВНАЯ и сама себе проверка запаса,
+  // ответ перечитан из БД (sendSkillState), ключа идемпотентности нет — повтор
+  // потратит вторые страницы, поэтому клиент повторов не делает.
+
+  // Собрать книгу из SCROLLS_PER_BOOK страниц. Страницы уходят, книга ложится в
+  // сумку — то есть ячейку она ТРАТИТ, если книги этого вида ещё нет.
+  server.post<{ Body: { id?: string } }>('/character/assemble-book', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const scrollId = parseScrollId(request.body?.id)
+    if (scrollId === null) return reply.status(400).send({ error: 'Unknown scroll' })
+    const scroll = scrollById(scrollId)
+    // Книга страницы — СТРОКА из каталога страниц, а не импортированный
+    // SkillBookId: каталоги лежат в байт-в-байт копиях и друг друга не
+    // импортируют (см. шапку scrolls.ts). Поэтому проверка РАНТАЙМОВАЯ, и
+    // расхождение каталогов даёт громкий 500, а не молча собранную пустоту.
+    const bookId = scroll === null ? null : parseSkillBookId(scroll.bookId)
+    if (scroll === null || bookId === null) {
+      request.log.error({ scrollId, bookId: scroll?.bookId }, 'assemble-book: страница ссылается на книгу, которой нет в каталоге расходников')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Вместимость — ТО ЖЕ правило, что у добычи на финише: ячейка нужна только
+    // под ПЕРВУЮ книгу этого вида. Проверка до записи, а не фильтром: занятость
+    // сумки это COUNT по другой таблице, в Prisma-фильтр она не выражается (та
+    // же незакрытая гонка, что у дропа, и та же цена промаха — одна ячейка сверх
+    // тридцати, которую клиент показывает красным).
+    const stock = consumableStockOf(character)
+    if (stock[bookId] === 0) {
+      const equipmentCells = await prisma.inventoryItem.count({
+        where: { characterId: character.id, equipped: false },
+      })
+      const cellsUsed = equipmentCells + Object.values(stock).filter((n) => n > 0).length
+      if (cellsUsed >= BAG_CAPACITY) {
+        return reply.status(400).send({ error: 'Bag is full', capacity: BAG_CAPACITY })
+      }
+    }
+
+    // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
+    // «страниц хватает»: между проверкой и записью ничего не влезет.
+    const written = await prisma.character.updateMany({
+      where: { userId, ...scrollStockFilter(scrollId, SCROLLS_PER_BOOK) },
+      data: {
+        ...scrollStockDecrement(scrollId, SCROLLS_PER_BOOK),
+        ...consumableStockIncrement(bookId, 1),
+      },
+    })
+    if (written.count === 0) {
+      // Страниц не хватило (их могли потратить со второго устройства между
+      // чтением и записью). Персонаж точно существует — findUnique выше его
+      // нашёл, — так что различать «нет персонажа» здесь не нужно.
+      return reply.status(409).send({ error: 'State changed, retry' })
+    }
+
+    return await sendSkillState(request, reply, userId)
+  })
+
+  // Продать ОДНУ страницу за SCROLL_SELL_PRICE золота. Без подтверждения на
+  // клиенте — как у книги: страница не уникальна, их копятся десятки.
+  server.post<{ Body: { id?: string } }>('/character/sell-scroll', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const scrollId = parseScrollId(request.body?.id)
+    if (scrollId === null) return reply.status(400).send({ error: 'Unknown scroll' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const written = await prisma.character.updateMany({
+      where: { userId, ...scrollStockFilter(scrollId, 1) },
+      data: {
+        ...scrollStockDecrement(scrollId, 1),
+        // increment, а не вычисленное значение: иначе параллельная покупка
+        // затёрла бы золото прочитанным снимком.
+        gold: { increment: SCROLL_SELL_PRICE },
+      },
+    })
+    if (written.count === 0) return reply.status(409).send({ error: 'State changed, retry' })
+
+    return await sendSkillState(request, reply, userId)
+  })
+
   // Покупка ОДНОГО зелья указанного тира. Цена и уровень открытия берутся из
   // каталога (src/potions.ts, копия server/src/potions.ts), НЕ из тела запроса:
   // клиент называет только тир. Раньше эндпоинт параметров не принимал вовсе и
@@ -1565,6 +1950,11 @@ export async function runRoutes(server: FastifyInstance) {
       // каталогом, а у расходников порядка нет вовсе, и позиционный массив
       // молча съехал бы при добавлении второго вида.
       consumables: consumableStockOf(character),
+      // Запас страниц — той же формы и по той же причине, что расходники выше.
+      // Отдельным полем, а не внутри consumables: страницы ячейку сумки НЕ
+      // тратят, и свалить их в один объект значило бы заставить клиента
+      // различать «что тратит ячейку» по id, а не по источнику данных.
+      scrolls: scrollStockOf(character),
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не

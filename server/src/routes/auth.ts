@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, skillLevelsOf, upgradesOf } from '../runState.js'
+import { consumableStockOf, scrollStockOf, skillLevelsOf, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -274,7 +274,13 @@ export async function authRoutes(server: FastifyInstance) {
         trophiesLost,
         eventsClosed: 0, // сервер не знает прогресс брошенного забега — осознанно всегда 0
         eventsTotal,
-        items: [],
+        // Добычи у забега, закрытого входом, НЕ БЫВАЕТ. Это не заглушка «пока
+        // не реализовано», как было у прежнего items, а правило: дроп
+        // разыгрывается по списку ЗАКРЫТЫХ событий, который приходит только с
+        // финишем. Сервер о прогрессе брошенного забега не знает ничего (см.
+        // eventsClosed: 0 строкой выше) — значит, и начислять не за что.
+        drops: [],
+        dropsLost: [],
         bonuses: [],
         // Настоящие приросты за брошенный забег — из последнего среза
         // (см. applyStatGrowth выше). Нулями они остаются только тогда, когда
@@ -304,6 +310,11 @@ export async function authRoutes(server: FastifyInstance) {
         // бы наказывать дважды (трофеи и так сгорели). Точильный камень тут
         // тоже не при чём: он списан ещё на старте.
         consumables: consumableStockOf(char),
+        // Склад страниц — тоже без изменений, и по более простой причине: дроп
+        // считается ТОЛЬКО на финише, по списку закрытых событий, а у забега,
+        // закрытого входом, этого списка нет вовсе (сервер не знает, что игрок
+        // успел пройти). Добычи такой забег не даёт — см. drops/dropsLost выше.
+        scrolls: scrollStockOf(char),
         }
       }
     }
@@ -343,6 +354,9 @@ export async function authRoutes(server: FastifyInstance) {
         // (объект по id каталога). Внутри character, а не верхним уровнем: это
         // именно склад персонажа, в отличие от trophyGoldRate ниже.
         consumables: consumableStockOf(char),
+        // Запас страниц — той же формы и по той же причине, что расходники
+        // выше. Отдельным полем: страницы ячейку сумки НЕ тратят.
+        scrolls: scrollStockOf(char),
         // Уровни навыков — объектом по id навыка, той же формы, что в
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).

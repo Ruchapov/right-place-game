@@ -21,6 +21,7 @@ import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
 import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
+import type { ScrollId } from './scrolls.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -505,6 +506,49 @@ export function consumableStockOf(character: ConsumableColumns): Record<Consumab
     book_bleed: character.bookBleed,
     book_heal: character.bookHeal,
     book_dash: character.bookDash,
+  }
+}
+
+// --- Страницы книг: колонки Character <-> объект по id каталога ---
+//
+// Рядом с раскладкой расходников и по тем же причинам: имена колонок клиенту не
+// нужны, а форма ответа — объект по id, не позиционный массив (порядка у
+// страниц нет, и массив молча съехал бы при добавлении шестой).
+//
+// Новая страница = новая колонка в схеме + миграция + строка здесь + вариант в
+// SCROLL_IDS (scrolls.ts). Забыть последнее нельзя: switch в
+// scrollStockIncrement/scrollStockFilter (routes/run.ts) не скомпилируется без
+// нового варианта. Забыть строку ЗДЕСЬ тоже нельзя, но цена ошибки другая — не
+// сборка, а экран: Record<ScrollId, number> без ключа не скомпилируется на
+// сервере, зато неполный объект, дошедший до клиента, readScrolls целиком
+// превратит в null, то есть «запас неизвестен» у ВСЕХ страниц сразу.
+export type ScrollColumns = {
+  scrollFire: number
+  scrollIce: number
+  scrollBleed: number
+  scrollHeal: number
+  scrollDash: number
+}
+
+/**
+ * Запас страниц объектом по id каталога — форма ответов клиенту (логин,
+ * профиль, обе ручки страниц, финиш забега).
+ *
+ * ⚠️ Отдавать НУЖНО ВСЕ id каталога: клиентский readScrolls (src/api.ts)
+ * требует их все и на неполном объекте возвращает null. Та же дисциплина, что у
+ * consumableStockOf и skillLevelsOf рядом.
+ *
+ * Перечислением, а не циклом по каталогу: ровно как consumableStockOf и
+ * skillLevelsOf ниже — тип Record<ScrollId, number> не соберётся, если забыть
+ * строку, а цикл по SCROLLS потребовал бы второй карты id→колонка.
+ */
+export function scrollStockOf(character: ScrollColumns): Record<ScrollId, number> {
+  return {
+    scroll_fire: character.scrollFire,
+    scroll_ice: character.scrollIce,
+    scroll_bleed: character.scrollBleed,
+    scroll_heal: character.scrollHeal,
+    scroll_dash: character.scrollDash,
   }
 }
 

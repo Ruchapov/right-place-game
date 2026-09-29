@@ -4,6 +4,8 @@
 Пары (источник → копия):
     src/potions.ts      → server/src/potions.ts
     src/consumables.ts  → server/src/consumables.ts
+    src/upgrades.ts     → server/src/upgrades.ts
+    src/scrolls.ts      → server/src/scrolls.ts
 
 Общего пакета в проекте нет (tsconfig.app.json включает только "src", у
 сервера rootDir "./src"), поэтому каталоги живут байт-в-байт копиями.
@@ -39,6 +41,7 @@ PAIRS = [
     ("каталог зелий", Path("src/potions.ts"), Path("server/src/potions.ts")),
     ("каталог расходников", Path("src/consumables.ts"), Path("server/src/consumables.ts")),
     ("каталог улучшений", Path("src/upgrades.ts"), Path("server/src/upgrades.ts")),
+    ("каталог страниц", Path("src/scrolls.ts"), Path("server/src/scrolls.ts")),
 ]
 
 
