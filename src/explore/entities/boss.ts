@@ -1,11 +1,10 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics, Sprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
-import type { Grid, PlayerPhysics, Boss, BossSpike, BossWave, BossAnimKind, RewardKind } from '../types'
+import type { Grid, PlayerPhysics, Boss, BossSpike, BossWave, BossAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } from '../collision'
 import { clamp } from '../utils'
-import { rollTrophies } from '../rewards'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 
 // HP-бар босса — тот же приём, что у зверя (redrawEnemyHpBar, см.
@@ -43,12 +42,10 @@ export type BossDeps = {
   ) => void
   playBossAnim: (kind: BossAnimKind) => void
   applyBossLayout: (boss: Boss) => void
-  spawnRewardFloat: (
-    worldX: number,
-    worldY: number,
-    rewards: { kind: RewardKind; amount: number; negative?: boolean }[],
-  ) => void
-  closeEvent: (index: number) => void
+  // Награду всплывает сам closeEvent по СЕРВЕРНОМУ числу события (см.
+  // MapEvent.trophyReward) — поэтому spawnRewardFloat здесь больше не нужен, а
+  // closeEvent берёт координаты: попап должен появиться над телом босса.
+  closeEvent: (index: number, worldX?: number, worldY?: number) => void
   // ОБЁРТКА над takeDamageRef, а не takeDamage напрямую — см. EnemyDeps в
   // enemy.ts, та же причина (deps собираются один раз при создании системы,
   // takeDamageRef синхронизируется отдельным useEffect'ом на каждый рендер).
@@ -692,11 +689,12 @@ export function createBossSystem(deps: BossDeps) {
         const deathDone = boss.sprite.currentFrame >= deathFrames.length - 1 || !boss.sprite.playing
         if (deathDone && !boss.rewardGiven) {
           boss.rewardGiven = true
-          const amount = rollTrophies(C.TROPHY_MULT_BOSS, deps.characterLevel.current)
-          deps.spawnRewardFloat(boss.sprite.x, boss.sprite.y - boss.sprite.height, [
-            { kind: 'trophy', amount },
-          ])
-          if (deps.bossEventIndex.current !== null) deps.closeEvent(deps.bossEventIndex.current)
+          // Трофеи и добыча всплывают внутри closeEvent, по числам сервера.
+          // rewardGiven по-прежнему дедупит: туша висит на последнем кадре и
+          // без флага закрывала бы событие каждый тик.
+          if (deps.bossEventIndex.current !== null) {
+            deps.closeEvent(deps.bossEventIndex.current, boss.sprite.x, boss.sprite.y - boss.sprite.height)
+          }
         }
       }
     }

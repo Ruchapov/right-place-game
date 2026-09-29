@@ -46,7 +46,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, type ConsumableId } from './consumables'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
@@ -425,6 +425,60 @@ function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string |
         iconSrc: spec === undefined ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
       }
     }
+  }
+}
+
+/**
+ * Ключ и путь к иконке выпавшего предмета.
+ *
+ * Отдельно от dropView выше: тому нужны ещё и НАЗВАНИЕ (экран итогов его
+ * печатает), а всплывашке в бою — только картинка. Ключ нужен, чтобы не грузить
+ * одну и ту же текстуру дважды, если за забег выпало две одинаковые вещи.
+ */
+/**
+ * Награда события для ОФЛАЙН-ЗАГЛУШКИ (вне Telegram, забег без сервера).
+ *
+ * ⚠️ ЭТО ЕДИНСТВЕННОЕ место, где трофеи ещё бросает клиент. В настоящей сессии
+ * их называет сервер (MapEvent.trophyReward), и совпадать эти два числа не
+ * обязаны — заглушка ничего никуда не отправляет (финиш без токена на сервер не
+ * уходит вовсе), а поверх игры висит оранжевая плашка «ЗАГЛУШКА».
+ *
+ * Добыча здесь тоже ТЕСТОВАЯ и нарочно РАЗНАЯ по категориям: без неё в браузере
+ * нельзя было бы увидеть ни всплывашку с иконкой, ни блок «ДОБЫЧА» на экране
+ * итогов. Вещи подобраны так, чтобы прогнать все четыре формы иконки —
+ * вытянутую страницу, зелье, книгу и снаряжение, у которого путь собирается из
+ * слота и тира.
+ *
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
+ */
+const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop | null> = {
+  enemy: { category: 'scroll', id: 'scroll_fire' },
+  chest: { category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 },
+  obelisk: { category: 'potion', tier: 1 },
+  boss: { category: 'book', id: 'book_ice' },
+  // У Контрабандиста и загадки добычи не бывает и на сервере.
+  smuggler: null,
+  puzzle: null,
+}
+
+function devEventReward(kind: EventKind): { trophies: number | null; drop: RunDrop | null } {
+  const mult = kind === 'enemy' ? C.TROPHY_MULT_ENEMY
+    : kind === 'chest' ? C.TROPHY_MULT_CHEST
+      : kind === 'obelisk' ? C.TROPHY_MULT_OBELISK
+        : kind === 'boss' ? C.TROPHY_MULT_BOSS
+          : 0
+  return {
+    trophies: mult === 0 ? 0 : rollTrophies(mult, C.PLAYER_LEVEL_FALLBACK),
+    drop: TEMP_DEV_EVENT_DROPS[kind],
+  }
+}
+
+function dropIconKey(drop: RunDrop): string {
+  switch (drop.category) {
+    case 'equipment': return `equipment:${drop.slot}:${drop.tier}`
+    case 'potion': return `potion:${drop.tier}`
+    case 'scroll': return `scroll:${drop.id}`
+    case 'book': return `book:${drop.id}`
   }
 }
 
@@ -1234,9 +1288,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Уровень персонажа — тем же способом, что maxHp ниже: прямой проп из
   // App.tsx (player.level, тот же источник, что endurance/strength), с
   // откатом на PLAYER_LEVEL_FALLBACK, если профиль ещё не загрузился.
-  // Ref — по образцу attackDamageRef ниже, читается из ticker'а: и
-  // масштабированием врагов/босса по уровню (enemy.ts/boss.ts), и всеми
-  // вызовами rollTrophies() (враг/обелиск/сундук здесь, босс в boss.ts).
+  // Ref — по образцу attackDamageRef ниже, читается из ticker'а
+  // масштабированием врагов и босса по уровню (enemy.ts/boss.ts).
+  // ⚠️ Трофеи он БОЛЬШЕ НЕ считает: с 30.09.2026 их называет сервер (см.
+  // MapEvent.trophyReward), и rollTrophies остался только в офлайн-заглушке
+  // devEventReward выше, где уровня персонажа нет вовсе.
   const characterLevel = level ?? C.PLAYER_LEVEL_FALLBACK
   const characterLevelRef = useRef(characterLevel)
 
@@ -2319,6 +2375,40 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
+      // Награда КАЖДОГО события, разобранная один раз здесь: и серверный путь, и
+      // офлайн-заглушка дают дальше одну и ту же форму, поэтому закрытие события
+      // не знает, откуда взялись числа.
+      const eventRewards = chosenEvents.map((ev) =>
+        startExploreResult
+          ? readEventReward(ev)
+          // Офлайн-заглушка (вне Telegram): сервера нет, и показать нечего —
+          // поэтому здесь ЖИВЁТ клиентский бросок, тот самый, что убран из
+          // настоящей сессии. Числа его никуда не уходят (финиш в этом режиме на
+          // сервер не идёт вовсе), и оранжевая плашка «ЗАГЛУШКА» уже говорит
+          // игроку, что забег ненастоящий.
+          : devEventReward(ev.kind),
+      )
+
+      // Иконки выпавшего — ЗАРАНЕЕ, здесь, а не в момент закрытия события:
+      // Assets.load асинхронен, и подгрузка в кадре смерти врага дала бы либо
+      // пропуск всплывашки, либо просадку ровно в бою (см. CLAUDE.md, задача про
+      // догрузку текстур). Их максимум три на забег.
+      // try/catch на КАЖДОЙ иконке: 404 одной не должен обрывать setup() — забег
+      // важнее картинки, и без текстуры строка добычи просто не нарисуется.
+      const dropIconTextures = new Map<string, Texture>()
+      for (const reward of eventRewards) {
+        if (reward.drop === null) continue
+        const key = dropIconKey(reward.drop)
+        if (dropIconTextures.has(key)) continue
+        const src = dropView(reward.drop).iconSrc
+        if (src === null) continue
+        try {
+          dropIconTextures.set(key, await Assets.load(src))
+        } catch (e) {
+          console.error('Explore: не загрузилась иконка добычи', src, e)
+        }
+      }
+
       const startRaw = slots?.start
       if (
         !Array.isArray(startRaw) ||
@@ -2520,7 +2610,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
         playSpriteAnim,
         findGroundSurfaceY,
-        spawnRewardFloat,
         closeEvent,
         // Обёртка над takeDamageRef, НЕ takeDamage напрямую — deps
         // собираются один раз здесь, а takeDamageRef синхронизируется
@@ -2618,12 +2707,39 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // Контрабандиста: удача там зелёная (успех), а не бронзовая «цвет трофея»,
       // потому что важен ИСХОД, а не тип валюты. Не задан — прежнее правило
       // (negative → красный, иначе REWARD_TEXT_COLOR по типу).
+      // Одна строка всплывашки. Две формы:
+      //   {kind, amount} — число с иконкой валюты, как было;
+      //   {kind:'drop'}  — ТОЛЬКО иконка выпавшего предмета, без числа и без
+      //                    названия (решение дизайнера). Название игрок увидит
+      //                    на экране итогов; над трупом оно было бы длинной
+      //                    надписью поверх боя.
+      type RewardFloatRow =
+        | { kind: RewardKind; amount: number; negative?: boolean; color?: number }
+        | { kind: 'drop'; texture: Texture }
+
       function spawnRewardFloat(
         worldX: number,
         worldY: number,
-        rewards: { kind: RewardKind; amount: number; negative?: boolean; color?: number }[]
+        rewards: RewardFloatRow[]
       ) {
         rewards.forEach((reward, i) => {
+          // Строка добычи: один спрайт, центрированный по worldX. Высота —
+          // та же REWARD_ICON_H, что у иконок валют, поэтому ряды стоят
+          // ровно, а REWARD_ROW_GAP (28 против 24) держит зазор и не даёт им
+          // наложиться.
+          if (reward.kind === 'drop') {
+            const dropIcon = new Sprite(reward.texture)
+            dropIcon.anchor.set(0.5, 0.5)
+            dropIcon.scale.set(C.REWARD_ICON_H / reward.texture.height)
+            const dropNode = new Container()
+            dropNode.x = worldX
+            dropNode.y = worldY - i * C.REWARD_ROW_GAP
+            dropNode.alpha = 0
+            dropNode.addChild(dropIcon)
+            worldContainer.addChild(dropNode)
+            rewardFloatsRef.current.push({ node: dropNode, elapsed: 0, startY: dropNode.y })
+            return
+          }
           // Клиентская оценка трофейного итога забега (см. trophiesEarnedRef/
           // buildClientResult выше) — суммируем то же число, что игрок видит
           // в этом попапе. Смуглер тоже сюда попадает (его gain/steal уже
@@ -2877,7 +2993,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
         playBossAnim,
         applyBossLayout,
-        spawnRewardFloat,
         closeEvent,
         takeDamage: (amount: number) => takeDamageRef.current(amount),
         dodgeIframe: dodgeIframeRef,
@@ -2896,24 +3011,19 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       })
 
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
+        const reward = eventRewards[eventIndex]
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
           if (points.length === 0) {
             console.error('Explore: enemy-событие без валидных точек кластера — нечего убивать', ev)
-            return { ...ev, closed: true, remainingEnemies: 0 }
+            return { ...ev, closed: true, remainingEnemies: 0, trophyReward: reward.trophies, drop: reward.drop }
           }
-          // Трофеи кластера разыгрываются ОДИН РАЗ на весь кластер (не на
-          // каждого врага отдельно — иначе random дал бы разные числа и
-          // сумма по группе поплыла бы). Каждому, кроме последнего, — ровная
-          // доля (Math.floor); последний добирает остаток, чтобы сумма долей
-          // всегда точно равнялась total.
-          const trophyTotal = rollTrophies(C.TROPHY_MULT_ENEMY, characterLevelRef.current)
-          const trophyShare = Math.floor(trophyTotal / points.length)
-          points.forEach(([ex, ey], i) => {
-            const trophyReward = i === points.length - 1 ? trophyTotal - trophyShare * (points.length - 1) : trophyShare
-            enemySystem!.spawn(ex, ey, eventIndex, trophyReward)
-          })
-          return { ...ev, closed: false, remainingEnemies: points.length }
+          // Долей трофеев у врагов БОЛЬШЕ НЕТ: число на всё событие называет
+          // сервер, и всплывает оно один раз — когда падает последний враг
+          // группы (см. closeEvent). Делить серверное число было бы нечем:
+          // сервер не знает состав кластера.
+          points.forEach(([ex, ey]) => enemySystem!.spawn(ex, ey, eventIndex))
+          return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drop: reward.drop }
         }
 
         const marker = new Graphics()
@@ -3010,7 +3120,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           bossEventIndexRef.current = eventIndex
         }
 
-        return { ...ev, marker, closed: false }
+        return { ...ev, marker, closed: false, trophyReward: reward.trophies, drop: reward.drop }
       })
 
       // Босс карты C (см. type Boss/explore/entities/boss.ts) — спавн НЕ
@@ -3401,10 +3511,35 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // убийство кластера — enemy): красит HUD-иконку и проверяет "все 3
       // закрыты?" -> onRunComplete. Вызывается из touch-цикла ниже И из
       // enemy-цикла, когда remainingEnemies кластера доходит до 0.
-      function closeEvent(index: number) {
+      // Закрытие события — ЕДИНСТВЕННОЕ место, где всплывает его награда
+      // (30.09.2026). Раньше каждый источник рисовал свою: враг — долю
+      // клиентского броска, сундук/обелиск/босс — свой rollTrophies. Числа эти
+      // с начисленными не сходились (сервер бросал свои), и в момент закрытия
+      // их было столько же, сколько источников. Теперь число одно, серверное, и
+      // всплывает ровно один раз.
+      //
+      // worldX/worldY не заданы — попапа нет вовсе: так закрывается
+      // Контрабандист (у него своя всплывашка с итогом сделки) и события,
+      // закрытые касанием, у которых награды нет по построению.
+      function closeEvent(index: number, worldX?: number, worldY?: number) {
         const ev = eventsRef.current[index]
         if (!ev || ev.closed) return
         ev.closed = true
+        if (worldX !== undefined && worldY !== undefined) {
+          const rows: RewardFloatRow[] = []
+          // null — сервер числа не назвал (старый сервер): молчим, а не печатаем
+          // ноль. Ноль же законен (так выглядит мимик) и значит «трофеев нет» —
+          // пустая надпись «+0» над трупом не нужна и там.
+          if (ev.trophyReward !== null && ev.trophyReward > 0) {
+            rows.push({ kind: 'trophy', amount: ev.trophyReward })
+          }
+          // Иконка идёт ВТОРОЙ строкой (i=1, то есть выше трофеев): так решил
+          // дизайнер. Текстуры нет — иконку не загрузили (404 или старый
+          // сервер); строку пропускаем, начисление от этого не зависит.
+          const dropTexture = ev.drop === null ? undefined : dropIconTextures.get(dropIconKey(ev.drop))
+          if (dropTexture !== undefined) rows.push({ kind: 'drop', texture: dropTexture })
+          if (rows.length > 0) spawnRewardFloat(worldX, worldY, rows)
+        }
         setEventClosed((prev) => {
           const next = [...prev]
           next[index] = true
@@ -3923,13 +4058,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               obelisk.burning = false
               playSpriteAnim(obelisk.sprite, obeliskIdleFrames, C.OBELISK_ANIM_SPEED, true)
             }
+            // Награду всплывает сам closeEvent, числами сервера. Координаты —
+            // последний зажжённый обелиск; его нет (теоретически) — попапа не
+            // будет, но событие всё равно закроется.
             const last = obeliskLastStruckRef.current
-            if (last) {
-              spawnRewardFloat(last.sprite.x, last.sprite.y - last.sprite.height, [
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_OBELISK, characterLevelRef.current) },
-              ])
+            if (obeliskEventIndexRef.current !== null) {
+              closeEvent(
+                obeliskEventIndexRef.current,
+                last ? last.sprite.x : undefined,
+                last ? last.sprite.y - last.sprite.height : undefined,
+              )
             }
-            if (obeliskEventIndexRef.current !== null) closeEvent(obeliskEventIndexRef.current)
           } else if (obeliskTimerRef.current <= 0) {
             obeliskEventActiveRef.current = false
             setObeliskHud(null)
@@ -4389,15 +4528,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             chest.sprite.gotoAndStop(activeFrames.length - 1) // держим последний кадр (открыт/гарь)
             applyChestLayout(chest)
             chest.sprite.visible = true
-            closeEvent(chest.eventIndex)
-            // Награда — ТОЛЬКО добрый исход, трофеями по общей формуле (см.
-            // задачу): реальное начисление player.trophies живёт на сервере,
-            // здесь только попап.
-            if (!chest.isMimic) {
-              spawnRewardFloat(chest.sprite.x, chest.sprite.y - chest.sprite.height, [
-                { kind: 'trophy', amount: rollTrophies(C.TROPHY_MULT_CHEST, characterLevelRef.current) },
-              ])
-            }
+            // Награду всплывает сам closeEvent, числами сервера. Прежней
+            // ветки `if (!chest.isMimic)` здесь НЕТ и быть не должно: мимика
+            // решает СЕРВЕР, и у его сундука trophyReward равен нулю, то есть
+            // строка трофеев не появится сама собой. Клиентский `chest.isMimic`
+            // (свой бросок, см. CHEST_MIMIC_CHANCE) остался решать только
+            // ВИДИМУЮ сторону — какие кадры играть и бьёт ли ловушка.
+            closeEvent(chest.eventIndex, chest.sprite.x, chest.sprite.y - chest.sprite.height)
           }
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }

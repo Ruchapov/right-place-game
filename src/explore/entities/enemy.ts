@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
-import type { Grid, PlayerPhysics, Enemy, MapEvent, RewardKind } from '../types'
+import type { Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp } from '../utils'
@@ -41,12 +41,11 @@ export type EnemyDeps = {
   ) => void
   playSpriteAnim: (sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
-  spawnRewardFloat: (
-    worldX: number,
-    worldY: number,
-    rewards: { kind: RewardKind; amount: number; negative?: boolean }[],
-  ) => void
-  closeEvent: (index: number) => void
+  // Награду всплывает сам closeEvent — по серверному числу события и один раз
+  // на всё событие, а не по врагу (см. MapEvent.trophyReward). Поэтому
+  // spawnRewardFloat системе врагов больше НЕ нужен, зато closeEvent берёт
+  // координаты: попап должен появиться там, где упал последний враг группы.
+  closeEvent: (index: number, worldX?: number, worldY?: number) => void
   // ОБЁРТКА над takeDamageRef, а не takeDamage напрямую: deps собираются
   // ОДИН раз при создании системы в setup(), а takeDamageRef синхронизируется
   // отдельным useEffect'ом на каждый рендер именно затем, чтобы тикер всегда
@@ -84,7 +83,7 @@ export function createEnemySystem(deps: EnemyDeps) {
   // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
   // (для декремента remainingEnemies при смерти). Ставит ногами на пол
   // клетки, как игрока.
-  function spawn(tileX: number, tileY: number, eventIndex: number, trophyReward: number): void {
+  function spawn(tileX: number, tileY: number, eventIndex: number): void {
     const enemyWorldX = tileX * C.TILE_SIZE + C.TILE_SIZE / 2 - C.ENEMY_WIDTH / 2
     const enemyWorldY = (tileY + 1) * C.TILE_SIZE - C.ENEMY_HEIGHT
 
@@ -172,7 +171,6 @@ export function createEnemySystem(deps: EnemyDeps) {
       stunTimer: 0,
       dead: false,
       deathHoldTimer: 0,
-      trophyReward,
       attackDamage: scaledAttackDamage,
       hpBarBg,
       hpBarFill,
@@ -234,15 +232,13 @@ export function createEnemySystem(deps: EnemyDeps) {
         if (deathDone) {
           enemy.deathHoldTimer += deltaMS
           if (enemy.deathHoldTimer >= C.DEATH_HOLD_MS) {
-            // Трофеи за убийство (см. задачу) — доля этого врага уже
-            // разыграна при спавне кластера (enemy.trophyReward). 0 —
-            // не вызываем spawnRewardFloat, чтобы не всплывала пустая
-            // надпись "+0" (см. задачу, п.4).
-            if (enemy.trophyReward > 0) {
-              deps.spawnRewardFloat(enemy.sprite.x, enemy.sprite.y - enemy.sprite.height, [
-                { kind: 'trophy', amount: enemy.trophyReward },
-              ])
-            }
+            // Награда НЕ здесь: она всплывает один раз на всё событие, когда
+            // падает ПОСЛЕДНИЙ враг группы, — этим занимается closeEvent ниже,
+            // и координаты ему даёт этот же труп. Прежняя всплывашка на каждом
+            // враге показывала клиентскую долю клиентского же броска и с
+            // начисленным сервером не сходилась.
+            const deathX = enemy.sprite.x
+            const deathY = enemy.sprite.y - enemy.sprite.height
             deps.worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
             enemy.rect.destroy()
             enemy.sprite.destroy()
@@ -253,7 +249,7 @@ export function createEnemySystem(deps: EnemyDeps) {
             const ownerEvent = deps.events.current[enemy.eventIndex]
             if (ownerEvent) {
               ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
-              if (ownerEvent.remainingEnemies <= 0) deps.closeEvent(enemy.eventIndex)
+              if (ownerEvent.remainingEnemies <= 0) deps.closeEvent(enemy.eventIndex, deathX, deathY)
             }
           }
         }

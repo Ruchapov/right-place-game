@@ -1,4 +1,5 @@
 import type { Graphics, AnimatedSprite, Container, Sprite } from 'pixi.js'
+import type { RunDrop } from '../api'
 
 export type Grid = string[][]
 
@@ -115,10 +116,12 @@ export type Enemy = {
   // затем удаляется/декрементирует remainingEnemies события, как раньше.
   dead: boolean
   deathHoldTimer: number
-  // Доля трофеев этого врага из суммы кластера (см. задачу) — разыграна
-  // ОДИН раз при спавне всего кластера (rollTrophies), не при смерти
-  // каждого врага отдельно, иначе сумма по группе не сходилась бы с total.
-  trophyReward: number
+  // ⚠️ Поля trophyReward здесь БОЛЬШЕ НЕТ (30.09.2026). Раньше сумма кластера
+  // разыгрывалась клиентом при спавне и делилась между врагами, чтобы каждый
+  // всплывал своей долей. Теперь трофеи называет СЕРВЕР и НА ВСЁ СОБЫТИЕ сразу
+  // (MapEvent.trophyReward), а всплывают они ОДИН раз — когда падает последний
+  // враг группы и событие закрывается. Делить серверное число на доли было бы
+  // нечем: сервер не знает, сколько врагов в кластере убил игрок.
   // Урон удара этого врага — посчитан ОДИН раз при спавне по формуле
   // масштабирования (см. scaling.ts/ENEMY_DAMAGE_PER_LEVEL), не константа
   // C.ENEMY_ATTACK_DAMAGE напрямую и не пересчитывается на лету (см. задачу
@@ -351,4 +354,18 @@ export type BossWave = {
 // прямоугольники); для остальных типов (пока заглушки) — как раньше, кружок
 // + закрытие касанием. remainingEnemies — только для kind='enemy': сколько
 // врагов кластера ещё живы; событие закрывается, когда доходит до 0.
-export type MapEvent = EventCandidate & { marker?: Graphics; closed: boolean; remainingEnemies?: number }
+// Награда события — СЕРВЕРНАЯ, приезжает в ответе /run/start-explore и всплывает
+// в момент закрытия события (см. closeEvent в Explore.tsx).
+//   trophyReward: number — столько трофеев начислит финиш;
+//   trophyReward: null   — сервер числа не назвал (старый сервер): всплывашки
+//                          трофеев НЕ будет вовсе. Ноль это НЕ то же самое —
+//                          ноль законен (так выглядит мимик) и значит «трофеев
+//                          нет», а null значит «неизвестно».
+//   drop                 — что выпадет, или null: бросок был, не выпало ничего.
+export type MapEvent = EventCandidate & {
+  marker?: Graphics
+  closed: boolean
+  remainingEnemies?: number
+  trophyReward: number | null
+  drop: RunDrop | null
+}

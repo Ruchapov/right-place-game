@@ -285,11 +285,31 @@ export type StartExploreEvent = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /**
+   * Сколько трофеев даст это событие. Разыграно СЕРВЕРОМ на старте — именно это
+   * число всплывает в момент закрытия события и именно оно начислится на финише.
+   *
+   * ОПЦИОНАЛЬНОЕ намеренно: старый сервер поля не присылает, и объявить его
+   * `number` значило бы получить `undefined`, типизированный как число, и
+   * напечатать «+undefined» над трупом врага. Разбирать ТОЛЬКО через
+   * readStartEvents ниже.
+   */
+  trophyReward?: number
+  /**
+   * Что выпадет с этого события. null — бросок был, не выпало ничего (самый
+   * частый исход). Поля нет — старый сервер. Разбирать ТОЛЬКО через
+   * readStartEvents: вид у него тот же RunDrop, что на экране итогов, и
+   * доверять ему как есть нельзя.
+   */
+  drop?: RunDrop | null
 }
 
-// Response shape of POST /run/start-explore (server/src/routes/run.ts) —
-// rewards (trophyReward/isMimic) are intentionally NOT part of this: the
-// server keeps them out of the response, see the endpoint's own comment.
+// Response shape of POST /run/start-explore (server/src/routes/run.ts).
+// ⚠️ С 30.09.2026 награды ОТДАЮТСЯ (trophyReward + drop у каждого события) —
+// прежнее решение «сервер держит их у себя» отменено: всплывашка в бою должна
+// показывать то же число, что потом начислится. isMimic по-прежнему не
+// отдаётся, хотя по trophyReward мимик и вычисляется (у него ровно 0) — эта
+// утечка принята дизайнером, см. комментарий в самом эндпоинте.
 export type StartExploreResult = {
   energy: number
   mapFile: string
@@ -1228,6 +1248,29 @@ export function readRunDrops(raw: unknown): RunDrop[] {
     }
   }
   return out
+}
+
+/**
+ * Награда ОДНОГО события из ответа старта: сколько трофеев и что выпало.
+ *
+ * Отдельно от readRunDrops потому, что здесь другой контракт на «нет данных».
+ * Старый сервер не присылает ни того, ни другого, и оба случая должны быть
+ * различимы в забеге: `trophies: null` значит «сервер числа не назвал» — тогда
+ * всплывашка трофеев не показывается ВОВСЕ, а не печатает ноль над трупом.
+ * Ноль же — законное число (так выглядит мимик) и значит «трофеев нет».
+ *
+ * Мусор в `trophyReward` (строка, дробное, отрицательное) — тоже null: печатать
+ * «+NaN» игроку нельзя, а догадываться, что имелось в виду, не из чего.
+ */
+export function readEventReward(raw: unknown): { trophies: number | null; drop: RunDrop | null } {
+  if (typeof raw !== 'object' || raw === null) return { trophies: null, drop: null }
+  const e = raw as Record<string, unknown>
+  const t = e.trophyReward
+  const trophies = typeof t === 'number' && Number.isInteger(t) && t >= 0 ? t : null
+  // Одиночную добычу разбираем тем же валидатором, что список на экране итогов —
+  // завернув в массив: второй разбор той же формы разошёлся бы с первым.
+  const drop = readRunDrops(e.drop === undefined || e.drop === null ? [] : [e.drop])[0] ?? null
+  return { trophies, drop }
 }
 
 /**
