@@ -73,6 +73,23 @@ model Character {
   bookBleed           Int      @default(0)
   bookHeal            Int      @default(0)
   bookDash            Int      @default(0)
+  // Страницы книг — по колонке на страницу, пять на пять навыков (каталог
+  // src/scrolls.ts / server/src/scrolls.ts, id scroll_*). Три страницы
+  // складываются в книгу (POST /character/assemble-book), одна продаётся за
+  // SCROLL_SELL_PRICE (POST /character/sell-scroll).
+  // ⚠️ В МАГАЗИНЕ СТРАНИЦ НЕТ — решение дизайнера: они только выпадают в
+  // забегах (POST /run/finish-explore), поэтому колонки растут ТОЛЬКО дропом.
+  // Ячейку сумки страница НЕ тратит (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»): их
+  // копятся десятки, как зелий, и терять их при переполнении было бы
+  // несоразмерно.
+  // Не Json и не таблица — та же причина, что у potionT1..T5, книг и
+  // расходников: видов ровно столько, сколько в каталоге, а счётчику нужны
+  // атомарные increment/decrement в том же UPDATE, где закрывается забег.
+  scrollFire          Int      @default(0)
+  scrollIce           Int      @default(0)
+  scrollBleed         Int      @default(0)
+  scrollHeal          Int      @default(0)
+  scrollDash          Int      @default(0)
   // Уровень КАЖДОГО навыка, по колонке на навык. Растёт на 1 за применённую
   // книгу (POST /character/upgrade-skill) и НИКОГДА не убывает: «забыть» навык
   // снимает его из equippedSkills, но уровень остаётся — так решено дизайном.
