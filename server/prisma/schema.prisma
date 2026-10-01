@@ -95,8 +95,10 @@ model Character {
   // снимает его из equippedSkills, но уровень остаётся — так решено дизайном.
   // Старт 1, а не 0: навык существует с первого уровня, ноль означал бы «навыка
   // нет», а это выражено отсутствием в equippedSkills и пустым складом книг.
-  // ⚠️ Уровень пока НИ НА ЧТО не влияет в бою — что он даёт, не решено
-  // (docs/skills.md). Он хранится и показывается, и это осознанно.
+  // Уровень УСИЛИВАЕТ навык с 02.10.2026: урон и лечение умножаются на
+  // skillPowerMult(уровень) = 1 + √(уровень − 1) / 32 (общая пара
+  // src/skillLevels.ts <-> server/src/skillLevels.ts). Перезарядки, длительность
+  // стана и число тиков он не трогает вовсе.
   // Колонка на навык, а не Json — та же причина, что у potionT1..T5 и книг:
   // навыков ровно пять по каталогу, а счётчику нужен атомарный increment в том
   // же UPDATE, где списывается книга.
@@ -112,6 +114,19 @@ model Character {
   skillLevelSlash     Int      @default(1)
   skillLevelHeal      Int      @default(1)
   skillLevelDash      Int      @default(1)
+  // Результативные применения навыка, накопленные в счёт СЛЕДУЮЩЕГО уровня
+  // (миграция 20261002120000_skill_uses_add). Порог — skillUsesThreshold
+  // (общая пара skillLevels.ts), при его пересечении уровень +1, а порог
+  // вычитается — значит здесь лежит ОСТАТОК, а не всего применений за
+  // историю. Пишутся ТОЛЬКО на закрытии забега (финиш и логин, одним
+  // кодом — см. applySkillUsesGrowth в game.ts), источник —
+  // currentRun.progress.skillUses, который кладёт клиент.
+  // Книга (+1 уровень) эти счётчики НЕ сбрасывает — решение дизайнера.
+  skillUsesFireball   Int      @default(0)
+  skillUsesIceball    Int      @default(0)
+  skillUsesSlash      Int      @default(0)
+  skillUsesHeal       Int      @default(0)
+  skillUsesDash       Int      @default(0)
   equippedSkills      String[] @default([])
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
