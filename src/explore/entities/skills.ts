@@ -48,7 +48,6 @@ export type SkillsDeps = {
   boss: MutableRefObject<Boss | null>
   attackDamage: MutableRefObject<number>
   takeDamage: (amount: number) => void
-  dodgeIframe: MutableRefObject<number>
   // Мёртв ли герой — тот же deathRef, что гейтит анимации в Explore.tsx.
   // Нужен, чтобы оборвать оставшиеся импульсы хила и снять ауру: healPlayer
   // сам вернёт 0, но по нулю НЕЛЬЗЯ отличить смерть от "HP уже полное" —

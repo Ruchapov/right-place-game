@@ -46,11 +46,24 @@ export type BossDeps = {
   // MapEvent.trophyReward) — поэтому spawnRewardFloat здесь больше не нужен, а
   // closeEvent берёт координаты: попап должен появиться над телом босса.
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
-  // ОБЁРТКА над takeDamageRef, а не takeDamage напрямую — см. EnemyDeps в
-  // enemy.ts, та же причина (deps собираются один раз при создании системы,
-  // takeDamageRef синхронизируется отдельным useEffect'ом на каждый рендер).
-  takeDamage: (amount: number) => void
-  dodgeIframe: MutableRefObject<number>
+  /**
+   * ОБЁРТКА над takeDamageRef, а не takeDamage напрямую — см. EnemyDeps в
+   * enemy.ts, та же причина (deps собираются один раз при создании системы,
+   * takeDamageRef синхронизируется отдельным useEffect'ом на каждый рендер).
+   *
+   * ⚠️ ВОЗВРАЩАЕТ true, если герой ОТБИЛ удар. Последствия отбива накладывает
+   * вызывающий, и они РАЗНЫЕ: ближний бой — стан босса и обрыв анимации, шип —
+   * шип уничтожается, но босс НЕ станится (он далеко, парировать можно только
+   * снаряд).
+   */
+  takeDamage: (amount: number) => boolean
+  /**
+   * Урон, который парировать НЕЛЬЗЯ (волна топота). Отдельная функция, а не флаг
+   * у takeDamage: на вызове видно, что это решение дизайна, а не забытый
+   * аргумент. ⚠️ Прежнего `dodgeIframe` в deps больше нет — уклонение с окном
+   * неуязвимости удалено целиком, от волны уклоняются только прыжком.
+   */
+  takeDamageUnblockable: (amount: number) => void
   boss: MutableRefObject<Boss | null>
   bossSpikes: MutableRefObject<BossSpike[]>
   bossWaves: MutableRefObject<BossWave[]>
@@ -223,6 +236,7 @@ export function createBossSystem(deps: BossDeps) {
       maxHp: scaledMaxHp,
       lastHitSwingId: 0,
       hurtTimer: 0,
+      parryStunTimer: 0,
       stunCount: 0,
       poiseImmuneTimer: 0,
       // Память о цели пуста — как у зверя (см. BOSS_AGGRO_MEMORY_MS).
@@ -323,6 +337,33 @@ export function createBossSystem(deps: BossDeps) {
           return
         }
         if (wasStunned && !boss.sprite.playing) boss.sprite.play()
+
+        // --- Стан от ПАРИРОВАНИЯ ---
+        //
+        // Отдельный заслон НИЖЕ заслона iceball, по той же причине, что у зверя
+        // (см. parryStunTimer в types.ts): iceball ставит паузу, парирование —
+        // отмену.
+        //
+        // ⚠️ hurtTimer здесь НЕ ТРОГАЕТСЯ вовсе. У босса это поле работает сразу
+        // как гейт, как выбор анимации и как длительность хитстана (см. каскад
+        // анимаций ниже), и записать стан туда значило бы незаметно изменить все
+        // три. Анимацию ставим напрямую: hurt один раз, потом последний кадр до
+        // конца стана.
+        const wasParryStunned = boss.parryStunTimer > 0
+        boss.parryStunTimer = Math.max(0, boss.parryStunTimer - deltaMS)
+        if (boss.parryStunTimer > 0) {
+          deps.playBossAnim('hurt')
+          const parryHurtFrames = deps.bossFrames.hurt
+          if (boss.sprite.currentFrame >= parryHurtFrames.length - 1) {
+            boss.sprite.gotoAndStop(parryHurtFrames.length - 1)
+          }
+          // Тело остаётся ФИЗИЧЕСКИМ — как под станом iceball выше.
+          pushPlayerOutOfBoss(boss)
+          return
+        }
+        // Стан кончился — снимаем «держим последний кадр», тем же приёмом, что у
+        // выхода из стана iceball выше.
+        if (wasParryStunned && !boss.sprite.playing) boss.sprite.play()
 
         boss.vy = Math.min(boss.vy + C.GRAVITY * dt, C.MAX_FALL)
         const prevBossFootY = boss.y + C.BOSS_HEIGHT
@@ -583,8 +624,7 @@ export function createBossSystem(deps: BossDeps) {
             boss.stunCount = 0
             // Зона удара — перед боссом по направлению facing, шириной
             // range (см. задачу, п.1/2). Урон — существующим путём
-            // (takeDamageRef), с учётом i-frames dodge героя
-            // (dodgeIframeRef) — переиспользуем проверку, не пишем свою.
+            // (takeDamageRef); он же решает, отбил ли герой.
             const zoneX = boss.facing === 1 ? boss.x + C.BOSS_WIDTH : boss.x - range
             const zone = { x: zoneX, y: boss.y, width: range, height: C.BOSS_HEIGHT }
             const strikePlayerBox = deps.getPlayerCombatBox()
@@ -593,8 +633,20 @@ export function createBossSystem(deps: BossDeps) {
               strikePlayerBox.x + strikePlayerBox.w > zone.x &&
               strikePlayerBox.y < zone.y + zone.height &&
               strikePlayerBox.y + strikePlayerBox.h > zone.y
-            if (overlap && deps.dodgeIframe.current <= 0) {
-              deps.takeDamage(damage)
+            if (overlap) {
+              // Отбил — урона нет, анимация атаки ОБРЫВАЕТСЯ (в отличие от
+              // стана iceball, который её только приостанавливает), и босс
+              // уходит в стан от парирования.
+              // Кулдаун атаки приходится взвести ЗДЕСЬ: обычно он стартует в
+              // ветке «анимация доиграла» ниже, а она после обрыва не
+              // выполнится — без этой строки босс ударил бы снова сразу после
+              // стана.
+              if (deps.takeDamage(damage)) {
+                boss.parryStunTimer = C.PARRY_STUN_MS
+                boss.attackAnimPlaying = false
+                boss.attackKind = null
+                boss.attackCooldownTimer = C.BOSS_ATTACK_COOLDOWN_MS
+              }
             }
           }
           if (boss.sprite.currentFrame >= kindFrames.length - 1 || !boss.sprite.playing) {
@@ -705,8 +757,9 @@ export function createBossSystem(deps: BossDeps) {
   // шип, брошенный до смерти босса, должен долетать сам по себе.
   // Баллистическая дуга (BOSS_SPIKE_GRAVITY, vy подобрана при спавне на
   // попадание в героя — см. spawnBossSpike), НЕ прямая горизонтальная.
-  // Попадание в героя — тем же getPlayerCombatBox()/dodgeIframeRef, что
-  // и melee-удар босса выше (не пишем свою проверку). dtSec — своя
+  // Попадание в героя — тем же getPlayerCombatBox() и той же общей точкой
+  // урона, что и melee-удар босса выше (не пишем свою проверку), поэтому шип
+  // ПАРИРУЕТСЯ наравне с ближним боем — но босса отбив шипа не станит. dtSec — своя
   // переменная (НЕ путать с внешним ticker-scale dt=ticker.deltaTime,
   // здесь нужны реальные секунды).
   function updateSpikes(deltaMS: number): void {
@@ -750,13 +803,17 @@ export function createBossSystem(deps: BossDeps) {
             box.x + box.w > spikeLeft &&
             box.y < spikeTop + C.BOSS_SPIKE_DRAW_H &&
             box.y + box.h > spikeTop
-          // dodgeIframeRef активен — шип пролетает насквозь, без урона и
-          // без импакта (см. задачу, п.7 — не трогаем).
-          if (overlap && deps.dodgeIframe.current <= 0) {
+          if (overlap) {
             spike.hitApplied = true
             remove = true
-            deps.takeDamage(spike.damage)
-            spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
+            // Шип ПАРИРУЕТСЯ: отбил — шип уничтожается без урона (remove уже
+            // стоит выше), но БОСС НЕ СТАНИТСЯ — он в этот момент далеко, и
+            // отбить можно только снаряд, не самого босса. Импакт в этом случае
+            // не рисуем: искра отбива (см. takeDamage в Explore.tsx) и так
+            // показывает, что удар пришёлся на клинок.
+            if (!deps.takeDamage(spike.damage)) {
+              spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
+            }
           }
         }
 
@@ -775,9 +832,9 @@ export function createBossSystem(deps: BossDeps) {
   // (по образцу bossSpikesRef выше): волна, рождённая до смерти/despawn
   // босса, должна докатиться сама по себе. Y НЕ меняется — катится по
   // земле, гравитации нет (в отличие от шипа). Уклонение ТОЛЬКО
-  // прыжком — dodgeIframeRef здесь НЕ учитывается (см. задачу, п.7):
-  // герой в прыжке физически выше волны своим боевым боксом, пересечения
-  // не будет само собой.
+  // прыжком: волна НЕ ПАРИРУЕТСЯ (решение дизайнера, см.
+  // takeDamageUnblockable), а герой в прыжке физически выше неё своим боевым
+  // боксом, так что пересечения не будет само собой.
   function updateWaves(deltaMS: number): void {
     if (deps.bossWaves.current.length > 0) {
       const stillRolling: BossWave[] = []
@@ -803,7 +860,8 @@ export function createBossSystem(deps: BossDeps) {
         }
 
         // Попадание в героя (см. задачу, п.7) — тем же getPlayerCombatBox(),
-        // что и у шипа, НО БЕЗ dodgeIframeRef (уклонение только прыжком).
+        // что и у шипа, НО через takeDamageUnblockable: волна НЕ ПАРИРУЕТСЯ
+        // (решение дизайнера), уклонение от неё только прыжком.
         // Каждая волна бьёт максимум один раз.
         if (!remove && !w.hitApplied) {
           const box = deps.getPlayerCombatBox()
@@ -817,7 +875,7 @@ export function createBossSystem(deps: BossDeps) {
           if (overlap) {
             w.hitApplied = true
             remove = true
-            deps.takeDamage(w.damage)
+            deps.takeDamageUnblockable(w.damage)
           }
         }
 

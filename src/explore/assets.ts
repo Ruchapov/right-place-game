@@ -20,6 +20,11 @@ export type ExploreAssets = {
     // проигрывается подменой текстур на спрайте ГЕРОЯ, это его анимация,
     // а не VFX-оверлей поверх него.
     dash: Texture[]
+    // Блок (парирование). Лежит в hero по той же причине, что dash: это
+    // анимация ГЕРОЯ, проигрываемая подменой текстур на его спрайте.
+    // ⚠️ Клетка у листа ВЫШЕ остальных (394×342) — см. HERO_BLOCK_* в
+    // constants.ts, там же про масштаб.
+    block: Texture[]
   }
   beast: {
     idle: Texture[]
@@ -40,6 +45,9 @@ export type ExploreAssets = {
   bossWaveRightFrames: Texture[]
   // Аура лечения (скилл heal) — кадры загружены, механики heal ещё нет
   // (см. explore/entities/skills.ts).
+  // Искра отбива (парирование) — ОДНОРАЗОВЫЙ VFX поверх героя, поэтому рядом с
+  // healAura/slashStreak, а не в hero: это не его анимация, а вспышка на клинке.
+  parrySpark: Texture[]
   healAura: Texture[]
   // Скилл slash: дуга взмаха (разовая). Петля кровотечения (Bleeding_Loop)
   // НЕ грузится — визуал кровотечения убран намеренно, см. updateBleeds в
@@ -166,6 +174,25 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     return null
   }
   assertSheetSize('cast_v2.png', castFrames, C.HERO_CELL_W, C.HERO_CELL_H, C.HERO_CAST_COUNT, 12, C.HERO_CAST_ROWS)
+  // Блок (парирование) — 9 кадров в ОДИН ряд, клетка 394×342. COLS передаётся
+  // ЯВНО по той же причине, что у dash ниже: дефолт loadSheetFrames — 12.
+  // ⚠️ Клетка ВЫШЕ остальных листов героя (342 против 296) — над головой место
+  // под поднятый меч. Масштаб спрайта при этом НЕ пересчитывается (см.
+  // HERO_BLOCK_* в constants.ts): блок обязан рисоваться тем же множителем, что
+  // idle, иначе переключение туда-обратно давало бы скачок размера.
+  const blockFrames = await loadSheetFrames(C.HERO_BLOCK_SRC, C.HERO_BLOCK_CELL_W, C.HERO_BLOCK_CELL_H, C.HERO_BLOCK_COUNT, C.HERO_BLOCK_COLS)
+  if (isCancelled()) {
+    // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+    return null
+  }
+  assertSheetSize('block.png', blockFrames, C.HERO_BLOCK_CELL_W, C.HERO_BLOCK_CELL_H, C.HERO_BLOCK_COUNT, C.HERO_BLOCK_COLS)
+  // Искра отбива — своя клетка 192×192, 11 кадров в один ряд.
+  const parrySparkFrames = await loadSheetFrames(C.PARRY_SPARK_SRC, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS)
+  if (isCancelled()) {
+    // Тот же случай, что и выше — ещё один await, ещё одна проверка.
+    return null
+  }
+  assertSheetSize('parry_spark.png', parrySparkFrames, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS)
   // Dash — анимация героя на СВОЁМ листе: клетка 240×128, 11 кадров в один
   // ряд, файл лежит в assets/skills (см. DASH_* в constants.ts). COLS
   // передаётся ЯВНО: дефолт loadSheetFrames — 12, и на нём кадры съехали бы.
@@ -419,6 +446,7 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
       death: deathFrames,
       cast: castFrames,
       dash: dashFrames,
+      block: blockFrames,
     },
     beast: {
       idle: beastIdleFrames,
@@ -437,6 +465,7 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     bossSpikeImpactFrames,
     bossWaveLeftFrames,
     bossWaveRightFrames,
+    parrySpark: parrySparkFrames,
     healAura: healAuraFrames,
     slashStreak: slashStreakFrames,
     fireballProjectile: fireballProjectileFrames,

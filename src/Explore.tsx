@@ -1313,7 +1313,15 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
-  const takeDamageRef = useRef<(amount: number) => void>(() => {})
+  // ⚠️ Возвращает boolean: true — герой ПАРИРОВАЛ, урона не было (см. takeDamage).
+  const takeDamageRef = useRef<(amount: number) => boolean>(() => false)
+  // Непарируемый урон (волна босса, шипы карты, ловушка мимика) — отдельная
+  // ссылка, чтобы на вызове было видно решение, а не забытый аргумент.
+  const takeDamageUnblockableRef = useRef<(amount: number) => void>(() => {})
+  // Искра на клинке в момент отбива. Ref с замыканием, как applySpikeDamageRef
+  // ниже, и по той же причине: спрайт рождается в worldContainer, который живёт
+  // ВНУТРИ setup(), а зовёт её takeDamage — она объявлена на уровне компонента.
+  const spawnParrySparkRef = useRef<() => void>(() => {})
   // Стабильная ссылка на killPlayer (см. задачу "обелиск перестал убивать") —
   // тот же приём, что у takeDamageRef выше, для того же ticker-кода.
   const killPlayerRef = useRef<() => void>(() => {})
@@ -1490,10 +1498,33 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // AoE-волны топота босса (см. type BossWave выше) — независимый от bossRef
   // список, по тому же образцу, что bossSpikesRef.
   const bossWavesRef = useRef<BossWave[]>([])
-  // Dodge игрока (Шаг 2-2) — окно неуязвимости от удара врага + кулдаун кнопки.
+  // --- Кнопка 🔄: ПАРИРОВАНИЕ (блок мечом) ---
+  //
+  // ⚠️ dodgeIframeRef УДАЛЁН (01.10.2026) вместе со всей механикой уклонения:
+  // окна неуязвимости в забеге больше нет ни у кнопки, ни у кого-либо ещё.
+  // Имя `dodgePressedRef` оставлено намеренно — это ВВОД (кнопка 🔄 и её
+  // перехват Контрабандистом), а не механика, и переименовывать его задача не
+  // просила.
   const dodgePressedRef = useRef(false) // флаг тапа по 🔄, читается и сбрасывается в ticker
-  const dodgeIframeRef = useRef(0) // мс — пока > 0, удар врага игрока не задевает
-  const dodgeCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
+  // Идёт стойка блока: герой стоит на месте, не ходит, не бьёт и не прыгает.
+  const parryingRef = useRef(false)
+  // Сколько мс прошло с начала стойки. ОДИН счётчик на две вещи: по нему
+  // выбирается кадр листа блока (PARRY_FRAME_ORDER) и по нему же определяется
+  // конец стойки. Второй таймер здесь разъехался бы с первым.
+  const parryElapsedRef = useRef(0)
+  // Остаток ОКНА ОТБИВА, мс. Отдельно от parryElapsedRef, потому что окно
+  // КОРОЧЕ анимации: после его закрытия герой ещё стоит в блоке, но уже уязвим.
+  const parryWindowRef = useRef(0)
+  const parryCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
+  // Какой кадр ЛИСТА блока (0..8) показан прямо сейчас. Считается в блоке
+  // таймеров парирования, читается двумя местами: веткой анимации (что рисовать)
+  // и искрой отбива (где у меча клинок на этом кадре).
+  //
+  // Отдельный ref, а НЕ hero.currentFrame: ветка анимации стоит в тикере ПОЗЖЕ
+  // AI врагов, поэтому в момент отбива на спрайте ещё кадр прошлого тика — а на
+  // первом тике стойки и вовсе кадр idle, индекс которого в таблицу точек
+  // клинка не попадает вовсе. Это дало бы искру не на клинке, причём молча.
+  const parryFrameRef = useRef(0)
 
   // Скиллы (см. explore/entities/skills.ts) — флаги тапа по ⚡/🔥, читаются и
   // сбрасываются ВНУТРИ createSkillsSystem().update(), тем же приёмом, что
@@ -1823,6 +1854,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     dashingRef.current = false // обрываем dash (хитстан главнее)
     castingRef.current = false // и каст — снаряд не вылетит, если не дошли до кадра вылета
     drinkingRef.current = false // обрываем питьё (хитстан главнее)
+    // Хитстан прерывает БЛОК — удар, пришедший после окна отбива, сбивает
+    // стойку, как и любую другую анимацию. Окно гасим вместе со стойкой: оно к
+    // этому моменту уже закрыто (иначе удар был бы отбит и сюда не дошёл), но
+    // оставлять его значением «на всякий случай» нельзя.
+    parryingRef.current = false
+    parryWindowRef.current = 0
     landTimerRef.current = 0 // hurt важнее land
   }
 
@@ -1838,6 +1875,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     dashingRef.current = false // обрываем dash (смерть главнее)
     castingRef.current = false // и каст (смерть главнее)
     drinkingRef.current = false // обрываем питьё (смерть главнее)
+    parryingRef.current = false // и блок (смерть главнее)
+    parryWindowRef.current = 0
     hurtTimerRef.current = 0
     landTimerRef.current = 0
     // Окна прыжка — смерть главнее и здесь: нажатие, сделанное за миг до
@@ -1861,7 +1900,45 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // (applySpikeDamageRef), и атакой зверя (takeDamageRef в ticker'е).
   // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
   // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
-  function takeDamage(amount: number) {
+  /**
+   * ПАРИРУЕМЫЙ урон — обычный путь для всех ударов врагов.
+   *
+   * Возвращает true, если герой ОТБИЛ: тогда урона не было, и вызывающий
+   * накладывает свои последствия отбива (стан зверя, обрыв атаки босса,
+   * уничтожение шипа). Проверка окна живёт ЗДЕСЬ, одной точкой на все источники,
+   * ровно за тем, чтобы будущий враг получил парирование автоматически —
+   * достаточно нанести урон этой функцией.
+   *
+   * ⚠️ Окно НЕ закрывается успехом: два удара, пришедшие в одно окно (например
+   * два шипа босса), парируются оба, и искра всплывает на каждом. Это прямое
+   * требование дизайна, а не побочный эффект.
+   *
+   * ⚠️ Проверка стоит ПЕРЕД debug-бессмертием и остальными перехватами
+   * applyDamage: отбив — событие боя, и игрок должен увидеть искру даже с
+   * включённым тумблером, иначе тестировать парирование было бы нечем.
+   */
+  function takeDamage(amount: number): boolean {
+    if (parryWindowRef.current > 0) {
+      spawnParrySparkRef.current()
+      return true
+    }
+    applyDamage(amount)
+    return false
+  }
+
+  /**
+   * НЕПАРИРУЕМЫЙ урон: волна топота босса, шипы карты, ловушка мимика.
+   *
+   * Отдельная функция, а не флаг у takeDamage: на вызове видно, что
+   * непарируемость — решение дизайна. Волна и шипы названы прямо в задаче;
+   * ловушку мимика отнесли сюда по смыслу — это взрыв сундука, а не удар
+   * оружием, и подставлять под него меч нечему.
+   */
+  function takeDamageUnblockable(amount: number): void {
+    applyDamage(amount)
+  }
+
+  function applyDamage(amount: number) {
     // ВРЕМЕННО (см. invincible state выше и SettingsPanel) — полный ранний
     // выход, ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту
     // функцию, так что перехват здесь один на все источники. HP/hurt/death
@@ -1978,9 +2055,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // актуальную версию.
   useEffect(() => {
     takeDamageRef.current = takeDamage
+    takeDamageUnblockableRef.current = takeDamageUnblockable
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
-    applySpikeDamageRef.current = () => takeDamage(maxHp * C.SPIKE_DAMAGE_RATIO)
+    // Шипы карты НЕ ПАРИРУЮТСЯ (решение дизайнера) — отсюда и unblockable:
+    // от них уклоняются прыжком, а не блоком.
+    applySpikeDamageRef.current = () => takeDamageUnblockable(maxHp * C.SPIKE_DAMAGE_RATIO)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     characterLevelRef.current = characterLevel
     armorRef.current = armor ?? 0
@@ -2552,7 +2632,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         boss: bossRef,
         attackDamage: attackDamageRef,
         takeDamage,
-        dodgeIframe: dodgeIframeRef,
         skill1Pressed: skill1PressedRef,
         skill2Pressed: skill2PressedRef,
         // Обёртка над healPlayerRef, НЕ healPlayer напрямую — та же причина,
@@ -2616,7 +2695,6 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // отдельным useEffect'ом на каждый рендер именно затем, чтобы
         // тикер всегда звал актуальную версию функции (см. EnemyDeps).
         takeDamage: (amount: number) => takeDamageRef.current(amount),
-        dodgeIframe: dodgeIframeRef,
         events: eventsRef,
         worldContainer,
         grid,
@@ -2648,6 +2726,8 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       const deathFrames = assets.hero.death
       const castFrames = assets.hero.cast
       const dashFrames = assets.hero.dash
+      const blockFrames = assets.hero.block
+      const parrySparkFrames = assets.parrySpark
 
       beastFramesRef.current = assets.beast
       // Аура лечения — в ref, откуда её читает система скиллов (создана выше
@@ -2794,6 +2874,54 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // deathFrames зеркалим в ref — triggerDeath() вызывается из takeDamage,
       // вне setup(), достать локальную deathFrames оттуда напрямую нельзя.
       deathFramesRef.current = deathFrames
+
+      // Искра отбива. Через ref с замыканием, потому что зовёт её takeDamage —
+      // она объявлена на уровне компонента, а worldContainer и кадры живут
+      // здесь (тот же приём, что у applySpikeDamageRef).
+      //
+      // Разовый спрайт, который сам себя убирает: 11 кадров за PARRY_SPARK_MS,
+      // потом removeChild + destroy. Своего списка, как у rewardFloatsRef, он не
+      // требует — анимацию крутит сам Pixi (autoUpdate), а снять спрайт хватает
+      // одного onComplete.
+      spawnParrySparkRef.current = () => {
+        const heroSprite = heroSpriteRef.current
+        if (!heroSprite) return
+        const scaleMag = C.HERO_DRAW_H / idleFrames[0].height
+        // Точка на клинке берётся у ТОГО кадра листа блока, который показан
+        // прямо сейчас: меч за анимацию проходит полдуги, и усреднённая точка
+        // висела бы в воздухе. Индекс — из parryFrameRef (0..8), а НЕ из
+        // hero.currentFrame: см. комментарий к рефу, на первом тике стойки там
+        // лежит кадр idle.
+        const [bladeX, bladeY] = C.PARRY_BLADE_POINTS[parryFrameRef.current]
+        // Смещение от якоря героя: якорь стоит в середине низа клетки
+        // (anchor 0.5/1.0), поэтому из точки вычитаются полуширина и полная
+        // высота клетки. По X зеркалим при взгляде влево — лист нарисован
+        // смотрящим вправо.
+        const offsetX = (bladeX - C.PARRY_BLADE_ANCHOR_X) * scaleMag * facingRef.current
+        const offsetY = (bladeY - C.HERO_BLOCK_CELL_H) * scaleMag
+        const spark = new AnimatedSprite(parrySparkFrames)
+        spark.anchor.set(0.5, 0.5)
+        spark.x = heroSprite.x + offsetX
+        spark.y = heroSprite.y + offsetY
+        spark.scale.set(scaleMag * C.PARRY_SPARK_SCALE)
+        // Альфа в этом арте = яркость, поэтому 'add': при обычном смешивании
+        // вокруг блика был бы тёмный квадрат.
+        spark.blendMode = 'add'
+        spark.loop = false
+        // Длительность задаётся через animationSpeed, а не таймером: у Pixi
+        // speed — это доля кадра за тик, то есть (кадров / мс) × мс-на-тик.
+        // 1000/60 — номинальный тик; на просевшем FPS искра станет чуть длиннее
+        // в секундах, и это не страшно: она ни на что не влияет механически.
+        spark.animationSpeed = (parrySparkFrames.length / C.PARRY_SPARK_MS) * (1000 / 60)
+        spark.onComplete = () => {
+          worldContainer.removeChild(spark)
+          spark.destroy()
+        }
+        // Над героем: addChild кладёт в конец списка детей worldContainer, а
+        // герой добавлен выше — значит искра рисуется поверх него.
+        worldContainer.addChild(spark)
+        spark.gotoAndPlay(0)
+      }
       // Прямоугольник остаётся хитбоксом для коллизии — просто прячем визуал.
       player.visible = false
 
@@ -2868,6 +2996,14 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // первом же кадре нового забега.
       jumpBufferRef.current = 0 // сброс на случай повторного запуска setup()
       coyoteRef.current = 0 // сброс на случай повторного запуска setup()
+      // Состояние парирования — туда же и по той же причине: рефы живут на
+      // уровне компонента и переживают перезапуск setup() (debug-переключатель
+      // карт), а стойка, оставшаяся с прошлой карты, заблокировала бы движение.
+      parryingRef.current = false
+      parryElapsedRef.current = 0
+      parryWindowRef.current = 0
+      parryCooldownRef.current = 0
+      parryFrameRef.current = 0
       // Сверка глотков с сервером — тоже на забег (см. sendSip). Поколение и
       // очередь общие с срезами прогресса (см. runWriteQueueRef).
       runWriteGenRef.current += 1
@@ -2995,7 +3131,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         applyBossLayout,
         closeEvent,
         takeDamage: (amount: number) => takeDamageRef.current(amount),
-        dodgeIframe: dodgeIframeRef,
+        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
         boss: bossRef,
         bossSpikes: bossSpikesRef,
         bossWaves: bossWavesRef,
@@ -3591,6 +3727,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // герой не переигрывает атаку и не перебивает deathFrames текстурами.
         if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
         if (attackCooldownRef.current > 0 || attackingRef.current) return false
+        // Из блока не бьют: стойка занимает того же героя и тот же спрайт.
+        // Симметрии нет намеренно — замах блок НЕ прерывает, потому что в
+        // обратную сторону кнопка 🔄 во время замаха и так не срабатывает (см.
+        // гейты нажатия в тикере).
+        if (parryingRef.current) return false
         // Каст занимает того же героя и тот же спрайт — обычная атака во
         // время каста не начинается (см. задачу).
         if (castingRef.current) return false
@@ -4116,7 +4257,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // происходит — он гейтится своими условиями, не heroLocked). Ровно то
         // же свойство у уже существующих обрывов замаха и рывка прыжком —
         // отдельного случая каст здесь не создаёт.
-        const heroLocked = drinkingRef.current || castingRef.current || deathRef.current
+        // Стойка блока добавлена сюда по той же причине, что каст: поза не
+        // должна ездить по карте. Нужная скорость — НОЛЬ, а ноль heroLocked уже
+        // умеет. Заодно это замораживает facing (тот же гейт ниже): развернуться
+        // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
+        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED
         // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
         // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
@@ -4214,7 +4359,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           jumpBufferRef.current > 0 &&
           !deathRef.current &&
           (phys.onGround || coyoteRef.current > 0) &&
-          !drinkingRef.current
+          !drinkingRef.current &&
+          // Из блока не прыгают — стойка держит героя на месте до конца
+          // анимации. Нажатие при этом НЕ пропадает: оно уже лежит в буфере и
+          // сработает, как только стойка кончится, если буфер не истечёт.
+          !parryingRef.current
         ) {
           phys.vy = -C.JUMP_VELOCITY
           phys.onGround = false
@@ -4413,11 +4562,31 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           }
         }
 
-        // Dodge игрока: окно неуязвимости от удара врага + кулдаун кнопки,
-        // независимо от i-frames шипов (spikeIframeRef) — отдельный механизм.
-        // Считается ОДИН раз за кадр (не за врага), поэтому вынесен перед
-        // циклом по врагам ниже.
-        dodgeIframeRef.current = Math.max(0, dodgeIframeRef.current - ticker.deltaMS)
+        // Парирование игрока: окно отбива, длительность стойки и кулдаун
+        // кнопки. Считается ОДИН раз за кадр (не за врага), поэтому вынесено
+        // перед циклом по врагам ниже — иначе первый враг закрыл бы окно для
+        // второго.
+        // Все три по ticker.deltaMS (реальное время), а не по кадрам: на
+        // просевшем FPS окно отбива иначе стало бы короче в секундах, то есть
+        // игра ужесточалась бы ровно там, где и так тяжело.
+        parryWindowRef.current = Math.max(0, parryWindowRef.current - ticker.deltaMS)
+        if (parryingRef.current) {
+          parryElapsedRef.current += ticker.deltaMS
+          // Шаг последовательности «туда и обратно» по накопленному времени.
+          // Деление на ДЛИНУ (не на длину-1) плюс clamp по последнему элементу:
+          // иначе на последнем тике индекс вылетел бы за массив.
+          const parryStep = Math.min(
+            C.PARRY_FRAME_ORDER.length - 1,
+            Math.floor((parryElapsedRef.current / C.PARRY_ANIM_MS) * C.PARRY_FRAME_ORDER.length),
+          )
+          parryFrameRef.current = C.PARRY_FRAME_ORDER[parryStep]
+          // Стойка кончилась — со следующего тика ветка idle/run подхватит
+          // обычные кадры. Окно отбива к этому моменту давно закрыто (оно
+          // короче), отдельно гасить его не нужно.
+          if (parryElapsedRef.current >= C.PARRY_ANIM_MS) {
+            parryingRef.current = false
+          }
+        }
         // Окно неуязвимости от оберега + мигание героя. Ветка выполняется только
         // пока окно открыто (2 с за весь забег), в остальное время это одно
         // сравнение. alpha возвращается в 1 РОВНО на закрытии окна — отдельного
@@ -4431,16 +4600,18 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               : (Math.floor(charmIframeRef.current / CHARM_BLINK_MS) % 2 === 0 ? 0.35 : 1)
           }
         }
-        dodgeCooldownRef.current = Math.max(0, dodgeCooldownRef.current - ticker.deltaMS)
+        parryCooldownRef.current = Math.max(0, parryCooldownRef.current - ticker.deltaMS)
         if (dodgePressedRef.current) {
           dodgePressedRef.current = false
-          // Смерть — мёртвый герой не может ни увернуться, ни открыть
+          // Смерть — мёртвый герой не может ни парировать, ни открыть
           // окно Контрабандиста. deathRef никогда не сбрасывается.
           if (deathRef.current) {
             // no-op
           } else {
-            // Смуглер рядом — перехватывает dodge и открывает панель (пока
-            // только флаг + console.log, см. задачу) вместо обычного dodge.
+            // Смуглер рядом — перехватывает нажатие 🔄 и открывает панель
+            // ВМЕСТО парирования. Этот перехват задача просила сохранить как
+            // есть, поэтому он стоит ПЕРВЫМ и блок при открытии панели не
+            // начинается.
             const playerCenterXForSmuggler = phys.x + C.PLAYER_WIDTH / 2
             const playerFeetYForSmuggler = phys.y + C.PLAYER_HEIGHT
             const nearbySmuggler = smugglersRef.current.find((s) => {
@@ -4458,9 +4629,26 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
               // закрыть ещё событие, и она изменилась. Запрос ничего не пишет на
               // сервере, звать его повторно безопасно.
               requestSmugglerQuote()
-            } else if (dodgeCooldownRef.current <= 0 && !drinkingRef.current) {
-              dodgeIframeRef.current = C.PLAYER_DODGE_IFRAME_MS
-              dodgeCooldownRef.current = C.PLAYER_DODGE_COOLDOWN_MS
+            } else if (
+              parryCooldownRef.current <= 0 &&
+              // Стойку можно принять ТОЛЬКО на земле и только из спокойного
+              // состояния: в воздухе, в замахе, в хитстане, во время питья,
+              // каста, рывка и уже идущего блока кнопка ничего не делает.
+              // Перечислено явно, а не «если ничего не играет»: молчаливое
+              // «иначе можно» однажды пустило бы блок поверх анимации, которая
+              // его не предполагает.
+              phys.onGround &&
+              !attackingRef.current &&
+              !castingRef.current &&
+              !dashingRef.current &&
+              !drinkingRef.current &&
+              !parryingRef.current &&
+              hurtTimerRef.current <= 0
+            ) {
+              parryingRef.current = true
+              parryElapsedRef.current = 0
+              parryWindowRef.current = C.PARRY_WINDOW_MS
+              parryCooldownRef.current = C.PARRY_COOLDOWN_MS
             }
           }
         }
@@ -4514,7 +4702,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             chest.sprite.currentFrame >= C.CHEST_TRAP_STRIKE_FRAME
           ) {
             chest.trapDamaged = true
-            takeDamageRef.current(maxHp * C.CHEST_TRAP_DAMAGE_FRAC)
+            // Взрыв ловушки — НЕ удар оружием, парировать его нечем (см.
+            // takeDamageUnblockable): тот же разряд, что шипы карты.
+            takeDamageUnblockableRef.current(maxHp * C.CHEST_TRAP_DAMAGE_FRAC)
           }
 
           if (chest.opening && (chest.sprite.currentFrame >= activeFrames.length - 1 || !chest.sprite.playing)) {
@@ -4672,6 +4862,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
           attackingRef.current = false // прыжок отменяет замах
           dashingRef.current = false // и dash тоже — он проигрывается только на земле
           castingRef.current = false // и каст: прыжок его обрывает, как и замах
+          // Блок — только на земле. Сюда герой попадает, если его сбросило с
+          // платформы посреди стойки: окно отбива гасим вместе со стойкой,
+          // иначе в воздухе остался бы «невидимый блок».
+          parryingRef.current = false
+          parryWindowRef.current = 0
           hurtTimerRef.current = 0 // в воздухе — прыжок, hurt не тянем на землю
         } else if (hurtTimerRef.current > 0) {
           hurtTimerRef.current = Math.max(0, hurtTimerRef.current - ticker.deltaMS)
@@ -4682,6 +4877,30 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
             hero.animationSpeed = C.HURT_ANIM_SPEED
             hero.gotoAndPlay(0)
           }
+        } else if (parryingRef.current) {
+          // Стойка блока. Кадр выбирается РУКАМИ по накопленному времени, а не
+          // через AnimatedSprite.play(): порядок кадров «туда и обратно»
+          // (PARRY_FRAME_ORDER, 17 шагов из 9 кадров), а play() умеет только
+          // вперёд и по кругу.
+          //
+          // ⚠️ Масштаб НЕ пересчитывается под клетку этого листа (342 против 296
+          // у остальных) — см. heroScaleMag ниже: блок обязан рисоваться тем же
+          // множителем, что idle, иначе переключение туда-обратно давало бы
+          // скачок размера. Ступни в клетке блока отстоят от низа на те же
+          // 14 px, что у idle, поэтому при anchor (0.5, 1) герой не дёргается и
+          // по вертикали.
+          hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+          if (hero.textures !== blockFrames) {
+            hero.textures = blockFrames
+            hero.loop = false
+            // stop(): кадры двигаем мы, а не автоапдейт Pixi. Без этого лист
+            // проигрывался бы ещё и сам, поверх нашего выбора.
+            hero.stop()
+          }
+          // Кадр уже посчитан блоком таймеров парирования выше (parryFrameRef) —
+          // там же, откуда его берёт искра отбива. Второй расчёт здесь разъехался
+          // бы с ним на тик, и искра садилась бы не на тот кадр клинка.
+          hero.gotoAndStop(parryFrameRef.current)
         } else if (drinkingRef.current) {
           // Хил — РОВНО один раз за питьё, на кадре глотка (не на нажатии
           // кнопки). Если hurt/death оборвали питьё РАНЬШЕ этого кадра
@@ -4815,6 +5034,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         // Масштаб — тоже КАЖДЫЙ кадр, а не один раз при создании спрайта: у
         // листа dash своя клетка (240×128), и общий множитель героя
         // (HERO_DRAW_H / 296) нарисовал бы его высотой ~61px вместо ~116.
+        // ⚠️ У ЛИСТА БЛОКА клетка тоже своя (394×342), но ветки для него здесь
+        // НЕТ И БЫТЬ НЕ ДОЛЖНО: ему нужен РОВНО общий множитель героя. Своего
+        // DRAW_H у блока нет — лишние 46 px клетки это место над головой под
+        // поднятый меч, а не более высокий герой. Поделив на 342, мы ужали бы
+        // его на 13%, и переключение idle↔block давало бы скачок размера.
         // Признак — ЛИСТ, который сейчас на спрайте (hero.textures), а не
         // dashingRef: на последнем кадре dash флаг уже снят веткой выше, а
         // кадр ещё показывается, и по флагу он мигнул бы не в том масштабе.

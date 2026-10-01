@@ -46,13 +46,24 @@ export type EnemyDeps = {
   // spawnRewardFloat системе врагов больше НЕ нужен, зато closeEvent берёт
   // координаты: попап должен появиться там, где упал последний враг группы.
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
-  // ОБЁРТКА над takeDamageRef, а не takeDamage напрямую: deps собираются
-  // ОДИН раз при создании системы в setup(), а takeDamageRef синхронизируется
-  // отдельным useEffect'ом на каждый рендер именно затем, чтобы тикер всегда
-  // звал АКТУАЛЬНУЮ версию функции — прямая передача took бы снимок с
-  // момента создания и сломала бы эту синхронизацию.
-  takeDamage: (amount: number) => void
-  dodgeIframe: MutableRefObject<number>
+  /**
+   * ОБЁРТКА над takeDamageRef, а не takeDamage напрямую: deps собираются
+   * ОДИН раз при создании системы в setup(), а takeDamageRef синхронизируется
+   * отдельным useEffect'ом на каждый рендер именно затем, чтобы тикер всегда
+   * звал АКТУАЛЬНУЮ версию функции — прямая передача взяла бы снимок с
+   * момента создания и сломала бы эту синхронизацию.
+   *
+   * ⚠️ ВОЗВРАЩАЕТ true, ЕСЛИ ГЕРОЙ ОТБИЛ УДАР (парирование). Тогда урона не
+   * было, и вызывающий обязан наложить свои последствия отбива — стан и
+   * сгоревший замах. Проверку делает сама takeDamage, одной точкой на все
+   * источники урона, поэтому будущий враг получит парирование автоматически:
+   * достаточно нанести урон этой функцией.
+   *
+   * ⚠️ Прежнего `dodgeIframe` в deps БОЛЬШЕ НЕТ — уклонение с окном
+   * неуязвимости удалено целиком. Непарируемые источники (волна босса, шипы
+   * карты) ходят через ОТДЕЛЬНУЮ takeDamageUnblockable, см. Explore.tsx.
+   */
+  takeDamage: (amount: number) => boolean
   events: MutableRefObject<MapEvent[]>
   worldContainer: Container
   grid: Grid
@@ -169,6 +180,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       investigateLookTimer: 0,
       // Не заморожен (см. ICEBALL_STUN_MS).
       stunTimer: 0,
+      parryStunTimer: 0,
       dead: false,
       deathHoldTimer: 0,
       attackDamage: scaledAttackDamage,
@@ -295,6 +307,39 @@ export function createEnemySystem(deps: EnemyDeps) {
         pushPlayerOutOfEnemy(enemy, deps.getPlayerCombatBox())
         continue
       }
+      // --- Стан от ПАРИРОВАНИЯ ---
+      //
+      // Отдельный заслон НИЖЕ заслона iceball и выше всего остального, потому
+      // что это ДРУГАЯ механика (см. parryStunTimer в types.ts): iceball ставит
+      // паузу и доигрывает замах, парирование замах сжигает.
+      //
+      // Таймер тикает БЕЗУСЛОВНО, до гейтов, как stunTimer выше — иначе стан не
+      // истекал бы в хитстане.
+      //
+      // Анимация: hurt ОДИН раз, потом держим последний кадр до конца стана.
+      // `playing` отличает «ещё идёт» от «доиграла»: по кругу hurt читался бы
+      // как «его бьют всё это время», а он просто открыт.
+      const wasParryStunned = enemy.parryStunTimer > 0
+      enemy.parryStunTimer = Math.max(0, enemy.parryStunTimer - deltaMS)
+      if (enemy.parryStunTimer > 0) {
+        const parryFrames = deps.beastFrames.current
+        if (parryFrames) {
+          deps.playSpriteAnim(enemy.sprite, parryFrames.hurt, C.BEAST_HURT_ANIM_SPEED, false)
+          if (enemy.sprite.currentFrame >= parryFrames.hurt.length - 1) {
+            enemy.sprite.gotoAndStop(parryFrames.hurt.length - 1)
+          }
+        }
+        // Тело остаётся ФИЗИЧЕСКИМ — та же причина и тот же вызов, что под
+        // станом iceball выше.
+        pushPlayerOutOfEnemy(enemy, deps.getPlayerCombatBox())
+        continue
+      }
+      // Стан кончился — снимаем «держим последний кадр». Тот же приём и та же
+      // причина, что у выхода из стана iceball ниже: спрайт остался
+      // остановленным, и без возобновления следующая ветка, попавшая на ТЕ ЖЕ
+      // кадры (playSpriteAnim на одинаковых текстурах не рестартит), оставила
+      // бы его замороженным.
+      if (wasParryStunned && !enemy.sprite.playing) enemy.sprite.play()
       if (wasStunned && !enemy.sprite.playing) {
         // Стан только что кончился — возвращаем проигрывание с того кадра,
         // на котором заморозили (gotoAndPlay здесь был бы отменой: он
@@ -544,8 +589,8 @@ export function createEnemySystem(deps: EnemyDeps) {
             enemy.attackTimer = C.ENEMY_ATTACK_INTERVAL // кулдаун — ПОСЛЕ удара
             // Момент удара БОЛЬШЕ НЕ здесь — перенесён на strike-кадр
             // attack-анимации (см. синк визуала ниже, BEAST_ATTACK_STRIKE_FRAME).
-            // inMeleeReach/dodgeIframeRef проверяются там же, заново, на
-            // момент strike-кадра — здесь ничего не наносим.
+            // Дальность и парирование проверяются там же, заново, на момент
+            // strike-кадра — здесь ничего не наносим.
           }
         }
       }
@@ -618,9 +663,10 @@ export function createEnemySystem(deps: EnemyDeps) {
 
           if (enemy.attackAnimPlaying) {
             // Момент удара — ровно на strike-кадре анимации (перенесено из
-            // конца WINDUP_MS выше). inMeleeReach/dodgeIframeRef — ТЕ ЖЕ
-            // проверки и числа, что и раньше, просто читаются здесь и
-            // сейчас (свежие значения этого тика), а не в конце windup.
+            // конца WINDUP_MS выше). inMeleeReach — ТА ЖЕ проверка и те же
+            // числа, что и раньше, просто читаются здесь и сейчас (свежие
+            // значения этого тика), а не в конце windup. Здесь же решается
+            // парирование — см. takeDamageParryable ниже.
             if (!enemy.attackHitApplied && enemy.sprite.currentFrame >= C.BEAST_ATTACK_STRIKE_FRAME) {
               enemy.attackHitApplied = true
               enemy.stunCount = 0 // замах дошёл до удара — сброс счётчика стан-резиста
@@ -642,8 +688,20 @@ export function createEnemySystem(deps: EnemyDeps) {
                 (enemy.facing === 1 && playerOnRight) ||
                 (enemy.facing === -1 && !playerOnRight)
               const canHit = (inMeleeReach || bodiesTouchingX) && verticalReach && playerInFront
-              if (canHit && deps.dodgeIframe.current <= 0) {
-                deps.takeDamage(enemy.attackDamage)
+              if (canHit) {
+                // Урон идёт через общую точку, и она же решает, отбил ли герой.
+                // Отбил — урона нет, а замах СГОРАЕТ: attackAnimPlaying снимаем
+                // здесь же, поэтому остаток анимации не доигрывается (в отличие
+                // от стана iceball, который только ставит её на паузу).
+                // Кулдаун атаки СПЕЦИАЛЬНО не трогаем: он уже взведён в конце
+                // windup (enemy.attackTimer = ENEMY_ATTACK_INTERVAL, см. выше),
+                // то есть «как после обычного удара» выполнено само.
+                if (deps.takeDamage(enemy.attackDamage)) {
+                  enemy.parryStunTimer = C.PARRY_STUN_MS
+                  enemy.attackAnimPlaying = false
+                  enemy.windingUp = false
+                  enemy.windupTimer = 0
+                }
               }
             }
             if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {
