@@ -1,4 +1,4 @@
-import { CONSUMABLES, consumableSkillBook, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 
@@ -130,6 +130,12 @@ export type LoginResponse = {
     // `undefined`, типизированный как объект, на старом или подменённом ответе.
     // Разбирать ТОЛЬКО через readSkillLevels ниже.
     skillLevels?: Record<string, number>
+    // Результативные применения каждого навыка, накопленные в счёт СЛЕДУЮЩЕГО
+    // уровня (02.10.2026). Опциональное по той же причине, что skillLevels
+    // выше. Разбирать ТОЛЬКО через readSkillUses: null значит «сервер не
+    // назвал», а НЕ «применений нет» — полоса «X / Y» в карточке навыка при
+    // null показывает прочерк, а не ноль из воздуха.
+    skillUses?: Record<string, number>
     // Склад СТРАНИЦ книг — объектом по id каталога (`{scroll_fire: N}`).
     // Отдельным полем от consumables намеренно: страницы ячейку сумки НЕ
     // тратят, и свалить их в один объект значило бы различать это по id.
@@ -466,7 +472,37 @@ export type RunResultSummary = {
    * consumables выше.
    */
   scrolls?: Record<string, number>
+  /**
+   * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень (02.10.2026). Пустой список —
+   * самый частый исход (первый уровень стоит 30 применений), и экран итогов
+   * тогда о навыках не пишет ничего.
+   *
+   * ⚠️ КОПИЯ серверного типа (`server/src/game.ts`, SkillLevelUp) — менять
+   * парами, сверяющего скрипта у этой пары нет (см. CLAUDE.md, таблица копий).
+   *
+   * НЕ опциональное, в отличие от складов выше: finishRunExplore прогоняет поле
+   * через readSkillLevelUps, поэтому здесь это всегда массив — пустой у старого
+   * сервера, который поля не присылает.
+   */
+  skillLevelUps: SkillLevelUp[]
+  /**
+   * Уровни и остатки применений ПОСЛЕ забега — абсолютные, как trophies/strength
+   * выше. Нужны, чтобы карточка навыка показала новый уровень и новую полосу
+   * сразу, а не дорановые числа до следующего логина. Опциональные по той же
+   * причине, что consumables/scrolls выше; разбирать через readSkillLevels/
+   * readSkillUses.
+   */
+  skillLevels?: Record<string, number>
+  skillUses?: Record<string, number>
 }
+
+/**
+ * Один выросший навык: его id и НОВЫЙ уровень.
+ *
+ * Считает сервер, а не клиент сравнением двух наборов: пороги и остатки
+ * применений живут только в БД.
+ */
+export type SkillLevelUp = { skillId: SkillBookSkillId; level: number }
 
 // Response shape of POST /run/finish-explore (server/src/routes/run.ts).
 export type FinishExploreResult = RunResultSummary
@@ -566,8 +602,13 @@ export async function finishRunExplore(
   // Сработал ли оберег от смерти. Сервер верит так же, как `died` (бой целиком
   // на клиенте), но проверяет, что оберег вообще был взят в забег — иначе 400.
   charmUsed?: boolean,
+  // Результативные применения каждого навыка за забег (Explore.tsx:
+  // skillUsesRef — считаются по ФАКТУ попадания/лечения, не по нажатию). Из них
+  // сервер растит уровни навыков, своей формулой и своими порогами. Доверие то
+  // же, что у четырёх счётчиков выше: попал ли удар, знает только клиент.
+  skillUses?: Record<string, number>,
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed })
+  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -636,7 +677,15 @@ export async function finishRunExplore(
         // Ответ финиша разбирается кастом (единственный такой эндпоинт в файле,
         // см. комментарий к readRunDrops). Добыча — новое поле, и её проверяем
         // здесь, чтобы ниже по коду это всегда были массивы, а не «что пришло».
-        return { ...data, drops: readRunDrops(data.drops), dropsLost: readRunDrops(data.dropsLost) }
+        return {
+          ...data,
+          drops: readRunDrops(data.drops),
+          dropsLost: readRunDrops(data.dropsLost),
+          // Выросшие навыки — тем же приёмом и по той же причине, что добыча:
+          // ответ разбирается кастом, поэтому новое поле проверяется здесь,
+          // чтобы ниже по коду это всегда был массив, а не «что пришло».
+          skillLevelUps: readSkillLevelUps(data.skillLevelUps),
+        }
       } catch (e) {
         clearTimeout(timer)
         lastKind = timedOut ? 'timeout' : 'network'
@@ -874,6 +923,16 @@ export type RunProgressSnapshot = {
   skillDamageDealt: number
   healedAmount: number
   damageTaken: number
+  /**
+   * Результативные применения КАЖДОГО навыка с начала забега (02.10.2026) —
+   * пятое поле того же среза, а не отдельный запрос: применения растят уровень
+   * навыка ровно тем же путём, что четыре счётчика выше растят статы, и у
+   * брошенного забега их подхватывает тот же /auth/login.
+   *
+   * Все пять навыков всегда, даже нулями: сервер разбирает срез СТРОГО, и
+   * половина объекта означала бы для него испорченный срез (400).
+   */
+  skillUses: Record<SkillBookSkillId, number>
 }
 
 export class ProgressError extends Error {
@@ -1034,6 +1093,8 @@ export type ProfileResult = {
   equippedSkills: string[] | null
   /** null — сервер не назвал уровни навыков (см. readSkillLevels). */
   skillLevels: Record<SkillBookSkillId, number> | null
+  /** null — сервер не назвал применения навыков (см. readSkillUses). */
+  skillUses: Record<SkillBookSkillId, number> | null
   /** null — сервер не назвал счётчики улучшений (см. readUpgrades). */
   upgrades: UpgradeCounts | null
 }
@@ -1054,6 +1115,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophyGoldRate?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
+    skillUses?: unknown
     upgrades?: unknown
   }>(
     `${SERVER_URL}/character/profile`,
@@ -1069,6 +1131,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
+    skillUses: readSkillUses(raw.skillUses),
     upgrades: readUpgrades(raw.upgrades),
   }
 }
@@ -1318,6 +1381,54 @@ export function readSkillLevels(raw: unknown): Record<SkillBookSkillId, number> 
     // данные, а не «просто мало».
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return null
     out[skillId] = v
+  }
+  return out
+}
+
+/**
+ * Разбор применений навыков (логин, профиль, финиш забега).
+ *
+ * Тот же контракт, что у readSkillLevels выше, с одним отличием: ноль здесь
+ * ЗАКОННЫЙ и самый частый (навык ещё не применяли с прошлого повышения),
+ * поэтому годное значение — целое >= 0, а не >= 1.
+ */
+export function readSkillUses(raw: unknown): Record<SkillBookSkillId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const spec of CONSUMABLES) {
+    const skillId = consumableSkillBook(spec)
+    if (skillId === null) continue
+    const v = record[skillId]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[skillId] = v
+  }
+  return out
+}
+
+/**
+ * Разбор списка выросших навыков из ответа финиша (и из interruptedRun логина).
+ *
+ * Нужен по той же причине, что readRunDrops: ответ финиша разбирается кастом,
+ * поэтому новое поле проверяется отдельно и ровно там, где возвращается.
+ *
+ * Негодная запись выбрасывается ПОШТУЧНО, а весь список — нет: уровень сервер
+ * УЖЕ записал, и потерять здесь можно только строчку на экране. Поля нет вовсе
+ * (старый сервер) — пустой список: у такого сервера уровни и не росли.
+ *
+ * id сверяется с каталогом (parseSkillBookSkillId), иначе на экране итогов
+ * оказалась бы строка без печати и без имени — «вырос неизвестно кто».
+ */
+export function readSkillLevelUps(raw: unknown): SkillLevelUp[] {
+  if (!Array.isArray(raw)) return []
+  const out: SkillLevelUp[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    const skillId = parseSkillBookSkillId(e.skillId)
+    if (skillId === null) continue
+    if (typeof e.level !== 'number' || !Number.isInteger(e.level) || e.level < 1) continue
+    out.push({ skillId, level: e.level })
   }
   return out
 }

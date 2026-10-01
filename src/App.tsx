@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readSkillLevels, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
@@ -17,6 +17,7 @@ import { itemIconSrc } from './itemIcons'
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
 import { consumableMechanicLine, skillBookLine } from './skillBooks'
+import { skillUsesThreshold } from './skillLevels'
 // Каталог улучшений — общая пара с сервером (src/upgrades.ts ↔
 // server/src/upgrades.ts, байт-в-байт). Цена, шаг и тексты берутся ТОЛЬКО
 // оттуда: цену применяет сервер, и своя копия формулы разошлась бы с ней.
@@ -42,6 +43,14 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * ⚠️ Ни на что в бою пока не влияет — что даёт уровень, не решено.
    */
   skillLevels: Record<SkillBookSkillId, number> | null
+  /**
+   * Результативные применения каждого навыка, накопленные в счёт СЛЕДУЮЩЕГО
+   * уровня (колонки Character.skillUses*). Растут в забегах — их считает
+   * Explore и отдаёт серверу, сервер превращает в уровни (02.10.2026).
+   * null — сервер не назвал (см. readSkillUses). Прочерк, а не ноль: «полоса
+   * пуста» и «сколько набрано, неизвестно» — разные сообщения.
+   */
+  skillUses: Record<SkillBookSkillId, number> | null
   /**
    * Сколько улучшений каждого вида куплено (колонки Character.attackUpgrades /
    * armorUpgrades). От них зависят УРОН и БРОНЯ.
@@ -381,6 +390,25 @@ function devSkillLevels(): Record<SkillBookSkillId, number> {
   }
   return out
 }
+/**
+ * TEMP_DEV_SKILL_USES — ТЕСТОВЫЕ применения каждого навыка для той же
+ * офлайн-заглушки. Настоящие лежат в колонках Character.skillUses* и приходят
+ * полем character.skillUses в ответе логина.
+ *
+ * Не ноль и не «порог минус один»: при пороге уровня 3 (52 применения) это
+ * показывает полосу ЗАПОЛНЕННОЙ ПРИМЕРНО НА ТРЕТЬ — видно и что число берётся
+ * из данных, и что полоса считает долю, а не стоит в одном из двух крайних
+ * положений. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
+ */
+const TEMP_DEV_SKILL_USES = 17
+function devSkillUses(): Record<SkillBookSkillId, number> {
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const c of CONSUMABLES) {
+    const skillId = consumableSkillBook(c)
+    if (skillId !== null) out[skillId] = TEMP_DEV_SKILL_USES
+  }
+  return out
+}
 
 // Затемнение фона вкладки "Исследовать" (подобрано вживую, см. историю)
 const EXPLORE_BG_TOP_DARKNESS = 0.77
@@ -674,7 +702,7 @@ export default function App() {
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
       // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock() })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
@@ -704,7 +732,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls) })
     setEnergyBase(data.character.energy)
     setEnergyBaseAt(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
@@ -883,8 +911,10 @@ export default function App() {
           name: spec.nameRu,
           desc: spec.desc as string | null,
           // «Что делает» — из боевых констант, та же строка, что в
-          // магазине и в карточке навыка на «Персонаже».
-          stat: consumableMechanicLine(spec),
+          // магазине и в карточке навыка на «Персонаже». Числа урона и лечения
+          // в ней считаются от УРОВНЯ ГЕРОЯ по этому навыку (02.10.2026),
+          // поэтому уровни передаются внутрь.
+          stat: consumableMechanicLine(spec, player?.skillLevels ?? null),
           qty: player?.consumables?.[spec.id] ?? 0,
           iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
           equipped: false,
@@ -907,8 +937,8 @@ export default function App() {
         desc: spec.desc as string | null,
         // Строка механики — ровно та же, что в витрине магазина, и из
         // той же функции: у камня и оберега из эффекта каталога, у книги
-        // из боевых констант скилла.
-        stat: consumableMechanicLine(spec),
+        // из боевых констант скилла (с поправкой на уровень героя).
+        stat: consumableMechanicLine(spec, player?.skillLevels ?? null),
         qty: player?.consumables?.[spec.id] ?? 0,
         iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
         equipped: false,
@@ -1008,6 +1038,10 @@ export default function App() {
       // (старый сервер) — прежний остаётся как есть, выдуманный не подставляем.
       // Без этого выпавшая страница не появилась бы в сумке до логина.
       const scrollStockAfter = readScrolls(result.scrolls)
+      // Уровни и применения навыков после забега — тем же приёмом и по той же
+      // причине (null = сервер не назвал, мержить нечего).
+      const skillLevelsAfter = readSkillLevels(result.skillLevels)
+      const skillUsesAfter = readSkillUses(result.skillUses)
       setPlayer(prev => prev ? {
         ...prev,
         ...(spentStock !== null ? { consumables: spentStock } : {}),
@@ -1018,6 +1052,12 @@ export default function App() {
         agility: result.agility,
         level: result.level,
         potions: result.potions,
+        // Уровни навыков и остатки применений ПОСЛЕ забега — тем же приёмом,
+        // что склад расходников выше: поля нет (старый сервер) — прежние
+        // остаются как есть. Без этого карточка навыка показывала бы дорановый
+        // уровень рядом с сообщением «Уровень N» на экране итогов.
+        ...(skillLevelsAfter !== null ? { skillLevels: skillLevelsAfter } : {}),
+        ...(skillUsesAfter !== null ? { skillUses: skillUsesAfter } : {}),
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -1183,6 +1223,10 @@ export default function App() {
         scrolls: result.scrolls,
         equippedSkills: result.equippedSkills,
         skillLevels: result.skillLevels,
+        // skillUses здесь НЕ мержится намеренно: книга растит уровень и счётчик
+        // применений не трогает (решение дизайнера), поэтому ручки книг его и
+        // не присылают. Полоса «X / Y» после улучшения пересчитается сама —
+        // знаменатель считается от НОВОГО уровня (skillUsesThreshold).
       } : prev)
       if (result.consumables === null || result.scrolls === null || result.equippedSkills === null || result.skillLevels === null) {
         console.error('Skill action: сервер ответил не полностью', action.kind, result)
@@ -1928,6 +1972,13 @@ export default function App() {
                 const book = bookBySkillId(skillId)
                 // Уровень: null значит «сервер не назвал» — прочерк, а не 1.
                 const level = p.skillLevels?.[skillId] ?? null
+                // Применения в счёт следующего уровня и порог, до которого их
+                // копить. null по той же причине и с тем же смыслом, что level.
+                const uses = p.skillUses?.[skillId] ?? null
+                // Порог считается от уровня, поэтому без уровня его нет вовсе:
+                // `level ?? 1` подставил бы здесь порог первого уровня, то есть
+                // показал бы полосу, посчитанную не от того числа.
+                const usesNeeded = level === null ? null : skillUsesThreshold(level)
                 return (
                 <div
                   onClick={() => { setHeroSkillSelected(null); setForgetConfirm(false); setSkillActionError(null) }}
@@ -1963,13 +2014,32 @@ export default function App() {
                         <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
                           {level === null ? 'Уровень — (неизвестен)' : `Уровень ${level}`}
                         </div>
+                        {/* Полоса до следующего уровня: сколько результативных
+                            применений набрано из нужных. Знаменатель —
+                            skillUsesThreshold(уровень) из общей с сервером пары
+                            (src/skillLevels.ts), тот же порог, по которому
+                            сервер реально повышает уровень.
+                            Оба числа неизвестны (сервер не назвал) — полосы нет
+                            вовсе, вместо выдуманного нуля: прочерк уже сказан
+                            строкой «Уровень — (неизвестен)» выше. */}
+                        {uses !== null && usesNeeded !== null && (
+                          <div style={{ marginTop:5 }}>
+                            <div style={{ height:3, borderRadius:2, background:C.nicheDeep, overflow:'hidden' }}>
+                              <div style={{
+                                width:`${Math.min(100, Math.round((uses / usesNeeded) * 100))}%`,
+                                height:'100%', background:C.glowMid,
+                              }} />
+                            </div>
+                            <div style={{ fontSize:10, color:C.textDim, marginTop:3 }}>{uses} / {usesNeeded}</div>
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     {/* «Что делает» — из боевых констант, не текстом. Та же
                         функция, что в карточке книги в магазине и в сумке. */}
                     <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
-                      <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId)}</div>
+                      <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId, level)}</div>
                     </div>
 
                     {forgetConfirm ? (
@@ -2199,7 +2269,7 @@ export default function App() {
                 // Строка механики собирается ИЗ ДАННЫХ: у камня и оберега из
                 // эффекта каталога, у книги — из боевых констант скилла. Числа
                 // текстом здесь не дублируются (см. consumableMechanicLine).
-                mechanic: { line: consumableMechanicLine(c) },
+                mechanic: { line: consumableMechanicLine(c, player?.skillLevels ?? null) },
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
@@ -3482,7 +3552,7 @@ export default function App() {
                             функция, что в магазине и в сумке; книг в этом списке
                             не бывает (он фильтрован по runSlot), но развилка
                             всё равно одна на весь клиент. */}
-                        <div style={{ fontSize:10, color:C.textDim }}>{consumableMechanicLine(c)}</div>
+                        <div style={{ fontSize:10, color:C.textDim }}>{consumableMechanicLine(c, player?.skillLevels ?? null)}</div>
                       </div>
                       <div style={{ fontSize:12, color:C.bone, flexShrink:0 }}>×{stock[c.id] ?? 0}</div>
                     </div>
@@ -3668,7 +3738,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Карточка предмета — ПОСЛЕДНИМ в дереве, а не внутри вкладки: её
           открывают и «Инвентарь», и гнёзда снаряжения на «Персонаже».

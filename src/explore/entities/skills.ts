@@ -168,6 +168,36 @@ export type SkillsDeps = {
   // тихий фолбэк, в проекте запрещён (см. CLAUDE.md, Design Decisions).
   // Сузим вместе с реализацией последнего из пяти.
   equipped: [string | null, string | null]
+
+  /**
+   * Во сколько раз УРОВЕНЬ навыка усиливает его урон и лечение
+   * (skillPowerMult, общая пара src/skillLevels.ts <-> server/src/skillLevels.ts).
+   * По множителю на каждый из пяти, 1 — базовая сила (уровень 1).
+   *
+   * Плоский объект, а не реф и не функция: уровень за забег не меняется
+   * (растёт только на закрытии забега), поэтому снимается ОДИН раз в setup() —
+   * тем же приёмом, что maxHp выше и attackDamageRef у обычной атаки.
+   *
+   * ⚠️ Умножает ТОЛЬКО урон и лечение. Перезарядки, длительность заморозки,
+   * число тиков кровотечения и импульсов лечения уровень НЕ трогает — решение
+   * дизайнера; поэтому множитель стоит у каждого ЧИСЛА УРОНА поимённо, а не
+   * общим коэффициентом где-то в одном месте.
+   */
+  skillPower: Record<SkillId, number>
+
+  /**
+   * Отметить РЕЗУЛЬТАТИВНОЕ применение навыка: из этих отметок сервер растит
+   * уровень (см. docs/skills.md).
+   *
+   * Зовётся НЕ БОЛЬШЕ ОДНОГО РАЗА ЗА НАЖАТИЕ и только когда применение
+   * действительно сработало: шары, рывок и кровотечение задели хотя бы одного
+   * врага, исцеление реально долило больше нуля HP. Промах, выстрел в стену и
+   * хил на полном здоровье не считаются — за них уровень не растёт.
+   *
+   * Счётчик живёт в Explore.tsx (skillUsesRef) и уезжает на сервер тем же
+   * путём, что четыре счётчика роста статов: в срезе /run/progress и на финише.
+   */
+  onSkillUse: (skillId: SkillId) => void
 }
 
 // Рантайм-двойник типа SkillId выше (тип в рантайме не существует). Нужен
@@ -298,6 +328,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // индекс с него съехал бы. Босс попадает сюда тем же объектом, отдельного
   // флага под него не заводим.
   const dashHitTargets = new Set<Enemy | Boss>()
+  // Применение ТЕКУЩЕГО рывка уже засчитано. Отдельный флаг рядом с
+  // dashHitTargets и чистится там же, на старте рывка: рывок бьёт каждый кадр и
+  // может задеть нескольких, а применение у него РОВНО ОДНО на нажатие.
+  let dashUseCounted = false
+  // То же для текущего каста исцеления: импульсов HEAL_PULSE_COUNT, долить
+  // может каждый, но применение одно на нажатие.
+  let healUseCounted = false
   // Дуга взмаха: разовая, живёт до последнего кадра. facing снимается на
   // старте и дальше не меняется — иначе дуга перевернулась бы посреди взмаха,
   // если игрок нажал другое направление.
@@ -358,8 +395,16 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // импульс отдельный: на 95/100 первый импульс долечит до сотни, второй
   // дольёт ноль. Это нормальный исход, не ошибка, сообщать не о чем.
   function applyHealPulse() {
-    deps.healPlayer(deps.maxHp * C.HEAL_PULSE_FRAC)
+    const healed = deps.healPlayer(deps.maxHp * C.HEAL_PULSE_FRAC * deps.skillPower.heal)
     healPulsesLeft -= 1
+    // Результативным считается каст, в котором ХОТЬ ОДИН импульс реально долил
+    // HP (healPlayer возвращает фактически долитое). Хил на полном здоровье —
+    // решение игрока, уровень за него не растёт. Один раз на каст: флаг
+    // сбрасывает castHeal.
+    if (healed > 0 && !healUseCounted) {
+      healUseCounted = true
+      deps.onSkillUse('heal')
+    }
   }
 
   // Аура СЛЕДУЕТ за героем, а не остаётся в точке применения — позиция
@@ -548,7 +593,11 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // НАМЕРЕННО нет, хотя скиллам она доступна и разовые попадания
         // fireball/dash её зовут: тик идёт раз в секунду пять секунд подряд и
         // держал бы цель в стан-локе весь этот срок.
-        const dmg = Math.floor(bleed.maxHp * C.BLEED_FRAC_PER_TICK)
+        // Уровень навыка усиливает КАЖДЫЙ тик (см. deps.skillPower), а число
+        // тиков и длительность не трогает — решение дизайнера. Множитель
+        // читается здесь, а не запоминается в BleedState: за забег уровень не
+        // меняется, так что это то же число, что было на наложении.
+        const dmg = Math.floor(bleed.maxHp * C.BLEED_FRAC_PER_TICK * deps.skillPower.slash)
         // Источник расследования — игрок НА МОМЕНТ ТИКА (не на момент
         // наложения): кровотечение тикает 5 секунд, за это время игрок
         // успевает уйти, и вести врага к месту, где его давно нет, незачем.
@@ -732,6 +781,11 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const h = drawH * scale
     const w = h * (C.FIREBALL_IMPACT_CELL_W / C.FIREBALL_IMPACT_CELL_H)
     const blast = { x: worldX - w / 2, y: worldY - h / 2, w, h }
+    // Задел ли взрыв хоть кого-то — от этого зависит, засчитывать ли
+    // применение. Один снаряд = один взрыв = не больше одного применения, а
+    // снаряд рождается ровно одним нажатием (см. onCastSpawnFrame), поэтому
+    // отдельного флага «за нажатие» здесь не нужно.
+    let blastHitAny = false
 
     // Каждая цель — ровно один раз за взрыв: список врагов проходится один
     // раз и хранит РАЗНЫЕ объекты, босс лежит отдельно от него (deps.boss) и
@@ -754,7 +808,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // worldX, и это было ошибкой: взрыв случается при касании цели, в ~85px
       // от неё, так что зверь доходил до места взрыва за ~0.75с, вставал и
       // возвращался в патруль, ни на шаг не приблизившись к игроку.
-      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * spec.damageFrac), deps.skillDamageDealt, sourceX)
+      blastHitAny = true
+      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * spec.damageFrac * deps.skillPower[spec.id]), deps.skillDamageDealt, sourceX)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Взрыв разовый, поэтому стан-лока он не даёт: каждая
       // цель проходит этот цикл один раз за взрыв.
@@ -767,11 +822,18 @@ export function createSkillsSystem(deps: SkillsDeps) {
     }
 
     const boss = deps.boss.current
+    // Применение засчитывается ДО выходов по боссу: врагов взрыв мог задеть, а
+    // босса в забеге может не быть вовсе.
+    if (blastHitAny) deps.onSkillUse(spec.id)
     if (!boss || boss.dead) return
     const d = overlapDepth(blast, bossBox(boss))
     if (d.x <= 0 || d.y <= 0) return
-    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * spec.damageFrac), deps.skillDamageDealt, sourceX)
+    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * spec.damageFrac * deps.skillPower[spec.id]), deps.skillDamageDealt, sourceX)
     if (!bossDied) deps.applyBossHitReaction(boss)
+    // Босс задет — применение результативно, даже если обычных врагов рядом не
+    // было. Повторно не засчитается: blastHitAny выставляется только в цикле по
+    // врагам, а эта ветка выполняется один раз за взрыв.
+    if (!blastHitAny) deps.onSkillUse(spec.id)
     // Босс станится наравне с обычным врагом (см. stunTimer в boss.ts).
     if (!bossDied && stunMs > 0) boss.stunTimer = stunMs
   }
@@ -861,6 +923,15 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // выше/ниже. Направления здесь нет намеренно (в отличие от
   // pickSlashTarget): рывок бьёт всех, сквозь кого прошёл, а едет он всегда
   // вперёд по facing.
+  // Применение рывка — РОВНО ОДНО за нажатие, даже если он задел трёх целей на
+  // трёх разных кадрах. Отдельной функцией, потому что точек попадания две
+  // (враг и босс), и писать условие дважды значило бы однажды его разойтись.
+  function countDashUse() {
+    if (dashUseCounted) return
+    dashUseCounted = true
+    deps.onSkillUse('dash')
+  }
+
   function applyDashHits() {
     const box = deps.getPlayerCombatBox()
 
@@ -883,7 +954,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ветки на смерть от рывка нет, как и у кровотечения. Возврат нужен
       // ровно для одного: не трясти труп (см. ниже).
       // Источник — сам игрок: рывок это контактный удар телом.
-      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * C.DASH_DAMAGE_FRAC), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+      countDashUse()
+      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * C.DASH_DAMAGE_FRAC * deps.skillPower.dash), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Ровно один раз за рывок на цель: дедуп тот же
       // dashHitTargets, что и у урона — цель добавлена в набор строкой выше.
@@ -899,7 +971,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
       box.y + box.h > boss.y
     if (!bossOverlap) return
     dashHitTargets.add(boss)
-    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * C.DASH_DAMAGE_FRAC), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+    countDashUse()
+    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * C.DASH_DAMAGE_FRAC * deps.skillPower.dash), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
     if (!bossDied) deps.applyBossHitReaction(boss)
   }
 
@@ -938,7 +1011,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Цели может не быть — тогда просто взмах без кровотечения. "Нет цели" НЕ
     // входит в гейт нажатия: скилл сработал, кулдаун потрачен.
     const target = pickSlashTarget(slashSwingFacing)
-    if (target) applyBleed(target)
+    if (target) {
+      applyBleed(target)
+      // Цель НАЙДЕНА — кровотечение наложено, применение результативно.
+      // Считается здесь, а не на тике: тиков пять, а применение одно, и взмах
+      // в пустоту (target === null) уровень растить не должен.
+      deps.onSkillUse('slash')
+    }
   }
 
   // Зовётся из Explore.tsx РОВНО в той точке, где анимация каста дошла до
@@ -973,6 +1052,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // для предыдущей ауры, и порядок наоборот стёр бы свежее число.
     spawnHealAura()
     healPulsesLeft = C.HEAL_PULSE_COUNT
+    // Новый каст — новое право засчитать применение (см. applyHealPulse).
+    // Сбрасывается ДО первого импульса, иначе он не засчитался бы.
+    healUseCounted = false
     applyHealPulse() // импульс в начале первого прохода
     if (!healAura) {
       // Кадров нет (см. spawnHealAura) — гнать импульсы нечему, аура не
@@ -1025,6 +1107,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // окончании рывка: так набор не зависит от того, чем рывок кончился
         // (доигранной анимацией, прыжком, хитстаном или смертью).
         dashHitTargets.clear()
+        // Там же, где список задетых, и по той же причине: право засчитать
+        // применение принадлежит ОДНОМУ рывку.
+        dashUseCounted = false
       }
       return
     }

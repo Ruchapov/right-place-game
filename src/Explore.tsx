@@ -47,7 +47,8 @@ import type { BeastFrames } from './explore/entities/enemy'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
-import { consumableById, consumableReviveFrac, type ConsumableId } from './consumables'
+import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
+import { skillPowerMult } from './skillLevels'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import { scrollById } from './scrolls'
@@ -174,6 +175,18 @@ type ExploreProps = {
   // скилла в таком состоянии показывает "?" вместо значка, а не притворяется
   // пустым слотом. В отличие от level/armor выше, тихого отката здесь НЕТ.
   equippedSkills?: string[]
+  /**
+   * Уровень КАЖДОГО навыка (App.tsx: player.skillLevels — приходят с сервера,
+   * /auth/login -> character.skillLevels). Из них считается множитель силы
+   * навыка (skillPowerMult, src/skillLevels.ts), который умножает урон и
+   * лечение скиллов в этом забеге.
+   *
+   * Проп НЕ ЗАДАН — в настоящей сессии это ошибка, и старт её отвергает (см.
+   * проверку в начале setup(), там же, где неизвестный урон оружия): уйти в
+   * забег с уровнем 1 вместо настоящего значило бы тихо ослабить все навыки
+   * игрока. Вне Telegram (офлайн-заглушка) уровни приходят из DevTester.
+   */
+  skillLevels?: Record<SkillBookSkillId, number>
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -366,6 +379,32 @@ const CHARM_BLINK_MS = 160
 
 // Всё, что уезжает в /run/finish-explore, одним снимком — в порядке аргументов
 // finishRunExplore. "Повторить сохранение" шлёт ровно его.
+/**
+ * Нулевой счётчик применений по ВСЕМ навыкам каталога.
+ *
+ * Собирается из каталога, а не литералом: шестая книга появится здесь сама, а
+ * литерал пришлось бы править вторым заходом — и до этого сервер получал бы
+ * срез без одного навыка, то есть 400 (он разбирает срез строго).
+ */
+function emptySkillUses(): Record<SkillBookSkillId, number> {
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const spec of CONSUMABLES) {
+    const skillId = consumableSkillBook(spec)
+    if (skillId !== null) out[skillId] = 0
+  }
+  return out
+}
+
+/** Совпадают ли два счётчика применений — для «срез не изменился» в sendProgress. */
+function sameSkillUses(a: Record<SkillBookSkillId, number>, b: Record<SkillBookSkillId, number>): boolean {
+  for (const spec of CONSUMABLES) {
+    const skillId = consumableSkillBook(spec)
+    if (skillId === null) continue
+    if (a[skillId] !== b[skillId]) return false
+  }
+  return true
+}
+
 type FinishPayload = {
   token: string
   closedEvents: number[]
@@ -382,6 +421,9 @@ type FinishPayload = {
   // «Повторить сохранение» обязано отправить ТОТ ЖЕ факт, иначе повтор списал бы
   // оберег по-другому.
   charmUsed: boolean
+  // Результативные применения навыков за забег. Снимком, по той же причине, что
+  // остальное: «Повторить сохранение» обязано отправить ТЕ ЖЕ числа.
+  skillUses: Record<SkillBookSkillId, number>
 }
 
 /**
@@ -715,7 +757,7 @@ function ResultsScreen({
               лишнего проверять не нужно. Левелап — заметнее (крупнее,
               FONT_DISPLAY, glowCore — тот же вес, что у заголовка экрана),
               отдельной строкой над списком статов. */}
-          {(result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp) && (
+          {(result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp || result.skillLevelUps.length > 0) && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                 <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
@@ -748,6 +790,27 @@ function ResultsScreen({
                     +{stat.value} {stat.label}
                   </div>
                 ))}
+              {/* Выросшие уровни навыков — печать навыка и его НОВЫЙ уровень
+                  (02.10.2026). Печать, а не название: тот же значок, что на
+                  кнопке этого навыка в бою и на гнезде «Персонажа», — игрок
+                  узнаёт его быстрее, чем прочитает имя. Число приходит от
+                  сервера (result.skillLevelUps): пороги и накопленные
+                  применения живут только в БД, и клиент их не считает.
+                  Пустой список — самый частый исход, строк тогда нет вовсе. */}
+              {result.skillLevelUps.map((up) => (
+                <div
+                  key={up.skillId}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}
+                >
+                  <img
+                    src={skillSealSrc(up.skillId)}
+                    alt=""
+                    draggable={false}
+                    style={{ width: 24, height: 24, objectFit: 'contain', display: 'block', flexShrink: 0 }}
+                  />
+                  Уровень {up.level}
+                </div>
+              ))}
             </div>
           )}
 
@@ -869,7 +932,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, consumables, onConsumablesSpent }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, consumables, onConsumablesSpent }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1027,6 +1090,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
   // тиру отдельно (по выданному на забег) и по сумме глотков — клиенту не
   // верим ни в общем числе, ни в раскладке по тирам.
   const potionsDrunkByTierRef = useRef<number[]>(emptyPotionStock())
+  // Сколько РЕЗУЛЬТАТИВНЫХ применений каждого навыка за забег (02.10.2026).
+  // Считает их модуль скиллов (deps.onSkillUse в entities/skills.ts) — по факту
+  // попадания или реального лечения, не по нажатию кнопки, и не больше одного
+  // на нажатие. Уезжает на сервер тем же путём, что четыре счётчика выше: в
+  // срезе /run/progress и в финише. Сервер растит из них уровень навыка своей
+  // формулой и своими порогами — клиент присылает сырьё, как и с ростом статов.
+  const skillUsesRef = useRef<Record<SkillBookSkillId, number>>(emptySkillUses())
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
@@ -1163,6 +1233,12 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // bonusLevels клиенту вообще не известен (нет такого пропа у Explore) —
       // заглушка 0, тем же приёмом, что и остальные поля выше.
       bonusLevels: 0,
+      // Вырос ли уровень навыка, клиент не знает: пороги и накопленные
+      // применения живут только в БД. Пустой список — честное «не знаю», и
+      // строка о навыке просто не рисуется, пока не придёт ответ сервера (тем
+      // же приёмом, что drops выше). skillLevels/skillUses не заполняем вовсе —
+      // они опциональные, и выдуманные числа попали бы прямо в player.
+      skillLevelUps: [],
     }
   }
 
@@ -1207,6 +1283,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       damageTaken: damageTakenRef.current,
       potionsDrunkByTier: [...potionsDrunkByTierRef.current],
       charmUsed: charmUsedRef.current,
+      skillUses: { ...skillUsesRef.current },
     }
     submitFinish()
   }
@@ -1233,6 +1310,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       payload.damageTaken,
       payload.potionsDrunkByTier,
       payload.charmUsed,
+      payload.skillUses,
     )
       .then((result) => {
         setRunResult(result)
@@ -1760,6 +1838,9 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       skillDamageDealt: skillDamageDealtRef.current,
       healedAmount: healedAmountRef.current,
       damageTaken: damageTakenRef.current,
+      // Копия, а не сам реф: снимок уедет в сеть и должен остаться тем, что был
+      // на момент отправки (progressSentRef сравнивается с ним потом).
+      skillUses: { ...skillUsesRef.current },
     }
     // Ничего не изменилось с прошлой УДАЧНОЙ отправки — на сервере уже лежит
     // ровно это. Сравнение с последним успехом, а не с последней попыткой:
@@ -1768,12 +1849,17 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
     // среза сервер и так читает нули (readRunProgress), так что пустой срез
     // ничего не добавил бы. Без этого каждый забег начинался бы с заведомо
     // бесполезного запроса, а тихий забег слал бы его каждые 20 секунд.
-    const sent = progressSentRef.current ?? { attackDamageDealt: 0, skillDamageDealt: 0, healedAmount: 0, damageTaken: 0 }
+    const sent = progressSentRef.current ?? { attackDamageDealt: 0, skillDamageDealt: 0, healedAmount: 0, damageTaken: 0, skillUses: emptySkillUses() }
     if (
       sent.attackDamageDealt === snapshot.attackDamageDealt &&
       sent.skillDamageDealt === snapshot.skillDamageDealt &&
       sent.healedAmount === snapshot.healedAmount &&
-      sent.damageTaken === snapshot.damageTaken
+      sent.damageTaken === snapshot.damageTaken &&
+      // Применения — пятое условие, и забыть его нельзя: состояние, в котором
+      // изменились ТОЛЬКО они, реально — кровотечение наложено (применение
+      // засчитано), а урон первого тика придёт только через секунду. Без этой
+      // строки такой срез не ушёл бы вовсе.
+      sameSkillUses(sent.skillUses, snapshot.skillUses)
     ) return
 
     const gen = runWriteGenRef.current
@@ -2205,6 +2291,24 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // Офлайн множитель ровно 1 — расходники без сервера не списываются, и
       // давать эффект бесплатно нельзя. Названо на той же оранжевой плашке.
       attackDamageRef.current = baseAttackDamage
+
+      // Множитель силы КАЖДОГО навыка от его уровня — снимается здесь, один раз
+      // на забег, рядом с уроном оружия и по тем же правилам: за забег уровень
+      // не меняется (растёт только на закрытии), а неизвестные данные — громкий
+      // throw, а не тихая единица. Уровень 1 вместо настоящего 40 ослабил бы
+      // ВСЕ навыки игрока, ничего об этом не сказав.
+      if (token && skillLevels === undefined) {
+        throw new Error('Уровни навыков неизвестны — профиль не загружен. Забег не начат, энергия не списана.')
+      }
+      const skillPower = {} as Record<SkillBookSkillId, number>
+      for (const spec of CONSUMABLES) {
+        const skillId = consumableSkillBook(spec)
+        if (skillId === null) continue
+        // Вне Telegram (token нет, уровней нет) — ровно 1, то есть базовая сила
+        // навыка. Это та же офлайн-заглушка, что урон без оружия выше, и она
+        // названа на оранжевой плашке.
+        skillPower[skillId] = skillLevels === undefined ? 1 : skillPowerMult(skillLevels[skillId])
+      }
 
       // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
       // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
@@ -2666,6 +2770,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         healPlayer: (amount: number) => healPlayerRef.current(amount),
         maxHp,
         healAuraFrames: healAuraFramesRef,
+        // Множитель силы от уровня навыка (снят выше, до /run/start-explore) и
+        // приёмник результативных применений. Второе пишет в тот же реф, что
+        // уезжает в срезе и финише.
+        skillPower,
+        onSkillUse: (skillId) => { skillUsesRef.current[skillId] += 1 },
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на
         // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
@@ -2990,6 +3099,7 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
+      skillUsesRef.current = emptySkillUses() // сброс на случай повторного запуска setup()
       potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
       // Окна прыжка — тоже на забег: setup() перезапускается БЕЗ размонтирования
       // (debug-переключатель карт), и недотаявший буфер выстрелил бы прыжком на

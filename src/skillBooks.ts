@@ -19,10 +19,27 @@ import {
 } from './explore/constants'
 import type { SkillId } from './explore/entities/skills'
 import { consumableEffectLine, consumableSkillBook, type Consumable, type SkillBookSkillId } from './consumables'
+import { skillPowerMult } from './skillLevels'
 
 /** Доля → целые проценты, как в consumableEffectLine. */
 function pct(frac: number): string {
   return String(Math.round(frac * 100))
+}
+
+/**
+ * Доля урона или лечения → проценты НА ЗАДАННОМ УРОВНЕ навыка (02.10.2026).
+ *
+ * Уровень null — «сервер уровней не назвал»: тогда вместо числа прочерк, а НЕ
+ * числа первого уровня. Подставить единицу значило бы показать игроку 40-го
+ * уровня силу новичка — тот самый тихий фолбэк, который в проекте запрещён
+ * (CLAUDE.md, Design Decisions).
+ *
+ * Применяется ТОЛЬКО к урону и лечению: перезарядки, заморозка и длительность
+ * кровотечения уровнем не меняются, поэтому у них остаётся sec() без поправки.
+ */
+function pctAt(frac: number, level: number | null): string {
+  if (level === null) return '—'
+  return pct(frac * skillPowerMult(level))
 }
 
 /**
@@ -44,33 +61,41 @@ function sec(ms: number): string {
  * перестанет совпадать с этим литералом (лишний ключ или недостающий), то есть
  * СБОРКА УПАДЁТ. Рантайм-списка id для этого не нужно.
  *
- * ⚠️ Места под «что будет после улучшения» здесь НЕТ: что именно даёт уровень
- * скилла, ещё не решено (docs/skills.md), а заглушка вида «+? урона» обещала бы
- * игроку неизвестное — тот же запрет, что на тихие фолбэки.
+ * ⚠️ С 02.10.2026 это ФУНКЦИЯ ОТ УРОВНЯ, а не готовая строка: уровень навыка
+ * усиливает его урон и лечение (skillPowerMult, src/skillLevels.ts), и строка
+ * обязана называть силу ТОГО САМОГО героя, который её читает. Иначе и витрина, и
+ * сумка, и карточка навыка продолжили бы показывать числа первого уровня тому, у
+ * кого уровень уже третий — ровно та ловушка, что была записана в docs/skills.md
+ * как «ловушка для того, кто будет делать эффект уровня».
+ *
+ * Одна карта на все три места намеренно: параметризовать уровнем только одно из
+ * них не вышло бы — строка собирается здесь, в одном экземпляре.
  */
-const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, string> = {
-  fireball:
+const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, (level: number | null) => string> = {
+  fireball: (level) =>
     `Огненный шар летит вперёд и взрывается о первого врага или стену. `
-    + `Урон: ${pct(FIREBALL_DAMAGE_FRAC)}% здоровья каждой цели в зоне взрыва. `
+    + `Урон: ${pctAt(FIREBALL_DAMAGE_FRAC, level)}% здоровья каждой цели в зоне взрыва. `
     + `Перезарядка ${sec(FIREBALL_COOLDOWN_MS)} с.`,
-  iceball:
+  iceball: (level) =>
     `Ледяной шар летит вперёд и взрывается о первого врага или стену. `
-    + `Урон: ${pct(ICEBALL_DAMAGE_FRAC)}% здоровья каждой цели в зоне взрыва, `
+    + `Урон: ${pctAt(ICEBALL_DAMAGE_FRAC, level)}% здоровья каждой цели в зоне взрыва, `
     + `заморозка ${sec(ICEBALL_STUN_MS)} с. Перезарядка ${sec(ICEBALL_COOLDOWN_MS)} с.`,
   // «в секунду» — не литерал: доля за тик приведена к секунде через сам тик
   // (BLEED_TICK_MS). Сделают тик чаще или реже — процент в строке пересчитается,
-  // а не станет врать.
-  slash:
-    `Удар клинком и кровотечение: ${pct(BLEED_FRAC_PER_TICK * (1000 / BLEED_TICK_MS))}% `
+  // а не станет врать. Уровень множит КАЖДЫЙ тик, поэтому и приведённую к
+  // секунде долю — тоже (длительность и число тиков он не трогает).
+  slash: (level) =>
+    `Удар клинком и кровотечение: ${pctAt(BLEED_FRAC_PER_TICK * (1000 / BLEED_TICK_MS), level)}% `
     + `здоровья цели в секунду, ${sec(BLEED_DURATION_MS)} с. `
     + `Повторный удар обновляет кровотечение. Перезарядка ${sec(SLASH_COOLDOWN_MS)} с.`,
   // Лечение идёт импульсами (HEAL_PULSE_COUNT штук по HEAL_PULSE_FRAC), а игрока
-  // интересует итог — поэтому произведение, а не доля одного импульса.
-  heal:
-    `Восстанавливает ${pct(HEAL_PULSE_FRAC * HEAL_PULSE_COUNT)}% здоровья героя. `
+  // интересует итог — поэтому произведение, а не доля одного импульса. Уровень
+  // усиливает каждый импульс, значит и произведение.
+  heal: (level) =>
+    `Восстанавливает ${pctAt(HEAL_PULSE_FRAC * HEAL_PULSE_COUNT, level)}% здоровья героя. `
     + `Перезарядка ${sec(HEAL_COOLDOWN_MS)} с.`,
-  dash:
-    `Рывок вперёд сквозь врагов. Урон: ${pct(DASH_DAMAGE_FRAC)}% здоровья каждого задетого. `
+  dash: (level) =>
+    `Рывок вперёд сквозь врагов. Урон: ${pctAt(DASH_DAMAGE_FRAC, level)}% здоровья каждого задетого. `
     + `Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
 }
 
@@ -99,9 +124,15 @@ export function skillSealSrc(skillId: SkillBookSkillId): string {
   return `${import.meta.env.BASE_URL}assets/icons/${SKILL_SEAL_FILE[skillId]}`
 }
 
-/** Что делает скилл, который улучшает книга. */
-export function skillBookLine(skillId: SkillBookSkillId): string {
-  return SKILL_BOOK_LINES[skillId]
+/**
+ * Что делает скилл, который улучшает книга, НА УРОВНЕ ГЕРОЯ по этому скиллу.
+ *
+ * `level === null` — уровни неизвестны (сервер их не назвал): числа урона и
+ * лечения становятся прочерком, см. pctAt. Перезарядки в строке остаются — они
+ * от уровня не зависят.
+ */
+export function skillBookLine(skillId: SkillBookSkillId, level: number | null): string {
+  return SKILL_BOOK_LINES[skillId](level)
 }
 
 /**
@@ -113,11 +144,17 @@ export function skillBookLine(skillId: SkillBookSkillId): string {
  * Развилка обязана быть одна: две копии разошлись бы, и один экран показывал бы
  * не то, что другой.
  */
-export function consumableMechanicLine(spec: Consumable): string {
+export function consumableMechanicLine(
+  spec: Consumable,
+  // Уровни навыков ГЕРОЯ (App.tsx: player.skillLevels). null — сервер их не
+  // назвал; тогда у книг числа урона и лечения станут прочерком, а у камня и
+  // оберега строка не изменится вовсе (их числа от уровня не зависят).
+  skillLevels: Record<SkillBookSkillId, number> | null,
+): string {
   // Через consumableSkillBook, а не прямым разбором union: каталог разбирает свой
   // эффект сам, один раз (там же это делают consumableAttackBonus/ReviveFrac).
   const skillId = consumableSkillBook(spec)
-  if (skillId !== null) return skillBookLine(skillId)
+  if (skillId !== null) return skillBookLine(skillId, skillLevels?.[skillId] ?? null)
   const line = consumableEffectLine(spec)
   if (line === null) {
     // Недостижимо: null каталог отдаёт только на skillBook, а он разобран выше.

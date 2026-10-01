@@ -1,6 +1,7 @@
 import type { RunResultSummary, AbandonedRunSummary } from '../api'
 import * as C from '../explore/constants'
 import { C as Theme } from './theme'
+import { skillSealSrc } from '../skillBooks'
 
 // Окно о ПРОШЛОМ забеге, который сервер закрыл сам при входе (/auth/login
 // отдаёт либо interruptedRun, либо abandonedRun — поля взаимоисключающие, см.
@@ -222,7 +223,8 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
             (notice.result.strengthGained > 0 ||
               notice.result.enduranceGained > 0 ||
               notice.result.agilityGained > 0 ||
-              notice.result.leveledUp) && (
+              notice.result.leveledUp ||
+              notice.result.skillLevelUps.length > 0) && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                   <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
@@ -255,6 +257,25 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                       +{stat.value} {stat.label}
                     </div>
                   ))}
+                {/* Выросшие навыки — КОПИЯ строки из ResultsScreen
+                    (Explore.tsx), менять вместе. Брошенный забег растит уровни
+                    навыков по-настоящему (из того же среза, что статы, см.
+                    /auth/login), поэтому прятать это здесь было бы молчанием о
+                    настоящем изменении персонажа. */}
+                {notice.result.skillLevelUps.map((up) => (
+                  <div
+                    key={up.skillId}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}
+                  >
+                    <img
+                      src={skillSealSrc(up.skillId)}
+                      alt=""
+                      draggable={false}
+                      style={{ width: 24, height: 24, objectFit: 'contain', display: 'block', flexShrink: 0 }}
+                    />
+                    Уровень {up.level}
+                  </div>
+                ))}
               </div>
             )}
 
