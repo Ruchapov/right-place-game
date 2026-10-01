@@ -17,7 +17,7 @@
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
-import { scaledBossMaxHp, scaledEnemyMaxHp } from './game.js'
+import { scaledBossMaxHp, scaledEnemyMaxHp, SKILL_BOOK_SKILL_IDS } from './game.js'
 import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
@@ -41,8 +41,9 @@ import type { ScrollId } from './scrolls.js'
 // `progress` — последний СРЕЗ сырых счётчиков забега, пишет /run/progress
 // ЗАМЕНОЙ (клиент шлёт накопленное с начала забега, а не дельту, поэтому
 // потерянный по дороге срез ничего не ломает — следующий перезапишет). Нужен
-// ровно для одного: у брошенного забега /auth/login больше не теряет рост
-// статов. Необязательное, читать только через readRunProgress.
+// ровно для одного: у брошенного забега /auth/login больше не теряет ни рост
+// статов, ни рост уровней навыков (skillUses внутри того же среза).
+// Необязательное, читать только через readRunProgress.
 // `confirmed` — дошёл ли клиент до готовности показать игру (POST /run/ready).
 // Забег, брошенный ДО этого момента, игрок не видел вовсе: закрывать его как
 // смерть значит штрафовать за упавшую текстуру или оборванную сеть. Поля НЕТ у
@@ -64,12 +65,67 @@ export type RunProgress = {
   skillDamageDealt: number
   healedAmount: number
   damageTaken: number
+  /**
+   * Сколько РЕЗУЛЬТАТИВНЫХ применений каждого навыка клиент насчитал за забег
+   * (02.10.2026). Пятое поле того же среза, и это намеренно: применения
+   * приходят тем же путём и по тем же правилам, что четыре счётчика выше
+   * (срез /run/progress заменой + финиш), поэтому смерть и брошенный забег
+   * обрабатывают их тем же кодом — нового правила не заводилось.
+   *
+   * Что считается применением — правило КЛИЕНТА (он один знает, попал ли
+   * удар): шары, рывок и кровотечение задели хотя бы одного врага, исцеление
+   * восстановило больше нуля HP, не больше одного за нажатие. См.
+   * docs/skills.md.
+   *
+   * Всегда ПОЛНЫЙ объект по пяти навыкам каталога: у забега без среза и у
+   * забега, начатого до появления поля, это честные нули (см. parseRunProgress).
+   */
+  skillUses: Record<SkillBookSkillId, number>
 }
 
 const RUN_PROGRESS_FIELDS = ['attackDamageDealt', 'skillDamageDealt', 'healedAmount', 'damageTaken'] as const
 
+export function emptySkillUses(): Record<SkillBookSkillId, number> {
+  const out = {} as Record<SkillBookSkillId, number>
+  for (const id of SKILL_BOOK_SKILL_IDS) out[id] = 0
+  return out
+}
+
+// Годное применение — ЦЕЛОЕ неотрицательное число, в отличие от счётчиков урона
+// выше (там допустима дробь: урон тика кровотечения считается долей hp). Нажатий
+// не бывает полтора, и дробь здесь означала бы испорченное поле.
+function isSkillUseValue(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0
+}
+
+// СТРОГО: либо все пять навыков названы годными числами, либо null. Так читается
+// присланный срез и то, что мы сами положили в currentRun.
+function parseSkillUses(raw: unknown): Record<SkillBookSkillId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = emptySkillUses()
+  for (const id of SKILL_BOOK_SKILL_IDS) {
+    const v = record[id]
+    if (!isSkillUseValue(v)) return null
+    out[id] = v
+  }
+  return out
+}
+
+// МЯГКО, поэлементно — для тела финиша, где каждое поле необязательное.
+function coerceSkillUses(raw: unknown): Record<SkillBookSkillId, number> {
+  const out = emptySkillUses()
+  if (typeof raw !== 'object' || raw === null) return out
+  const record = raw as Record<string, unknown>
+  for (const id of SKILL_BOOK_SKILL_IDS) {
+    const v = record[id]
+    if (isSkillUseValue(v)) out[id] = v
+  }
+  return out
+}
+
 export function emptyRunProgress(): RunProgress {
-  return { attackDamageDealt: 0, skillDamageDealt: 0, healedAmount: 0, damageTaken: 0 }
+  return { attackDamageDealt: 0, skillDamageDealt: 0, healedAmount: 0, damageTaken: 0, skillUses: emptySkillUses() }
 }
 
 // Годное значение счётчика — конечное неотрицательное число. Отдельной функцией,
@@ -94,6 +150,17 @@ export function parseRunProgress(raw: unknown): RunProgress | null {
     if (!isRunProgressValue(v)) return null
     out[key] = v
   }
+  // Применения навыков — ОТДЕЛЬНО от цикла выше: это вложенный объект, а не
+  // число. Поля нет вовсе — честные нули, а не отказ: так шлёт клиент старее
+  // 02.10.2026 и так выглядит срез, записанный прежним сервером (тот же
+  // договор, что у readRunProgress с отсутствующим progress). Поле есть, но
+  // негодное — null, как и у четырёх счётчиков: испорченному срезу нельзя
+  // верить ни в одном поле.
+  if (record.skillUses !== undefined) {
+    const uses = parseSkillUses(record.skillUses)
+    if (uses === null) return null
+    out.skillUses = uses
+  }
   return out
 }
 
@@ -110,6 +177,7 @@ export function coerceRunProgress(raw: unknown): RunProgress {
     const v = record[key]
     if (isRunProgressValue(v)) out[key] = v
   }
+  out.skillUses = coerceSkillUses(record.skillUses)
   return out
 }
 
@@ -311,6 +379,11 @@ export function judgeInterruptedRun(run: ActiveExploreRun): InterruptedRunJudgem
     loud.push('currentRun.progress is malformed, cannot prove the run was never played')
     return penalty()
   }
+  // Применений навыков здесь НЕТ намеренно, и это не пробел: результативное
+  // применение по построению даёт либо урон (шары, рывок, кровотечение), либо
+  // лечение (исцеление), то есть одно из четырёх чисел ниже уже не ноль.
+  // Отдельное условие было бы пятым способом сказать то же самое — и новым
+  // правилом там, где задача просила его не заводить.
   const played =
     progress.attackDamageDealt > 0 || progress.skillDamageDealt > 0 ||
     progress.healedAmount > 0 || progress.damageTaken > 0
@@ -396,6 +469,17 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
       skillDamageDealt: Math.round(raw.skillDamageDealt * dealtScale),
       healedAmount: Math.min(raw.healedAmount, runMaxHp),
       damageTaken: Math.min(raw.damageTaken, maxDamageTaken),
+      // Применения навыков проходят ЗДЕСЬ БЕЗ ПОТОЛКА, и это осознанно, а не
+      // забытая проверка. Вывести его не из чего: урон ограничен числом врагов
+      // забега, а число РЕЗУЛЬТАТИВНЫХ нажатий — нет (забег не ограничен по
+      // времени, кулдаун позволяет бить одну цель сколько угодно раз). Любое
+      // выдуманное число резало бы рост навыка честному игроку — ровно та
+      // ошибка, от которой потолок полученного урона уже лечили (см. шапку).
+      // Поэтому применения — то же доверие клиенту, что и весь бой: см.
+      // CLAUDE.md, Design Decisions, «Модель сетевой авторитетности боя НЕ
+      // выбрана». Строка обязана остаться даже без потолка: забудь её — и
+      // применения молча пропадут на пути к росту уровня.
+      skillUses: raw.skillUses,
     },
     dealtScale,
     maxDamageDealt,
@@ -584,6 +668,96 @@ export function skillLevelsOf(character: SkillLevelColumns): Record<SkillBookSki
     slash: character.skillLevelSlash,
     heal: character.skillLevelHeal,
     dash: character.skillLevelDash,
+  }
+}
+
+/**
+ * Колонка уровня по id навыка. switch, а не сборка имени строкой: шестой
+ * навык без ветки не скомпилируется, а склеенное имя промолчало бы и дало
+ * несуществующую колонку в рантайме.
+ */
+function skillLevelColumnOf(skillId: SkillBookSkillId): keyof SkillLevelColumns {
+  switch (skillId) {
+    case 'fireball': return 'skillLevelFireball'
+    case 'iceball': return 'skillLevelIceball'
+    case 'slash': return 'skillLevelSlash'
+    case 'heal': return 'skillLevelHeal'
+    case 'dash': return 'skillLevelDash'
+  }
+}
+
+/**
+ * Кусок `data` с ПРИБАВКАМИ к уровням — только те навыки, что РЕАЛЬНО
+ * выросли; ни один не вырос — пустой объект, то есть этих колонок в UPDATE
+ * нет вовсе.
+ *
+ * ОДНА копия на оба пути закрытия забега (финиш и логин) — та же причина, что
+ * у самой формулы роста в game.ts.
+ *
+ * ⚠️ Именно ПРИБАВКА, а не готовое значение: у уровня ЕСТЬ второй
+ * писатель — книга (POST /character/upgrade-skill, +1), и запись вычисленным
+ * числом затёрла бы его +1, случившийся между чтением персонажа и закрытием
+ * забега. Тот же довод, что у золота в /character/exchange-trophies. Остаток
+ * применений — наоборот, абсолютный (skillUsesToColumns): «было 20, стало 5,
+ * потому что порог вычли» приращением не выражается, а второго писателя у
+ * них нет: книга счётчик не трогает (решение дизайнера).
+ *
+ * Тип написан руками, а не взят из Prisma: этот файл по-прежнему не знает ни
+ * о БД, ни о HTTP (см. шапку), а по форме он совместим с update-вводом Prisma.
+ */
+export type SkillLevelIncrements = Partial<Record<keyof SkillLevelColumns, { increment: number }>>
+
+export function skillLevelGrowthColumns(
+  before: Record<SkillBookSkillId, number>,
+  after: Record<SkillBookSkillId, number>,
+): SkillLevelIncrements {
+  const data: SkillLevelIncrements = {}
+  for (const skillId of SKILL_BOOK_SKILL_IDS) {
+    const gain = after[skillId] - before[skillId]
+    if (gain > 0) data[skillLevelColumnOf(skillId)] = { increment: gain }
+  }
+  return data
+}
+
+// --- Применения навыков: колонки Character <-> объект по id навыка ---
+//
+// Рядом с уровнями и теми же двумя функциями: счётчик едет клиенту
+// (полоса «X / Y» в карточке навыка) и пишется на закрытии забега
+// АБСОЛЮТНЫМ значением (остаток после вычета порогов), а НЕ increment'ом:
+// остаток приращением не выражается. Безопасно именно здесь и только
+// здесь: эти колонки не пишет БОЛЬШЕ НИКТО — ни магазин, ни ручки книг
+// (книга растит УРОВЕНЬ и счётчик не трогает, см. upgrade-skill).
+export type SkillUsesColumns = {
+  skillUsesFireball: number
+  skillUsesIceball: number
+  skillUsesSlash: number
+  skillUsesHeal: number
+  skillUsesDash: number
+}
+
+/** Применения объектом по id навыка — форма ответов (логин, профиль, финиш). */
+export function skillUsesOf(character: SkillUsesColumns): Record<SkillBookSkillId, number> {
+  return {
+    fireball: character.skillUsesFireball,
+    iceball: character.skillUsesIceball,
+    slash: character.skillUsesSlash,
+    heal: character.skillUsesHeal,
+    dash: character.skillUsesDash,
+  }
+}
+
+/**
+ * Обратное преобразование — готовый кусок `data` для Prisma (тот же приём, что
+ * potionStockToColumns). Забыть строку нельзя ни тут, ни в skillUsesOf —
+ * Record<SkillBookSkillId, number> без ключа не соберётся.
+ */
+export function skillUsesToColumns(uses: Record<SkillBookSkillId, number>): SkillUsesColumns {
+  return {
+    skillUsesFireball: uses.fireball,
+    skillUsesIceball: uses.iceball,
+    skillUsesSlash: uses.slash,
+    skillUsesHeal: uses.heal,
+    skillUsesDash: uses.dash,
   }
 }
 

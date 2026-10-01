@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy, calculateLevel, applyStatGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
+import { getCurrentEnergy, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
   type ActiveExploreRun,
   judgeInterruptedRun,
@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, scrollStockOf, skillLevelsOf, upgradesOf } from '../runState.js'
+import { consumableStockOf, scrollStockOf, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -221,6 +221,14 @@ export async function authRoutes(server: FastifyInstance) {
         char.bonusLevels,
       )
 
+      // Рост УРОВНЕЙ НАВЫКОВ за брошенный забег — из того же среза и ТОЙ ЖЕ
+      // функцией, что на финише (applySkillUsesGrowth, game.ts). Отдельной
+      // формулы здесь быть не может по той же причине, что у статов выше:
+      // разойдись они — и «убить приложение» снова стало бы отдельной дорогой,
+      // дешёвой или дорогой, вместо того же пути, что честная смерть.
+      const skillLevelsBefore = skillLevelsOf(char)
+      const skillGrowth = applySkillUsesGrowth(skillLevelsBefore, skillUsesOf(char), cappedProgress.progress.skillUses)
+
       // Один update на всё: трофеи, забег, склад зелий и статы. Разнести их по
       // двум записям нельзя — падение между ними оставило бы забег закрытым, а
       // трофеи/зелья целыми, то есть снова сделало бы закрытие приложения
@@ -241,6 +249,11 @@ export async function authRoutes(server: FastifyInstance) {
           agilityProgress: growth.agilityProgress,
           bonusLevels: char.bonusLevels,
           level: growth.level,
+          // Уровни навыков — ПРИБАВКАМИ (у колонки есть второй писатель, книга),
+          // остатки применений — абсолютными значениями. Те же два помощника и
+          // та же причина, что в финише (см. skillLevelGrowthColumns).
+          ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
+          ...skillUsesToColumns(skillGrowth.uses),
         },
       })
       char.trophies = 0
@@ -266,6 +279,21 @@ export async function authRoutes(server: FastifyInstance) {
       char.agility = growth.agility
       char.agilityProgress = growth.agilityProgress
       char.level = growth.level
+      // Уровни и остатки применений — тем же приёмом и по тому же правилу, что
+      // статы выше (CLAUDE.md: правка ветки закрытия забега — это ВСЕГДА две
+      // строки на поле, запись и отражение). Ниже из char собирается
+      // character.skillLevels/skillUses ответа логина, и без этих строк игрок
+      // увидел бы ДОРАНОВЫЙ уровень навыка рядом с сообщением о его росте.
+      char.skillLevelFireball = skillGrowth.levels.fireball
+      char.skillLevelIceball = skillGrowth.levels.iceball
+      char.skillLevelSlash = skillGrowth.levels.slash
+      char.skillLevelHeal = skillGrowth.levels.heal
+      char.skillLevelDash = skillGrowth.levels.dash
+      char.skillUsesFireball = skillGrowth.uses.fireball
+      char.skillUsesIceball = skillGrowth.uses.iceball
+      char.skillUsesSlash = skillGrowth.uses.slash
+      char.skillUsesHeal = skillGrowth.uses.heal
+      char.skillUsesDash = skillGrowth.uses.dash
 
       interruptedRun = {
         interrupted: true,
@@ -315,6 +343,13 @@ export async function authRoutes(server: FastifyInstance) {
         // закрытого входом, этого списка нет вовсе (сервер не знает, что игрок
         // успел пройти). Добычи такой забег не даёт — см. drops/dropsLost выше.
         scrolls: scrollStockOf(char),
+        // Уровни навыков БРОШЕННЫЙ забег растит НАСТОЯЩИМ образом — в
+        // отличие от добычи выше и точно как статы: источник есть (срез
+        // currentRun.progress.skillUses), и терять его значило бы сделать закрытие
+        // приложения отдельной дорогой.
+        skillLevelUps: skillGrowth.levelUps,
+        skillLevels: skillGrowth.levels,
+        skillUses: skillGrowth.uses,
         }
       }
     }
@@ -361,6 +396,11 @@ export async function authRoutes(server: FastifyInstance) {
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).
         skillLevels: skillLevelsOf(char),
+        // Применения, накопленные в счёт следующего уровня — той же формы и
+        // тем же полем, что в GET /character/profile. Если этот же вход только что
+        // закрыл брошенный забег, здесь уже ЧИСЛА ПОСЛЕ роста (char.* отражён
+        // выше, рядом со статами).
+        skillUses: skillUsesOf(char),
         // Счётчики улучшений: от них зависят урон и броня, которые клиент
         // показывает на «Персонаже» и с которыми уходит в забег.
         upgrades: upgradesOf(char),

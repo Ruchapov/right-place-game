@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, applyStatGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE } from '../game.js'
+import { getCurrentEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
@@ -27,6 +27,9 @@ import {
   scrollStockOf,
   type ConsumableColumns,
   skillLevelsOf,
+  skillLevelGrowthColumns,
+  skillUsesOf,
+  skillUsesToColumns,
   upgradesOf,
   readConsumablesUsed,
   readSmugglerDeal,
@@ -184,8 +187,13 @@ function equippedSkillsUnchanged(prev: string[]): Prisma.StringNullableListFilte
   return prev.length === 0 ? { isEmpty: true } : { equals: prev }
 }
 
-// +1 к уровню навыка, готовым куском data. Тот же приём и та же причина, что
-// выше: switch по SkillBookSkillId, шестой навык без ветки не скомпилируется.
+// +1 к уровню навыка за книгу, готовым куском data. Тот же приём и та же
+// причина, что выше: switch по SkillBookSkillId, шестой навык без ветки не
+// скомпилируется.
+//
+// ⚠️ ВТОРОЙ путь роста тех же колонок — применения за забег
+// (skillLevelGrowthColumns, runState.ts). Два писателя и есть причина, по которой
+// оба растят уровень increment'ом, а не вычисленным числом.
 function skillLevelIncrement(skillId: SkillBookSkillId): Prisma.CharacterUpdateManyMutationInput {
   switch (skillId) {
     case 'fireball': return { skillLevelFireball: { increment: 1 } }
@@ -571,6 +579,13 @@ type FinishExploreBody = {
   // trusted as-is: capped per tier against what THIS run was issued
   // (currentRun.potions), then capped again against the run's sip allowance.
   potionsDrunkByTier?: number[]
+  // Сколько РЕЗУЛЬТАТИВНЫХ применений каждого навыка насчитал клиент
+  // (Explore.tsx: skillUsesRef — по факту попадания, не по нажатию). Из них
+  // сервер растит уровни навыков — своей формулой и своими порогами
+  // (applySkillUsesGrowth, game.ts). Разбирается ТЕМ ЖЕ coerceRunProgress, что
+  // четыре счётчика выше (мягко, поэлементно), поэтому старый клиент
+  // без этого поля просто не растит уровни.
+  skillUses?: Record<string, number>
   // Сработал ли оберег от смерти в этом забеге. Спасение считает КЛИЕНТ (бой
   // целиком на нём), и серверу остаётся тот же уровень доверия, что у `died`:
   // проверить можно только то, что оберег вообще был взят в забег
@@ -656,6 +671,21 @@ export type RunResultSummary = {
    * ждать следующего логина.
    */
   scrolls: Record<string, number>
+  /**
+   * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
+   * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
+   * стоит 30 применений), и экран итогов тогда ничего о навыках не рисует.
+   * Считает сервер, а не клиент сравнением двух наборов: пороги и остатки
+   * живут только в БД.
+   */
+  skillLevelUps: SkillLevelUp[]
+  /**
+   * Уровни и остатки применений ПОСЛЕ забега — абсолютные, как
+   * trophies/strength выше. Без них полоса «X / Y» и «Уровень N» в карточке
+   * навыка показывали бы дорановые числа до следующего логина.
+   */
+  skillLevels: Record<string, number>
+  skillUses: Record<string, number>
 }
 
 export async function runRoutes(server: FastifyInstance) {
@@ -1234,6 +1264,15 @@ export async function runRoutes(server: FastifyInstance) {
       )
     }
 
+    // --- Рост УРОВНЕЙ НАВЫКОВ (02.10.2026) ---
+    // Тот же источник, что у роста статов (сырьё из тела финиша, прошедшее
+    // те же мягкий разбор и потолки), и та же функция, что у /auth/login на
+    // брошенном забеге (applySkillUsesGrowth, game.ts). Смерть рост НЕ отменяет —
+    // ровно как у статов выше: навыки были применены по-настоящему, и сгорают
+    // только трофеи.
+    const skillLevelsBefore = skillLevelsOf(character)
+    const skillGrowth = applySkillUsesGrowth(skillLevelsBefore, skillUsesOf(character), capped.progress.skillUses)
+
     // bonusLevels инкрементируется здесь, ДО applyStatGrowth — level (снимок)
     // обязан пересчитаться уже с новым bonusLevels в той же формуле
     // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
@@ -1387,6 +1426,13 @@ export async function runRoutes(server: FastifyInstance) {
           // упрётся в пустой currentRun (400 выше), либо не найдёт строку по
           // фильтру и получит 409, ничего не записав.
           ...resolvedDrops.stockData,
+          // Уровни навыков — increment'ами на прирост (skillLevelGrowthColumns), остатки
+          // применений — абсолютными значениями (остаток приращением не
+          // выражается). В ТОЙ ЖЕ записи, что трофеи и закрытие забега:
+          // повтор финиша не начислит применения дважды по той же причине, что
+          // не выдаст дважды добычу.
+          ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
+          ...skillUsesToColumns(skillGrowth.uses),
           currentRun: Prisma.DbNull,
         },
       })
@@ -1466,6 +1512,15 @@ export async function runRoutes(server: FastifyInstance) {
       bonusLevels: newBonusLevels,
       consumables: consumablesAfterFinish,
       scrolls: scrollsAfterFinish,
+      // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
+      // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
+      // собран skillLevelUps), а не всё, что успело случиться с колонкой после:
+      // перечитанный уровень с чужим +1 от книги рассказал бы про забег неправду.
+      // Расхождение с БД возможно только при покупке книги со второго
+      // устройства ровно в окне финиша, и лечится «Обновить баланс».
+      skillLevelUps: skillGrowth.levelUps,
+      skillLevels: skillGrowth.levels,
+      skillUses: skillGrowth.uses,
     }
     return reply.send(result)
   })
@@ -2090,6 +2145,10 @@ export async function runRoutes(server: FastifyInstance) {
       // другой вкладке экран «Персонаж» остался бы с устаревшими числами.
       equippedSkills: character.equippedSkills,
       skillLevels: skillLevelsOf(character),
+      // Применения, накопленные в счёт следующего уровня (02.10.2026) —
+      // рядом с уровнями и по той же причине: из них рисуется полоса «X / Y» в
+      // карточке навыка, и «Обновить баланс» обязан её обновлять.
+      skillUses: skillUsesOf(character),
       // Счётчики улучшений — от них зависят и урон, и броня на экране
       // «Персонаж», значит «Обновить баланс» обязан их обновлять: иначе после
       // покупки улучшения во второй вкладке экран остался бы со старыми числами.

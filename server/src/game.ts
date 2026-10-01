@@ -1,4 +1,11 @@
 // Pure game logic (no DB, no HTTP) - easy to reason about and test.
+//
+// Импорты здесь только на ТАКИЕ ЖЕ чистые модули: каталог расходников
+// (байт-в-байт копия с клиентом, без своих импортов) и формулы уровня навыка
+// (skillLevels.ts, такая же пара). Цикла нет и быть не может: runState.ts
+// импортирует ЭТОТ файл, а не наоборот.
+import { CONSUMABLES, consumableSkillBook, type SkillBookSkillId } from './consumables.js'
+import { skillUsesThreshold } from './skillLevels.js'
 
 const MAX_ENERGY = 100
 const ENERGY_PER_MINUTE = 1
@@ -74,6 +81,94 @@ export function applyStatProgress(
 export const STRENGTH_THRESHOLD_BASE = 710
 export const ENDURANCE_THRESHOLD_BASE = 290
 export const AGILITY_THRESHOLD_BASE = 710
+
+// --- Уровень навыка от применений (02.10.2026) ---
+//
+// Тот же механизм, что у статов выше, и намеренно одной формы: накопленное
+// сравнивается с порогом, при пересечении порог вычитается и остаток переходит
+// на следующий уровень (решение дизайнера). Отличие одно: порог считает НЕ
+// этот файл, а общая с клиентом пара skillLevels.ts — тот же skillUsesThreshold
+// рисует полосу «X / Y» в карточке навыка, и вторая формула здесь значила бы,
+// что полоса дошла до конца, а уровень не вырос.
+
+/**
+ * ОДИН навык: прибавляет применения забега к накопленному остатку и
+ * повышает уровень, пока хватает на порог.
+ *
+ * ⚠️ Условие выхода — ОТРИЦАНИЕМ, ровно как в applyStatProgress и ровно по той
+ * же причине: на нечисле ложны ОБА прямых сравнения, цикл не вышел бы
+ * никогда и повесил бы весь сервер (Node однопоточен) — а сюда ведёт путь с
+ * /auth/login, без которого игра не откроется вообще. См. CLAUDE.md, «Цикл while со
+ * сравнением чисел». Вторая половина защиты — в skillUsesThreshold: он никогда
+ * не возвращает ноль (иначе одно применение давало бы бесконечный уровень).
+ */
+export function applySkillLevelProgress(
+  currentLevel: number,
+  currentUses: number,
+  newUses: number,
+): { level: number; uses: number } {
+  let level = currentLevel
+  let uses = currentUses + newUses
+  while (true) {
+    const threshold = skillUsesThreshold(level)
+    if (!(uses >= threshold)) break
+    uses -= threshold
+    level++
+  }
+  return { level, uses }
+}
+
+/**
+ * Пять id навыков в рантайме — из каталога расходников, а не отдельным списком:
+ * тип SkillBookSkillId в рантайме не существует, а вторая копия списка разъехалась
+ * бы с каталогом при добавлении шестой книги. Тот же приём, что у
+ * parseSkillBookSkillId (consumables.ts) и клиентского readSkillLevels.
+ *
+ * Живёт здесь, а не в runState.ts, где тоже нужен: по нему идёт
+ * applySkillUsesGrowth ниже, а runState импортирует этот файл и без того
+ * (scaledEnemyMaxHp) — обратный импорт дал бы цикл на инициализации этой
+ * самой константы.
+ */
+export const SKILL_BOOK_SKILL_IDS: readonly SkillBookSkillId[] = CONSUMABLES
+  .map((spec) => consumableSkillBook(spec))
+  .filter((id): id is SkillBookSkillId => id !== null)
+
+/** Навык, у которого за этот забег вырос уровень, и его НОВЫЙ уровень. */
+export type SkillLevelUp = { skillId: SkillBookSkillId; level: number }
+
+/**
+ * Все пять навыков за один закрытый забег — ОДНА копия на оба пути
+ * закрытия (/run/finish-explore и /auth/login с брошенным забегом), ровно как
+ * applyStatGrowth выше и ровно по той же причине: разошлись бы две формулы —
+ * и «убить приложение» снова стало бы отдельной дорогой, дешёвой или дорогой.
+ *
+ * Возвращает ПОЛНЫЕ наборы уровней и остатков (все пять, даже
+ * нетронутые) — их ждёт и ответ клиенту, и запись в колонки, и неполный
+ * объект клиентский разборщик целиком превратил бы в null.
+ *
+ * Плюс levelUps — только те, кто РЕАЛЬНО вырос: из них строится строка на
+ * экране итогов, и сравнивать там два набора заново клиент не должен.
+ */
+export function applySkillUsesGrowth(
+  currentLevels: Record<SkillBookSkillId, number>,
+  currentUses: Record<SkillBookSkillId, number>,
+  newUses: Record<SkillBookSkillId, number>,
+): {
+  levels: Record<SkillBookSkillId, number>
+  uses: Record<SkillBookSkillId, number>
+  levelUps: SkillLevelUp[]
+} {
+  const levels = {} as Record<SkillBookSkillId, number>
+  const uses = {} as Record<SkillBookSkillId, number>
+  const levelUps: SkillLevelUp[] = []
+  for (const skillId of SKILL_BOOK_SKILL_IDS) {
+    const result = applySkillLevelProgress(currentLevels[skillId], currentUses[skillId], newUses[skillId])
+    levels[skillId] = result.level
+    uses[skillId] = result.uses
+    if (result.level > currentLevels[skillId]) levelUps.push({ skillId, level: result.level })
+  }
+  return { levels, uses, levelUps }
+}
 
 // Applies one run's worth of RAW damage (no more per-level normalization —
 // see above) to all three stats via applyStatProgress, then recomputes level
