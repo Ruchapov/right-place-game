@@ -1042,7 +1042,7 @@ export const ENEMY_HPBAR_OFFSET_Y = 30
 // - ENEMY_SPEED=1 px/кадр в Battle БЕЗ dt (там ticker вообще не масштабирует
 //   движение врага по deltaTime) — здесь то же число, но умножаем на dt, как
 //   уже сделано для игрока (MOVE_SPEED*dt).
-// - ENEMY_ATTACK_INTERVAL=0.5с (обычный, не boss) — кулдаун МЕЖДУ атаками:
+// - ENEMY_ATTACK_INTERVAL=0.7с (обычный, не boss) — кулдаун МЕЖДУ атаками:
 //   стартует ПОСЛЕ удара (см. ниже), не перед первым — см. настройку боя.
 // - ATTACK_RANGE переиспользуем как есть (см. выше) — в Battle.tsx ОДНА и та
 //   же константа используется и для атаки игрока, и для дальности врага; это
@@ -1082,7 +1082,10 @@ export const WINDUP_MS = 400
 export const BEAST_ATTACK_STRIKE_FRAME = 13
 export const BEAST_ATTACK_ANIM_SPEED = BEAST_ATTACK_STRIKE_FRAME / (60 * (WINDUP_MS / 1000))
 
-export const ENEMY_ATTACK_INTERVAL = 0.5
+// 0.5 → 0.7 (02.10.2026): зверь бил слишком часто. Поменялась ТОЛЬКО пауза
+// МЕЖДУ ударами; WINDUP_MS остался 400 — на нём держится окно
+// парирования, и удлинённая пауза его не затрагивает.
+export const ENEMY_ATTACK_INTERVAL = 0.7
 // ENEMY_ATTACK_DAMAGE — БАЗА формулы масштабирования (значение НА УРОВНЕ 1),
 // та же схема, что у ENEMY_MAX_HP выше (было 14, фиксированный урон без
 // масштабирования). ENEMY_DAMAGE_PER_LEVEL — прирост урона за уровень.
