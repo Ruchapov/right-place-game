@@ -3,7 +3,7 @@ import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sp
 import { renderMapToCanvas, backdropPaths } from './mapRenderer'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
-import TouchControls, { type SkillButtonSlot } from './explore/ui/TouchControls'
+import TouchControls, { paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
   Grid,
@@ -1756,8 +1756,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
   // Осталась только диагностика: вид кнопки (печать / «?» / отсутствие) целиком
   // задаётся при её создании в TouchControls, восстанавливать после перезаписи
-  // cssText здесь больше нечего. Функция всё равно вызывается оттуда — точка для
-  // будущего индикатора кулдауна (открытая задача) сохранена.
+  // cssText здесь больше нечего. Индикатор перезарядки сюда НЕ попал намеренно:
+  // он обновляется каждый кадр из тикера (paintSkillCd в setup), а эта функция
+  // зовётся на ре-рендере, то есть не тогда, когда нужно; тень, стёртую
+  // перезаписью cssText, возвращает repaintSkillCooldown там же, где cssText и
+  // переписывается.
   function updateSkillButtons() {
     if (!equippedSkillsKnown && !equippedUnknownLoggedRef.current) {
       equippedUnknownLoggedRef.current = true
@@ -2853,6 +2856,26 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // модуль это значение пока не читает.
         equipped: equippedSlots,
       })
+
+      // Индикатор перезарядки на кнопках навыков. Числа берутся у модуля
+      // навыков (только чтение, readCooldown), рисует их TouchControls
+      // (paintSkillCooldown) — прямо в стиль DOM-узла кнопки, БЕЗ React-
+      // состояния и без ре-рендера дерева: кадр тикера не имеет права
+      // перерисовывать React (см. .claude/skills/pixijs-conventions).
+      //
+      // Объект под ответ — ОДИН на весь забег, переиспользуется: readCooldown
+      // пишет в переданный, чтобы в тикере не появлялось аллокации на кадр.
+      const skillCdOut = { leftMs: 0, totalMs: 0 }
+      function paintSkillCd(slot: 0 | 1, btn: HTMLButtonElement | null, dtMs: number) {
+        // Кнопки нет вовсе — гнездо пустое (навык не надет). Нормальное
+        // состояние, см. skillButtonSlots.
+        if (!btn) return
+        // false — в гнезде нет навыка либо id неизвестен самому модулю навыков:
+        // у такой кнопки своя картина («?»), и трогать её нельзя, иначе цифра
+        // секунд затёрла бы знак вопроса.
+        if (!skills!.readCooldown(slot, skillCdOut)) return
+        paintSkillCooldown(btn, skillCdOut.leftMs, skillCdOut.totalMs, dtMs)
+      }
 
       // AI обычного врага (см. explore/entities/enemy.ts) — создаётся тем же
       // приёмом и в том же месте, что и skills выше. enemies/beastFrames —
@@ -4842,9 +4865,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           }
         }
 
-        // Скиллы (см. explore/entities/skills.ts) — пока только гасит
-        // skill1Pressed/skill2Pressed, самой логики ещё нет.
+        // Скиллы (см. explore/entities/skills.ts): тикают перезарядки,
+        // разбираются нажатия обоих гнёзд, живут снаряды, рывок, дуга взмаха,
+        // кровотечения и аура лечения.
         skills!.update(ticker.deltaMS)
+
+        // Индикатор перезарядки на кнопках — СТРОГО ПОСЛЕ update(): там
+        // перезарядки убавляются на этот кадр, и кнопка показывает число
+        // этого кадра, а не прошлого.
+        paintSkillCd(0, skill1BtnRef.current, ticker.deltaMS)
+        paintSkillCd(1, skill2BtnRef.current, ticker.deltaMS)
 
         // AI обычного врага (см. explore/entities/enemy.ts) — вызов на ТОМ
         // ЖЕ месте кадра, где раньше стоял сам AI-цикл: сразу после

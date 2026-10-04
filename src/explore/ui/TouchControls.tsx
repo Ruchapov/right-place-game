@@ -93,6 +93,25 @@ function roundButtonCss(x: number, y: number, opts: { fontSize: number; art?: st
   `
 }
 
+// --- ИНДИКАТОР ПЕРЕЗАРЯДКИ НА КНОПКАХ НАВЫКОВ ---
+//
+// Числа приходят из модуля навыков (skills.readCooldown) через тикер
+// Explore.tsx, рисуются ЗДЕСЬ — тот же раздел труда, что у skillSlots выше:
+// кто считает, тот не рисует.
+//
+// ⚠️ Тень — ЕЩЁ ОДИН СЛОЙ ФОНА поверх печати, а НЕ псевдоэлемент. Слои фона
+// рисуются НИЖЕ текста, поэтому цифра секунд остаётся поверх тени и читаемой.
+// Абсолютно спозиционированный псевдоэлемент накрыл бы её собой, а не
+// абсолютный стал бы флекс-элементом и сдвинул бы её с центра — та же грабля,
+// что у зоны захвата ▲ ниже.
+const CD_SHADE = 'rgba(8,6,12,0.66)'
+// Сглаживание кромки сектора: у конического градиента без него край
+// лестничный. Полтора градуса — меньше, чем шаг цифры, и в раскладке не видно.
+const CD_FEATHER_DEG = 1.5
+// Вспышка ободка в момент готовности — «около 0.3 с» по дизайну.
+const CD_FLASH_MS = 300
+const CD_FLASH_ATTR = 'data-cd-flash'
+
 const PRESS_MIN_VISIBLE_MS = 120
 const PRESS_TRANSITION = 'transform 70ms ease-out, background-color 70ms ease-out, border-color 70ms ease-out'
 const PRESS_CSS = `
@@ -133,6 +152,26 @@ const PRESS_CSS = `
     border-radius: 50%;
     background: transparent;
   }
+  /* Навык готов: ободок кнопки один раз коротко вспыхивает. Атрибут ставит и
+     снимает paintSkillCooldown, вид задан ЗДЕСЬ — инлайн-стиль на этой кнопке
+     жил бы до первого ре-рендера (cssText переписывается целиком), ровно та же
+     причина, по которой правилом задана подсветка нажатия выше.
+     Ободок ВНУТРЕННИЙ (inset): кнопки веера КАСАЮТСЯ друг друга, и внешнее
+     кольцо залезло бы на соседей.
+     Цвет — золото дизайн-системы, но вспышка на цвет не опирается: её главный
+     сигнал — движение (кольцо появляется и гаснет).
+     filter назван во ВСЕХ трёх кадрах намеренно: кадр без свойства берёт
+     значение из «подложки», и у разных движков это считается по-разному.
+     При нажатии яркость перебивает подсветка (у неё !important, а important
+     старше анимации) — так и надо, нажатая кнопка важнее вспышки. */
+  @keyframes rp-skill-ready {
+    0%   { box-shadow: inset 0 0 0 0 rgba(232,178,58,0); filter: brightness(1); }
+    30%  { box-shadow: inset 0 0 0 3px rgba(232,178,58,0.95); filter: brightness(1.25); }
+    100% { box-shadow: inset 0 0 0 0 rgba(232,178,58,0); filter: brightness(1); }
+  }
+  [data-touch-controls] [${CD_FLASH_ATTR}="1"] {
+    animation: rp-skill-ready ${CD_FLASH_MS}ms ease-out;
+  }
 `
 
 // Момент нажатия и таймер отложенного гашения — по самому DOM-узлу, а не в
@@ -169,6 +208,125 @@ function pressOffAfterMin(el: HTMLElement) {
   }
   if (st.timer != null) window.clearTimeout(st.timer)
   st.timer = window.setTimeout(() => pressOff(el), left)
+}
+
+/**
+ * Состояние индикатора перезарядки ОДНОЙ кнопки. Живёт по самому DOM-узлу
+ * (WeakMap, как pressState выше), а не в замыкании компонента: узлы веера
+ * создаются императивно и переживают ре-рендеры, а замыкание — нет.
+ */
+type SkillCdState = {
+  // Слои фона БЕЗ тени — ровно то, что написал roundButtonCss (печать навыка).
+  // Снимается С УЗЛА, а не приходит пропом: cssText кнопки переписывается
+  // целиком при каждом ре-рендере, и что в нём сейчас лежит, знает только он.
+  base: string
+  // Что УЖЕ нарисовано. Сравнение с ним и есть вся экономия: DOM трогается
+  // только когда поменялся угол или цифра, а не каждый кадр. -1 = не нарисовано
+  // ничего (навык готов).
+  drawnDeg: number
+  drawnSecs: number
+  // Последние ПОЛУЧЕННЫЕ числа — чтобы перерисовать тень после перезаписи
+  // cssText, не дожидаясь следующего кадра (см. repaintSkillCooldown).
+  leftMs: number
+  totalMs: number
+  // Перезарядка шла в прошлый вызов. По фронту «шла → кончилась» заводится
+  // вспышка. Отдельное поле, а не вывод из drawnDeg: нарисованное после
+  // ре-рендера сбрасывается, а состояние перезарядки — нет.
+  onCd: boolean
+  flashMs: number
+}
+const skillCdState = new WeakMap<HTMLElement, SkillCdState>()
+
+function drawSkillCd(el: HTMLElement, st: SkillCdState) {
+  const onCd = st.leftMs > 0 && st.totalMs > 0
+  // Открытая (светлая) часть растёт по часовой стрелке от 12 часов, тень
+  // убывает вместе с ней: `from 0deg` — это и есть 12 часов, и конический
+  // градиент идёт по часовой стрелке сам.
+  // Угол в ЦЕЛЫХ градусах — и чтобы строка не дёргалась по десятым, и чтобы
+  // кадров без записи в DOM было больше.
+  const deg = onCd ? Math.round(360 * (1 - Math.min(1, st.leftMs / st.totalMs))) : -1
+  // ВВЕРХ: 4.2 с -> «5». Ноль на кнопке не появится никогда — на нуле
+  // перезарядки уже нет, и ветка ниже стирает цифру вместе с тенью.
+  const secs = onCd ? Math.ceil(st.leftMs / 1000) : -1
+  if (deg === st.drawnDeg && secs === st.drawnSecs) return
+  st.drawnDeg = deg
+  st.drawnSecs = secs
+  if (!onCd) {
+    el.style.backgroundImage = st.base
+    el.style.backgroundSize = '100%'
+    el.textContent = ''
+    return
+  }
+  const clearTo = Math.max(0, deg - CD_FEATHER_DEG)
+  // ⚠️ Если движок не знает conic-gradient, CSSOM отбрасывает ВСЁ присваивание
+  // и на кнопке остаётся прежний фон — печать навыка, без тени. То есть
+  // деградация тихая и безопасная: цифра секунд остаётся на месте в любом
+  // случае, потому что она в textContent, а не в фоне.
+  const shade = `conic-gradient(from 0deg, rgba(0,0,0,0) ${clearTo}deg, ${CD_SHADE} ${deg}deg)`
+  // Пустой base бывает только у кнопки без арта (у навыков такой нет). Запятая
+  // без второго слоя сделала бы значение невалидным, и фон не сменился бы
+  // вовсе — поэтому ветка, а не склейка наугад.
+  el.style.backgroundImage = st.base ? `${shade}, ${st.base}` : shade
+  el.style.backgroundSize = st.base ? '100%, 100%' : '100%'
+  el.textContent = String(secs)
+}
+
+/**
+ * Обновить индикатор перезарядки на кнопке навыка.
+ *
+ * Зовётся КАЖДЫЙ КАДР из тикера Explore.tsx, а не из React-рендера: дерево
+ * перерисовывать на каждый кадр нельзя (на телефоне это заикание — см.
+ * .claude/skills/pixijs-conventions). Поэтому и пишем прямо в стиль узла.
+ *
+ * leftMs/totalMs — из skills.readCooldown; dtMs — ticker.deltaMS, им тикает
+ * вспышка. Именно в миллисекундах, а не в кадрах: по кадрам она на просевшем
+ * FPS укоротилась бы в реальных секундах (общее правило проекта по окнам).
+ */
+export function paintSkillCooldown(el: HTMLElement, leftMs: number, totalMs: number, dtMs: number) {
+  let st = skillCdState.get(el)
+  if (!st) {
+    st = { base: el.style.backgroundImage, drawnDeg: -1, drawnSecs: -1, leftMs, totalMs, onCd: false, flashMs: 0 }
+    skillCdState.set(el, st)
+  }
+  st.leftMs = leftMs
+  st.totalMs = totalMs
+  const onCd = leftMs > 0 && totalMs > 0
+  // Фронт готовности. На первом кадре забега сюда тоже заходим, но onCd там
+  // false с самого начала — вспышки на старте не будет.
+  if (st.onCd && !onCd) st.flashMs = CD_FLASH_MS
+  st.onCd = onCd
+  if (st.flashMs > 0) {
+    // Атрибут ставится ОДИН раз: переписывать его тем же значением каждый кадр
+    // значит каждый кадр пересчитывать стиль узла задаром.
+    if (el.getAttribute(CD_FLASH_ATTR) !== '1') el.setAttribute(CD_FLASH_ATTR, '1')
+    st.flashMs -= dtMs
+    if (st.flashMs <= 0) {
+      st.flashMs = 0
+      el.removeAttribute(CD_FLASH_ATTR)
+    }
+  }
+  drawSkillCd(el, st)
+}
+
+/**
+ * Перечитать базовый фон кнопки и нарисовать индикатор заново. Зовётся сразу
+ * после перезаписи cssText (fan-блок ниже): та стирает и тень, и
+ * background-size, а перезарядка при этом никуда не делась.
+ *
+ * Без этого тень гасла бы на один кадр при каждом ре-рендере Explore — а они
+ * идут регулярно (таймер обелиска тикает раз в секунду), то есть вышло бы
+ * мерцание на ровном месте.
+ */
+export function repaintSkillCooldown(el: HTMLElement) {
+  const st = skillCdState.get(el)
+  // Записи нет — по этой кнопке индикатор не рисовали ни разу (или его у неё
+  // не бывает вовсе, как у 🔄). Завести её здесь нечем: чисел перезарядки тут
+  // не знают.
+  if (!st) return
+  st.base = el.style.backgroundImage
+  st.drawnDeg = -1
+  st.drawnSecs = -1
+  drawSkillCd(el, st)
 }
 
 interface TouchControlsProps {
@@ -400,6 +558,11 @@ export default function TouchControls({
                 art: b.spec.art,
                 dimmed: b.spec.dimmed,
               })
+              // cssText выше стёр тень перезарядки вместе со всем остальным —
+              // возвращаем её по тому состоянию, которое ведёт
+              // paintSkillCooldown. Для 🔄 (перезарядки у кнопки нет) вызов
+              // ничего не делает.
+              repaintSkillCooldown(el)
               if (!existing) container.appendChild(el)
             })
 

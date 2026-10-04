@@ -1129,6 +1129,36 @@ export function createSkillsSystem(deps: SkillsDeps) {
     }
   }
 
+  // Остаток и полная длительность перезарядки навыка из гнезда slot — для
+  // индикатора на кнопке (рисует его paintSkillCooldown в ../ui/TouchControls.tsx).
+  //
+  // ⚠️ ТОЛЬКО ЧТЕНИЕ: функция ничего не взводит, не сбрасывает и не тикает.
+  // Сами перезарядки по-прежнему живут и тикают ЗДЕСЬ, как и раньше; наружу
+  // они видны ровно этой функцией и ничем больше.
+  //
+  // Пишет в ПЕРЕДАННЫЙ объект, а не возвращает новый: зовёт её тикер каждый
+  // кадр по каждому гнезду, а в тикере не место аллокациям (см.
+  // .claude/skills/pixijs-conventions, «no per-frame object allocation»).
+  //
+  // false значит «показывать нечего»: гнездо пусто либо id не из каталога. Это
+  // НЕ «навык готов» — у таких кнопок своя картина («?» или кнопки нет вовсе),
+  // и вызывающий их не трогает вообще.
+  function readCooldown(slot: 0 | 1, out: { leftMs: number; totalMs: number }): boolean {
+    const id = deps.equipped[slot]
+    if (id === null || !KNOWN_SKILL_IDS.includes(id)) return false
+    // Разбор по id ветками — тот же приём и та же причина, что в pressSlot:
+    // поле кулдауна у каждого скилла своё, общего массива нет.
+    if (id === 'heal') { out.leftMs = healCdMs; out.totalMs = C.HEAL_COOLDOWN_MS; return true }
+    if (id === 'slash') { out.leftMs = slashCdMs; out.totalMs = C.SLASH_COOLDOWN_MS; return true }
+    if (id === 'dash') { out.leftMs = dashCdMs; out.totalMs = C.DASH_COOLDOWN_MS; return true }
+    if (id === 'fireball') { out.leftMs = projectileCdMs.fireball; out.totalMs = FIREBALL_SPEC.cooldownMs; return true }
+    if (id === 'iceball') { out.leftMs = projectileCdMs.iceball; out.totalMs = ICEBALL_SPEC.cooldownMs; return true }
+    // Досюда можно дойти только если KNOWN_SKILL_IDS разошёлся с ветками выше.
+    // Об этом уже кричит pressSlot (там ровно та же развилка), поэтому здесь
+    // молча «показывать нечего» — второй крик каждый кадр залил бы консоль.
+    return false
+  }
+
   // dt — МИЛЛИСЕКУНДЫ (ticker.deltaMS), тот же выбор единиц, что уже
   // используют bossSpikesRef/bossWavesRef/rewardFloatsRef в Explore.tsx
   // (lifeMs/elapsed копятся в мс, а не в frame-scale ticker.deltaTime,
@@ -1234,5 +1264,5 @@ export function createSkillsSystem(deps: SkillsDeps) {
     dashHitTargets.clear()
   }
 
-  return { update, dispose, onAttackStrike, onCastSpawnFrame }
+  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown }
 }
