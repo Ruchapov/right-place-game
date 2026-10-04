@@ -199,6 +199,32 @@ type ExploreProps = {
   agility?: number
 }
 
+/**
+ * Слой параллакс-фона: текстура или null, если PNG не загрузился.
+ *
+ * ⚠️ Загрузка фона НЕ ИМЕЕТ ПРАВА уронить забег. До 04.10.2026 оба слоя грузились
+ * голым `Assets.load` внутри `Promise.all`, и 404 (или битый файл) на любом из
+ * двух обрывал весь `setup()`: игрок получал каменный экран ошибки вместо игры —
+ * из-за КАРТИНКИ, которая ни на физику, ни на бой не влияет. Теперь промах
+ * слоя — громкий warn в консоль и забег без этого слоя.
+ *
+ * Свой try/catch на КАЖДЫЙ слой, а не один на оба: дальний и ближний
+ * независимы, и падение одного не должно забирать второй.
+ *
+ * ⚠️ Это НЕ общее правило «глушить ошибки загрузки» — у сетки, слотов и листов
+ * спрайтов всё наоборот: без них забега нет, и их промах обязан быть виден
+ * (экран ошибки, предохранитель LOAD_WATCHDOG_MS). Фон — единственный слой,
+ * отсутствие которого игра переживает.
+ */
+async function loadBackdropLayer(url: string, layer: 'far' | 'mid'): Promise<Texture | null> {
+  try {
+    return await Assets.load(url) as Texture
+  } catch (e) {
+    console.warn(`Explore: слой фона ${layer} не загрузился (${url}) — забег идёт без него`, e)
+    return null
+  }
+}
+
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
 // hit-test'ом врага/сундука через attackHitboxRef.
 type AttackHitbox = { x: number; y: number; width: number; height: number }
@@ -2681,28 +2707,41 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // глубины. Пресет фиксирован по карте (см. BACKDROP_BY_MAP выше).
       const preset = backdropForMap(resolvedMapFile)
       const { far: farUrl, mid: midUrl } = backdropPaths(preset)
+      // null у любого слоя — его просто не будет (см. loadBackdropLayer):
+      // забег без картинки фона играется, забега с экраном ошибки — нет.
       const [farTexture, midTexture] = await Promise.all([
-        Assets.load(farUrl) as Promise<Texture>,
-        Assets.load(midUrl) as Promise<Texture>,
+        loadBackdropLayer(farUrl, 'far'),
+        loadBackdropLayer(midUrl, 'mid'),
       ])
-      const bgFar = new TilingSprite({ texture: farTexture, width: app.screen.width, height: app.screen.height })
-      const bgMid = new TilingSprite({ texture: midTexture, width: app.screen.width, height: app.screen.height })
-      const farScale = app.screen.height / farTexture.height
-      const midScale = app.screen.height / midTexture.height
-      bgFar.tileScale.set(farScale)
-      bgMid.tileScale.set(midScale)
-      app.stage.addChild(bgFar)
-      app.stage.addChild(bgMid)
+      const bgFar = farTexture === null ? null
+        : new TilingSprite({ texture: farTexture, width: app.screen.width, height: app.screen.height })
+      const bgMid = midTexture === null ? null
+        : new TilingSprite({ texture: midTexture, width: app.screen.width, height: app.screen.height })
+      if (bgFar !== null && farTexture !== null) {
+        bgFar.tileScale.set(app.screen.height / farTexture.height)
+        app.stage.addChild(bgFar)
+      }
+      if (bgMid !== null && midTexture !== null) {
+        bgMid.tileScale.set(app.screen.height / midTexture.height)
+        app.stage.addChild(bgMid)
+      }
+      // Затемнение добавляется ВСЕГДА, даже если оба слоя не загрузились: это не
+      // часть картинки фона, а отдельная плашка настроения, и от неё зависит
+      // читаемость карты поверх.
       const bgDim = new Graphics()
       bgDim.rect(0, 0, app.screen.width, app.screen.height).fill({ color: 0x0e0c13, alpha: 0.42 })
       app.stage.addChild(bgDim)
 
       onBgResize = () => {
         const w = app!.screen.width, h = app!.screen.height
-        bgFar.width = w; bgFar.height = h
-        bgMid.width = w; bgMid.height = h
-        bgFar.tileScale.set(h / farTexture.height)
-        bgMid.tileScale.set(h / midTexture.height)
+        if (bgFar !== null && farTexture !== null) {
+          bgFar.width = w; bgFar.height = h
+          bgFar.tileScale.set(h / farTexture.height)
+        }
+        if (bgMid !== null && midTexture !== null) {
+          bgMid.width = w; bgMid.height = h
+          bgMid.tileScale.set(h / midTexture.height)
+        }
         bgDim.clear().rect(0, 0, w, h).fill({ color: 0x0e0c13, alpha: 0.42 })
       }
       app.renderer.on('resize', onBgResize)
@@ -3776,12 +3815,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Параллакс: far/mid ползут МЕДЛЕННЕЕ карты — доля от движения камеры,
         // не от движения игрока напрямую (иначе не совпадало бы с lerp/clamp
         // выше). far двигается меньше всего (дальше), mid — заметнее (ближе).
+        // null — слой не загрузился (см. loadBackdropLayer): двигать нечего,
+        // остальная камера работает как обычно. Две проверки на кадр против
+        // падения тикера на каждом кадре — обмен очевидный.
         const FAR_FACTOR = 0.15
         const MID_FACTOR = 0.4
-        bgFar.tilePosition.x = worldContainer.x * FAR_FACTOR
-        bgFar.tilePosition.y = worldContainer.y * FAR_FACTOR
-        bgMid.tilePosition.x = worldContainer.x * MID_FACTOR
-        bgMid.tilePosition.y = worldContainer.y * MID_FACTOR
+        if (bgFar !== null) {
+          bgFar.tilePosition.x = worldContainer.x * FAR_FACTOR
+          bgFar.tilePosition.y = worldContainer.y * FAR_FACTOR
+        }
+        if (bgMid !== null) {
+          bgMid.tilePosition.x = worldContainer.x * MID_FACTOR
+          bgMid.tilePosition.y = worldContainer.y * MID_FACTOR
+        }
       }
 
       updateCamera(Infinity)
