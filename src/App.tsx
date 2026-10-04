@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
@@ -456,6 +456,20 @@ const REFUGE_HERO_KEYFRAMES = Array.from({ length: REFUGE_HERO_FRAMES }, (_, i) 
 
 const REFUGE_HERO_DURATION = 2.0 // s — подобрано вживую временным ползунком, зашито
 
+/**
+ * Энергия на экране: база с сервера плюс целые минуты, прошедшие с момента
+ * отсчёта. Потолок — MAX_ENERGY, как на сервере.
+ *
+ * ⚠️ `baseAt` — НЕ момент входа, а момент входа МИНУС остаток минуты, который
+ * сервер уже натикал (см. readEnergyAccruedSec и место вызова setEnergyBaseAt).
+ * Иначе отсчёт начинается заново на каждом входе, и клиент отстаёт от сервера
+ * до целой минуты — ровно то, из-за чего полная энергия показывалась как
+ * 99/100.
+ *
+ * ⚠️ MAX_ENERGY и шаг «1 за минуту» — РУЧНАЯ копия серверных чисел
+ * (server/src/game.ts). Сверяющего скрипта у этой пары нет; разъедутся — экран
+ * начнёт расходиться с тем, что сервер реально начислил.
+ */
 function liveEnergy(base: number, baseAt: number, now: number): number {
   const minutes = Math.floor((now - baseAt) / 60000)
   return Math.min(MAX_ENERGY, base + minutes)
@@ -740,7 +754,14 @@ export default function App() {
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
     setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls) })
     setEnergyBase(data.character.energy)
-    setEnergyBaseAt(Date.now())
+    // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
+    // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
+    // минутные границы совпадают с серверными, и число на экране равно числу на
+    // сервере. Без этого сдвига клиент показывал 99/100 при настоящих 100 — до
+    // целой минуты подряд, и это был наблюдавшийся баг (04.10.2026).
+    // Разность, а не серверная метка времени: часы телефона могут отличаться от
+    // серверных на минуты, и абсолютный момент с сервера показал бы чушь.
+    setEnergyBaseAt(Date.now() - readEnergyAccruedSec(data.character.energyAccruedSec) * 1000)
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
     // это правило экономики, а не свойство персонажа (server/src/routes/auth.ts).
     // Через readTrophyGoldRate, а не присваиванием: нет поля или мусор — null,

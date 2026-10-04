@@ -9,41 +9,104 @@ import { skillUsesThreshold } from './skillLevels.js'
 
 const MAX_ENERGY = 100
 const ENERGY_PER_MINUTE = 1
+const ENERGY_MINUTE_MS = 60_000
 
 /**
- * Current energy, accounting for regeneration since lastUpdate.
- * Regenerates 1 per minute, never above MAX_ENERGY.
+ * Энергия СЕЙЧАС плюс момент, от которого считать дальше.
+ *
+ * `lastEnergyUpdate` здесь — НЕ `now`, и это вся суть правки 04.10.2026
+ * («энергия упирается в 99»): он сдвигается на ЦЕЛОЕ число начисленных минут,
+ * то есть недобранный остаток минуты ПЕРЕНОСИТСЯ в следующий расчёт, а не
+ * сгорает. До этого каждая запись (старт забега, возврат за брошенный забег)
+ * ставила `now` и теряла до 59 секунд прогресса — на десяти забегах подряд
+ * набегало 7 единиц, и энергия подолгу стояла на 97..99 вместо 100.
  */
-export function getCurrentEnergy(storedEnergy: number, lastUpdate: Date): number {
-  const minutesPassed = Math.floor((Date.now() - lastUpdate.getTime()) / 60_000)
-  const regenerated = storedEnergy + minutesPassed * ENERGY_PER_MINUTE
-  return Math.min(MAX_ENERGY, regenerated)
+export type EnergyState = { energy: number; lastEnergyUpdate: Date }
+
+/**
+ * Регенерация: 1 за минуту, не выше MAX_ENERGY, с переносом остатка.
+ *
+ * ⚠️ На ПОЛНОЙ энергии таймер НЕ копится: `lastEnergyUpdate` становится `now`.
+ * Иначе неделя простоя под потолком превратилась бы в банк из тысяч минут, и
+ * сразу после траты энергия мгновенно долилась бы обратно — трата перестала бы
+ * что-то стоить. Ниже потолка, наоборот, остаток обязан сохраняться.
+ *
+ * `now` — параметр, а не `Date.now()` внутри: один и тот же момент нужен и
+ * числу, и остатку для клиента (см. energyForClient), иначе два вызова могли бы
+ * лечь по разные стороны минутной границы и клиент получил бы число от одного
+ * момента с остатком от другого.
+ *
+ * Отрицательный интервал (часы сервера сдвинули назад, запись из будущего)
+ * трактуется как ноль минут, и `lastEnergyUpdate` при этом НЕ сдвигается: ни
+ * начислять, ни отнимать за испорченное время нельзя.
+ */
+export function regenerateEnergy(storedEnergy: number, lastUpdate: Date, now: Date = new Date()): EnergyState {
+  const elapsed = now.getTime() - lastUpdate.getTime()
+  const minutesPassed = elapsed > 0 ? Math.floor(elapsed / ENERGY_MINUTE_MS) : 0
+  const energy = Math.min(MAX_ENERGY, storedEnergy + minutesPassed * ENERGY_PER_MINUTE)
+  if (energy >= MAX_ENERGY) return { energy, lastEnergyUpdate: now }
+  return { energy, lastEnergyUpdate: new Date(lastUpdate.getTime() + minutesPassed * ENERGY_MINUTE_MS) }
+}
+
+/**
+ * Энергия для КЛИЕНТА: число плюс сколько секунд уже натикало в счёт следующей
+ * единицы (0..59).
+ *
+ * Второе поле — ровно то, чего клиенту не хватало, чтобы показывать ТО ЖЕ
+ * число, что сервер. Он считает минуты от момента ВХОДА (`liveEnergy` в
+ * App.tsx), и без остатка его отсчёт начинался заново: сервер уже 50 секунд как
+ * ждал сотую единицу, а клиент начинал ждать свои 60 — и показывал 99/100 там,
+ * где на сервере было 100, до целой минуты подряд. Это и есть наблюдавшийся
+ * баг.
+ *
+ * Секунды, а не миллисекунды: точнее сети всё равно не будет, а целое число
+ * читается в логах.
+ */
+export function energyForClient(
+  storedEnergy: number,
+  lastUpdate: Date,
+  now: Date = new Date(),
+): { energy: number; accruedSec: number } {
+  const regen = regenerateEnergy(storedEnergy, lastUpdate, now)
+  if (regen.energy >= MAX_ENERGY) return { energy: regen.energy, accruedSec: 0 }
+  const accruedMs = now.getTime() - regen.lastEnergyUpdate.getTime()
+  // Клэмп — страховка от испорченных часов: ниже потолка остаток по построению
+  // лежит в [0, 60000), но отрицательный интервал выше оставляет lastUpdate как
+  // есть, и разность тогда может выйти за границы.
+  const accruedSec = Math.min(59, Math.max(0, Math.floor(accruedMs / 1000)))
+  return { energy: regen.energy, accruedSec }
 }
 
 /**
  * Возврат энергии за забег, который так и не начался (см. judgeInterruptedRun
- * в runState.ts). Сначала доначисляем всё, что натикало (getCurrentEnergy),
- * потом возвращаем списанное и упираемся в потолок — так игрок получает ровно
- * то, что имел бы, не нажав кнопку: двойной регенерации не возникает, выше
- * MAX_ENERGY не подняться.
+ * в runState.ts). Сначала доначисляем всё, что натикало, потом возвращаем
+ * списанное и упираемся в потолок — так игрок получает ровно то, что имел бы,
+ * не нажав кнопку: двойной регенерации не возникает, выше MAX_ENERGY не
+ * подняться.
  *
  * `refunded` — ФАКТИЧЕСКАЯ прибавка, а не spentEnergy: у игрока с энергией под
  * потолок она меньше списанного (или ноль), и сообщать ему списанное было бы
  * неправдой.
  *
- * ⚠️ Дробный остаток минуты теряется — его отбрасывает floor внутри
- * getCurrentEnergy, и lastUpdate сдвигается на now. Это та же потеря, что уже
- * есть у каждого списания энергии в проекте (см. задачу «энергия упирается в
- * 99»), отдельной новой она здесь не становится.
+ * `lastEnergyUpdate` вызывающий обязан записать ИМЕННО ЭТОТ, а не `new Date()`:
+ * в нём перенесён остаток минуты (см. regenerateEnergy). Прежняя запись `now`
+ * и была задачей «[ЭНЕРГИЯ, мелкое] Возврат теряет остаток минуты».
  */
 export function refundEnergy(
   storedEnergy: number,
   lastUpdate: Date,
   spentEnergy: number,
-): { energy: number; refunded: number } {
-  const before = getCurrentEnergy(storedEnergy, lastUpdate)
-  const energy = Math.min(MAX_ENERGY, before + spentEnergy)
-  return { energy, refunded: energy - before }
+  now: Date = new Date(),
+): { energy: number; refunded: number; lastEnergyUpdate: Date } {
+  const regen = regenerateEnergy(storedEnergy, lastUpdate, now)
+  const energy = Math.min(MAX_ENERGY, regen.energy + spentEnergy)
+  return {
+    energy,
+    refunded: energy - regen.energy,
+    // Долилось до потолка — таймер не копим (то же правило, что в
+    // regenerateEnergy); не долилось — несём остаток дальше.
+    lastEnergyUpdate: energy >= MAX_ENERGY ? now : regen.lastEnergyUpdate,
+  }
 }
 // --- Stat growth: incremental accumulation ---
 

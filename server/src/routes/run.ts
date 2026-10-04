@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { getCurrentEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
+import { regenerateEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
@@ -760,12 +760,17 @@ export async function runRoutes(server: FastifyInstance) {
     }
     const takenIds = takenSpecs.map((s) => s.id)
 
-    const currentEnergy = getCurrentEnergy(character.energy, character.lastEnergyUpdate)
-    if (currentEnergy < RUN_COST) {
-      return reply.status(400).send({ error: 'Not enough energy', energy: currentEnergy })
+    // Энергия и НОВЫЙ момент отсчёта — одним вызовом: в lastEnergyUpdate ниже
+    // пишется именно regen.lastEnergyUpdate, а не `new Date()`, иначе недобранный
+    // остаток минуты сгорал бы на каждом старте забега (см. regenerateEnergy в
+    // game.ts, правка 04.10.2026). RUN_COST в этот расчёт не входит вовсе,
+    // поэтому смена 3 -> 10 перед релизом его не трогает.
+    const regen = regenerateEnergy(character.energy, character.lastEnergyUpdate)
+    if (regen.energy < RUN_COST) {
+      return reply.status(400).send({ error: 'Not enough energy', energy: regen.energy })
     }
 
-    const newEnergy = currentEnergy - RUN_COST
+    const newEnergy = regen.energy - RUN_COST
     const maxHp = character.endurance * 8
     // Снимок склада ПО ТИРАМ + отдельный лимит глотков. Раньше здесь был один
     // Math.min(potionCharges, 3), смешивавший «сколько есть» и «сколько можно».
@@ -802,10 +807,10 @@ export async function runRoutes(server: FastifyInstance) {
     //
     // spentEnergy — СПИСАННОЕ ИМЕННО СЕЙЧАС, выражением от тех же двух чисел,
     // что уходят в запись ниже, а не копией RUN_COST. Сегодня это одно и то же
-    // (currentEnergy >= RUN_COST проверено выше, клэмпа между ними нет), но
+    // (regen.energy >= RUN_COST проверено выше, клэмпа между ними нет), но
     // привязка к фактической разнице переживёт и смену константы, и появление
     // любых скидок: вернуть при закрытии обязаны ровно то, что сняли.
-    const spentEnergy = currentEnergy - newEnergy
+    const spentEnergy = regen.energy - newEnergy
     // consumablesUsed кладём ТОЛЬКО когда что-то взяли: у забега без расходников
     // поля нет вовсе, и readConsumablesUsed читает это как честное «не брали»
     // (тот же договор, что у potionsDrunk и smugglerDeal).
@@ -836,7 +841,10 @@ export async function runRoutes(server: FastifyInstance) {
       },
       data: {
         energy: newEnergy,
-        lastEnergyUpdate: new Date(),
+        // С ПЕРЕНОСОМ остатка минуты (см. regen выше). Если игрок был под
+        // потолком, regen.lastEnergyUpdate равен now — накопленного банка у
+        // полной энергии нет намеренно.
+        lastEnergyUpdate: regen.lastEnergyUpdate,
         currentRun: activeRun as unknown as Prisma.InputJsonValue,
         ...spend.data,
       },
@@ -2105,7 +2113,7 @@ export async function runRoutes(server: FastifyInstance) {
   // открытый currentRun (как смерть, если забег был подтверждён), и делать это
   // побочным эффектом кнопки «обновить» нельзя.
   // Поэтому здесь НЕТ ни одной записи, currentRun не читается и не трогается,
-  // энергия не пересчитывается: getCurrentEnergy сдвигает lastEnergyUpdate у
+  // энергия не пересчитывается: расчёт энергии сдвигает lastEnergyUpdate у
   // вызывающих её эндпоинтов, а тихо терять остаток минуты на каждом обновлении
   // витрины — цена на пустом месте.
   server.get('/character/profile', async (request, reply) => {

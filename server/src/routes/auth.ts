@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
-import { getCurrentEnergy, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
+import { energyForClient, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
   type ActiveExploreRun,
   judgeInterruptedRun,
@@ -129,7 +129,10 @@ export async function authRoutes(server: FastifyInstance) {
         // ВООБЩЕ — не «те же значения», а отсутствуют: пустой забег не повод
         // трогать персонажа.
         const refund = refundEnergy(char.energy, char.lastEnergyUpdate, judgement.spentEnergy)
-        const refundedAt = new Date()
+        // Момент отсчёта берём ИЗ РАСЧЁТА, а не `new Date()`: в нём перенесён
+        // недобранный остаток минуты (см. refundEnergy в game.ts). Прежний
+        // `new Date()` и был задачей «Возврат теряет остаток минуты».
+        const refundedAt = refund.lastEnergyUpdate
         await prisma.character.update({
           where: { id: char.id },
           data: {
@@ -139,7 +142,7 @@ export async function authRoutes(server: FastifyInstance) {
           },
         })
         // Зеркалим в память — ниже из char собирается блок character ответа
-        // (energy там считается getCurrentEnergy'ем от этих двух полей).
+        // (energy там считается energyForClient'ом от этих двух полей).
         char.energy = refund.energy
         char.lastEnergyUpdate = refundedAt
         abandonedRun = { reason: 'not-confirmed', energyRefunded: refund.refunded }
@@ -354,6 +357,11 @@ export async function authRoutes(server: FastifyInstance) {
       }
     }
 
+    // Энергия и остаток минуты — ОДНИМ вызовом и от ОДНОГО момента: два
+    // отдельных расчёта могли бы лечь по разные стороны минутной границы, и
+    // клиент получил бы число от одного момента с остатком от другого.
+    const energyNow = energyForClient(char.energy, char.lastEnergyUpdate)
+
     // level — денормализованный снимок в БД (см. комментарий к полю в
     // schema.prisma), но эндпоинт профиля им не пользуется — уровень для
     // ответа клиенту всегда пересчитывается явно, как и везде в проекте
@@ -382,7 +390,13 @@ export async function authRoutes(server: FastifyInstance) {
       character: {
         ...charFields,
         level,
-        energy: getCurrentEnergy(char.energy, char.lastEnergyUpdate),
+        energy: energyNow.energy,
+        // Сколько секунд уже натикало в счёт следующей единицы (0..59). Клиент
+        // считает минуты от момента ВХОДА, и без этого поля его отсчёт
+        // начинался заново: сервер уже почти доначислил единицу, а клиент
+        // начинал ждать целую минуту — и показывал 99/100 там, где на сервере
+        // было 100. См. energyForClient в game.ts.
+        energyAccruedSec: energyNow.accruedSec,
         equippedSkills: char.equippedSkills,
         potions: potionStockOf(char),
         // Запас расходников — та же форма, что в GET /character/profile
