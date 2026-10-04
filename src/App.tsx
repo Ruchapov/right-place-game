@@ -17,7 +17,6 @@ import { itemIconSrc } from './itemIcons'
 // у книг — в боевых константах скиллов, и развилка обязана быть одна (см.
 // consumableMechanicLine).
 import { consumableMechanicLine, skillBookLine } from './skillBooks'
-import { skillUsesThreshold } from './skillLevels'
 import type { SkillStats } from './skillDamage'
 // Каталог улучшений — общая пара с сервером (src/upgrades.ts ↔
 // server/src/upgrades.ts, байт-в-байт). Цена, шаг и тексты берутся ТОЛЬКО
@@ -26,6 +25,7 @@ import { UPGRADES, UPGRADE_ORDER, upgradePrice, upgradeBonus, type UpgradeCounts
 import { playerAttackDamage } from './playerDamage'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
+import SkillLevelNote from './ui/SkillLevelNote'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number
@@ -48,8 +48,12 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * Результативные применения каждого навыка, накопленные в счёт СЛЕДУЮЩЕГО
    * уровня (колонки Character.skillUses*). Растут в забегах — их считает
    * Explore и отдаёт серверу, сервер превращает в уровни (02.10.2026).
-   * null — сервер не назвал (см. readSkillUses). Прочерк, а не ноль: «полоса
-   * пуста» и «сколько набрано, неизвестно» — разные сообщения.
+   * null — сервер не назвал (см. readSkillUses), и это НЕ ноль.
+   *
+   * ⚠️ НИГДЕ НЕ ПОКАЗЫВАЕТСЯ с 04.10.2026 — решение дизайнера: прогресса
+   * применений в интерфейсе нет ни в карточке навыка, ни где-либо ещё.
+   * Поле живёт дальше, потому что сервер его присылает и счётчики не трогали:
+   * форма профиля обязана совпадать с ответом логина.
    */
   skillUses: Record<SkillBookSkillId, number> | null
   /**
@@ -396,10 +400,11 @@ function devSkillLevels(): Record<SkillBookSkillId, number> {
  * офлайн-заглушки. Настоящие лежат в колонках Character.skillUses* и приходят
  * полем character.skillUses в ответе логина.
  *
- * Не ноль и не «порог минус один»: при пороге уровня 3 (52 применения) это
- * показывает полосу ЗАПОЛНЕННОЙ ПРИМЕРНО НА ТРЕТЬ — видно и что число берётся
- * из данных, и что полоса считает долю, а не стоит в одном из двух крайних
- * положений. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
+ * ⚠️ С 04.10.2026 это число НИГДЕ НЕ ВИДНО: прогресс применений из интерфейса
+ * убран целиком (решение дизайнера), полоса «X / Y» в карточке навыка удалена.
+ * Заглушка оставлена, потому что поле по-прежнему приходит с сервера и живёт в
+ * player — убери её, и офлайн-сборка разошлась бы с настоящей формой профиля.
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
  */
 const TEMP_DEV_SKILL_USES = 17
 function devSkillUses(): Record<SkillBookSkillId, number> {
@@ -1255,8 +1260,9 @@ export default function App() {
         skillLevels: result.skillLevels,
         // skillUses здесь НЕ мержится намеренно: книга растит уровень и счётчик
         // применений не трогает (решение дизайнера), поэтому ручки книг его и
-        // не присылают. Полоса «X / Y» после улучшения пересчитается сама —
-        // знаменатель считается от НОВОГО уровня (skillUsesThreshold).
+        // не присылают. Показать его тоже негде: прогресса применений в
+        // интерфейсе нет с 04.10.2026, а уровень и эффект в блоке под «что
+        // делает» пересчитаются сами от нового skillLevels.
       } : prev)
       if (result.consumables === null || result.scrolls === null || result.equippedSkills === null || result.skillLevels === null) {
         console.error('Skill action: сервер ответил не полностью', action.kind, result)
@@ -2002,13 +2008,6 @@ export default function App() {
                 const book = bookBySkillId(skillId)
                 // Уровень: null значит «сервер не назвал» — прочерк, а не 1.
                 const level = p.skillLevels?.[skillId] ?? null
-                // Применения в счёт следующего уровня и порог, до которого их
-                // копить. null по той же причине и с тем же смыслом, что level.
-                const uses = p.skillUses?.[skillId] ?? null
-                // Порог считается от уровня, поэтому без уровня его нет вовсе:
-                // `level ?? 1` подставил бы здесь порог первого уровня, то есть
-                // показал бы полосу, посчитанную не от того числа.
-                const usesNeeded = level === null ? null : skillUsesThreshold(level)
                 return (
                 <div
                   onClick={() => { setHeroSkillSelected(null); setForgetConfirm(false); setSkillActionError(null) }}
@@ -2040,29 +2039,12 @@ export default function App() {
                         )}
                       </div>
                       <div style={{ minWidth:0 }}>
+                        {/* В шапке — только имя навыка. Уровень и прогресс
+                            применений отсюда УБРАНЫ 04.10.2026: уровень теперь
+                            называет блок под строкой «что делает» (один на три
+                            карточки, см. SkillLevelNote), а прогресса
+                            применений в интерфейсе нет нигде. */}
                         <div style={{ fontSize:15, color:C.textMain }}>{HERO_SKILL_NAMES[skillId] ?? skillId}</div>
-                        <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
-                          {level === null ? 'Уровень — (неизвестен)' : `Уровень ${level}`}
-                        </div>
-                        {/* Полоса до следующего уровня: сколько результативных
-                            применений набрано из нужных. Знаменатель —
-                            skillUsesThreshold(уровень) из общей с сервером пары
-                            (src/skillLevels.ts), тот же порог, по которому
-                            сервер реально повышает уровень.
-                            Оба числа неизвестны (сервер не назвал) — полосы нет
-                            вовсе, вместо выдуманного нуля: прочерк уже сказан
-                            строкой «Уровень — (неизвестен)» выше. */}
-                        {uses !== null && usesNeeded !== null && (
-                          <div style={{ marginTop:5 }}>
-                            <div style={{ height:3, borderRadius:2, background:C.nicheDeep, overflow:'hidden' }}>
-                              <div style={{
-                                width:`${Math.min(100, Math.round((uses / usesNeeded) * 100))}%`,
-                                height:'100%', background:C.glowMid,
-                              }} />
-                            </div>
-                            <div style={{ fontSize:10, color:C.textDim, marginTop:3 }}>{uses} / {usesNeeded}</div>
-                          </div>
-                        )}
                       </div>
                     </div>
 
@@ -2071,6 +2053,9 @@ export default function App() {
                     <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
                       <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId, level, skillStats)}</div>
                     </div>
+
+                    {/* Уровень навыка — тем же блоком, что в сумке и в магазине. */}
+                    <SkillLevelNote level={level} />
 
                     {forgetConfirm ? (
                       <>
@@ -2220,6 +2205,14 @@ export default function App() {
               levelRequired: number
               mechanic: { label: string; value: string } | { line: string }
               /**
+               * Навык, который улучшает эта книга, или null у всего остального
+               * (зелья, камень, оберег, улучшения). От него зависит блок об
+               * уровне навыка под строкой механики — у товара без навыка его нет.
+               * Поле обязательное у ВСЕХ трёх ветвей намеренно: иначе доступ к
+               * нему не собрался бы, а «забыли ветку» выяснилось бы на экране.
+               */
+              skillId: SkillBookSkillId | null
+              /**
                * Сколько такого уже есть. null — запас НЕИЗВЕСТЕН (профиль не
                * загружен), undefined — у товара запаса нет ВООБЩЕ: у улучшений
                * счётчика по решению дизайнера нет, и «у тебя: 0» врало бы.
@@ -2263,6 +2256,8 @@ export default function App() {
                   // только цена, и она растёт сама.
                   levelRequired: 1,
                   mechanic: { line },
+                  // Улучшение — не книга, навыка у него нет.
+                  skillId: null,
                   owned: undefined,
                   purchase: { kind: 'single' as const, label: 'Улучшить', buy: () => handleBuyUpgrade(spec.kind) },
                 }
@@ -2277,6 +2272,8 @@ export default function App() {
                   price: p.price,
                   levelRequired: p.levelRequired,
                   mechanic: { label: 'Восстанавливает', value: `${Math.round(p.healFrac * 100)}% от здоровья` },
+                  // Зелье — не книга, уровня навыка у него нет.
+                  skillId: null,
                   owned: player === null ? null : (player.potions[p.tier - 1] ?? 0),
                   purchase: {
                     kind: 'stepper',
@@ -2300,6 +2297,9 @@ export default function App() {
                 // эффекта каталога, у книги — из боевых констант скилла. Числа
                 // текстом здесь не дублируются (см. consumableMechanicLine).
                 mechanic: { line: consumableMechanicLine(c, player?.skillLevels ?? null, skillStats) },
+                // Навык, который улучшает эта книга, или null у камня и оберега:
+                // от него зависит, показывать ли блок об уровне ниже.
+                skillId: consumableSkillBook(c),
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
@@ -2621,6 +2621,13 @@ export default function App() {
                         </>
                       )}
                     </div>
+
+                    {/* Уровень навыка — ТОЛЬКО у книги (у зелья, камня и оберега
+                        skillId === null). Уровень берётся ГЕРОЯ по этому навыку:
+                        книга в витрине одна и та же для всех, а усиление — его. */}
+                    {shopCard.skillId !== null && (
+                      <SkillLevelNote level={player?.skillLevels?.[shopCard.skillId] ?? null} />
+                    )}
 
                     {playerLevel >= shopCard.levelRequired ? (() => {
                       // Явные проверки вместо `player?.gold ?? 0`: нулём
@@ -3816,6 +3823,13 @@ export default function App() {
             <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
               <div style={{ fontSize:12, color:C.bone }}>{selectedEntry.stat}</div>
             </div>
+
+            {/* Уровень навыка — ТОЛЬКО у книги: у предмета, зелья, страницы и
+                прочих расходников уровня нет вовсе. Тот же блок, что в карточке
+                навыка на «Персонаже» и в витрине магазина. */}
+            {selectedEntry.kind === 'book' && (
+              <SkillLevelNote level={player?.skillLevels?.[selectedEntry.skillId] ?? null} />
+            )}
 
             {/* Действия. У страницы их две, у книги три и своя раскладка;
                 у предмета — «Надеть»/«Снять» (+ «Продать за N», если он не
