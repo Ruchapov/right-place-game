@@ -19,6 +19,22 @@ export function scaledEnemyAttackDamage(level: number): number {
   return Math.ceil(C.ENEMY_ATTACK_DAMAGE + C.ENEMY_DAMAGE_PER_LEVEL * (level - 1))
 }
 
+// ЗВОНАРЬ (дальний бой, 04.10.2026) — тоже НЕ своя формула, а множитель поверх
+// зверя ТОГО ЖЕ уровня, по образцу босса ниже и по той же причине: две линейные
+// формулы с разными коэффициентами разъехались бы с ростом уровня, и «хрупкий»
+// перестал бы быть хрупким ровно тогда, когда это перестанут замечать.
+export function scaledZvonarMaxHp(level: number): number {
+  return Math.round(C.ZVONAR_HP_MULT * scaledEnemyMaxHp(level))
+}
+
+// Урон волны = урон удара зверя того же уровня (решение дизайнера 04.10.2026).
+// Отдельная функция при одинаковой формуле — НЕ лишняя обёртка: на месте вызова
+// видно, что равенство это решение, а не совпадение, и менять его придётся
+// здесь, а не искать по коду, кто ещё зовёт scaledEnemyAttackDamage.
+export function scaledZvonarWaveDamage(level: number): number {
+  return scaledEnemyAttackDamage(level)
+}
+
 // Босс не растёт по level САМ ПО СЕБЕ — его характеристики являются
 // множителем поверх уже отмасштабированных характеристик обычного врага НА
 // ТОМ ЖЕ уровне (см. задачу: "HP босса = round(2.5 * HP обычного врага)").

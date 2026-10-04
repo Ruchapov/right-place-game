@@ -22,6 +22,7 @@ import type {
   BossSpike,
   BossWave,
   MapEvent,
+  EnemyKind,
 } from './explore/types'
 import {
   isSolid,
@@ -40,13 +41,15 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadExploreAssets } from './explore/assets'
+import { loadExploreAssets, loadZvonarAssets } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
+import { createZvonarSystem } from './explore/entities/zvonar'
+import type { ZvonarFrames } from './explore/entities/zvonar'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
@@ -539,6 +542,31 @@ const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop | null> = {
   puzzle: null,
 }
 
+/**
+ * Чем вызвать группу Звонарей в ОФЛАЙН-отладке (вне Telegram, заглушка
+ * DevTester). В настоящей сессии вид врагов называет СЕРВЕР, и эта константа не
+ * исполняется вовсе.
+ *
+ *   'roll'   — как на сервере, бросок на каждую группу (обычная отладка);
+ *   'always' — все группы забега Звонарьи (проверять его и только его);
+ *   'never'  — все группы звериные (проверять, что ничего не сломалось зверям).
+ *
+ * ⚠️ TEMP_DEV_ZVONAR_CHANCE — НЕ копия серверной ZVONAR_GROUP_CHANCE и сверять
+ * их не надо: доля живёт только на сервере (см. его комментарий), а здесь стоит
+ * похожее число просто чтобы офлайн-забег был похож на настоящий. Забег на
+ * заглушке и так помечен оранжевой плашкой.
+ *
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
+ */
+const TEMP_DEV_ZVONAR_GROUPS: 'roll' | 'always' | 'never' = 'roll'
+const TEMP_DEV_ZVONAR_CHANCE = 0.3
+
+function devEnemyKind(): EnemyKind {
+  if (TEMP_DEV_ZVONAR_GROUPS === 'always') return 'zvonar'
+  if (TEMP_DEV_ZVONAR_GROUPS === 'never') return 'beast'
+  return Math.random() < TEMP_DEV_ZVONAR_CHANCE ? 'zvonar' : 'beast'
+}
+
 function devEventReward(kind: EventKind): { trophies: number | null; drop: RunDrop | null } {
   const mult = kind === 'enemy' ? C.TROPHY_MULT_ENEMY
     : kind === 'chest' ? C.TROPHY_MULT_CHEST
@@ -999,6 +1027,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // доступны отовсюду (enemySystem.spawn, applyAttackHit) через этот ref,
   // как deathFramesRef у героя.
   const beastFramesRef = useRef<BeastFrames | null>(null)
+  // Кадры Звонаря — тот же приём, что у beastFramesRef, но ref здесь нужен ещё
+  // и потому, что листов может не быть ВОВСЕ: они грузятся, только если сервер
+  // назвал хотя бы одну группу его (8.7 МБ, см. loadZvonarAssets). null — это
+  // «в этом забеге Звонарей нет», а не «не успели загрузиться».
+  const zvonarFramesRef = useRef<ZvonarFrames | null>(null)
   // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
   // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
   const landTimerRef = useRef(0)
@@ -2291,6 +2324,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // мог вызвать dispose() (тот же приём, что у onBgResize выше).
     let skills: ReturnType<typeof createSkillsSystem> | null = null
     let enemySystem: ReturnType<typeof createEnemySystem> | null = null
+    let zvonarSystem: ReturnType<typeof createZvonarSystem> | null = null
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
 
     async function setup() {
@@ -2618,7 +2652,22 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           chosenEvents = pickRandom(poolWithoutBoss, C.EVENTS_PER_RUN)
         }
         bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
+        // Вид врагов офлайн бросает сам клиент — сервера, который назвал бы его,
+        // здесь нет (см. devEnemyKind и плашку «ЗАГЛУШКА»).
+        chosenEvents = chosenEvents.map((ev) =>
+          ev.kind === 'enemy' ? { ...ev, enemyKind: devEnemyKind() } : ev,
+        )
       }
+      // Вид врагов КАЖДОГО события, разобранный один раз здесь — ровно как
+      // награды ниже: дальше по коду оба пути (сервер и заглушка) дают одну
+      // форму, и спавн не знает, откуда взялось значение.
+      // null — событие не про врагов вовсе.
+      const eventEnemyKinds: (EnemyKind | null)[] = chosenEvents.map((ev) =>
+        ev.kind === 'enemy' ? readEnemyKind(ev.enemyKind) : null,
+      )
+      // Нужны ли тяжёлые листы Звонаря. Решается ЗДЕСЬ, до загрузки ассетов, —
+      // в этом и был смысл того, что вид врагов приезжает со старта забега.
+      const needsZvonarSheets = eventEnemyKinds.includes('zvonar')
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
@@ -2907,6 +2956,29 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         characterLevel: characterLevelRef,
       })
 
+      // Звонарь (см. explore/entities/zvonar.ts) — отдельная система НА ТОТ ЖЕ
+      // список врагов: enemiesRef общий, и каждая из двух систем обслуживает
+      // только свой вид. Создаётся ВСЕГДА, даже когда в забеге нет ни одного
+      // Звонаря: пустой цикл по чужим врагам ничего не стоит, а условное
+      // создание пришлось бы проверять в каждой точке вызова.
+      zvonarSystem = createZvonarSystem({
+        phys,
+        getPlayerCombatBox,
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
+        findGroundSurfaceY,
+        closeEvent,
+        // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
+        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        // Рывок — волна проходит сквозь героя, а не гаснет об него (см. ZvonarDeps).
+        dashing: dashingRef,
+        events: eventsRef,
+        worldContainer,
+        grid,
+        frames: zvonarFramesRef,
+        enemies: enemiesRef,
+        characterLevel: characterLevelRef,
+      })
+
       // Вся последовательная загрузка спрайт-листов (герой/зверь/сундук/
       // смуглер/обелиск/босс/шип/волна/иконки наград) вынесена в
       // loadExploreAssets — числа/пути/порядок/try-catch там те же, что
@@ -2934,6 +3006,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const parrySparkFrames = assets.parrySpark
 
       beastFramesRef.current = assets.beast
+
+      // Листы Звонаря — ТОЛЬКО если в этом забеге есть хотя бы одна его группа.
+      // 8.7 МБ на врага, которого с вероятностью 70% в забеге нет вовсе, —
+      // грузить их всегда значило бы удлинить «ПОДГОТОВКУ» каждому игроку ради
+      // меньшинства забегов. Вид группы называет сервер (enemyKind), клиент
+      // только читает (см. readEnemyKind).
+      // Стоит ПОСЛЕ основной загрузки, а не параллельно ей: порядок тут —
+      // очередь на один канал, и ранний старт тяжёлых листов задержал бы героя
+      // и карту.
+      if (needsZvonarSheets) {
+        const zvonarAssets = await loadZvonarAssets(() => cancelled)
+        if (!zvonarAssets) return // размонтировали посреди загрузки
+        zvonarFramesRef.current = zvonarAssets
+      }
       // Аура лечения — в ref, откуда её читает система скиллов (создана выше
       // по файлу, до загрузки ассетов; см. healAuraFramesRef).
       healAuraFramesRef.current = assets.healAura
@@ -3363,7 +3449,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // сервер, и всплывает оно один раз — когда падает последний враг
           // группы (см. closeEvent). Делить серверное число было бы нечем:
           // сервер не знает состав кластера.
-          points.forEach(([ex, ey]) => enemySystem!.spawn(ex, ey, eventIndex))
+          // Чья группа — та система её и спавнит. Группа ОДНОРОДНАЯ: смешанных
+          // нет ни на сервере, ни здесь.
+          // Листы Звонаря могли не загрузиться только если их и не просили, а
+          // просили ровно по этому же признаку — поэтому отдельной проверки
+          // «а есть ли кадры» здесь нет, она была бы недостижимой веткой.
+          const groupKind = eventEnemyKinds[eventIndex] ?? 'beast'
+          points.forEach(([ex, ey]) =>
+            groupKind === 'zvonar'
+              ? zvonarSystem!.spawn(ex, ey, eventIndex)
+              : enemySystem!.spawn(ex, ey, eventIndex),
+          )
           return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drop: reward.drop }
         }
 
@@ -4068,9 +4164,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
           enemy.dead = true
           redrawEnemyHpBar(enemy) // пустая полоса
-          const beastFrames = beastFramesRef.current
-          if (beastFrames) {
-            playSpriteAnim(enemy.sprite, beastFrames.death, C.BEAST_DEATH_ANIM_SPEED, false)
+          // Death запускается ЗДЕСЬ, в общей точке урона, — и лист берётся по
+          // виду врага. У Звонаря вместе с листом меняется и ЯКОРЬ: у его
+          // анимаций разные клетки, и смерть с чужим якорем уехала бы вбок.
+          if (enemy.kind === 'zvonar') {
+            const zf = zvonarFramesRef.current
+            if (zf) {
+              const spec = C.ZVONAR_SHEETS.death
+              enemy.zvonarAnim = 'death'
+              enemy.sprite.textures = zf.death
+              enemy.sprite.anchor.set(spec.anchorX, spec.anchorY)
+              enemy.sprite.animationSpeed = spec.speed
+              enemy.sprite.loop = false
+              enemy.sprite.gotoAndPlay(0)
+            }
+          } else {
+            const beastFrames = beastFramesRef.current
+            if (beastFrames) {
+              playSpriteAnim(enemy.sprite, beastFrames.death, C.BEAST_DEATH_ANIM_SPEED, false)
+            }
           }
           enemy.deathHoldTimer = 0
           return true
@@ -4163,7 +4275,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // замах в ранней фазе (poiseImmuneTimer>0 перекрывает проверку
         // POISE_POINT точно так же, как поздняя фаза — ветка COMMIT).
         const wasWindingUp = enemy.windingUp
-        const windupProgress = wasWindingUp ? enemy.windupTimer / C.WINDUP_MS : 0
+        // Длительность замаха — ПОЛЕ врага: у зверя 400 мс, у Звонаря ≈1111.
+        // С общей константой прогресс Звонаря перескакивал бы единицу через
+        // 400 мс, и сбить его замах стало бы нельзя почти никогда.
+        const windupProgress = wasWindingUp ? enemy.windupTimer / enemy.windupMs : 0
         const poiseImmune = enemy.poiseImmuneTimer > 0
         if (!wasWindingUp || (windupProgress < C.POISE_POINT && !poiseImmune)) {
           if (wasWindingUp) {
@@ -4173,7 +4288,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               enemy.stunCount = 0
             }
           }
-          enemy.hurtTimer = C.ENEMY_HURT_MS
+          // Хитстан — свой у каждого вида: он выведен из скорости СВОЕЙ
+          // hurt-анимации, и общее число разошлось бы с картинкой.
+          enemy.hurtTimer = enemy.kind === 'zvonar' ? C.ZVONAR_HURT_MS : C.ENEMY_HURT_MS
           enemy.windingUp = false
           enemy.windupTimer = 0
           enemy.attackAnimPlaying = false
@@ -4242,9 +4359,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           ) {
             const hb = attackHitboxRef.current
             const overlap =
-              hb.x < enemy.x + C.ENEMY_WIDTH &&
+              // Габариты — ПОЛЯ врага: в списке лежат и звери (116×80), и
+              // Звонари (56×120), см. Enemy.width/height в types.ts.
+              hb.x < enemy.x + enemy.width &&
               hb.x + hb.width > enemy.x &&
-              hb.y < enemy.y + C.ENEMY_HEIGHT &&
+              hb.y < enemy.y + enemy.height &&
               hb.y + hb.height > enemy.y
             if (overlap) {
               enemy.lastHitSwingId = attackSwingIdRef.current
@@ -4883,6 +5002,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // ticker.deltaMS — реальные мс для таймеров внутри enemy.ts.
         enemySystem!.update(dt, ticker.deltaMS)
 
+        // Звонарь — СРАЗУ за зверем, по тому же списку врагов и с теми же двумя
+        // масштабами времени. Волны он двигает внутри себя, последним шагом
+        // своего же update (тот же порядок, что у босса с шипами).
+        zvonarSystem!.update(dt, ticker.deltaMS)
+
         // Босс карты C (см. explore/entities/boss.ts) — вызов на ТОМ ЖЕ
         // месте кадра, где раньше стоял AI-блок + шипы + волны: сразу после
         // enemySystem.update() и до сундуков/обелисков/смуглера (порядок
@@ -5349,6 +5473,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       clearLoadWatchdog()
       skills?.dispose()
       enemySystem?.dispose()
+      zvonarSystem?.dispose()
       bossSystem?.dispose()
       // destroy() только если init() реально завершился — до этого у app нет
       // внутренностей, на которые destroy() рассчитывает (см. комментарий

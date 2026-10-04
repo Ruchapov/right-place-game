@@ -513,12 +513,12 @@ export function createSkillsSystem(deps: SkillsDeps) {
     for (const enemy of deps.enemies.current) {
       if (enemy.dead) continue
       const overlap =
-        hx < enemy.x + C.ENEMY_WIDTH &&
+        hx < enemy.x + enemy.width &&
         hx + range > enemy.x &&
-        box.y < enemy.y + C.ENEMY_HEIGHT &&
+        box.y < enemy.y + enemy.height &&
         box.y + box.h > enemy.y
       if (!overlap) continue
-      const dist = Math.abs(enemy.x + C.ENEMY_WIDTH / 2 - playerCx)
+      const dist = Math.abs(enemy.x + enemy.width / 2 - playerCx)
       if (dist < bestDist) {
         bestDist = dist
         best = { enemy }
@@ -698,7 +698,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // констант. Возвращается {x,y,w,h} той же формы, что даёт
   // getPlayerCombatBox — чтобы обе проверки ниже читались одинаково.
   function enemyBox(enemy: Enemy) {
-    return { x: enemy.x, y: enemy.y, w: C.ENEMY_WIDTH, h: C.ENEMY_HEIGHT }
+    // ⚠️ Габариты — ПОЛЯ врага, а не константы зверя: с 04.10.2026 в том же
+    // списке лежит Звонарь, и бокс у него другой (56×120 против 116×80).
+    return { x: enemy.x, y: enemy.y, w: enemy.width, h: enemy.height }
   }
   function bossBox(boss: Boss) {
     return { x: boss.x, y: boss.y, w: C.BOSS_WIDTH, h: C.BOSS_HEIGHT }
@@ -939,9 +941,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // здесь же, поэтому убитый рывком враг на следующем кадре отсеется сам.
       if (enemy.dead || dashHitTargets.has(enemy)) continue
       const overlap =
-        box.x < enemy.x + C.ENEMY_WIDTH &&
+        box.x < enemy.x + enemy.width &&
         box.x + box.w > enemy.x &&
-        box.y < enemy.y + C.ENEMY_HEIGHT &&
+        box.y < enemy.y + enemy.height &&
         box.y + box.h > enemy.y
       if (!overlap) continue
       dashHitTargets.add(enemy)

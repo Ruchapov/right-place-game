@@ -475,3 +475,85 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     rewardIcons: rewardIconTextures,
   }
 }
+
+/**
+ * Листы Звонаря — ОТДЕЛЬНОЙ функцией, а не внутри loadExploreAssets.
+ *
+ * ⚠️ Это не стилистика, а 8.7 МБ: столько весят семь его листов (для сравнения
+ * весь остальной забег грузит около 12 МБ, а зверь — 2). Грузить их в каждом
+ * забеге значило бы удвоить ожидание на экране «ПОДГОТОВКА» ради врага, которого
+ * в этом забеге с вероятностью 70% нет вовсе. Поэтому вызывается ТОЛЬКО когда
+ * сервер назвал хотя бы одну группу его (см. setup() в Explore.tsx).
+ *
+ * isCancelled — тот же механизм, что у loadExploreAssets: размонтировали посреди
+ * загрузки, и остальные листы даже не запрашиваются.
+ */
+export type ZvonarAssets = {
+  idle: Texture[]
+  walk: Texture[]
+  attack: Texture[]
+  hurt: Texture[]
+  death: Texture[]
+  // Волна — ОДИН кадр, поэтому обычный Assets.load, без нарезки (тот же приём,
+  // что у шипа босса).
+  wave: Texture
+  impact: Texture[]
+}
+
+export async function loadZvonarAssets(isCancelled: () => boolean): Promise<ZvonarAssets | null> {
+  // Пять листов фигуры — через общую таблицу ZVONAR_SHEETS: клетка, колонки и
+  // число кадров у каждого СВОИ, и перечислять их здесь вторым списком значило
+  // бы завести копию, которая однажды разойдётся с той, по которой рисуют.
+  const sheets = {} as Record<keyof typeof C.ZVONAR_SHEETS, Texture[]>
+  for (const key of Object.keys(C.ZVONAR_SHEETS) as (keyof typeof C.ZVONAR_SHEETS)[]) {
+    const spec = C.ZVONAR_SHEETS[key]
+    const frames = await loadSheetFrames(spec.src, spec.cellW, spec.cellH, spec.count, spec.cols)
+    if (isCancelled()) return null
+    // Сверка размера — ГРОМКАЯ и дешёвая, по образцу остальных листов: без неё
+    // неверные cols/клетка дали бы сдвинутые или пустые кадры, и выглядело бы
+    // это как «Звонарь не прорисовался», а не как ошибка нарезки.
+    // ⚠️ rows ОБЯЗАТЕЛЕН: по умолчанию он 1, а у Звонаря многорядные все пять
+    // листов (2/2/5/2/5). Без него проверка требовала бы лист в один ряд и
+    // падала бы на каждом.
+    assertSheetSize(
+      spec.src.split('/').pop() ?? spec.src,
+      frames,
+      spec.cellW,
+      spec.cellH,
+      spec.count,
+      spec.cols,
+      Math.ceil(spec.count / spec.cols),
+    )
+    sheets[key] = frames
+  }
+
+  const wave = await Assets.load(C.ZVONAR_WAVE_SRC)
+  if (isCancelled()) return null
+  const impact = await loadSheetFrames(
+    C.ZVONAR_WAVE_IMPACT_SRC,
+    C.ZVONAR_WAVE_IMPACT_CELL,
+    C.ZVONAR_WAVE_IMPACT_CELL,
+    C.ZVONAR_WAVE_IMPACT_COUNT,
+    C.ZVONAR_WAVE_IMPACT_COLS,
+  )
+  if (isCancelled()) return null
+  assertSheetSize(
+    'Zvonar_Wave_Impact_v2.png',
+    impact,
+    C.ZVONAR_WAVE_IMPACT_CELL,
+    C.ZVONAR_WAVE_IMPACT_CELL,
+    C.ZVONAR_WAVE_IMPACT_COUNT,
+    C.ZVONAR_WAVE_IMPACT_COLS,
+    Math.ceil(C.ZVONAR_WAVE_IMPACT_COUNT / C.ZVONAR_WAVE_IMPACT_COLS),
+  )
+
+  return {
+    idle: sheets.idle,
+    walk: sheets.walk,
+    attack: sheets.attack,
+    hurt: sheets.hurt,
+    death: sheets.death,
+    wave,
+    impact,
+  }
+}

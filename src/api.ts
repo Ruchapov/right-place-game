@@ -297,11 +297,22 @@ export async function confirmRunReady(token: string): Promise<{ confirmed: boole
 // server/src/runEvents.ts's RunEventKind.
 export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
+/**
+ * Чья группа врагов — только у kind === 'enemy' (04.10.2026). Бросает СЕРВЕР
+ * (ZVONAR_GROUP_CHANCE живёт только там), клиент получает готовый ответ.
+ */
+export type StartExploreEnemyKind = 'beast' | 'zvonar'
+
 export type StartExploreEvent = {
   kind: StartExploreEventKind
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /**
+   * Чья это группа. Разбирать ТОЛЬКО через readEnemyKind ниже: поля может не
+   * быть вовсе (забег начат сервером, где Звонаря ещё не существовало).
+   */
+  enemyKind?: StartExploreEnemyKind
   /**
    * Сколько трофеев даст это событие. Разыграно СЕРВЕРОМ на старте — именно это
    * число всплывает в момент закрытия события и именно оно начислится на финише.
@@ -1336,6 +1347,28 @@ export function readRunDrops(raw: unknown): RunDrop[] {
  * Мусор в `trophyReward` (строка, дробное, отрицательное) — тоже null: печатать
  * «+NaN» игроку нельзя, а догадываться, что имелось в виду, не из чего.
  */
+/**
+ * Разбор вида врагов в событии (04.10.2026).
+ *
+ * ⚠️ Три входа, два исхода, и «тихим фолбэком» это не является:
+ *   поля НЕТ         -> 'beast'. Это единственное, чем может быть группа у
+ *                       сервера, который Звонаря не знал, — отсутствие поля
+ *                       ЗНАЧИТ «звери», а не «неизвестно»;
+ *   'beast'/'zvonar' -> как сказано;
+ *   что угодно иное  -> 'beast' И ГРОМКАЯ ошибка в консоль. Молчать нельзя:
+ *                       это рассинхрон каталогов, и он обязан быть виден.
+ *
+ * Почему не null, как у readConsumables: у склада «неизвестно» — рабочее
+ * состояние экрана, а здесь выбор между двумя наборами спрайт-листов, и забег
+ * без врагов хуже забега со зверями вместо Звонарей.
+ */
+export function readEnemyKind(raw: unknown): StartExploreEnemyKind {
+  if (raw === undefined || raw === null) return 'beast'
+  if (raw === 'beast' || raw === 'zvonar') return raw
+  console.error('api: неизвестный вид врагов в событии', raw, '— считаем зверями')
+  return 'beast'
+}
+
 export function readEventReward(raw: unknown): { trophies: number | null; drop: RunDrop | null } {
   if (typeof raw !== 'object' || raw === null) return { trophies: null, drop: null }
   const e = raw as Record<string, unknown>

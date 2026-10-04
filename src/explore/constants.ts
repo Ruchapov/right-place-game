@@ -1332,3 +1332,157 @@ export const EVENTS_PER_RUN = 3
 // при выборе chosenEvents, наравне с гарантией Контрабандиста на карте D
 // OPEN; не выпало — босс не спавнится вообще (см. spawnBoss/bossRef ниже).
 export const BOSS_SPAWN_CHANCE = 0.3
+
+// ============================================================================
+// ЗВОНАРЬ — второй враг, ДАЛЬНИЙ БОЙ (04.10.2026)
+// ============================================================================
+// Хрупкий стрелок: бьёт молотом по своему колоколу, тот вспыхивает и выпускает
+// звуковую волну строго по горизонтали. Ближнего удара и урона касанием у него
+// НЕТ вовсе. Арт и все числа листов — docs/art-session-2026-09-enemies.md,
+// разбор поведения — docs/explore-engine.md.
+
+export const ZVONAR_IDLE_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Idle.png`
+export const ZVONAR_WALK_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Walk_v2.png`
+export const ZVONAR_ATTACK_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Attack_v4.png`
+export const ZVONAR_HURT_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Hurt.png`
+export const ZVONAR_DEATH_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Death.png`
+export const ZVONAR_WAVE_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Wave.png`
+export const ZVONAR_WAVE_IMPACT_SRC = `${import.meta.env.BASE_URL}assets/sprites/zvonar/Zvonar_Wave_Impact_v2.png`
+
+/**
+ * ⚠️ ОДИН МНОЖИТЕЛЬ НА ВСЕ ЛИСТЫ, и делить на высоту клетки НЕЛЬЗЯ.
+ *
+ * У Звонаря КАЖДАЯ анимация в своей клетке, и высоты пять разных:
+ * 296 / 292 / 327 / 287 / 285. Привычный для проекта приём «масштаб =
+ * DRAW_H / высота клетки» (BEAST_CELL_RENDER_H, HERO_DRAW_H) здесь дал бы
+ * скачок размера до 14.7% при каждом переключении idle↔attack. Поэтому
+ * масштаб ОДИН, а разные клетки разводит якорь, свой у каждого листа
+ * (ZVONAR_SHEETS ниже).
+ *
+ * Откуда 0.48: рост фигуры на экране приравнен к росту ГЕРОЯ (решение
+ * дизайнера). Замерено по альфе силуэтов — герой в кадре 0 idle 272 px при
+ * клетке 296 и HERO_DRAW_H 140, то есть 272 × 140/296 = 128.65 px на экране;
+ * Звонарь в кадре 0 idle — 268 px, и 128.65 / 268 = 0.4800. Перерисуют любой
+ * из двух спрайтов — перезамерить обе высоты и пересчитать это число.
+ */
+export const ZVONAR_SCALE = 0.48
+
+// Физический бокс (AI, коллизия, хитбокс для меча и скиллов) — СВОЙ, не
+// ENEMY_WIDTH/ENEMY_HEIGHT зверя: тот приземистый и широкий (116×80), а Звонарь
+// высокий и узкий. Фигура на экране ≈ 62×129, бокс немного уже и ниже — как у
+// героя (54×128), чтобы меч доставал по корпусу, а не по воздуху рядом.
+export const ZVONAR_WIDTH = 56
+export const ZVONAR_HEIGHT = 120
+
+// HP — доля от HP зверя ТОГО ЖЕ уровня (решение дизайнера: хрупкий стрелок).
+// Применяется в scaling.ts поверх уже отмасштабированного зверя; своей линейной
+// формулы у Звонаря нет намеренно — две формулы разъехались бы с уровнем.
+export const ZVONAR_HP_MULT = 0.6
+
+// Атака: от начала до начала. Лист в 54 кадра обязан уложиться в этот же
+// интервал целиком, поэтому скорость анимации ВЫВЕДЕНА из него, а не подобрана:
+// иначе замах и кулдаун разъехались бы при правке любого из двух чисел.
+export const ZVONAR_ATTACK_INTERVAL_MS = 2500
+export const ZVONAR_ATTACK_COUNT = 54
+export const ZVONAR_ATTACK_ANIM_SPEED = ZVONAR_ATTACK_COUNT / (60 * (ZVONAR_ATTACK_INTERVAL_MS / 1000)) // 0.36
+// Кадр вылета волны (вспышка колокола). Замерен, а не взят со слов README:
+// светящихся пикселей по кадрам 23→24→25 это 485→2082→19289, и максимальный шаг
+// силуэта за всю анимацию тоже на 24-м.
+export const ZVONAR_WAVE_SPAWN_FRAME = 24
+// Сколько длится замах до вылета — ВЫВЕДЕНО из кадра и скорости. Нужно двум
+// местам: прогрессу замаха для poise (см. Enemy.windupMs) и описанию в доках.
+export const ZVONAR_WAVE_SPAWN_MS = (1000 * ZVONAR_WAVE_SPAWN_FRAME) / (60 * ZVONAR_ATTACK_ANIM_SPEED) // ≈1111мс
+
+// Скорости остальных анимаций. Idle и ходьба — «естественные» из README
+// (7.2 и 12 кадров/с при 60 кадрах тикера).
+export const ZVONAR_IDLE_ANIM_SPEED = 0.12
+export const ZVONAR_WALK_ANIM_PATROL = 0.2
+// Отход быстрее патруля ровно во столько же раз, во сколько быстрее сам шаг
+// (1.6 против 0.55) — тот же принцип, что у WALK_ANIM_CHASE зверя.
+export const ZVONAR_WALK_ANIM_RETREAT = 0.58
+/**
+ * Хитстан. ⚠️ Это НЕ «естественная» скорость листа: 25 кадров при 12 кадрах/с
+ * дали бы 2.08 с, то есть один удар мечом выключал бы стрелка почти на целый
+ * цикл атаки. 0.7 — середина между этим и темпом зверя (ENEMY_HURT_MS ≈351мс):
+ * вздрагивание читается, но не превращает Звонаря в мишень. Число под живую
+ * проверку, см. ДОЛГ в CLAUDE.md.
+ */
+export const ZVONAR_HURT_ANIM_SPEED = 0.7
+export const ZVONAR_HURT_COUNT = 25
+export const ZVONAR_HURT_MS = (1000 * ZVONAR_HURT_COUNT) / (60 * ZVONAR_HURT_ANIM_SPEED) // ≈595мс
+// Смерть: 41 кадр за ≈1.2с — чуть медленнее зверя (0.8с), высокая фигура
+// складывается дольше. Последний кадр держится DEATH_HOLD_MS, как у зверя.
+export const ZVONAR_DEATH_ANIM_SPEED = 0.57
+
+/**
+ * Листы Звонаря одной таблицей: ОДИН источник и для загрузки (assets.ts), и для
+ * проигрывания (entities/zvonar.ts). Отдельными константами это было бы 35 штук,
+ * и первая же рассинхронизация колонок с кадрами резала бы лист МОЛЧА.
+ *
+ * ⚠️ `cols` у каждого листа СВОЙ (12/12/12/13/10) — дефолт loadSheetFrames равен
+ * 12, и для hurt/death он неверен.
+ * ⚠️ `anchorX/anchorY` — доли клетки, та самая точка (середина между стопами),
+ * которая у всех листов ОДНА И ТА ЖЕ физически. Проверено замером: кадр 0
+ * каждого листа стоит относительно своего якоря одинаково (верх −267.7…−269.6,
+ * низ −0.6…−1.7), а якорь по X попадает ровно в разрыв между стопами.
+ */
+export const ZVONAR_SHEETS = {
+  idle: { src: ZVONAR_IDLE_SRC, cellW: 174, cellH: 296, cols: 12, count: 24, anchorX: 0.621, anchorY: 0.986, speed: ZVONAR_IDLE_ANIM_SPEED, loop: true },
+  walk: { src: ZVONAR_WALK_SRC, cellW: 190, cellH: 292, cols: 12, count: 23, anchorX: 0.682, anchorY: 0.985, speed: ZVONAR_WALK_ANIM_PATROL, loop: true },
+  attack: { src: ZVONAR_ATTACK_SRC, cellW: 242, cellH: 327, cols: 12, count: ZVONAR_ATTACK_COUNT, anchorX: 0.734, anchorY: 0.987, speed: ZVONAR_ATTACK_ANIM_SPEED, loop: false },
+  hurt: { src: ZVONAR_HURT_SRC, cellW: 192, cellH: 287, cols: 13, count: ZVONAR_HURT_COUNT, anchorX: 0.630, anchorY: 0.985, speed: ZVONAR_HURT_ANIM_SPEED, loop: false },
+  death: { src: ZVONAR_DEATH_SRC, cellW: 356, cellH: 285, cols: 10, count: 41, anchorX: 0.610, anchorY: 0.971, speed: ZVONAR_DEATH_ANIM_SPEED, loop: false },
+} as const
+
+// --- Волна ---
+// Клетка волны и её отрисовка. Масштаб ТОТ ЖЕ, что у самого Звонаря: лист
+// нарисован в его пропорциях (высота волны ≈1.3 высоты колокола), и свой
+// множитель развёл бы картинку с фигурой.
+export const ZVONAR_WAVE_CELL_W = 161
+export const ZVONAR_WAVE_CELL_H = 160
+export const ZVONAR_WAVE_DRAW_W = ZVONAR_WAVE_CELL_W * ZVONAR_SCALE // ≈77.3
+export const ZVONAR_WAVE_DRAW_H = ZVONAR_WAVE_CELL_H * ZVONAR_SCALE // ≈76.8
+/**
+ * Хитбокс волны — по ВИДИМОМУ содержимому листа (замер по альфе: 148×140 из
+ * клетки 161×160), а не по всей клетке. Разница — прозрачные поля по краям, и
+ * считать их попаданием значило бы врать игроку про размер волны (то же
+ * правило, что у зоны взрыва fireball).
+ */
+export const ZVONAR_WAVE_HIT_W = 148 * ZVONAR_SCALE // ≈71.0
+export const ZVONAR_WAVE_HIT_H = 140 * ZVONAR_SCALE // ≈67.2
+/**
+ * Точка вылета — раструб колокола на кадре вспышки, в пикселях ЛИСТА АТАКИ от
+ * ЯКОРЯ спрайта (не от центра клетки). X — ВПЕРЁД по взгляду, поэтому в коде
+ * умножается на facing. Числа из README арт-сессии; ядро свечения на кадрах
+ * 24–26 лежит в 10–17 px от них, так что подгонять под глаз, как
+ * FIREBALL_OFFSET_X/Y, ещё придётся.
+ */
+export const ZVONAR_WAVE_OFFSET_FORWARD = 64
+export const ZVONAR_WAVE_OFFSET_UP = 204
+// Скорость и дальность. Волна летит строго горизонтально, без наведения и без
+// гравитации. Дальность — РАССТОЯНИЕМ, а не временем жизни: «до стены или
+// 8 тайлов» это про путь, и при правке скорости дальность не должна поехать.
+export const ZVONAR_WAVE_SPEED = 350 // px/СЕКУНДУ, как BOSS_WAVE_SPEED
+export const ZVONAR_WAVE_RANGE_TILES = 8
+// Попадание: лист 176×176, 9 колонок, 25 кадров. Рисуется ВДВОЕ крупнее волны —
+// пиксели в листе вдвое мельче, чтобы он был лёгким (README арт-сессии).
+// Замер подтверждает подмену: центры масс волны и первого кадра попадания
+// расходятся на 0.36 px по X и 0.17 px по Y (в пикселях волны).
+export const ZVONAR_WAVE_IMPACT_CELL = 176
+export const ZVONAR_WAVE_IMPACT_COLS = 9
+export const ZVONAR_WAVE_IMPACT_COUNT = 25
+export const ZVONAR_WAVE_IMPACT_DRAW = ZVONAR_WAVE_IMPACT_CELL * ZVONAR_SCALE * 2 // ≈169
+export const ZVONAR_WAVE_IMPACT_ANIM_SPEED = 0.2
+/**
+ * Играем 22 кадра из 25. Последние три — хвост затухания, которого глазу уже не
+ * видно: альфа в них падает до 25, 8 и 1 из 255 (замерено). Резать сам лист
+ * незачем — просто не доигрываем.
+ */
+export const ZVONAR_WAVE_IMPACT_PLAY = 22
+
+// --- Поведение ---
+// Ближе этого Звонарь отходит; упёрся в стену или край — стреляет с места.
+export const ZVONAR_KEEP_DIST_TILES = 3
+// Отход — медленнее бега героя (MOVE_SPEED = 4), иначе дистанцию было бы не
+// сократить никогда. Быстрее патруля зверя, но медленнее его погони.
+export const ZVONAR_RETREAT_SPEED = 1.6

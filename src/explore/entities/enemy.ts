@@ -22,7 +22,9 @@ export function redrawEnemyHpBar(enemy: Enemy) {
   const pct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp))
   enemy.hpBarFill.clear()
   if (pct > 0) {
-    enemy.hpBarFill.rect(0, 0, C.ENEMY_WIDTH * pct, C.ENEMY_HP_BAR_HEIGHT).fill(0xe0353b)
+    // Ширина — ПОЛЕ врага, а не C.ENEMY_WIDTH: полосу рисуют оба вида, и у
+    // Звонаря бокс у́же (56 против 116). Функция общая, её зовёт и zvonar.ts.
+    enemy.hpBarFill.rect(0, 0, enemy.width * pct, C.ENEMY_HP_BAR_HEIGHT).fill(0xe0353b)
   }
 }
 
@@ -151,6 +153,12 @@ export function createEnemySystem(deps: EnemyDeps) {
     const scaledAttackDamage = scaledEnemyAttackDamage(level)
 
     const enemy: Enemy = {
+      // Вид и габариты — поля с 04.10.2026, когда в том же списке появился
+      // Звонарь (см. entities/zvonar.ts). Этот модуль спавнит ТОЛЬКО зверей, так
+      // что здесь они константны; общий код читает поля, а не константы.
+      kind: 'beast',
+      width: C.ENEMY_WIDTH,
+      height: C.ENEMY_HEIGHT,
       x: enemyWorldX,
       y: enemyWorldY,
       vy: 0,
@@ -160,6 +168,15 @@ export function createEnemySystem(deps: EnemyDeps) {
       attackTimer: 0,
       windingUp: false,
       windupTimer: 0,
+      // Длительность замаха ПОЛЕМ — её читает applyEnemyHitReaction, считая
+      // прогресс для POISE_POINT. У зверя это по-прежнему C.WINDUP_MS, у
+      // Звонаря своя, втрое длиннее (см. Enemy.windupMs в types.ts).
+      windupMs: C.WINDUP_MS,
+      // Поля Звонаря. У зверя не используются вовсе, но тип один на обоих:
+      // заводить второй ради двух полей значило бы разнести по двум типам всё,
+      // что общего (а общего — весь урон, скиллы, станы и парирование).
+      waveCooldownMs: 0,
+      zvonarAnim: null,
       eventIndex,
       spawnX: enemyWorldX,
       patrolDir: 1,
@@ -227,6 +244,12 @@ export function createEnemySystem(deps: EnemyDeps) {
     // (takeDamageRef), отдельно считать не нужно.
     for (let i = 0; i < deps.enemies.current.length; i++) {
       const enemy = deps.enemies.current[i]
+      // ⚠️ Список один на все виды врагов (04.10.2026) — чужих пропускаем молча.
+      // Звонарём занимается entities/zvonar.ts: у него другое поведение целиком
+      // (держит дистанцию, стреляет), и ветвить здесь значило бы сращивать два
+      // несовместимых набора состояний в одной функции. Общее — тип Enemy и
+      // список, поэтому урон, скиллы, станы и парирование у обоих одни и те же.
+      if (enemy.kind !== 'beast') continue
 
       // Death — высший приоритет (death > hurt > attack > walk/idle):
       // мёртвый враг ПОЛНОСТЬЮ пропускает физику/AI/hurt/attack/idle-walk
