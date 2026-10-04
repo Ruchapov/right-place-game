@@ -48,7 +48,7 @@ import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
-import { skillPowerMult } from './skillLevels'
+import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import { scrollById } from './scrolls'
@@ -187,6 +187,16 @@ type ExploreProps = {
    * игрока. Вне Telegram (офлайн-заглушка) уровни приходят из DevTester.
    */
   skillLevels?: Record<SkillBookSkillId, number>
+  /**
+   * Ловкость героя (App.tsx: player.agility). Нужна с 02.10.2026: от неё
+   * считается урон ледяного шара и половина урона тика кровотечения
+   * (src/skillDamage.ts).
+   *
+   * НЕ ЗАДАНА — в настоящей сессии это ошибка, и старт её отвергает, как и
+   * неизвестный урон оружия: уйти в забег с нулевой ловкостью значило бы тихо
+   * обнулить урон ледяного шара.
+   */
+  agility?: number
 }
 
 // Зона удара атаки, в мировых (тайловых) координатах — читается будущим
@@ -932,7 +942,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, consumables, onConsumablesSpent }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, consumables, onConsumablesSpent }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1219,12 +1229,13 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // Абсолютные значения — тоже заглушки: player этими полями обновляется
       // ТОЛЬКО из настоящего ответа сервера (см. sendFinishExplore, .then),
       // не из этого клиентского fallback — эти конкретные числа никогда не
-      // читаются, просто заполняют форму RunResultSummary. agility нет среди
-      // пропов Explore — 0, как и everywhere в файле, где agility недоступен.
+      // читаются, просто заполняют форму RunResultSummary. Проп agility у Explore
+      // появился 02.10.2026 (его требует урон навыков), так что здесь больше не
+      // жёсткий ноль — но поле осталось такой же заглушкой, как соседи.
       trophies: died ? 0 : (trophies ?? 0) + earned,
       strength: strength ?? 0,
       endurance: endurance ?? 0,
-      agility: 0,
+      agility: agility ?? 0,
       level: characterLevel,
       // Склад по тирам — единственное из абсолютных полей, которое клиент
       // знает точно (ref живого забега). Всё равно заглушка в том же смысле,
@@ -2292,23 +2303,46 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
       // давать эффект бесплатно нельзя. Названо на той же оранжевой плашке.
       attackDamageRef.current = baseAttackDamage
 
-      // Множитель силы КАЖДОГО навыка от его уровня — снимается здесь, один раз
-      // на забег, рядом с уроном оружия и по тем же правилам: за забег уровень
-      // не меняется (растёт только на закрытии), а неизвестные данные — громкий
-      // throw, а не тихая единица. Уровень 1 вместо настоящего 40 ослабил бы
-      // ВСЕ навыки игрока, ничего об этом не сказав.
+      // Урон и лечение КАЖДОГО навыка — снимаются здесь, один раз на забег,
+      // рядом с уроном меча и по тем же правилам: ни статы, ни броня, ни уровни
+      // за забег не меняются, а неизвестные данные — громкий throw, а не тихий
+      // ноль. С 02.10.2026 навыки бьют от СТАТОВ ГЕРОЯ (src/skillDamage.ts), а
+      // не долей maxHp цели, поэтому им нужны те же данные, что уже требует
+      // урон меча, плюс ловкость и броня.
       if (token && skillLevels === undefined) {
         throw new Error('Уровни навыков неизвестны — профиль не загружен. Забег не начат, энергия не списана.')
       }
-      const skillPower = {} as Record<SkillBookSkillId, number>
+      if (token && agility === undefined) {
+        throw new Error('Ловкость персонажа неизвестна — профиль не загружен. Забег не начат, энергия не списана.')
+      }
+      // Броня входит в урон рывка, поэтому «неизвестна» перестало быть
+      // безобидным: прежний тихий откат на 0 (armorRef) ослабил бы рывок молча.
+      // Проверка ОТДЕЛЬНАЯ, хотя сегодня её покрывают две выше (все три числа
+      // приходят из одного загруженного инвентаря): выводить одно из другого —
+      // ровно тот инвариант, который переворачивается молча.
+      if (token && armor === undefined) {
+        throw new Error('Броня неизвестна — снаряжение не загрузилось. Забег не начат, энергия не списана.')
+      }
+      // Вне Telegram (token нет) — заглушка: статы из пропов, броня и оружие по
+      // нулям, уровни навыков первые. Это та же офлайн-заглушка, что урон без
+      // оружия выше, и она названа на той же оранжевой плашке.
+      const skillStats: SkillStats = {
+        strength,
+        endurance: endurance ?? 0,
+        agility: agility ?? 0,
+        armor: armor ?? 0,
+        // ИМЕННО baseAttackDamage, без множителя точильного камня: так назвал
+        // атаку дизайнер, и то же число показывает «Урон» на «Персонаже» —
+        // строка «что делает» в магазине обязана совпасть с забегом.
+        attack: baseAttackDamage,
+      }
+      const skillDamage = {} as Record<SkillBookSkillId, number>
       for (const spec of CONSUMABLES) {
         const skillId = consumableSkillBook(spec)
         if (skillId === null) continue
-        // Вне Telegram (token нет, уровней нет) — ровно 1, то есть базовая сила
-        // навыка. Это та же офлайн-заглушка, что урон без оружия выше, и она
-        // названа на оранжевой плашке.
-        skillPower[skillId] = skillLevels === undefined ? 1 : skillPowerMult(skillLevels[skillId])
+        skillDamage[skillId] = skillValue(skillId, skillStats, skillLevels === undefined ? 1 : skillLevels[skillId])
       }
+      console.log('Explore: урон навыков', skillDamage)
 
       // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
       // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
@@ -2768,12 +2802,11 @@ export default function Explore({ onClose, endurance, strength, level, onRunComp
         iceballProjectileFrames: iceballProjectileFramesRef,
         iceballImpactFrames: iceballImpactFramesRef,
         healPlayer: (amount: number) => healPlayerRef.current(amount),
-        maxHp,
         healAuraFrames: healAuraFramesRef,
-        // Множитель силы от уровня навыка (снят выше, до /run/start-explore) и
-        // приёмник результативных применений. Второе пишет в тот же реф, что
-        // уезжает в срезе и финише.
-        skillPower,
+        // Готовые урон/лечение каждого навыка (сняты выше, до
+        // /run/start-explore) и приёмник результативных применений. Второе
+        // пишет в тот же реф, что уезжает в срезе и финише.
+        skillDamage,
         onSkillUse: (skillId) => { skillUsesRef.current[skillId] += 1 },
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на

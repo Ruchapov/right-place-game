@@ -138,11 +138,6 @@ export type SkillsDeps = {
   // healedAmount живут ТАМ, здесь не дублируются. Возвращает фактически
   // долитое HP (0, если игрок уже полон или мёртв).
   healPlayer: (amount: number) => number
-  // maxHp игрока — от него считается доза одного импульса хила
-  // (C.HEAL_PULSE_FRAC). Плоское
-  // значение, а не реф: за забег не меняется (считается из endurance один раз,
-  // см. maxHp в Explore.tsx).
-  maxHp: number
   // Кадры ауры лечения (Heal_Aura, 14 кадров). РЕФ, а не плоский массив (в
   // отличие от bossFrames в boss.ts): createSkillsSystem вызывается в setup()
   // РАНЬШЕ, чем резолвится loadExploreAssets() — на момент сборки deps кадров
@@ -170,20 +165,26 @@ export type SkillsDeps = {
   equipped: [string | null, string | null]
 
   /**
-   * Во сколько раз УРОВЕНЬ навыка усиливает его урон и лечение
-   * (skillPowerMult, общая пара src/skillLevels.ts <-> server/src/skillLevels.ts).
-   * По множителю на каждый из пяти, 1 — базовая сила (уровень 1).
+   * Готовое ЦЕЛОЕ значение каждого навыка: урон за попадание (у кровотечения —
+   * ЗА ТИК, у исцеления — лечение ЗА ИМПУЛЬС). Считает его общая формула
+   * `skillValue` (src/skillDamage.ts) — от статов героя, брони, урона меча и
+   * уровня этого навыка.
    *
-   * Плоский объект, а не реф и не функция: уровень за забег не меняется
-   * (растёт только на закрытии забега), поэтому снимается ОДИН раз в setup() —
-   * тем же приёмом, что maxHp выше и attackDamageRef у обычной атаки.
+   * ⚠️ Числа ГОТОВЫЕ, а не множитель и не формула: ни статы, ни броня, ни
+   * уровень за забег не меняются, поэтому Explore.tsx считает их ОДИН раз в
+   * setup() рядом с уроном меча. Тикер только читает.
    *
-   * ⚠️ Умножает ТОЛЬКО урон и лечение. Перезарядки, длительность заморозки,
-   * число тиков кровотечения и импульсов лечения уровень НЕ трогает — решение
-   * дизайнера; поэтому множитель стоит у каждого ЧИСЛА УРОНА поимённо, а не
-   * общим коэффициентом где-то в одном месте.
+   * ⚠️ От maxHp ЦЕЛИ урон навыка больше НЕ зависит (02.10.2026): прежние доли
+   * (FIREBALL_DAMAGE_FRAC и четыре таких же) удалены, и вместе с ними ушла
+   * причина знать здесь maxHp цели вообще — отсюда же исчезли deps.maxHp и
+   * maxHp в BleedState.
+   *
+   * Уровень навыка уже ВНУТРИ этих чисел (его множитель применён в skillValue),
+   * поэтому в тикере его больше нет нигде. Перезарядки, длительность заморозки,
+   * число тиков и импульсов от уровня и статов не зависят — они по-прежнему
+   * константы.
    */
-  skillPower: Record<SkillId, number>
+  skillDamage: Record<SkillId, number>
 
   /**
    * Отметить РЕЗУЛЬТАТИВНОЕ применение навыка: из этих отметок сервер растит
@@ -229,7 +230,6 @@ type ProjectileSpec = {
   // было видно, какой лист не загрузился.
   framesName: string
   impactFramesName: string
-  damageFrac: number
   cooldownMs: number
   // Эффект попадания сверх урона: стан цели на столько мс. 0 — эффекта нет
   // (fireball); значение читается только когда оно > 0, поэтому ноль здесь
@@ -267,9 +267,11 @@ type Projectile = {
   hitApplied: boolean
 }
 
+// maxHp цели здесь БОЛЬШЕ НЕТ (02.10.2026): урон тика считается от статов
+// героя (deps.skillDamage.slash), а не от доли чужого здоровья, и хранить его
+// максимум стало незачем.
 type BleedState = {
   enemy: Enemy | null
-  maxHp: number
   msLeft: number
   tickMsLeft: number
 }
@@ -302,7 +304,6 @@ export function createSkillsSystem(deps: SkillsDeps) {
     impactFrames: deps.fireballImpactFrames,
     framesName: 'Fireball_Projectile',
     impactFramesName: 'Fireball_Impact',
-    damageFrac: C.FIREBALL_DAMAGE_FRAC,
     cooldownMs: C.FIREBALL_COOLDOWN_MS,
     stunMs: 0, // fireball не станит — весь его вклад это урон
   }
@@ -312,7 +313,6 @@ export function createSkillsSystem(deps: SkillsDeps) {
     impactFrames: deps.iceballImpactFrames,
     framesName: 'IceBall_Projectile',
     impactFramesName: 'IceBall_Impact',
-    damageFrac: C.ICEBALL_DAMAGE_FRAC,
     cooldownMs: C.ICEBALL_COOLDOWN_MS,
     stunMs: C.ICEBALL_STUN_MS,
   }
@@ -395,7 +395,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // импульс отдельный: на 95/100 первый импульс долечит до сотни, второй
   // дольёт ноль. Это нормальный исход, не ошибка, сообщать не о чем.
   function applyHealPulse() {
-    const healed = deps.healPlayer(deps.maxHp * C.HEAL_PULSE_FRAC * deps.skillPower.heal)
+    const healed = deps.healPlayer(deps.skillDamage.heal)
     healPulsesLeft -= 1
     // Результативным считается каст, в котором ХОТЬ ОДИН импульс реально долил
     // HP (healPlayer возвращает фактически долитое). Хил на полном здоровье —
@@ -497,7 +497,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // враг за спиной не выберется НИКОГДА, даже если он ближе. Босс — цель
   // наравне с обычными врагами. Проверка по обеим осям, как у обычного удара:
   // иначе slash доставал бы цель этажом выше/ниже.
-  function pickSlashTarget(facing: 1 | -1): { enemy: Enemy | null; maxHp: number } | null {
+  function pickSlashTarget(facing: 1 | -1): { enemy: Enemy | null } | null {
     const box = deps.getPlayerCombatBox()
     const range = C.PLAYER_ATTACK_RANGE * C.SLASH_RANGE_MULT
     // facing — ЗАФИКСИРОВАННЫЙ на нажатии, не текущий: прямоугольник поиска
@@ -505,7 +505,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const hx = facing === 1 ? box.x + box.w : box.x - range
     const playerCx = box.x + box.w / 2
 
-    let best: { enemy: Enemy | null; maxHp: number } | null = null
+    // enemy === null означает «цель — босс», как и в BleedState: других целей у
+    // кровотечения не бывает, и отдельного поля под вид цели не нужно.
+    let best: { enemy: Enemy | null } | null = null
     let bestDist = Infinity
 
     for (const enemy of deps.enemies.current) {
@@ -519,7 +521,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       const dist = Math.abs(enemy.x + C.ENEMY_WIDTH / 2 - playerCx)
       if (dist < bestDist) {
         bestDist = dist
-        best = { enemy, maxHp: enemy.maxHp }
+        best = { enemy }
       }
     }
 
@@ -534,7 +536,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
         const dist = Math.abs(boss.x + C.BOSS_WIDTH / 2 - playerCx)
         if (dist < bestDist) {
           bestDist = dist
-          best = { enemy: null, maxHp: boss.maxHp }
+          best = { enemy: null }
         }
       }
     }
@@ -546,17 +548,15 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // длительность и фазу тика на целую секунду, второй записи не заводим.
   // Так же вело себя присваивание `bleedingRef.current = 5` в Battle.tsx
   // (присваивание, а не +=).
-  function applyBleed(target: { enemy: Enemy | null; maxHp: number }) {
+  function applyBleed(target: { enemy: Enemy | null }) {
     const existing = bleeds.find((b) => b.enemy === target.enemy)
     if (existing) {
       existing.msLeft = C.BLEED_DURATION_MS
       existing.tickMsLeft = C.BLEED_TICK_MS
-      existing.maxHp = target.maxHp
       return
     }
     bleeds.push({
       enemy: target.enemy,
-      maxHp: target.maxHp,
       msLeft: C.BLEED_DURATION_MS,
       tickMsLeft: C.BLEED_TICK_MS,
     })
@@ -593,11 +593,11 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // НАМЕРЕННО нет, хотя скиллам она доступна и разовые попадания
         // fireball/dash её зовут: тик идёт раз в секунду пять секунд подряд и
         // держал бы цель в стан-локе весь этот срок.
-        // Уровень навыка усиливает КАЖДЫЙ тик (см. deps.skillPower), а число
-        // тиков и длительность не трогает — решение дизайнера. Множитель
-        // читается здесь, а не запоминается в BleedState: за забег уровень не
-        // меняется, так что это то же число, что было на наложении.
-        const dmg = Math.floor(bleed.maxHp * C.BLEED_FRAC_PER_TICK * deps.skillPower.slash)
+        // Урон тика — ГОТОВОЕ число забега (статы героя + уровень навыка уже
+        // внутри, см. deps.skillDamage). Читается здесь, а не запоминается в
+        // BleedState на момент наложения: за забег оно не меняется, так что это
+        // то же самое число.
+        const dmg = deps.skillDamage.slash
         // Источник расследования — игрок НА МОМЕНТ ТИКА (не на момент
         // наложения): кровотечение тикает 5 секунд, за это время игрок
         // успевает уйти, и вести врага к месту, где его давно нет, незачем.
@@ -795,9 +795,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
       if (enemy.dead) continue
       const d = overlapDepth(blast, enemyBox(enemy))
       if (d.x <= 0 || d.y <= 0) continue
-      // Урон — тем же способом, что у рывка и тика кровотечения: доля
-      // МАКСИМАЛЬНОГО hp цели, Math.floor, через общие с обычной атакой
-      // damageEnemy/damageBoss. Аккумулятор — skillDamageDealt (растит
+      // Урон — ГОТОВОЕ число забега (deps.skillDamage), через общие с обычной
+      // атакой damageEnemy/damageBoss. Аккумулятор — skillDamageDealt (растит
       // ловкость), а не attack-счётчик (растит силу).
       // Смерть цели тут НЕ обрабатывается намеренно: damageEnemy делает всё
       // сама (флаг dead, HP-бар, анимация трупа, закрытие события) — своей
@@ -809,7 +808,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // от неё, так что зверь доходил до места взрыва за ~0.75с, вставал и
       // возвращался в патруль, ни на шаг не приблизившись к игроку.
       blastHitAny = true
-      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * spec.damageFrac * deps.skillPower[spec.id]), deps.skillDamageDealt, sourceX)
+      const died = deps.damageEnemy(enemy, deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Взрыв разовый, поэтому стан-лока он не даёт: каждая
       // цель проходит этот цикл один раз за взрыв.
@@ -828,7 +827,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (!boss || boss.dead) return
     const d = overlapDepth(blast, bossBox(boss))
     if (d.x <= 0 || d.y <= 0) return
-    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * spec.damageFrac * deps.skillPower[spec.id]), deps.skillDamageDealt, sourceX)
+    const bossDied = deps.damageBoss(deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX)
     if (!bossDied) deps.applyBossHitReaction(boss)
     // Босс задет — применение результативно, даже если обычных врагов рядом не
     // было. Повторно не засчитается: blastHitAny выставляется только в цикле по
@@ -946,8 +945,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
         box.y + box.h > enemy.y
       if (!overlap) continue
       dashHitTargets.add(enemy)
-      // Урон — тем же способом, что тик кровотечения выше: доля МАКСИМАЛЬНОГО
-      // hp цели, Math.floor. Аккумулятор — skillDamageDealt (растит ловкость),
+      // Урон — ГОТОВОЕ число забега (deps.skillDamage), как и у тика
+      // кровотечения выше. Аккумулятор — skillDamageDealt (растит ловкость),
       // а не attack-счётчик (растит силу).
       // Смерть цели тут НЕ обрабатывается намеренно: damageEnemy делает всё
       // сама (флаг dead, HP-бар, анимация трупа, закрытие события) — своей
@@ -955,7 +954,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ровно для одного: не трясти труп (см. ниже).
       // Источник — сам игрок: рывок это контактный удар телом.
       countDashUse()
-      const died = deps.damageEnemy(enemy, Math.floor(enemy.maxHp * C.DASH_DAMAGE_FRAC * deps.skillPower.dash), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+      const died = deps.damageEnemy(enemy, deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Ровно один раз за рывок на цель: дедуп тот же
       // dashHitTargets, что и у урона — цель добавлена в набор строкой выше.
@@ -972,7 +971,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (!bossOverlap) return
     dashHitTargets.add(boss)
     countDashUse()
-    const bossDied = deps.damageBoss(Math.floor(boss.maxHp * C.DASH_DAMAGE_FRAC * deps.skillPower.dash), deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+    const bossDied = deps.damageBoss(deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
     if (!bossDied) deps.applyBossHitReaction(boss)
   }
 

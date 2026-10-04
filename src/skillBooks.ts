@@ -8,38 +8,43 @@
 // байт-в-байт, либо завести ТРЕТИЙ экземпляр чисел, правящихся при каждом
 // балансе, — и витрина начала бы обещать не то, что делает забег.
 //
-// ⚠️ Поэтому здесь НЕТ НИ ОДНОГО ЧИСЛА текстом: всё подставляется из констант.
+// ⚠️ Поэтому здесь НЕТ НИ ОДНОГО ЧИСЛА текстом: всё подставляется из констант
+// (тайминги) и из общей формулы урона навыков (src/skillDamage.ts, с 02.10.2026
+// — она считает урон и лечение от СТАТОВ ГЕРОЯ, а не долей maxHp цели).
 // Меняется баланс скилла — строка в магазине меняется сама.
 import {
-  FIREBALL_DAMAGE_FRAC, FIREBALL_COOLDOWN_MS,
-  ICEBALL_DAMAGE_FRAC, ICEBALL_COOLDOWN_MS, ICEBALL_STUN_MS,
-  BLEED_FRAC_PER_TICK, BLEED_TICK_MS, BLEED_DURATION_MS, SLASH_COOLDOWN_MS,
-  HEAL_PULSE_FRAC, HEAL_PULSE_COUNT, HEAL_COOLDOWN_MS,
-  DASH_DAMAGE_FRAC, DASH_COOLDOWN_MS,
+  FIREBALL_COOLDOWN_MS,
+  ICEBALL_COOLDOWN_MS, ICEBALL_STUN_MS,
+  BLEED_TICK_MS, BLEED_DURATION_MS, SLASH_COOLDOWN_MS,
+  HEAL_PULSE_COUNT, HEAL_COOLDOWN_MS,
+  DASH_COOLDOWN_MS,
 } from './explore/constants'
 import type { SkillId } from './explore/entities/skills'
 import { consumableEffectLine, consumableSkillBook, type Consumable, type SkillBookSkillId } from './consumables'
-import { skillPowerMult } from './skillLevels'
-
-/** Доля → целые проценты, как в consumableEffectLine. */
-function pct(frac: number): string {
-  return String(Math.round(frac * 100))
-}
+import { skillValue, type SkillStats } from './skillDamage'
 
 /**
- * Доля урона или лечения → проценты НА ЗАДАННОМ УРОВНЕ навыка (02.10.2026).
+ * Урон или лечение навыка ЧИСЛОМ — на статах героя и его уровне по этому навыку
+ * (02.10.2026). `mult` умножает результат: им строка приводит значение ЗА ТИК к
+ * «в секунду» (кровотечение) и значение ЗА ИМПУЛЬС к итогу применения (хил).
  *
- * Уровень null — «сервер уровней не назвал»: тогда вместо числа прочерк, а НЕ
- * числа первого уровня. Подставить единицу значило бы показать игроку 40-го
- * уровня силу новичка — тот самый тихий фолбэк, который в проекте запрещён
- * (CLAUDE.md, Design Decisions).
+ * Уровень или статы неизвестны — прочерк, а НЕ числа новичка: подставить
+ * единицу и нули значило бы показать игроку 40-го уровня чужую силу, то есть
+ * ровно тот тихий фолбэк, который в проекте запрещён (CLAUDE.md, Design
+ * Decisions). Прочерк показывается и офлайн в браузере, где нет инвентаря, —
+ * так же, как уже прочеркнуты «Урон» и «Броня» на экране «Персонаж».
  *
  * Применяется ТОЛЬКО к урону и лечению: перезарядки, заморозка и длительность
- * кровотечения уровнем не меняются, поэтому у них остаётся sec() без поправки.
+ * кровотечения от статов и уровня не зависят, у них остаётся sec() без поправки.
  */
-function pctAt(frac: number, level: number | null): string {
-  if (level === null) return '—'
-  return pct(frac * skillPowerMult(level))
+function valueAt(
+  skillId: SkillBookSkillId & SkillId,
+  level: number | null,
+  stats: SkillStats | null,
+  mult = 1,
+): string {
+  if (level === null || stats === null) return '—'
+  return String(skillValue(skillId, stats, level) * mult)
 }
 
 /**
@@ -61,41 +66,43 @@ function sec(ms: number): string {
  * перестанет совпадать с этим литералом (лишний ключ или недостающий), то есть
  * СБОРКА УПАДЁТ. Рантайм-списка id для этого не нужно.
  *
- * ⚠️ С 02.10.2026 это ФУНКЦИЯ ОТ УРОВНЯ, а не готовая строка: уровень навыка
- * усиливает его урон и лечение (skillPowerMult, src/skillLevels.ts), и строка
- * обязана называть силу ТОГО САМОГО героя, который её читает. Иначе и витрина, и
- * сумка, и карточка навыка продолжили бы показывать числа первого уровня тому, у
- * кого уровень уже третий — ровно та ловушка, что была записана в docs/skills.md
- * как «ловушка для того, кто будет делать эффект уровня».
+ * ⚠️ С 02.10.2026 это ФУНКЦИЯ ОТ УРОВНЯ И СТАТОВ, а не готовая строка: урон и
+ * лечение навыка считаются от силы, выносливости, ловкости, брони и урона меча
+ * ГЕРОЯ (src/skillDamage.ts), а уровень навыка их усиливает. Строка обязана
+ * называть силу ТОГО САМОГО героя, который её читает, иначе и витрина, и сумка,
+ * и карточка навыка показывали бы чужие числа — ровно та ловушка, что была
+ * записана в docs/skills.md как «ловушка для того, кто будет делать эффект
+ * уровня».
  *
- * Одна карта на все три места намеренно: параметризовать уровнем только одно из
- * них не вышло бы — строка собирается здесь, в одном экземпляре.
+ * ⚠️ Проценты ушли вместе с долями maxHp: урон теперь ПЛОСКОЕ число, и «% цели»
+ * в тексте было бы прямой ложью.
+ *
+ * Одна карта на все три места намеренно: параметризовать только одно из них не
+ * вышло бы — строка собирается здесь, в одном экземпляре.
  */
-const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, (level: number | null) => string> = {
-  fireball: (level) =>
+const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, (level: number | null, stats: SkillStats | null) => string> = {
+  fireball: (level, stats) =>
     `Огненный шар летит вперёд и взрывается о первого врага или стену. `
-    + `Урон: ${pctAt(FIREBALL_DAMAGE_FRAC, level)}% здоровья каждой цели в зоне взрыва. `
+    + `Урон: ${valueAt('fireball', level, stats)} каждой цели в зоне взрыва. `
     + `Перезарядка ${sec(FIREBALL_COOLDOWN_MS)} с.`,
-  iceball: (level) =>
+  iceball: (level, stats) =>
     `Ледяной шар летит вперёд и взрывается о первого врага или стену. `
-    + `Урон: ${pctAt(ICEBALL_DAMAGE_FRAC, level)}% здоровья каждой цели в зоне взрыва, `
+    + `Урон: ${valueAt('iceball', level, stats)} каждой цели в зоне взрыва, `
     + `заморозка ${sec(ICEBALL_STUN_MS)} с. Перезарядка ${sec(ICEBALL_COOLDOWN_MS)} с.`,
-  // «в секунду» — не литерал: доля за тик приведена к секунде через сам тик
-  // (BLEED_TICK_MS). Сделают тик чаще или реже — процент в строке пересчитается,
-  // а не станет врать. Уровень множит КАЖДЫЙ тик, поэтому и приведённую к
-  // секунде долю — тоже (длительность и число тиков он не трогает).
-  slash: (level) =>
-    `Удар клинком и кровотечение: ${pctAt(BLEED_FRAC_PER_TICK * (1000 / BLEED_TICK_MS), level)}% `
-    + `здоровья цели в секунду, ${sec(BLEED_DURATION_MS)} с. `
+  // «в секунду» — не литерал: урон ЗА ТИК приведён к секунде через сам тик
+  // (BLEED_TICK_MS). Сделают тик чаще или реже — число в строке пересчитается,
+  // а не станет врать (длительность и число тиков от статов не зависят).
+  slash: (level, stats) =>
+    `Удар клинком и кровотечение: ${valueAt('slash', level, stats, 1000 / BLEED_TICK_MS)} `
+    + `в секунду, ${sec(BLEED_DURATION_MS)} с. `
     + `Повторный удар обновляет кровотечение. Перезарядка ${sec(SLASH_COOLDOWN_MS)} с.`,
-  // Лечение идёт импульсами (HEAL_PULSE_COUNT штук по HEAL_PULSE_FRAC), а игрока
-  // интересует итог — поэтому произведение, а не доля одного импульса. Уровень
-  // усиливает каждый импульс, значит и произведение.
-  heal: (level) =>
-    `Восстанавливает ${pctAt(HEAL_PULSE_FRAC * HEAL_PULSE_COUNT, level)}% здоровья героя. `
+  // Лечение идёт импульсами (HEAL_PULSE_COUNT штук), а игрока интересует итог —
+  // поэтому значение импульса умножается на их число.
+  heal: (level, stats) =>
+    `Восстанавливает ${valueAt('heal', level, stats, HEAL_PULSE_COUNT)} здоровья героя. `
     + `Перезарядка ${sec(HEAL_COOLDOWN_MS)} с.`,
-  dash: (level) =>
-    `Рывок вперёд сквозь врагов. Урон: ${pctAt(DASH_DAMAGE_FRAC, level)}% здоровья каждого задетого. `
+  dash: (level, stats) =>
+    `Рывок вперёд сквозь врагов. Урон: ${valueAt('dash', level, stats)} каждому задетому. `
     + `Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
 }
 
@@ -125,14 +132,20 @@ export function skillSealSrc(skillId: SkillBookSkillId): string {
 }
 
 /**
- * Что делает скилл, который улучшает книга, НА УРОВНЕ ГЕРОЯ по этому скиллу.
+ * Что делает скилл, который улучшает книга, НА СТАТАХ ГЕРОЯ и его уровне по
+ * этому скиллу.
  *
- * `level === null` — уровни неизвестны (сервер их не назвал): числа урона и
- * лечения становятся прочерком, см. pctAt. Перезарядки в строке остаются — они
- * от уровня не зависят.
+ * `level === null` (сервер уровней не назвал) или `stats === null` (не
+ * загружены инвентарь/улучшения, то есть неизвестны броня и урон меча) — числа
+ * урона и лечения становятся прочерком, см. valueAt. Перезарядки остаются: они
+ * ни от статов, ни от уровня не зависят.
  */
-export function skillBookLine(skillId: SkillBookSkillId, level: number | null): string {
-  return SKILL_BOOK_LINES[skillId](level)
+export function skillBookLine(
+  skillId: SkillBookSkillId,
+  level: number | null,
+  stats: SkillStats | null,
+): string {
+  return SKILL_BOOK_LINES[skillId](level, stats)
 }
 
 /**
@@ -146,15 +159,17 @@ export function skillBookLine(skillId: SkillBookSkillId, level: number | null): 
  */
 export function consumableMechanicLine(
   spec: Consumable,
-  // Уровни навыков ГЕРОЯ (App.tsx: player.skillLevels). null — сервер их не
-  // назвал; тогда у книг числа урона и лечения станут прочерком, а у камня и
-  // оберега строка не изменится вовсе (их числа от уровня не зависят).
+  // Уровни навыков ГЕРОЯ (App.tsx: player.skillLevels) и его статы. null у
+  // любого из двух — числа урона и лечения у книг станут прочерком, а у камня и
+  // оберега строка не изменится вовсе (их числа ни от статов, ни от уровня не
+  // зависят).
   skillLevels: Record<SkillBookSkillId, number> | null,
+  skillStats: SkillStats | null,
 ): string {
   // Через consumableSkillBook, а не прямым разбором union: каталог разбирает свой
   // эффект сам, один раз (там же это делают consumableAttackBonus/ReviveFrac).
   const skillId = consumableSkillBook(spec)
-  if (skillId !== null) return skillBookLine(skillId, skillLevels?.[skillId] ?? null)
+  if (skillId !== null) return skillBookLine(skillId, skillLevels?.[skillId] ?? null, skillStats)
   const line = consumableEffectLine(spec)
   if (line === null) {
     // Недостижимо: null каталог отдаёт только на skillBook, а он разобран выше.

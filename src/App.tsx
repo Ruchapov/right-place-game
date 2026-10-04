@@ -18,6 +18,7 @@ import { itemIconSrc } from './itemIcons'
 // consumableMechanicLine).
 import { consumableMechanicLine, skillBookLine } from './skillBooks'
 import { skillUsesThreshold } from './skillLevels'
+import type { SkillStats } from './skillDamage'
 // Каталог улучшений — общая пара с сервером (src/upgrades.ts ↔
 // server/src/upgrades.ts, байт-в-байт). Цена, шаг и тексты берутся ТОЛЬКО
 // оттуда: цену применяет сервер, и своя копия формулы разошлась бы с ней.
@@ -821,6 +822,76 @@ export default function App() {
   // «Персонаж». Разметка одна на оба экрана — копия разъехалась бы с оригиналом
   // при первой правке.
   const potionStock = player?.potions ?? null
+  // --- Числа героя, от которых зависят экраны И забег ---
+  // Объявлены ЗДЕСЬ, выше карточки предмета (selectedEntry ниже), а не рядом
+  // с гейтом старта забега, где выросли: с 02.10.2026 строка «что делает» у
+  // книги навыка считает урон от статов, брони и урона меча (skillStats в
+  // конце блока), а карточка строится раньше гейта. Сам гейт
+  // (gearNotReady/runBlocked) остался на месте — он зависит от энергии,
+  // которая считается ниже.
+  // Счётчики улучшений. null — сервер их не назвал, и тогда НИ броня, НИ урон
+  // не известны: считать их с нулём значило бы показать игроку заниженные числа
+  // и увести его с ними в забег.
+  const upgradeCounts = player?.upgrades ?? null
+  // Суммарная броня надетых предметов — та же формула, что уже показывает
+  // статистика "Броня" на экране "Персонаж" (см. charStats ниже), вынесена
+  // сюда же, чтобы прокинуть тем же числом в Explore (см. задача "броня в
+  // бою"). inventory грузится СРАЗУ при логине (см. refreshPlayerFromServer
+  // выше — там же, где player), не лениво при первом открытии вкладки
+  // "Инвентарь": броня должна быть известна ДО первого удара в забеге, а не
+  // подгружаться посреди боя.
+  // Два прежних useEffect'а, дёргавших loadInventory() на открытие вкладки
+  // (gearTab === 'equipment') и на установку slotFilter, УДАЛЕНЫ: данные уже
+  // здесь с логина, а после надевания/снятия их перезапрашивает сама
+  // handleEquipItem. Фильтр по слоту — операция над уже полученным массивом,
+  // сеть для неё не нужна вовсе.
+  // Броня надетых предметов — только их сумма. Купленная закалка брони
+  // прибавляется ОТДЕЛЬНО, ниже: считает её общий каталог (upgradeBonus), тот
+  // же, что применяет сервер на старте забега.
+  const equippedArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
+  // Итоговая броня. null — «неизвестна» (инвентарь не загружен ИЛИ улучшения
+  // не названы), и это НЕ ноль: экран ставит прочерк, забег не стартует.
+  const totalArmor: number | null =
+    inventoryStatus !== 'ready' || upgradeCounts === null
+      ? null
+      : equippedArmor + upgradeBonus('armor', upgradeCounts)
+  // Прибавка к урону от закалки клинка — тем же каталогом. null по той же
+  // причине, что у брони.
+  const attackUpgradeBonus: number | null =
+    upgradeCounts === null ? null : upgradeBonus('attack', upgradeCounts)
+
+  // Урон надетого оружия — слагаемое формулы урона (src/playerDamage.ts), одно
+  // и то же число для строки "Урон" на экране "Персонаж" и для пропа Explore.
+  // null — НЕИЗВЕСТЕН, а не ноль: инвентарь не 'ready' (грузится, ошибка,
+  // офлайн), либо у надетого оружия damage null (битая строка каталога). Ноль —
+  // только когда оружия честно не надето.
+  const equippedWeapon = inventory.find(i => i.equipped && i.item.slot === 'weapon')
+  const weaponDamage: number | null =
+    inventoryStatus !== 'ready' ? null
+      : equippedWeapon === undefined ? 0
+        : equippedWeapon.item.damage
+
+  // Всё, от чего зависят урон и лечение НАВЫКОВ (02.10.2026, src/skillDamage.ts):
+  // статы героя, итоговая броня и урон меча. Нужно строке «что делает» в трёх
+  // местах — витрина магазина, карточка книги в сумке, карточка навыка.
+  //
+  // null — «посчитать нечем»: нет профиля, либо не загружены инвентарь и
+  // улучшения (а значит неизвестны броня и урон меча). Тогда в строке на месте
+  // урона прочерк — ровно как в строках «Урон» и «Броня» на «Персонаже», и по
+  // той же причине: выдуманные нули показали бы игроку не его силу.
+  const skillStats: SkillStats | null =
+    player === null || weaponDamage === null || attackUpgradeBonus === null || totalArmor === null
+      ? null
+      : {
+        strength: player.strength,
+        endurance: player.endurance,
+        agility: player.agility,
+        armor: totalArmor,
+        // Без множителя точильного камня — он живёт только внутри забега; см.
+        // SkillStats.attack в src/skillDamage.ts.
+        attack: playerAttackDamage(player.strength, weaponDamage, attackUpgradeBonus),
+      }
+
   const selectedEntry = gearSelectedItem ? (() => {
     if (gearSelectedItem.kind === 'item') {
       const inv = inventory.find((i) => i.inventoryItemId === gearSelectedItem.inventoryItemId)
@@ -914,7 +985,7 @@ export default function App() {
           // магазине и в карточке навыка на «Персонаже». Числа урона и лечения
           // в ней считаются от УРОВНЯ ГЕРОЯ по этому навыку (02.10.2026),
           // поэтому уровни передаются внутрь.
-          stat: consumableMechanicLine(spec, player?.skillLevels ?? null),
+          stat: consumableMechanicLine(spec, player?.skillLevels ?? null, skillStats),
           qty: player?.consumables?.[spec.id] ?? 0,
           iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
           equipped: false,
@@ -938,7 +1009,7 @@ export default function App() {
         // Строка механики — ровно та же, что в витрине магазина, и из
         // той же функции: у камня и оберега из эффекта каталога, у книги
         // из боевых констант скилла (с поправкой на уровень героя).
-        stat: consumableMechanicLine(spec, player?.skillLevels ?? null),
+        stat: consumableMechanicLine(spec, player?.skillLevels ?? null, skillStats),
         qty: player?.consumables?.[spec.id] ?? 0,
         iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
         equipped: false,
@@ -972,52 +1043,11 @@ export default function App() {
   // 'idle') не блокируем: сервера нет вовсе, забег там — заглушка с оранжевой
   // плашкой. Отладочные кнопки карт этот гейт намеренно обходят — их страхует
   // проверка в начале setup() в Explore.tsx (экран ошибки, энергия не списана).
-  // Счётчики улучшений. null — сервер их не назвал, и тогда НИ броня, НИ урон
-  // не известны: считать их с нулём значило бы показать игроку заниженные числа
-  // и увести его с ними в забег.
-  const upgradeCounts = player?.upgrades ?? null
   // Улучшения входят в тот же гейт, что и снаряжение: без них неизвестны урон и
   // броня, и забег пошёл бы с заниженными числами — ровно та беда, ради которой
   // гейт и заводился.
   const gearNotReady = isTelegramSession && (inventoryStatus !== 'ready' || upgradeCounts === null)
   const runBlocked = notEnoughEnergy || gearNotReady
-  // Суммарная броня надетых предметов — та же формула, что уже показывает
-  // статистика "Броня" на экране "Персонаж" (см. charStats ниже), вынесена
-  // сюда же, чтобы прокинуть тем же числом в Explore (см. задача "броня в
-  // бою"). inventory грузится СРАЗУ при логине (см. refreshPlayerFromServer
-  // выше — там же, где player), не лениво при первом открытии вкладки
-  // "Инвентарь": броня должна быть известна ДО первого удара в забеге, а не
-  // подгружаться посреди боя.
-  // Два прежних useEffect'а, дёргавших loadInventory() на открытие вкладки
-  // (gearTab === 'equipment') и на установку slotFilter, УДАЛЕНЫ: данные уже
-  // здесь с логина, а после надевания/снятия их перезапрашивает сама
-  // handleEquipItem. Фильтр по слоту — операция над уже полученным массивом,
-  // сеть для неё не нужна вовсе.
-  // Броня надетых предметов — только их сумма. Купленная закалка брони
-  // прибавляется ОТДЕЛЬНО, ниже: считает её общий каталог (upgradeBonus), тот
-  // же, что применяет сервер на старте забега.
-  const equippedArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
-  // Итоговая броня. null — «неизвестна» (инвентарь не загружен ИЛИ улучшения
-  // не названы), и это НЕ ноль: экран ставит прочерк, забег не стартует.
-  const totalArmor: number | null =
-    inventoryStatus !== 'ready' || upgradeCounts === null
-      ? null
-      : equippedArmor + upgradeBonus('armor', upgradeCounts)
-  // Прибавка к урону от закалки клинка — тем же каталогом. null по той же
-  // причине, что у брони.
-  const attackUpgradeBonus: number | null =
-    upgradeCounts === null ? null : upgradeBonus('attack', upgradeCounts)
-
-  // Урон надетого оружия — слагаемое формулы урона (src/playerDamage.ts), одно
-  // и то же число для строки "Урон" на экране "Персонаж" и для пропа Explore.
-  // null — НЕИЗВЕСТЕН, а не ноль: инвентарь не 'ready' (грузится, ошибка,
-  // офлайн), либо у надетого оружия damage null (битая строка каталога). Ноль —
-  // только когда оружия честно не надето.
-  const equippedWeapon = inventory.find(i => i.equipped && i.item.slot === 'weapon')
-  const weaponDamage: number | null =
-    inventoryStatus !== 'ready' ? null
-      : equippedWeapon === undefined ? 0
-        : equippedWeapon.item.damage
 
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
   // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
@@ -2039,7 +2069,7 @@ export default function App() {
                     {/* «Что делает» — из боевых констант, не текстом. Та же
                         функция, что в карточке книги в магазине и в сумке. */}
                     <div style={{ background:C.nicheDeep, borderRadius:8, padding:'9px 11px', marginBottom:12 }}>
-                      <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId, level)}</div>
+                      <div style={{ fontSize:12, lineHeight:1.5, color:C.bone }}>{skillBookLine(skillId, level, skillStats)}</div>
                     </div>
 
                     {forgetConfirm ? (
@@ -2269,7 +2299,7 @@ export default function App() {
                 // Строка механики собирается ИЗ ДАННЫХ: у камня и оберега из
                 // эффекта каталога, у книги — из боевых констант скилла. Числа
                 // текстом здесь не дублируются (см. consumableMechanicLine).
-                mechanic: { line: consumableMechanicLine(c, player?.skillLevels ?? null) },
+                mechanic: { line: consumableMechanicLine(c, player?.skillLevels ?? null, skillStats) },
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
@@ -3552,7 +3582,7 @@ export default function App() {
                             функция, что в магазине и в сумке; книг в этом списке
                             не бывает (он фильтрован по runSlot), но развилка
                             всё равно одна на весь клиент. */}
-                        <div style={{ fontSize:10, color:C.textDim }}>{consumableMechanicLine(c, player?.skillLevels ?? null)}</div>
+                        <div style={{ fontSize:10, color:C.textDim }}>{consumableMechanicLine(c, player?.skillLevels ?? null, skillStats)}</div>
                       </div>
                       <div style={{ fontSize:12, color:C.bone, flexShrink:0 }}>×{stock[c.id] ?? 0}</div>
                     </div>
@@ -3738,7 +3768,7 @@ export default function App() {
         })}
       </div>
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Карточка предмета — ПОСЛЕДНИМ в дереве, а не внутри вкладки: её
           открывают и «Инвентарь», и гнёзда снаряжения на «Персонаже».
