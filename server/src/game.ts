@@ -6,61 +6,63 @@
 // импортирует ЭТОТ файл, а не наоборот.
 import { CONSUMABLES, consumableSkillBook, type SkillBookSkillId } from './consumables.js'
 import { skillUsesThreshold } from './skillLevels.js'
-
-const MAX_ENERGY = 100
-const ENERGY_PER_MINUTE = 1
-const ENERGY_MINUTE_MS = 60_000
+import { MAX_ENERGY, ENERGY_REGEN_MS, energyAfter, energyUnitsGained } from './energy.js'
 
 /**
  * Энергия СЕЙЧАС плюс момент, от которого считать дальше.
  *
- * `lastEnergyUpdate` здесь — НЕ `now`, и это вся суть правки 04.10.2026
- * («энергия упирается в 99»): он сдвигается на ЦЕЛОЕ число начисленных минут,
- * то есть недобранный остаток минуты ПЕРЕНОСИТСЯ в следующий расчёт, а не
- * сгорает. До этого каждая запись (старт забега, возврат за брошенный забег)
- * ставила `now` и теряла до 59 секунд прогресса — на десяти забегах подряд
- * набегало 7 единиц, и энергия подолгу стояла на 97..99 вместо 100.
+ * `lastEnergyUpdate` здесь — НЕ `now`: он сдвигается на ЦЕЛОЕ число начисленных
+ * шагов, то есть недобранный остаток ПЕРЕНОСИТСЯ в следующий расчёт, а не
+ * сгорает (правка 04.10.2026). До этого каждая запись (старт забега, возврат за
+ * брошенный забег) ставила `now` и теряла до целого шага прогресса — на десяти
+ * забегах подряд набегало 7 единиц.
+ *
+ * ⚠️ Наблюдавшийся «99 / 100» ЭТИМ НЕ ЛЕЧИЛСЯ и лечиться не мог: причина была
+ * на клиенте (отрицательная разность времени, см. energyUnitsGained в
+ * energy.ts). Здесь — отдельный, настоящий, но другой дефект.
  */
 export type EnergyState = { energy: number; lastEnergyUpdate: Date }
 
 /**
- * Регенерация: 1 за минуту, не выше MAX_ENERGY, с переносом остатка.
+ * Регенерация, не выше MAX_ENERGY, с переносом остатка. Темп — ENERGY_REGEN_MS
+ * из общей с клиентом пары (`energy.ts`), сейчас одна единица за 2 минуты.
  *
  * ⚠️ На ПОЛНОЙ энергии таймер НЕ копится: `lastEnergyUpdate` становится `now`.
- * Иначе неделя простоя под потолком превратилась бы в банк из тысяч минут, и
+ * Иначе неделя простоя под потолком превратилась бы в банк из тысяч шагов, и
  * сразу после траты энергия мгновенно долилась бы обратно — трата перестала бы
  * что-то стоить. Ниже потолка, наоборот, остаток обязан сохраняться.
  *
  * `now` — параметр, а не `Date.now()` внутри: один и тот же момент нужен и
  * числу, и остатку для клиента (см. energyForClient), иначе два вызова могли бы
- * лечь по разные стороны минутной границы и клиент получил бы число от одного
+ * лечь по разные стороны границы шага и клиент получил бы число от одного
  * момента с остатком от другого.
  *
  * Отрицательный интервал (часы сервера сдвинули назад, запись из будущего)
- * трактуется как ноль минут, и `lastEnergyUpdate` при этом НЕ сдвигается: ни
- * начислять, ни отнимать за испорченное время нельзя.
+ * трактуется как ноль шагов — это правило живёт в energyUnitsGained, общей с
+ * клиентом, — и `lastEnergyUpdate` при этом НЕ сдвигается: ни начислять, ни
+ * отнимать за испорченное время нельзя.
  */
 export function regenerateEnergy(storedEnergy: number, lastUpdate: Date, now: Date = new Date()): EnergyState {
   const elapsed = now.getTime() - lastUpdate.getTime()
-  const minutesPassed = elapsed > 0 ? Math.floor(elapsed / ENERGY_MINUTE_MS) : 0
-  const energy = Math.min(MAX_ENERGY, storedEnergy + minutesPassed * ENERGY_PER_MINUTE)
+  const unitsGained = energyUnitsGained(elapsed)
+  const energy = energyAfter(storedEnergy, elapsed)
   if (energy >= MAX_ENERGY) return { energy, lastEnergyUpdate: now }
-  return { energy, lastEnergyUpdate: new Date(lastUpdate.getTime() + minutesPassed * ENERGY_MINUTE_MS) }
+  return { energy, lastEnergyUpdate: new Date(lastUpdate.getTime() + unitsGained * ENERGY_REGEN_MS) }
 }
 
 /**
  * Энергия для КЛИЕНТА: число плюс сколько секунд уже натикало в счёт следующей
- * единицы (0..59).
+ * единицы (0 .. ENERGY_REGEN_MS/1000 − 1, сейчас 0..119).
  *
- * Второе поле — ровно то, чего клиенту не хватало, чтобы показывать ТО ЖЕ
- * число, что сервер. Он считает минуты от момента ВХОДА (`liveEnergy` в
- * App.tsx), и без остатка его отсчёт начинался заново: сервер уже 50 секунд как
- * ждал сотую единицу, а клиент начинал ждать свои 60 — и показывал 99/100 там,
- * где на сервере было 100, до целой минуты подряд. Это и есть наблюдавшийся
- * баг.
+ * Второе поле — то, чего клиенту не хватает, чтобы показывать ТО ЖЕ число и тот
+ * же таймер, что у сервера: клиент отсчитывает шаг от момента ВХОДА, и без
+ * остатка его отсчёт начинался бы заново на каждом входе — сервер уже почти
+ * доначислил единицу, а клиент ждал бы полный шаг (до 2 минут).
  *
  * Секунды, а не миллисекунды: точнее сети всё равно не будет, а целое число
- * читается в логах.
+ * читается в логах. ⚠️ Потолок клэмпа берётся ИЗ ШАГА, а не числом 59: при
+ * темпе «1 за 2 минуты» остаток доходит до 119 секунд, и прежний клэмп срезал
+ * бы его вдвое.
  */
 export function energyForClient(
   storedEnergy: number,
@@ -71,9 +73,10 @@ export function energyForClient(
   if (regen.energy >= MAX_ENERGY) return { energy: regen.energy, accruedSec: 0 }
   const accruedMs = now.getTime() - regen.lastEnergyUpdate.getTime()
   // Клэмп — страховка от испорченных часов: ниже потолка остаток по построению
-  // лежит в [0, 60000), но отрицательный интервал выше оставляет lastUpdate как
-  // есть, и разность тогда может выйти за границы.
-  const accruedSec = Math.min(59, Math.max(0, Math.floor(accruedMs / 1000)))
+  // лежит в [0, ENERGY_REGEN_MS), но отрицательный интервал выше оставляет
+  // lastUpdate как есть, и разность тогда может выйти за границы.
+  const maxAccruedSec = Math.floor(ENERGY_REGEN_MS / 1000) - 1
+  const accruedSec = Math.min(maxAccruedSec, Math.max(0, Math.floor(accruedMs / 1000)))
   return { energy: regen.energy, accruedSec }
 }
 

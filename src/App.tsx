@@ -23,6 +23,11 @@ import type { SkillStats } from './skillDamage'
 // оттуда: цену применяет сервер, и своя копия формулы разошлась бы с ней.
 import { UPGRADES, UPGRADE_ORDER, upgradePrice, upgradeBonus, type UpgradeCounts, type UpgradeKind } from './upgrades'
 import { playerAttackDamage } from './playerDamage'
+// Потолок и темп энергии + вся арифметика от них — общая с сервером пара
+// (src/energy.ts <-> server/src/energy.ts, байт в байт). Своих копий этих чисел
+// в клиенте больше НЕТ: до 04.10.2026 здесь жили `MAX_ENERGY = 100` и литерал
+// `60000` в формуле, и смена темпа потребовала бы править две стороны.
+import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import SkillLevelNote from './ui/SkillLevelNote'
@@ -308,7 +313,6 @@ function trophyWord(n: number): string {
   return 'трофеев'
 }
 
-const MAX_ENERGY = 100
 const RUN_COST = 3 // DEV: держать в синхроне с сервером (вернуть 10 перед релизом)
 /**
  * TEMP_DEV_TROPHY_GOLD_RATE — ТЕСТОВЫЙ курс обмена трофеев на золото для
@@ -457,22 +461,38 @@ const REFUGE_HERO_KEYFRAMES = Array.from({ length: REFUGE_HERO_FRAMES }, (_, i) 
 const REFUGE_HERO_DURATION = 2.0 // s — подобрано вживую временным ползунком, зашито
 
 /**
- * Энергия на экране: база с сервера плюс целые минуты, прошедшие с момента
- * отсчёта. Потолок — MAX_ENERGY, как на сервере.
+ * Энергия на экране: база с сервера плюс целые шаги, прошедшие с момента
+ * отсчёта. Потолок и темп — из общей с сервером пары (`src/energy.ts`), поэтому
+ * экран и начисление не могут разойтись.
  *
- * ⚠️ `baseAt` — НЕ момент входа, а момент входа МИНУС остаток минуты, который
- * сервер уже натикал (см. readEnergyAccruedSec и место вызова setEnergyBaseAt).
- * Иначе отсчёт начинается заново на каждом входе, и клиент отстаёт от сервера
- * до целой минуты — ровно то, из-за чего полная энергия показывалась как
- * 99/100.
+ * ⚠️ `baseAt` — НЕ момент входа, а момент входа МИНУС остаток, который сервер
+ * уже натикал (см. readEnergyAccruedSec и место вызова setEnergyBaseAt). Иначе
+ * отсчёт начинается заново на каждом входе, и клиент отстаёт от сервера до
+ * целого шага.
  *
- * ⚠️ MAX_ENERGY и шаг «1 за минуту» — РУЧНАЯ копия серверных чисел
- * (server/src/game.ts). Сверяющего скрипта у этой пары нет; разъедутся — экран
- * начнёт расходиться с тем, что сервер реально начислил.
+ * ⚠️ `now` может оказаться РАНЬШЕ `baseAt`: `now` — состояние React, снятое при
+ * монтировании, а `baseAt` ставится позже, когда придёт ответ логина (на
+ * просыпающемся Render это десятки секунд). Отрицательная разность и давала
+ * «99 / 100» на полной энергии — `Math.floor(-20000 / шаг)` это −1. Ноль за
+ * отрицательное время живёт в energyUnitsGained, общей с сервером.
  */
 function liveEnergy(base: number, baseAt: number, now: number): number {
-  const minutes = Math.floor((now - baseAt) / 60000)
-  return Math.min(MAX_ENERGY, base + minutes)
+  return energyAfter(base, now - baseAt)
+}
+
+/**
+ * Остаток до следующей единицы как «2:00» / «0:07», или null — энергия полна и
+ * показывать нечего.
+ *
+ * `Math.ceil` по секундам: на самой границе шага это «2:00», а не «2:01», то
+ * есть таймер НИКОГДА не показывает больше шага. Полный шаг в начале отсчёта
+ * честен — единица только что начислена.
+ */
+function energyCountdownText(base: number, baseAt: number, now: number): string | null {
+  const leftMs = msToNextEnergy(base, now - baseAt)
+  if (leftMs === null) return null
+  const totalSec = Math.ceil(leftMs / 1000)
+  return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`
 }
 
 // Причина провала входа словами игрока, а не текстом исключения. Три случая
@@ -680,11 +700,6 @@ export default function App() {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 15000)
-    return () => clearInterval(id)
-  }, [])
-
-  useEffect(() => {
     // Предзагрузка каменной рамки экрана ошибки (Explore, позже — экран
     // итогов забега) в кеш браузера. Грузим её сейчас, пока сеть ещё есть —
     // сам экран ошибки как раз показывается, когда сети уже может не быть,
@@ -762,6 +777,11 @@ export default function App() {
     // Разность, а не серверная метка времени: часы телефона могут отличаться от
     // серверных на минуты, и абсолютный момент с сервера показал бы чушь.
     setEnergyBaseAt(Date.now() - readEnergyAccruedSec(data.character.energyAccruedSec) * 1000)
+    // `now` освежаем ТУТ ЖЕ: он снят при монтировании, а логин мог идти десятки
+    // секунд (просыпающийся Render), и без этого первый экран после входа считал
+    // бы энергию от устаревшего момента. Клэмп в energyUnitsGained защищает от
+    // отрицательной разности, но показывать устаревший таймер всё равно незачем.
+    setNow(Date.now())
     // Курс обмена — из ТОГО ЖЕ ответа. Поле верхнего уровня, не внутри character:
     // это правило экономики, а не свойство персонажа (server/src/routes/auth.ts).
     // Через readTrophyGoldRate, а не присваиванием: нет поля или мусор — null,
@@ -1062,6 +1082,11 @@ export default function App() {
   })() : null
 
   const energy = liveEnergy(energyBase, energyBaseAt, now)
+  // Текст «+1 через M:SS» или null на полной энергии. Считается от ТОЙ ЖЕ базы и
+  // того же шага, что само число, поэтому не может разойтись с ним.
+  // ⚠️ До 04.10.2026 здесь был не расчёт, а ЛИТЕРАЛ «+1 через 2:41» в вёрстке
+  // вкладки «Исследовать»: он не тикал и не зависел ни от темпа, ни от энергии.
+  const energyCountdown = energyCountdownText(energyBase, energyBaseAt, now)
   const notEnoughEnergy = energy < RUN_COST
   // Снаряжение не готово — в НАСТОЯЩЕЙ сессии забег из меню не стартует: броня
   // (totalArmor) и урон оружия (weaponDamage) считаются по inventory, и без
@@ -1074,6 +1099,17 @@ export default function App() {
   // гейт и заводился.
   const gearNotReady = isTelegramSession && (inventoryStatus !== 'ready' || upgradeCounts === null)
   const runBlocked = notEnoughEnergy || gearNotReady
+
+  // Тик экранного времени. СЕКУНДА, пока на экране идёт отсчёт «+1 через»
+  // (иначе таймер стоял бы на месте до 15 секунд и выглядел сломанным), и
+  // прежние 15 секунд в остальных случаях: на полной энергии отсчитывать нечего,
+  // а во время забега (Explore смонтирован) секундный ре-рендер меню — это
+  // работа впустую под PixiJS-тикером на слабом телефоне.
+  const energyTickMs = showExploreTest || energyCountdown === null ? 15000 : 1000
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), energyTickMs)
+    return () => clearInterval(id)
+  }, [energyTickMs])
 
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
   // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
@@ -3510,7 +3546,11 @@ export default function App() {
             </div>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:8 }}>
               <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.glowCore }}>{energy} / {MAX_ENERGY}</div>
-              <div style={{ fontSize:11, color:C.textDim }}>+1 через 2:41</div>
+              {/* На полной энергии строки нет вовсе: «+1 через» там обещало бы
+                  прибавку, которой не будет. Число тогда остаётся слева одно. */}
+              {energyCountdown !== null && (
+                <div style={{ fontSize:11, color:C.textDim }}>+1 через {energyCountdown}</div>
+              )}
             </div>
           </div>
 
