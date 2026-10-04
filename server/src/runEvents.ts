@@ -88,11 +88,36 @@ export const SMUGGLER_STEAL_FRAC = 0.5 // constants.ts:431
 // только у офлайн-заглушки всплывашки и на исход больше не влияет.
 export const SMUGGLER_STEAL_CHANCE = 0.2 // constants.ts:790
 
+/**
+ * Доля групп врагов, которая достаётся ЗВОНАРЯМ вместо зверей (04.10.2026).
+ *
+ * ⚠️ Живёт ТОЛЬКО ЗДЕСЬ, копии на клиенте НЕТ и заводить не надо: бросает
+ * сервер, клиент получает готовый `enemyKind` в событии и просто рисует то,
+ * что сказано. Это тот же приём, что у TROPHY_GOLD_RATE (CLAUDE.md, таблица
+ * копий): передать значением дешевле, чем держать ещё одну ручную копию без
+ * сверяющего скрипта.
+ *
+ * Офлайн-заглушка клиента (вне Telegram) бросает своим числом и с этим НЕ
+ * сверяется намеренно — она и так помечена оранжевой плашкой «ЗАГЛУШКА».
+ */
+export const ZVONAR_GROUP_CHANCE = 0.3
+
 // --- Типы ---
 
 import type { EventDrop } from './runDrops.js'
 
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
+
+/**
+ * Чья это группа врагов. Только для kind === 'enemy'.
+ *
+ * 'beast'  — зверь ближнего боя, как было всегда;
+ * 'zvonar' — Звонарь, дальний бой (04.10.2026).
+ *
+ * Группа ОДНОРОДНАЯ: смешанных нет. Трофеи и добыча у обеих одинаковые —
+ * бросок вида идёт ПОСЛЕ них и на них не влияет (см. rollRunEvents).
+ */
+export type RunEnemyKind = 'beast' | 'zvonar'
 
 // Кандидат из пула — эквивалент EventCandidate на клиенте (src/explore/types.ts:12).
 type EventCandidate = {
@@ -113,6 +138,14 @@ export type RunEvent = {
   clusterPoints?: [number, number][]
   trophyReward: number
   isMimic?: boolean // только для kind === 'chest'
+  /**
+   * Чья группа — только для kind === 'enemy' (04.10.2026).
+   *
+   * Поля НЕТ — забег начат СТАРЫМ сервером, где Звонаря не существовало: такую
+   * группу клиент обязан читать как звериную. Отдельного значения под это не
+   * заводим ровно потому, что отсутствие и значит «звери».
+   */
+  enemyKind?: RunEnemyKind
   /**
    * Что выпадет с этого события, разыгранное НА СТАРТЕ (30.09.2026).
    *
@@ -279,6 +312,17 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
         // Мимик — чистое наказание, без награды (Explore.tsx:2042: rollTrophies
         // вызывается только "if (!chest.isMimic)").
         trophyReward: isMimic ? 0 : rollTrophies(multiplier!, characterLevel),
+      }
+    }
+
+    if (ev.kind === 'enemy') {
+      // Вид врагов — отдельный бросок ПОСЛЕ награды и НЕЗАВИСИМО от неё:
+      // трофеи и добыча у группы Звонарей ровно те же, что у звериной
+      // (решение дизайнера), поэтому множитель здесь ни при чём.
+      return {
+        ...ev,
+        trophyReward: multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0,
+        enemyKind: Math.random() < ZVONAR_GROUP_CHANCE ? ('zvonar' as const) : ('beast' as const),
       }
     }
 

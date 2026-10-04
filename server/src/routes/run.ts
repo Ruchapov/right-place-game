@@ -876,6 +876,10 @@ export async function runRoutes(server: FastifyInstance) {
       x: ev.x,
       y: ev.y,
       ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
+      // Чья группа (04.10.2026). Отдаётся ТОЛЬКО если сервер её разыграл: у
+      // забега, начатого старым сервером, поля нет вовсе, и клиент читает это
+      // как «звери» — см. readEnemyKind в src/api.ts.
+      ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
       trophyReward: ev.trophyReward,
       drop: ev.drop === undefined || ev.drop === null
         ? null
