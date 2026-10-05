@@ -17,7 +17,7 @@
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
-import { scaledBossMaxHp, scaledEnemyMaxHp, SKILL_BOOK_SKILL_IDS } from './game.js'
+import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS } from './game.js'
 import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
@@ -429,9 +429,10 @@ export type ClampedRunProgress = {
 // смерть, то есть ровно тем способом, которым закрытие становится выгоднее
 // (см. CLAUDE.md, вариант А).
 //
-// Потолок нанесённого — число врагов ЭТОГО забега (сумма clusterPoints у
+// Потолок нанесённого — суммарное HP врагов ЭТОГО забега (clusterPoints у
 // событий kind:'enemy' из run.events, то есть из currentRun, а не из тела
-// запроса) × HP врага на уровне персонажа, ПЛЮС число боссов × HP босса на том
+// запроса; HP одного врага — по виду группы, у Привратника оно в полтора раза
+// больше звериного), ПЛЮС число боссов × HP босса на том
 // же уровне (scaledBossMaxHp — множитель BOSS_HP_MULT поверх scaledEnemyMaxHp,
 // см. game.ts) — иначе забег с одним боссом и без обычных врагов давал потолок
 // 0 и обрезал весь урон. Всё вместе × запас 1.5 (промахи/оверкилл). Меч и
@@ -450,11 +451,22 @@ export type ClampedRunProgress = {
 // (это ЛОГИН). Сами четыре числа уже конечны: их пропустил parse/coerce выше.
 export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, characterLevel: number): ClampedRunProgress {
   const events = Array.isArray(run.events) ? run.events : []
-  const enemyCount = events
-    .filter((ev) => ev.kind === 'enemy')
-    .reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0)
+  // HP группы — по её ВИДУ (06.10.2026): у Привратника 150% HP зверя, и посчитай
+  // мы его группу как звериную, она одна выбрала бы весь запас ×1.5 — честному
+  // игроку потолок начал бы срезать рост силы, молча. Вид берётся из СВОЕГО
+  // currentRun (его бросил этот же сервер на старте), а не из тела запроса.
+  // Любое другое значение, включая отсутствие поля, считается звериным: у
+  // Звонаря HP меньше, и такой счёт потолок только завышает.
+  const enemyGroups = events.filter((ev) => ev.kind === 'enemy')
+  // Число врагов в потолок больше не входит (его заменила сумма HP ниже), но
+  // остаётся в ответе функции: по нему читаются логи расхождений на финише.
+  const enemyCount = enemyGroups.reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0)
+  const enemyHpTotal = enemyGroups.reduce((sum, ev) => {
+    const perEnemy = ev.enemyKind === 'gatekeeper' ? scaledGatekeeperMaxHp(characterLevel) : scaledEnemyMaxHp(characterLevel)
+    return sum + (ev.clusterPoints?.length ?? 0) * perEnemy
+  }, 0)
   const bossCount = events.filter((ev) => ev.kind === 'boss').length
-  const maxDamageDealt = (enemyCount * scaledEnemyMaxHp(characterLevel) + bossCount * scaledBossMaxHp(characterLevel)) * 1.5
+  const maxDamageDealt = (enemyHpTotal + bossCount * scaledBossMaxHp(characterLevel)) * 1.5
 
   const combinedDealt = raw.attackDamageDealt + raw.skillDamageDealt
   const dealtScale = combinedDealt > maxDamageDealt && combinedDealt > 0 ? maxDamageDealt / combinedDealt : 1

@@ -319,6 +319,18 @@ export function scaledBossMaxHp(level: number): number {
   return Math.round(BOSS_HP_MULT * scaledEnemyMaxHp(level))
 }
 
+// Привратник — тоже множитель поверх HP зверя (mirrors GATEKEEPER_HP_MULT в
+// src/explore/constants.ts, тот же ручной синк). Нужен потолку нанесённого
+// урона в runState.ts: группа Привратников живучее звериной в полтора раза, и
+// посчитанная как звериная она съела бы весь запас потолка.
+// ⚠️ Звонаря (0.6 HP зверя) здесь НЕТ намеренно: его группа считается как
+// звериная, потолок от этого только выше настоящего, честного игрока не режет.
+export const GATEKEEPER_HP_MULT = 1.5
+
+export function scaledGatekeeperMaxHp(level: number): number {
+  return Math.round(GATEKEEPER_HP_MULT * scaledEnemyMaxHp(level))
+}
+
 
 // --- Экономика: обмен трофеев на золото (POST /character/exchange-trophies) ---
 //

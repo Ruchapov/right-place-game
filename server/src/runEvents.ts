@@ -89,18 +89,48 @@ export const SMUGGLER_STEAL_FRAC = 0.5 // constants.ts:431
 export const SMUGGLER_STEAL_CHANCE = 0.2 // constants.ts:790
 
 /**
- * Доля групп врагов, которая достаётся ЗВОНАРЯМ вместо зверей (04.10.2026).
+ * Чьей окажется группа врагов: веса трёх видов (06.10.2026).
  *
- * ⚠️ Живёт ТОЛЬКО ЗДЕСЬ, копии на клиенте НЕТ и заводить не надо: бросает
+ * Звери 45%, Звонари 30%, Привратники 25% — решение дизайнера. Это ВЕСА, а не
+ * проценты: rollEnemyKind делит на их сумму, так что правка одного числа не
+ * требует подгонять остальные под сотню.
+ *
+ * ⚠️ Живут ТОЛЬКО ЗДЕСЬ, копии на клиенте НЕТ и заводить не надо: бросает
  * сервер, клиент получает готовый `enemyKind` в событии и просто рисует то,
  * что сказано. Это тот же приём, что у TROPHY_GOLD_RATE (CLAUDE.md, таблица
  * копий): передать значением дешевле, чем держать ещё одну ручную копию без
  * сверяющего скрипта.
  *
- * Офлайн-заглушка клиента (вне Telegram) бросает своим числом и с этим НЕ
+ * Офлайн-заглушка клиента (вне Telegram) бросает своими числами и с этими НЕ
  * сверяется намеренно — она и так помечена оранжевой плашкой «ЗАГЛУШКА».
+ *
+ * Прежняя ZVONAR_GROUP_CHANCE = 0.3 (один бросок «Звонарь или зверь») заменена
+ * этой таблицей: доля Звонарей осталась 30%, Привратники забрали свои 25% у
+ * зверей.
  */
-export const ZVONAR_GROUP_CHANCE = 0.3
+export const ENEMY_GROUP_WEIGHTS: Record<RunEnemyKind, number> = {
+  beast: 45,
+  zvonar: 30,
+  gatekeeper: 25,
+}
+
+/**
+ * Один бросок вида группы по весам выше. Порядок перебора — порядок ключей
+ * таблицы; на вероятности он не влияет.
+ *
+ * Последний вид возвращается и «на остаток»: при roll, равном сумме весов из-за
+ * округления чисел с плавающей точкой, цикл иначе не вернул бы ничего.
+ */
+export function rollEnemyKind(): RunEnemyKind {
+  const kinds = Object.keys(ENEMY_GROUP_WEIGHTS) as RunEnemyKind[]
+  const total = kinds.reduce((sum, k) => sum + ENEMY_GROUP_WEIGHTS[k], 0)
+  let roll = Math.random() * total
+  for (const kind of kinds) {
+    roll -= ENEMY_GROUP_WEIGHTS[kind]
+    if (roll < 0) return kind
+  }
+  return kinds[kinds.length - 1]
+}
 
 // --- Типы ---
 
@@ -111,13 +141,14 @@ export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 
 /**
  * Чья это группа врагов. Только для kind === 'enemy'.
  *
- * 'beast'  — зверь ближнего боя, как было всегда;
- * 'zvonar' — Звонарь, дальний бой (04.10.2026).
+ * 'beast'      — зверь ближнего боя, как было всегда;
+ * 'zvonar'     — Звонарь, дальний бой (04.10.2026);
+ * 'gatekeeper' — Привратник, ближний бой с дверью-щитом (06.10.2026).
  *
- * Группа ОДНОРОДНАЯ: смешанных нет. Трофеи и добыча у обеих одинаковые —
+ * Группа ОДНОРОДНАЯ: смешанных нет. Трофеи и добыча у всех трёх одинаковые —
  * бросок вида идёт ПОСЛЕ них и на них не влияет (см. rollRunEvents).
  */
-export type RunEnemyKind = 'beast' | 'zvonar'
+export type RunEnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
 
 // Кандидат из пула — эквивалент EventCandidate на клиенте (src/explore/types.ts:12).
 type EventCandidate = {
@@ -317,12 +348,12 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
 
     if (ev.kind === 'enemy') {
       // Вид врагов — отдельный бросок ПОСЛЕ награды и НЕЗАВИСИМО от неё:
-      // трофеи и добыча у группы Звонарей ровно те же, что у звериной
-      // (решение дизайнера), поэтому множитель здесь ни при чём.
+      // трофеи и добыча у группы Звонарей и Привратников ровно те же, что у
+      // звериной (решение дизайнера), поэтому множитель здесь ни при чём.
       return {
         ...ev,
         trophyReward: multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0,
-        enemyKind: Math.random() < ZVONAR_GROUP_CHANCE ? ('zvonar' as const) : ('beast' as const),
+        enemyKind: rollEnemyKind(),
       }
     }
 
