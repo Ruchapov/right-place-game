@@ -857,8 +857,13 @@ export const FALLBACK_MAX_HP = 80 // если endurance ещё не прокин
 // потолком/полом в px, чтобы не раздувался гигантским на широких экранах;
 // высота — из пропорции картинки. Все числа ниже подобраны вживую временным
 // тюнером (снят после подгонки).
-export const HP_FRAME_SRC = `${import.meta.env.BASE_URL}assets/hp_frame_v2.png`
-export const HP_FRAME_ASPECT = 1 / 2.391 // height/width исходного PNG
+export const HP_FRAME_SRC = `${import.meta.env.BASE_URL}assets/hp_frame_v2.webp`
+// Маска формы углубления ниши (белый с альфой, 1579×324) — по ней обрезается
+// окно HP, см. HudPlate. Нарисована ровно под окно HP_WINDOW_* ниже и
+// растягивается на него целиком (mask-size 100% 100%): сдвинут доли окна, не
+// перерисовав маску, — её натянет не по нише, и ни сборка, ни типы не скажут.
+export const HP_WELL_MASK_SRC = `${import.meta.env.BASE_URL}assets/hp_well_mask.png`
+export const HP_FRAME_ASPECT = 1 / 2.391 // height/width исходной картинки
 export const PLAQUE_VW = 40
 export const HP_FRAME_W = `clamp(160px, ${PLAQUE_VW}vw, 340px)`
 // Высота — тем же выражением, что и ширина, умноженным на аспект: НЕ через
@@ -871,10 +876,10 @@ export const HP_FRAME_W = `clamp(160px, ${PLAQUE_VW}vw, 340px)`
 export const HP_FRAME_H = `calc(${HP_FRAME_W} * ${HP_FRAME_ASPECT})`
 // Окно под полосу HP внутри плиты — доли (0..1) от размера ВСЕЙ картинки,
 // не пиксели, чтобы не зависеть от масштаба отрисовки (см. HP_FRAME_W).
-export const HP_WINDOW_X = 0.395
-export const HP_WINDOW_Y = 0.24
-export const HP_WINDOW_W = 0.56
-export const HP_WINDOW_H = 0.215
+export const HP_WINDOW_X = 0.3929
+export const HP_WINDOW_Y = 0.199
+export const HP_WINDOW_W = 0.5713
+export const HP_WINDOW_H = 0.2803
 // Число HP — центр ниши, отдельные доли (не строго X+W/2 — подобрано глазом).
 export const HPTXT_X = 0.685
 export const HPTXT_Y = 0.345

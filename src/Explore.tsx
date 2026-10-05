@@ -1715,10 +1715,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   function updateHpBar() {
     const fraction = Math.max(0, Math.min(1, hpRef.current / maxHp))
     if (hpFillRef.current) {
-      // Ширина в % от контейнера фрейма (левый край окна тоже в % от него же —
-      // см. JSX), а не от ширины самого окна — так left/width остаются в одной
-      // системе координат и полоса не съезжает при resize.
-      hpFillRef.current.style.width = `${C.HP_WINDOW_W * fraction * 100}%`
+      // Ширина в % от ОКНА HP (контейнер с маской, см. HudPlate), а не от
+      // плиты: заливка лежит внутри окна и растёт от его левого края, так что
+      // 100% — это полное HP. Маска висит на окне и от этой ширины не зависит.
+      hpFillRef.current.style.width = `${fraction * 100}%`
       hpFillRef.current.style.background = fraction <= 0.3 ? '#E0353B' : '#4FB477'
     }
     if (hpTextRef.current) {

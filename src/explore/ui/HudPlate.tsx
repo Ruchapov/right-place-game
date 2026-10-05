@@ -39,20 +39,47 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
           draggable={false}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
         />
-        {/* Полоса HP лежит в нише плиты — рисуется ПОВЕРХ картинки (позже в
-            DOM = выше в стэке), т.к. сама ниша в PNG непрозрачная (тёмная),
-            не прозрачная дырка — "под" не был бы виден. */}
+        {/* Окно HP лежит в нише плиты — рисуется ПОВЕРХ картинки (позже в
+            DOM = выше в стэке), т.к. сама ниша в картинке непрозрачная
+            (тёмная), не прозрачная дырка — "под" не был бы виден.
+            Окно — контейнер ровно по углублению ниши, а форму ему даёт
+            CSS-маска: прямоугольник обрезается по неровному краю камня. Маска
+            висит на КОНТЕЙНЕРЕ, а не на заливке — иначе она сжималась бы
+            вместе с шириной полосы, и форма ниши ездила бы за уровнем HP.
+            Все три свойства маски продублированы с -webkit-: старый WebKit на
+            iOS без префикса не понимает ни одного, а с одним -webkit-mask-image
+            положил бы маску плиткой в натуральном размере (1579×324).
+            Своего фона, рамки и скругления у окна НЕТ намеренно: пустая часть
+            полосы прозрачная, под ней видна ниша самой плиты. */}
         <div
-          ref={hpFillRef}
           style={{
             position: 'absolute',
             left: `${C.HP_WINDOW_X * 100}%`,
             top: `${C.HP_WINDOW_Y * 100}%`,
             height: `${C.HP_WINDOW_H * 100}%`,
             width: `${C.HP_WINDOW_W * 100}%`,
-            background: '#4FB477',
+            maskImage: `url("${C.HP_WELL_MASK_SRC}")`,
+            WebkitMaskImage: `url("${C.HP_WELL_MASK_SRC}")`,
+            maskSize: '100% 100%',
+            WebkitMaskSize: '100% 100%',
+            maskRepeat: 'no-repeat',
+            WebkitMaskRepeat: 'no-repeat',
           }}
-        />
+        >
+          {/* Заливка: растёт от левого края окна, ширину (долю HP) и цвет
+              пишет updateHpBar в Explore.tsx. */}
+          <div
+            ref={hpFillRef}
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: '100%',
+              background: '#4FB477',
+            }}
+          />
+        </div>
         <span
           ref={hpTextRef}
           style={{
