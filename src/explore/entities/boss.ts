@@ -46,6 +46,8 @@ export type BossDeps = {
   // MapEvent.trophyReward) — поэтому spawnRewardFloat здесь больше не нужен, а
   // closeEvent берёт координаты: попап должен появиться над телом босса.
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Мана с убитого — то же, что у зверя (см. EnemyDeps в enemy.ts).
+  dropMana: (worldX: number, worldY: number) => void
   /**
    * ОБЁРТКА над takeDamageRef, а не takeDamage напрямую — см. EnemyDeps в
    * enemy.ts, та же причина (deps собираются один раз при создании системы,
@@ -741,6 +743,8 @@ export function createBossSystem(deps: BossDeps) {
         const deathDone = boss.sprite.currentFrame >= deathFrames.length - 1 || !boss.sprite.playing
         if (deathDone && !boss.rewardGiven) {
           boss.rewardGiven = true
+          // Мана — под тем же дедупом, что награда: один раз на тушу.
+          deps.dropMana(boss.x + C.BOSS_WIDTH / 2, boss.y + C.BOSS_HEIGHT / 2)
           // Трофеи и добыча всплывают внутри closeEvent, по числам сервера.
           // rewardGiven по-прежнему дедупит: туша висит на последнем кадре и
           // без флага закрывала бы событие каждый тик.

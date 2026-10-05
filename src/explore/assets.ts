@@ -62,6 +62,8 @@ export type ExploreAssets = {
   iceballProjectile: Texture[]
   iceballImpact: Texture[]
   rewardIcons: Record<RewardKind, Texture>
+  // Шар маны, летящий из убитого врага в героя (см. entities/mana.ts).
+  manaOrb: Texture
 }
 
 // Последовательная загрузка всех спрайт-листов забега (герой/зверь/сундук/
@@ -434,6 +436,10 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     rp: rpIconTexture,
   }
 
+  // Шар маны — одна картинка, как иконки наград выше.
+  const manaOrbTexture = await Assets.load(C.MANA_ORB_SRC)
+  if (isCancelled()) return null
+
   return {
     hero: {
       idle: idleFrames,
@@ -473,6 +479,7 @@ export async function loadExploreAssets(isCancelled: () => boolean): Promise<Exp
     iceballProjectile: iceballProjectileFrames,
     iceballImpact: iceballImpactFrames,
     rewardIcons: rewardIconTextures,
+    manaOrb: manaOrbTexture,
   }
 }
 

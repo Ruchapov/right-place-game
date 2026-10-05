@@ -199,7 +199,25 @@ export type SkillsDeps = {
    * путём, что четыре счётчика роста статов: в срезе /run/progress и на финише.
    */
   onSkillUse: (skillId: SkillId) => void
+
+  /**
+   * Мана забега (см. C.MANA_MAX). Запасом владеет Explore.tsx — тот же реф
+   * читают гнёзда на HUD-плите и пополняют шары с убитых врагов; этот модуль
+   * его только ЧИТАЕТ (хватает ли на навык).
+   */
+  mana: MutableRefObject<number>
+  /**
+   * Списать ману за навык. Зовётся РОВНО там, где взводится перезарядка, и
+   * только вместе с ней: применение не началось — мана цела. Перерисовка гнёзд
+   * на плите — внутри, здесь о ней не знают.
+   */
+  spendMana: (amount: number) => void
 }
+
+// Цена каждого навыка в мане. Сами числа — в constants.ts (SKILL_MANA_COST);
+// присваивание в Record<SkillId, number> заставляет компилятор сверить, что
+// цена названа у всех пяти.
+const MANA_COST: Record<SkillId, number> = C.SKILL_MANA_COST
 
 // Рантайм-двойник типа SkillId выше (тип в рантайме не существует). Нужен
 // ТОЛЬКО для диагностики: строка в слоте, которой здесь нет — рассинхрон
@@ -380,6 +398,21 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // булевых пометок heal/slash, только на несколько листов сразу).
   const missingSheetLogged = new Set<string>()
   const unknownIdLogged = new Set<string>()
+
+  // Хватает ли маны на навык ПРЯМО СЕЙЧАС. Одна функция и на нажатие
+  // (pressSlot), и на вид кнопки (canAfford): тусклая кнопка и «нажатие ничего
+  // не делает» обязаны быть одним и тем же условием.
+  //
+  // ⚠️ Считается не от всего запаса: цена снаряда, чей каст УЖЕ ИДЁТ,
+  // придержана. Мана за снаряд списывается на кадре вылета, а не на нажатии
+  // (вместе с его перезарядкой, см. onCastSpawnFrame), и без этой оговорки за
+  // время замаха второй навык успел бы потратить ту же ману: исцеление жмётся
+  // и посреди каста. Тогда снаряд вылетал бы, когда платить уже нечем.
+  // Оборвали каст — пометка снимается (см. update), и мана снова свободна.
+  function canAffordSkill(id: SkillId): boolean {
+    const held = pendingCastSpec ? MANA_COST[pendingCastSpec.id] : 0
+    return MANA_COST[id] <= deps.mana.current - held
+  }
 
   // Только визуал: счётчик импульсов НЕ трогает (его ставит castHeal и
   // обнуляет ветка смерти) — иначе destroy() в начале spawnHealAura стирал бы
@@ -990,6 +1023,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Кулдаун обычной атаки уже взведён ВНУТРИ startPlayerAttack — иначе
     // slash дал бы бесплатный удар в обход ATTACK_COOLDOWN.
     slashCdMs = C.SLASH_COOLDOWN_MS
+    deps.spendMana(MANA_COST.slash)
     // ВСЁ. Дуга, выбор цели и кровотечение — не здесь, а на кадре удара
     // (см. onAttackStrike): по нажатию герой только начинает замах, и
     // показывать эффект в этот момент значило бы рисовать удар до удара.
@@ -1037,6 +1071,10 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // кадра вылета, и повторным нажатием эту дыру не заспамить. Случай
     // мёртвый — лист сверяется assertSheetSize на загрузке (см. assets.ts).
     projectileCdMs[spec.id] = spec.cooldownMs
+    // Мана — там же и по той же причине: оборванный каст не стоит ни секунд,
+    // ни маны. Хватит её наверняка: цена этого каста была придержана с самого
+    // нажатия (см. canAffordSkill).
+    deps.spendMana(MANA_COST[spec.id])
     spawnProjectile(spec, pendingCastFacing)
   }
 
@@ -1049,6 +1087,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Независимо от того, сколько реально долилось: жать heal на полном HP —
     // решение игрока, а не осечка скилла.
     healCdMs = C.HEAL_COOLDOWN_MS
+    deps.spendMana(MANA_COST.heal)
     // Спавн ПЕРЕД выставлением счётчика: внутри он зовёт destroyHealAura()
     // для предыдущей ауры, и порядок наоборот стёр бы свежее число.
     spawnHealAura()
@@ -1080,6 +1119,11 @@ export function createSkillsSystem(deps: SkillsDeps) {
       }
       return
     }
+    // Маны меньше цены — нажатие не делает НИЧЕГО: ни маны, ни перезарядки, ни
+    // замаха. Тихо, как и кулдаун ниже, — видно это на самой кнопке, она
+    // тусклая (то же условие, см. canAfford). Приведение типа честное: строкой
+    // выше id сверен с KNOWN_SKILL_IDS.
+    if (!canAffordSkill(id as SkillId)) return
     // Кулдаун везде проверяется тихо: нормальное состояние игры, не ошибка.
     if (id === 'heal') {
       if (healCdMs > 0) return
@@ -1103,6 +1147,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // должен съедать 5 секунд.
       if (deps.startPlayerDash()) {
         dashCdMs = C.DASH_COOLDOWN_MS
+        deps.spendMana(MANA_COST.dash)
         // Новый рывок — новый список задетых: каждая цель снова может
         // получить урон ровно один раз. Чистим ИМЕННО на старте, а не по
         // окончании рывка: так набор не зависит от того, чем рывок кончился
@@ -1159,6 +1204,19 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Об этом уже кричит pressSlot (там ровно та же развилка), поэтому здесь
     // молча «показывать нечего» — второй крик каждый кадр залил бы консоль.
     return false
+  }
+
+  // Хватает ли маны на навык из гнезда slot — для приглушения кнопки (рисует
+  // paintSkillAffordable в ../ui/TouchControls.tsx). То же условие, что гейтит
+  // нажатие в pressSlot, и ТОЛЬКО чтение, как readCooldown выше.
+  //
+  // Пустое гнездо и неизвестный id — true, то есть «по мане не приглушать»: у
+  // таких кнопок своя картина, и вызывающий до них не доходит вовсе (он выходит
+  // раньше, по false из readCooldown).
+  function canAfford(slot: 0 | 1): boolean {
+    const id = deps.equipped[slot]
+    if (id === null || !KNOWN_SKILL_IDS.includes(id)) return true
+    return canAffordSkill(id as SkillId)
   }
 
   // dt — МИЛЛИСЕКУНДЫ (ticker.deltaMS), тот же выбор единиц, что уже
@@ -1266,5 +1324,5 @@ export function createSkillsSystem(deps: SkillsDeps) {
     dashHitTargets.clear()
   }
 
-  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown }
+  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford }
 }

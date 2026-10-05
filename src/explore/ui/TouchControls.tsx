@@ -111,6 +111,9 @@ const CD_FEATHER_DEG = 1.5
 // Вспышка ободка в момент готовности — «около 0.3 с» по дизайну.
 const CD_FLASH_MS = 300
 const CD_FLASH_ATTR = 'data-cd-flash'
+// Маны на навык не хватает — кнопка тусклая (см. paintSkillAffordable ниже).
+const NO_MANA_ATTR = 'data-no-mana'
+const NO_MANA_OPACITY = 0.45
 
 const PRESS_MIN_VISIBLE_MS = 120
 const PRESS_TRANSITION = 'transform 70ms ease-out, background-color 70ms ease-out, border-color 70ms ease-out'
@@ -171,6 +174,14 @@ const PRESS_CSS = `
   }
   [data-touch-controls] [${CD_FLASH_ATTR}="1"] {
     animation: rp-skill-ready ${CD_FLASH_MS}ms ease-out;
+  }
+  /* Маны на навык не хватает: кнопка тусклая. Атрибут ставит и снимает
+     paintSkillAffordable, вид задан ЗДЕСЬ — по той же причине, что вспышка
+     выше: инлайновая opacity жила бы до первого ре-рендера (cssText
+     переписывается целиком), а атрибут он не трогает. !important перебивает
+     opacity:1, которую пишет в инлайн roundButtonCss. */
+  [data-touch-controls] [${NO_MANA_ATTR}="1"] {
+    opacity: ${NO_MANA_OPACITY} !important;
   }
 `
 
@@ -327,6 +338,21 @@ export function repaintSkillCooldown(el: HTMLElement) {
   st.drawnDeg = -1
   st.drawnSecs = -1
   drawSkillCd(el, st)
+}
+
+/**
+ * Приглушить кнопку навыка, на который не хватает маны, или вернуть ей вид.
+ *
+ * Зовётся КАЖДЫЙ КАДР из тикера Explore.tsx, рядом с paintSkillCooldown и по
+ * той же причине не через React. В DOM пишет только на СМЕНУ состояния.
+ * Хватает ли маны, решает модуль навыков (skills.canAfford) — тем же условием,
+ * которым он гейтит само нажатие; здесь только вид.
+ */
+export function paintSkillAffordable(el: HTMLElement, affordable: boolean) {
+  const dimmed = el.getAttribute(NO_MANA_ATTR) === '1'
+  if (dimmed === !affordable) return
+  if (affordable) el.removeAttribute(NO_MANA_ATTR)
+  else el.setAttribute(NO_MANA_ATTR, '1')
 }
 
 interface TouchControlsProps {

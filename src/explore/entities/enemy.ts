@@ -48,6 +48,10 @@ export type EnemyDeps = {
   // spawnRewardFloat системе врагов больше НЕ нужен, зато closeEvent берёт
   // координаты: попап должен появиться там, где упал последний враг группы.
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Мана с убитого (см. entities/mana.ts): бросок выпадения и шары — там, сюда
+  // приходит только «вот тело, оно здесь». Зовётся на КАЖДОГО врага, в отличие
+  // от closeEvent, который срабатывает на последнем в группе.
+  dropMana: (worldX: number, worldY: number) => void
   /**
    * ОБЁРТКА над takeDamageRef, а не takeDamage напрямую: deps собираются
    * ОДИН раз при создании системы в setup(), а takeDamageRef синхронизируется
@@ -274,6 +278,9 @@ export function createEnemySystem(deps: EnemyDeps) {
             // начисленным сервером не сходилась.
             const deathX = enemy.sprite.x
             const deathY = enemy.sprite.y - enemy.sprite.height
+            // Мана — с КАЖДОГО убитого, а не с последнего в группе (этим она и
+            // отличается от награды события ниже). Вылетает из центра тела.
+            deps.dropMana(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2)
             deps.worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
             enemy.rect.destroy()
             enemy.sprite.destroy()

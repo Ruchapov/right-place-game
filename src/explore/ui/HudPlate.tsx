@@ -14,9 +14,24 @@ interface HudPlateProps {
    * признак, по которому игрок знает, есть ли у него запасная жизнь.
    */
   charmReady: boolean
+  /**
+   * Узел-обёртка десяти гнёзд маны. Колбэк, а не RefObject: горящие гнёзда
+   * переключает сам Explore.tsx (updateManaSockets), без React-состояния, и
+   * обязан сделать это сразу, как узел появился, — иначе до первой траты маны
+   * плита показывала бы вид по умолчанию, а не запас.
+   */
+  manaRingRef: (el: HTMLDivElement | null) => void
 }
 
-export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady }: HudPlateProps) {
+// Диаметр гнезда маны — доля ШИРИНЫ плиты, тем же выражением, каким задана сама
+// ширина: ширина и высота гнезда явные и равные, без aspect-ratio (см.
+// комментарий у HP_FRAME_H в constants.ts — на нём уже обжигались).
+const MANA_SOCKET_SIZE = `calc(${C.HP_FRAME_W} * ${C.MANA_SOCKET_D})`
+// Свечение горящего шара. Размеры тени — тоже в долях ширины плиты: гнездо на
+// узком экране около 4.5 px, и тень в постоянных пикселях залила бы соседей.
+const MANA_ORB_GLOW = `0 0 calc(${C.HP_FRAME_W} * 0.012) calc(${C.HP_FRAME_W} * 0.004) rgba(70,196,232,0.9)`
+
+export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady, manaRingRef }: HudPlateProps) {
   return (
     <>
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
@@ -180,6 +195,50 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
             </div>
           )
         })}
+
+        {/* Гнёзда маны — десять лунок на ободе медальона (MANA_SOCKETS, индекс 0
+            сверху, дальше по часовой). Пустое гнездо видно всегда; горящее —
+            это шар поверх него. Какие горят, решает НЕ эта разметка: шары
+            рисуются все десять, а гасит и зажигает их updateManaSockets в
+            Explore.tsx, меняя opacity прямо у узла (как ширину полосы HP).
+            Поэтому opacity в стиле шара ниже нет намеренно — React, не найдя
+            её в пропах, на ре-рендере её и не трогает.
+            Свечение — box-shadow на круглом узле, а не filter: drop-shadow, по
+            той же причине, что у колец событий выше (ореол не стекает вниз). */}
+        <div ref={manaRingRef} style={{ position: 'absolute', inset: 0 }}>
+          {C.MANA_SOCKETS.map(([x, y], i) => (
+            <div
+              key={i}
+              style={{
+                position: 'absolute',
+                left: `${x * 100}%`,
+                top: `${y * 100}%`,
+                width: MANA_SOCKET_SIZE,
+                height: MANA_SOCKET_SIZE,
+                transform: 'translate(-50%, -50%)',
+                backgroundImage: `url("${C.MANA_SOCKET_SRC}")`,
+                backgroundSize: '100% 100%',
+                backgroundRepeat: 'no-repeat',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <div
+                style={{
+                  width: `${C.MANA_SOCKET_ORB_SCALE * 100}%`,
+                  height: `${C.MANA_SOCKET_ORB_SCALE * 100}%`,
+                  borderRadius: '50%',
+                  backgroundImage: `url("${C.MANA_ORB_SRC}")`,
+                  backgroundSize: '100% 100%',
+                  backgroundRepeat: 'no-repeat',
+                  boxShadow: MANA_ORB_GLOW,
+                  transition: 'opacity 150ms linear',
+                }}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </>
   )

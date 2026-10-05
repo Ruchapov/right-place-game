@@ -3,7 +3,7 @@ import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sp
 import { renderMapToCanvas, backdropPaths } from './mapRenderer'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
-import TouchControls, { paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
+import TouchControls, { paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
   Grid,
@@ -43,6 +43,7 @@ import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
 import { loadExploreAssets, loadZvonarAssets } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
+import { createManaSystem } from './explore/entities/mana'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createZvonarSystem } from './explore/entities/zvonar'
@@ -1331,6 +1332,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // Тикер больше не нужен — забег кончился, дальнейшая физика/AI под
     // экраном итогов только сажали бы батарею телефона без всякой пользы.
     appRef.current?.ticker.stop()
+    // Шары маны в полёте — снять: тикер остановлен, долететь им уже нечем, и
+    // под экраном итогов они так и висели бы замершими.
+    clearManaOrbsRef.current()
 
     setRunResult(buildClientResult(died))
 
@@ -1457,6 +1461,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const hpRef = useRef(maxHp)
   const hpFillRef = useRef<HTMLDivElement>(null)
   const hpTextRef = useRef<HTMLSpanElement>(null)
+  // Мана забега — тоже в ref и по той же причине, что hp: её читает тикер
+  // (хватает ли на навык — каждый кадр), а гнёзда на плите переключаются
+  // вручную через DOM (updateManaSockets). Живёт только внутри забега: на
+  // сервер не ходит и между забегами не хранится, setup() ставит её в полную.
+  const manaRef = useRef(C.MANA_MAX)
+  // Обёртка десяти гнёзд маны на HUD-плите (см. HudPlate).
+  const manaRingElRef = useRef<HTMLDivElement | null>(null)
+  // Снять со сцены шары маны, которые ещё летят. Реф на функцию, потому что
+  // сама система шаров живёт в замыкании setup(), а позвать это нужно из
+  // sendFinishExplore — тот же приём, что у takeDamageRef ниже.
+  const clearManaOrbsRef = useRef<() => void>(() => {})
 
   // Стабильная ссылка на takeDamage для будущих источников урона (шипы и т.п.),
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
@@ -1724,6 +1739,35 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     if (hpTextRef.current) {
       hpTextRef.current.textContent = `${hpRef.current}/${maxHp}`
     }
+  }
+
+  // Гнёзда маны на плите — тот же приём, что updateHpBar: пишем прямо в узлы,
+  // без React-состояния. Шары в разметке есть все десять (см. HudPlate), здесь
+  // им только ставится opacity: горят гнёзда 0..мана-1, гаснут с конца.
+  // Плиты ещё нет (до ready) — рисовать не на чем; как только она появится,
+  // её ref-колбэк позовёт эту функцию сам.
+  function updateManaSockets() {
+    const ring = manaRingElRef.current
+    if (!ring) return
+    const sockets = ring.children
+    for (let i = 0; i < sockets.length; i++) {
+      const orb = sockets[i].firstElementChild as HTMLElement | null
+      if (orb) orb.style.opacity = i < manaRef.current ? '1' : '0'
+    }
+  }
+
+  // ЕДИНСТВЕННАЯ запись в запас маны: и трата навыком, и прилёт шара идут
+  // через неё, поэтому потолок и перерисовка гнёзд живут в одном месте.
+  function setMana(next: number) {
+    // Ниже нуля запас уйти не может по построению: навык сверяет цену ДО
+    // списания (canAffordSkill в entities/skills.ts). Ушёл — значит, сломан тот
+    // гейт, и молча обрезать до нуля значило бы незаметно дарить навык даром.
+    if (next < 0) {
+      console.error('Explore: мана ушла в минус — навык применён без проверки цены', { mana: manaRef.current, next })
+    }
+    // Сверху обрезается ТИХО и намеренно: лишняя мана сгорает, это правило.
+    manaRef.current = Math.max(0, Math.min(C.MANA_MAX, next))
+    updateManaSockets()
   }
 
   // Подпись кнопки 🧪 — тот же приём, что updateHpBar (DOM-ref, обновляется
@@ -2326,6 +2370,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let enemySystem: ReturnType<typeof createEnemySystem> | null = null
     let zvonarSystem: ReturnType<typeof createZvonarSystem> | null = null
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
+    let manaSystem: ReturnType<typeof createManaSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -2899,6 +2944,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // пишет в тот же реф, что уезжает в срезе и финише.
         skillDamage,
         onSkillUse: (skillId) => { skillUsesRef.current[skillId] += 1 },
+        // Мана: модуль читает запас сам (хватает ли на навык), а списывает
+        // через setMana — единственную запись в запас, она же гасит гнёзда.
+        mana: manaRef,
+        spendMana: (amount) => setMana(manaRef.current - amount),
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на
         // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
@@ -2924,6 +2973,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // секунд затёрла бы знак вопроса.
         if (!skills!.readCooldown(slot, skillCdOut)) return
         paintSkillCooldown(btn, skillCdOut.leftMs, skillCdOut.totalMs, dtMs)
+        // Маны на навык не хватает — кнопка тусклая. Условие то же, каким
+        // модуль навыков гейтит само нажатие (canAfford), поэтому тусклая
+        // кнопка и «нажатие ничего не делает» разойтись не могут.
+        paintSkillAffordable(btn, skills!.canAfford(slot))
       }
 
       // AI обычного врага (см. explore/entities/enemy.ts) — создаётся тем же
@@ -2943,6 +2996,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         playSpriteAnim,
         findGroundSurfaceY,
         closeEvent,
+        // Система шаров маны создаётся НИЖЕ, после загрузки ассетов (ей нужна
+        // готовая картинка), поэтому здесь обёртка, а не сама функция: зовётся
+        // она только из тикера, когда система уже есть.
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         // Обёртка над takeDamageRef, НЕ takeDamage напрямую — deps
         // собираются один раз здесь, а takeDamageRef синхронизируется
         // отдельным useEffect'ом на каждый рендер именно затем, чтобы
@@ -2967,6 +3024,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
         findGroundSurfaceY,
         closeEvent,
+        // Та же обёртка и по той же причине, что у зверя выше.
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
         takeDamage: (amount: number) => takeDamageRef.current(amount),
         // Рывок — волна проходит сквозь героя, а не гаснет об него (см. ZvonarDeps).
@@ -3028,6 +3087,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       fireballImpactFramesRef.current = assets.fireballImpact
       iceballProjectileFramesRef.current = assets.iceballProjectile
       iceballImpactFramesRef.current = assets.iceballImpact
+
+      // Мана с убитых врагов (см. explore/entities/mana.ts): бросок выпадения
+      // и полёт шаров в героя. Создаётся ЗДЕСЬ, после загрузки, а не рядом с
+      // остальными системами выше: ей нужна готовая картинка шара. Системы
+      // врагов и босса зовут её обёрткой dropMana, и только из тикера.
+      manaSystem = createManaSystem({
+        phys,
+        worldContainer,
+        orbTexture: assets.manaOrb,
+        dead: deathRef,
+        gainMana: (amount) => setMana(manaRef.current + amount),
+      })
+      clearManaOrbsRef.current = manaSystem.clear
 
       const chestFrames = assets.chest
       const chestTrapFrames = assets.chestTrap
@@ -3306,6 +3378,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       setProgressStalled(false)
       setRunResult(null) // сброс на случай повторного запуска setup()
       setSaveStatus('pending') // сброс на случай повторного запуска setup()
+      // Мана — на забег: каждый начинается с полного запаса, прошлый остаток
+      // не переносится (и взять его неоткуда — мана нигде не хранится).
+      setMana(C.MANA_MAX)
 
       // Обелиски (карта F) — сброс состояния события ПЕРЕД спавном: стартовый
       // обелиск создаётся НИЖЕ, внутри map-цикла событий, только если kind
@@ -3421,6 +3496,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         playBossAnim,
         applyBossLayout,
         closeEvent,
+        // Та же обёртка, что у зверя и Звонаря: мана падает и с босса.
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         takeDamage: (amount: number) => takeDamageRef.current(amount),
         takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
         boss: bossRef,
@@ -5016,6 +5093,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // получить его физический шаг сразу, не на следующем кадре).
         bossSystem!.update(dt, ticker.deltaMS)
 
+        // Шары маны — ПОСЛЕ всех трёх систем врагов: выпадение случается
+        // внутри них (там, где труп снимается со сцены), и шар, родившийся в
+        // этом кадре, сразу получает свой первый шаг — тот же порядок, что у
+        // босса с шипами. Здесь же шары снимаются, если герой мёртв.
+        manaSystem!.update(ticker.deltaMS)
+
         // Сундуки: завершение анимации открытия (тем же способом, каким
         // определяется конец attack/hurt у героя — конец текстур ИЛИ спрайт
         // сам остановился) + мягкая стена по X (та же pushPlayerOutX, что и
@@ -5475,6 +5558,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       enemySystem?.dispose()
       zvonarSystem?.dispose()
       bossSystem?.dispose()
+      manaSystem?.dispose()
+      // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
+      // чтобы он не держал систему уже уничтоженной сцены и не звал её clear().
+      clearManaOrbsRef.current = () => {}
       // destroy() только если init() реально завершился — до этого у app нет
       // внутренностей, на которые destroy() рассчитывает (см. комментарий
       // у объявления initialized выше).
@@ -5815,6 +5902,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         eventClosed={eventClosed}
         eventKinds={eventKinds}
         charmReady={charmReady}
+        // Узел гнёзд появился (или пересоздан) — сразу красим его по запасу:
+        // до первой траты маны updateManaSockets больше никто не позовёт.
+        manaRingRef={(el) => {
+          manaRingElRef.current = el
+          updateManaSockets()
+        }}
       />
 
       {/* Выход через шестерёнку = смерть по решению разработчика (трофеи

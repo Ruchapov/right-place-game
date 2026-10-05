@@ -742,6 +742,51 @@ export const ICEBALL_COOLDOWN_MS = 5000
 // движение, И продвижение кадров анимации.
 export const ICEBALL_STUN_MS = 2000
 
+// --- МАНА ЗАБЕГА ---
+// Один запас на оба гнезда навыков. Живёт ТОЛЬКО внутри забега: сервер о нём
+// не знает, между забегами он не хранится, каждый забег начинается с полного.
+// Выше потолка не бывает — лишнее сгорает (см. setMana в Explore.tsx).
+export const MANA_MAX = 10
+// Цена навыка в мане. Все пять В ОДНОМ месте намеренно, хотя перезарядки выше
+// разнесены по блокам своих навыков: цены — это один общий баланс, и править
+// его надо одним взглядом. Списывается там же и тогда же, где взводится
+// перезарядка (см. entities/skills.ts): применение не началось — мана цела.
+// Набор ключей сверяет компилятор — в skills.ts объект присваивается в
+// Record<SkillId, number>, и шестой навык без цены не соберётся.
+export const SKILL_MANA_COST = {
+  dash: 2,
+  iceball: 3,
+  fireball: 2,
+  slash: 2,
+  heal: 3,
+}
+// Выпадение маны с убитого врага — любого: зверь, Звонарь, босс. Бросков два:
+// «выпало ли» и «сколько» (MIN..MAX включительно, равновероятно). Бросает
+// клиент — мана на сервер не ходит вовсе (см. entities/mana.ts).
+export const MANA_DROP_CHANCE = 0.5
+export const MANA_DROP_MIN = 1
+export const MANA_DROP_MAX = 2
+// Шар маны — и летящий в мире (Pixi), и горящий в гнезде HUD-плиты (DOM):
+// картинка одна. Путь тем же способом (BASE_URL), что у HP_FRAME_SRC.
+export const MANA_ORB_SRC = `${import.meta.env.BASE_URL}assets/mana_orb.webp`
+// Полёт шара из тела врага в героя. Время в МИЛЛИСЕКУНДАХ и идёт по
+// ticker.deltaMS: длительность полёта одна и та же на любом FPS и на любом
+// расстоянии (далёкий шар просто летит быстрее).
+export const MANA_ORB_FLIGHT_MS = 500
+// Задержка вылета каждого следующего шара из той же туши.
+export const MANA_ORB_STAGGER_MS = 100
+export const MANA_ORB_SIZE = 18 // диаметр шара на экране, px мира
+// Подъём дуги над прямой «труп → герой» в середине полёта, px мира.
+export const MANA_ORB_ARC_H = 48
+// Второй шар той же туши летит по более пологой дуге — иначе два шара с
+// разницей в 0.1 с шли бы след в след и читались как один.
+export const MANA_ORB_ARC_ALT = 0.55
+// Свечение — второй спрайт той же картинки: крупнее, полупрозрачный, additive.
+export const MANA_ORB_GLOW_SCALE = 2.4
+export const MANA_ORB_GLOW_ALPHA = 0.35
+// Шар долетел, мана засчитана — он гаснет за это время, оставаясь на герое.
+export const MANA_ORB_FADE_MS = 120
+
 // Обелиски (карта F)
 export const OBELISK_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Idle.png`
 export const OBELISK_BURNING_SRC = `${import.meta.env.BASE_URL}assets/objects/Obelisk_Burning.png`
@@ -895,6 +940,27 @@ export const RING_SCALE = 0.93
 export const RING_W = 4
 export const RING_DX = 0
 export const RING_DY = -0.09
+
+// Гнёзда маны — десять лунок на ободе медальона с портретом (на самой плите
+// их нет, каждое рисуется картинкой mana_socket_empty поверх). Доли плиты:
+// диаметр — от её ШИРИНЫ, центры — x от ширины, y от высоты. Индекс 0 сверху,
+// дальше по часовой стрелке; горят гнёзда 0..мана-1, гаснут с конца.
+export const MANA_SOCKET_SRC = `${import.meta.env.BASE_URL}assets/mana_socket_empty.webp`
+export const MANA_SOCKET_D = 0.0282
+// Диаметр горящего шара в долях диаметра гнезда.
+export const MANA_SOCKET_ORB_SCALE = 0.74
+export const MANA_SOCKETS: [number, number][] = [
+  [0.1957, 0.1014],
+  [0.2872, 0.1737],
+  [0.3446, 0.367],
+  [0.3479, 0.6009],
+  [0.2934, 0.7962],
+  [0.2014, 0.8765],
+  [0.1084, 0.8016],
+  [0.0516, 0.6116],
+  [0.0491, 0.3757],
+  [0.1029, 0.1806],
+]
 
 export const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 export const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс

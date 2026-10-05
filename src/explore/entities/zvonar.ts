@@ -68,6 +68,8 @@ export type ZvonarDeps = {
   ) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Мана с убитого — то же, что у зверя (см. EnemyDeps в enemy.ts).
+  dropMana: (worldX: number, worldY: number) => void
   /**
    * ПАРИРУЕМЫЙ урон (та же общая точка, что у удара зверя). Возвращает true,
    * если герой ОТБИЛ, — тогда урона не было, и волна обязана погаснуть со
@@ -361,6 +363,8 @@ export function createZvonarSystem(deps: ZvonarDeps) {
           if (enemy.deathHoldTimer >= C.DEATH_HOLD_MS) {
             const deathX = enemy.sprite.x
             const deathY = enemy.sprite.y - enemy.sprite.height
+            // Мана — с каждого убитого, как у зверя (см. enemy.ts).
+            deps.dropMana(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2)
             deps.worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
             enemy.rect.destroy()
             enemy.sprite.destroy()
