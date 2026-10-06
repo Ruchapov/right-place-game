@@ -7,15 +7,24 @@
 
 **Правило на будущее**: новые боевые механики Explore НЕ пишутся в
 `Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`.
-Готовы три: `skills.ts`, `enemy.ts`, `boss.ts`.
+Готовы шесть: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
+(04.10.2026) и `gatekeeper.ts` (06.10.2026).
 
 ### Контракт
 
 ```
 createEnemySystem(deps) → { spawn, update(dt, deltaMS), dispose }
+createZvonarSystem(deps) → { spawn, update(dt, deltaMS), dispose }
+createGatekeeperSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createBossSystem(deps)  → { spawn, update(dt, deltaMS), dispose }
 createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame }
 ```
+
+⚠️ Три системы врагов (`enemy.ts`, `zvonar.ts`, `gatekeeper.ts`) работают по
+ОДНОМУ списку `enemiesRef` и каждая в начале цикла пропускает чужих по
+`enemy.kind`. Новый вид врага без своей системы молча останется стоять на
+месте: ни один из трёх гейтов его не возьмёт. Разбор — `docs/explore-engine.md`,
+«Звонарь» и «Привратник».
 
 - `dt` = `ticker.deltaTime` — кадро-масштабированный, для ДВИЖЕНИЯ (та же
   единица, что у `phys` игрока: `x += vx * dt`).
@@ -210,10 +219,17 @@ createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnF
 
 #### Урон и реакция на попадание — общие точки
 
-- **`damageEnemy(enemy, amount, accumulator, sourceX)`** (`Explore.tsx:2490`)
+- **`damageEnemy(enemy, amount, accumulator, sourceX, via)`** (`Explore.tsx`)
   и **`damageBoss(amount, accumulator, sourceX)`** (`Explore.tsx:2529`) —
   единственные места, где списывается HP цели. Здесь же живут смерть,
   HP-бар, переход босса во вторую стадию и запуск расследования.
+  ⚠️ **`via: 'sword' | 'skill' | 'tick'`** (06.10.2026) — ЧЕМ нанесён урон,
+  пятый параметр `damageEnemy`, ОБЯЗАТЕЛЬНЫЙ и без умолчания, как `sourceX`.
+  Нужен двери Привратника, и правило двери живёт ЗДЕСЬ же, в начале функции:
+  меч в поднятую дверь спереди не списывает ничего (функция возвращает `false`
+  раньше, чем дойдёт до HP), навык — половину, тик кровотечения — всё. Новый
+  источник урона обязан назвать себя одним из трёх; у `damageBoss` параметра
+  нет — двери у босса не бывает.
   `sourceX` — X ИСТОЧНИКА урона в мировых координатах, параметр
   ОБЯЗАТЕЛЬНЫЙ, без значения по умолчанию: молчаливая заглушка увела бы цель
   расследовать не туда, и заметить это в игре почти нельзя. Для меча, рывка
@@ -246,6 +262,9 @@ createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnF
 ```
 skills.update(ticker.deltaMS)   :3201
 enemySystem.update(dt, deltaMS) :3208
+zvonarSystem.update(dt, deltaMS)      сразу за enemySystem (04.10.2026)
+gatekeeperSystem.update(dt, deltaMS)  сразу за zvonarSystem (06.10.2026); у этих
+                                двух номеров строк нет намеренно — сдвинулись
 bossSystem.update(dt, deltaMS)  :3217
 manaSystem.update(deltaMS)      сразу за bossSystem (06.10.2026; строки выше
                                 с тех пор сдвинулись, номера у неё нет намеренно)
