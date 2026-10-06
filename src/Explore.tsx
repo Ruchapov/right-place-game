@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
-import { renderMapToCanvas, backdropPaths } from './mapRenderer'
+import { renderMapToCanvas, renderSpikeTile, backdropPaths, backdropLook } from './mapRenderer'
+import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
 import TouchControls, { paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
@@ -2540,6 +2541,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const grid: Grid = mapText.split('\n').map((line) => line.split(''))
       const decor = slots.decor ?? []
 
+      // Готовый слой платформ и декора — у карт A и F (см. explore/mapArt.ts).
+      // null — карта рисуется плиткой, как раньше.
+      const mapArt = mapArtFor(resolvedMapFile)
+      // Слой собран под конкретную геометрию. Сумма считается ЗДЕСЬ, по тексту
+      // файла: ниже в сетку вставляются шипы из слотов, и после этого она уже не
+      // та, под которую собирали. Расхождение — громко в консоль: картинка и
+      // столкновения разойдутся, а столкновения по-прежнему идут по сетке.
+      if (mapArt && gridChecksum(mapText) !== mapArt.gridChecksum) {
+        console.error(
+          `Explore: сетка ${resolvedMapFile} изменилась после сборки её готового слоя — ` +
+          'картинка платформ не совпадёт со столкновениями. Пересобрать: node tools/build_map_art.mjs',
+        )
+      }
+
       // Карта была известна заранее (debug-панель/mapFile-проп) — запрос
       // выше не делался (mapFile !== ''), делаем его теперь для уже
       // известного имени — 1:1 прежнее поведение.
@@ -2789,7 +2804,26 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
       const start = { x: startRaw[0], y: startRaw[1] }
 
-      const mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: C.TILE_SIZE, theme: backdropForMap(resolvedMapFile) })
+      // Холст карты — плитка, декор и шипы — есть только у карт БЕЗ готового слоя.
+      // У карты со слоем плитка и декор уже в нём, а шипы (их вставили в сетку
+      // выше) рисуются отдельными спрайтами одной клетки, см. ниже.
+      const mapTheme = backdropForMap(resolvedMapFile)
+      let mapCanvas: HTMLCanvasElement | null = null
+      let spikeTile: HTMLCanvasElement | null = null
+      const spikeCells: [number, number][] = []
+      if (mapArt) {
+        for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) if (grid[y][x] === '^') spikeCells.push([x, y])
+        if (spikeCells.length > 0) spikeTile = await renderSpikeTile(C.TILE_SIZE)
+      } else if (mapTheme === 'graveyard') {
+        // Плитки кладбища в игре больше нет. Карта с этой темой и без слоя —
+        // ошибка настройки, а не повод молча нарисовать плоскую заливку.
+        throw new Error(
+          `У карты ${resolvedMapFile} тема «кладбище», но готового слоя для неё нет. ` +
+          'Собрать слой (tools/build_map_art.mjs) или назначить карте другую тему в BACKDROP_BY_MAP.',
+        )
+      } else {
+        mapCanvas = await renderMapToCanvas({ grid, decor, tileSize: C.TILE_SIZE, theme: mapTheme })
+      }
 
       if (cancelled || !containerRef.current) {
         // Всё ещё ДО init() — по той же причине ничего не разрушаем.
@@ -2828,44 +2862,67 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
       // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
       // глубины. Пресет фиксирован по карте (см. BACKDROP_BY_MAP выше).
-      const preset = backdropForMap(resolvedMapFile)
+      const preset = mapTheme
       const { far: farUrl, mid: midUrl } = backdropPaths(preset)
+      const look = backdropLook(preset)
       // null у любого слоя — его просто не будет (см. loadBackdropLayer):
       // забег без картинки фона играется, забега с экраном ошибки — нет.
-      const [farTexture, midTexture] = await Promise.all([
+      // ⚠️ Готовый слой карты грузится здесь же, но БЕЗ такой поблажки: это сами
+      // платформы, без него игрок шёл бы по невидимой земле. Его промах валит
+      // setup() в экран ошибки, как промах сетки или листов спрайтов.
+      const [farTexture, midTexture, artTexture] = await Promise.all([
         loadBackdropLayer(farUrl, 'far'),
         loadBackdropLayer(midUrl, 'mid'),
+        mapArt ? (Assets.load(mapArt.src) as Promise<Texture>) : Promise.resolve(null),
       ])
+      if (mapArt && artTexture && (artTexture.width !== mapArt.width || artTexture.height !== mapArt.height)) {
+        throw new Error(
+          `Готовый слой карты ${resolvedMapFile} не того размера: ${artTexture.width}×${artTexture.height}, ` +
+          `ожидался ${mapArt.width}×${mapArt.height}. Пересобрать: node tools/build_map_art.mjs`,
+        )
+      }
+      // Масштаб картинки фона. Обычно — по высоте экрана. У темы с worldHeight
+      // (кладбище) картинка привязана к МИРУ, как в одобренном предпросмотре, и от
+      // экрана не зависит; экранная высота остаётся нижней границей — на экране
+      // выше картинки плитка фона иначе повторилась бы по вертикали.
+      const backdropScale = (textureHeight: number) => {
+        const byScreen = app!.screen.height / textureHeight
+        if (look.worldHeight === null) return byScreen
+        return Math.max(byScreen, (look.worldHeight * C.WORLD_SCALE) / textureHeight)
+      }
       const bgFar = farTexture === null ? null
         : new TilingSprite({ texture: farTexture, width: app.screen.width, height: app.screen.height })
       const bgMid = midTexture === null ? null
         : new TilingSprite({ texture: midTexture, width: app.screen.width, height: app.screen.height })
       if (bgFar !== null && farTexture !== null) {
-        bgFar.tileScale.set(app.screen.height / farTexture.height)
+        bgFar.tileScale.set(backdropScale(farTexture.height))
         app.stage.addChild(bgFar)
       }
       if (bgMid !== null && midTexture !== null) {
-        bgMid.tileScale.set(app.screen.height / midTexture.height)
+        bgMid.tileScale.set(backdropScale(midTexture.height))
+        // Прозрачность ближнего слоя — по теме (см. backdropLook): у кладбища
+        // 0.55, как в одобренном предпросмотре, у остальных тем слой непрозрачен.
+        bgMid.alpha = look.midAlpha
         app.stage.addChild(bgMid)
       }
       // Затемнение добавляется ВСЕГДА, даже если оба слоя не загрузились: это не
       // часть картинки фона, а отдельная плашка настроения, и от неё зависит
-      // читаемость карты поверх.
+      // читаемость карты поверх. Цвет и плотность — тоже по теме.
       const bgDim = new Graphics()
-      bgDim.rect(0, 0, app.screen.width, app.screen.height).fill({ color: 0x0e0c13, alpha: 0.42 })
+      bgDim.rect(0, 0, app.screen.width, app.screen.height).fill({ color: look.dimColor, alpha: look.dimAlpha })
       app.stage.addChild(bgDim)
 
       onBgResize = () => {
         const w = app!.screen.width, h = app!.screen.height
         if (bgFar !== null && farTexture !== null) {
           bgFar.width = w; bgFar.height = h
-          bgFar.tileScale.set(h / farTexture.height)
+          bgFar.tileScale.set(backdropScale(farTexture.height))
         }
         if (bgMid !== null && midTexture !== null) {
           bgMid.width = w; bgMid.height = h
-          bgMid.tileScale.set(h / midTexture.height)
+          bgMid.tileScale.set(backdropScale(midTexture.height))
         }
-        bgDim.clear().rect(0, 0, w, h).fill({ color: 0x0e0c13, alpha: 0.42 })
+        bgDim.clear().rect(0, 0, w, h).fill({ color: look.dimColor, alpha: look.dimAlpha })
       }
       app.renderer.on('resize', onBgResize)
 
@@ -2874,11 +2931,32 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       worldContainer.scale.set(C.WORLD_SCALE)
       app.stage.addChild(worldContainer)
 
-      const mapTexture = Texture.from(mapCanvas)
-      const mapSprite = new Sprite(mapTexture)
-      mapSprite.x = 0
-      mapSprite.y = 0
-      worldContainer.addChild(mapSprite)
+      // Готовый слой платформ и декора (карты A и F) — первым, в (0, 0) и без
+      // масштаба: он собран пиксель в пиксель под мир игры, 64 px на тайл.
+      if (artTexture) {
+        const artSprite = new Sprite(artTexture)
+        artSprite.x = 0
+        artSprite.y = 0
+        worldContainer.addChild(artSprite)
+      }
+      // Шипы карты со слоем — поверх него: одна текстура клетки, по спрайту на шип.
+      if (spikeTile) {
+        const spikeTexture = Texture.from(spikeTile)
+        for (const [sx, sy] of spikeCells) {
+          const spike = new Sprite(spikeTexture)
+          spike.x = sx * C.TILE_SIZE
+          spike.y = sy * C.TILE_SIZE
+          worldContainer.addChild(spike)
+        }
+      }
+      // Холст обычной карты: плитка, декор и шипы одной картинкой.
+      if (mapCanvas) {
+        const mapTexture = Texture.from(mapCanvas)
+        const mapSprite = new Sprite(mapTexture)
+        mapSprite.x = 0
+        mapSprite.y = 0
+        worldContainer.addChild(mapSprite)
+      }
 
       const phys = physicsRef.current
       phys.x = start.x * C.TILE_SIZE
