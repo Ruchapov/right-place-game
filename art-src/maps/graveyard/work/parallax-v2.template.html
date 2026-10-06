@@ -1,0 +1,70 @@
+<div id="rp-depth-v2">
+ <div class="viz-controls">
+  <button class="btn btn-primary" type="button" id="pv-play">Запустить параллакс</button>
+  <label class="form-check"><input class="form-check-input" id="pv-far" type="checkbox" checked><span class="form-check-label">Дальний фон</span></label>
+  <label class="form-check"><input class="form-check-input" id="pv-mid" type="checkbox" checked><span class="form-check-label">Ближний фон</span></label>
+  <label class="form-check"><input class="form-check-input" id="pv-map" type="checkbox"><span class="form-check-label">Тайлы и герой</span></label>
+ </div>
+ <label class="form-label" for="pv-camera">Движение камеры</label>
+ <input class="form-range" id="pv-camera" type="range" min="0" max="960" value="0" step="1">
+ <div class="pv-pair">
+  <figure><figcaption>1 · Дальний фон <span class="tabular-nums" id="pv-far-shift">0 px</span></figcaption><canvas id="pv-far-view" width="700" height="560" role="img" aria-label="Отдельный дальний слой с туманным городом, движется медленно"></canvas></figure>
+  <figure><figcaption>2 · Ближний фон <span class="tabular-nums" id="pv-mid-shift">0 px</span></figcaption><canvas id="pv-mid-view" width="700" height="560" role="img" aria-label="Отдельный прозрачный слой галерей и арок, движется быстрее"></canvas></figure>
+ </div>
+ <figure class="pv-combined"><figcaption>Два фона вместе</figcaption><canvas id="pv-composite" width="700" height="560" role="img" aria-label="Живой параллакс: ближние арки проходят перед медленно движущимся дальним городом"></canvas></figure>
+ <span class="text-small" id="pv-status" aria-live="polite">Загрузка двух слоёв…</span>
+</div>
+<style>
+#rp-depth-v2{color:var(--foreground)}
+#rp-depth-v2 .pv-pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+#rp-depth-v2 figure{margin:0;min-width:0}
+#rp-depth-v2 figcaption{margin:10px 0 6px}
+#rp-depth-v2 figcaption span{margin-left:8px}
+#rp-depth-v2 canvas{display:block;width:100%;height:auto;aspect-ratio:1.25;background:repeating-conic-gradient(var(--muted) 0% 25%,var(--background) 0% 50%) 0 0/16px 16px}
+#rp-depth-v2 .pv-combined{margin-top:12px}
+#rp-depth-v2 #pv-status{display:block;margin-top:10px}
+</style>
+<script>
+(()=>{
+ const root=document.getElementById('rp-depth-v2');
+ const ASSETS=__ASSETS__,GRID=__GRID__;
+ __RENDERER__
+ const farView=root.querySelector('#pv-far-view'),midView=root.querySelector('#pv-mid-view'),combined=root.querySelector('#pv-composite');
+ const farOn=root.querySelector('#pv-far'),midOn=root.querySelector('#pv-mid'),mapOn=root.querySelector('#pv-map'),camera=root.querySelector('#pv-camera'),play=root.querySelector('#pv-play'),status=root.querySelector('#pv-status');
+ let ready=false,running=false,raf=0,world=null;const images={};
+ const W=700,H=560;
+ function load(k){return new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>{images[k]=im;resolve();};im.onerror=()=>reject(Error(k));im.src=ASSETS[k];});}
+ function layer(ctx,image,offset){const h=H,w=image.width*h/image.height;const start=((offset%w)+w)%w-w;for(let x=start;x<W;x+=w)ctx.drawImage(image,x,0,w+.5,h);}
+ function draw(){
+  if(!ready)return;
+  const c=Number(camera.value),a=-c*.15,b=-c*.4;
+  root.querySelector('#pv-far-shift').textContent=Math.round(a)+' px';root.querySelector('#pv-mid-shift').textContent=Math.round(b)+' px';
+  farView.dataset.offset=String(a);midView.dataset.offset=String(b);
+  const f=farView.getContext('2d'),m=midView.getContext('2d'),out=combined.getContext('2d');
+  f.clearRect(0,0,W,H);m.clearRect(0,0,W,H);out.clearRect(0,0,W,H);
+  layer(f,images.far,a);layer(m,images.mid,b);
+  if(farOn.checked)out.drawImage(farView,0,0);
+  if(midOn.checked)out.drawImage(midView,0,0);
+  if(mapOn.checked){out.fillStyle='rgba(14,12,19,.28)';out.fillRect(0,0,W,H);const s=.55,cy=H*.87-21*64*s;out.drawImage(world,-c,cy,world.width*s,world.height*s);const im=images.hero,h=140*s,w=h*394/296;out.drawImage(im,0,0,im.width/12,im.height/2,W*.37-w/2,H*.87+11*s-h,w,h);}
+  combined.dataset.camera=String(c);combined.dataset.farVisible=String(farOn.checked);combined.dataset.midVisible=String(midOn.checked);combined.dataset.mapVisible=String(mapOn.checked);
+ }
+ function remember(){window.openai?.setWidgetState?.({modelContent:{farVisible:farOn.checked,midVisible:midOn.checked,mapVisible:mapOn.checked,camera:Number(camera.value)},privateContent:null})?.catch(()=>{});}
+ function stop(){cancelAnimationFrame(raf);running=false;play.textContent='Запустить параллакс';}
+ function start(){
+  if(!ready)return;if(running){stop();remember();return;}
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches){camera.value=String((Number(camera.value)+320)%961);draw();remember();return;}
+  running=true;play.textContent='Остановить';const t0=performance.now();
+  const tick=t=>{const p=Math.min(1,(t-t0)/16000);camera.value=String(Math.round(960*p));draw();if(p<1)raf=requestAnimationFrame(tick);else{stop();status.textContent='Дальний фон: −144 px. Ближний: −384 px.';remember();}};
+  raf=requestAnimationFrame(tick);
+ }
+ function restore(state){const s=state?.modelContent;if(!s)return;farOn.checked=s.farVisible!==false;midOn.checked=s.midVisible!==false;mapOn.checked=!!s.mapVisible;if(Number.isFinite(s.camera))camera.value=String(s.camera);draw();}
+ camera.addEventListener('input',()=>{stop();draw();});camera.addEventListener('change',remember);
+ for(const control of [farOn,midOn,mapOn])control.addEventListener('change',()=>{draw();remember();});
+ play.addEventListener('click',start);
+ Promise.all([load('far'),load('mid'),load('hero'),renderMapToCanvas({grid:GRID,decor:[],theme:'graveyard'}).then(c=>world=c)]).then(()=>{
+  ready=true;restore(window.openai?.widgetState);draw();status.textContent='Дальний ×0,15 · ближний ×0,40 · тайлы ×1';
+  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){observer.disconnect();start();}},{threshold:.4});observer.observe(combined);}
+ }).catch(e=>{status.textContent='Не удалось загрузить слой: '+e.message;status.setAttribute('role','alert');});
+ window.addEventListener('openai:set_globals',e=>restore(e.detail?.globals?.widgetState));
+})();
+</script>

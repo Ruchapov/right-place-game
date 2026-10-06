@@ -1,0 +1,675 @@
+{
+  "source": "D:/dev/telegram-game/public/assets/maps/map_F_sanctuary.txt",
+  "sha256": "0a5a764dccceab7822fecd31fcfdd8569cd704c31742b2878d671258807ee56b",
+  "columns": 48,
+  "rows": 22,
+  "tileSize": 64,
+  "counts": {
+    "#": 197,
+    "=": 27,
+    ".": 832
+  },
+  "assetMatch": {
+    "far": "6de4c40ca4e684a552a63aaba6e36c1f004b122c92be6732e3fc63ce210bee5e",
+    "mid": "0d8390359dc8a0f7606fea6cb8c4ad009e522acd63bac9b7b42c2392d614107f",
+    "bridge": "d74b1d25acd97d6f012390662d88ae5d1bfd45daab89e51ebf143acd8babd35a",
+    "support": "c6faa3f1672fc29a2b07f633506474578417330c496b35fade833b80b049e623"
+  },
+  "smallDetails": 57,
+  "maxHeight": 62,
+  "groupCount": 12,
+  "groups": [
+    {
+      "floor": 320,
+      "start": 125,
+      "end": 343,
+      "ids": [
+        "moss",
+        "chips",
+        "ivy"
+      ]
+    },
+    {
+      "floor": 320,
+      "start": 545,
+      "end": 758,
+      "ids": [
+        "lichen",
+        "urn",
+        "moss"
+      ]
+    },
+    {
+      "floor": 320,
+      "start": 1065,
+      "end": 1237,
+      "ids": [
+        "cross",
+        "moss",
+        "candle"
+      ]
+    },
+    {
+      "floor": 640,
+      "start": 2125,
+      "end": 2210,
+      "ids": [
+        "candle",
+        "ivy"
+      ]
+    },
+    {
+      "floor": 832,
+      "start": 730,
+      "end": 917,
+      "ids": [
+        "candles",
+        "urn",
+        "chips"
+      ]
+    },
+    {
+      "floor": 832,
+      "start": 1100,
+      "end": 1260,
+      "ids": [
+        "cross",
+        "candle",
+        "lichen"
+      ]
+    },
+    {
+      "floor": 832,
+      "start": 1430,
+      "end": 1614,
+      "ids": [
+        "urn",
+        "candles",
+        "shards"
+      ]
+    },
+    {
+      "floor": 1280,
+      "start": 95,
+      "end": 344,
+      "ids": [
+        "chips",
+        "shards",
+        "moss"
+      ]
+    },
+    {
+      "floor": 1280,
+      "start": 560,
+      "end": 732,
+      "ids": [
+        "urn",
+        "chips",
+        "candle"
+      ]
+    },
+    {
+      "floor": 1280,
+      "start": 1490,
+      "end": 1777,
+      "ids": [
+        "cross",
+        "shards",
+        "chips",
+        "lichen"
+      ]
+    },
+    {
+      "floor": 1280,
+      "start": 2060,
+      "end": 2276,
+      "ids": [
+        "chips",
+        "urn",
+        "shards"
+      ]
+    },
+    {
+      "floor": 1280,
+      "start": 2570,
+      "end": 2775,
+      "ids": [
+        "candle",
+        "chips",
+        "moss"
+      ]
+    }
+  ],
+  "hanging": 4,
+  "supports": 1,
+  "decor": [
+    {
+      "id": "moss",
+      "x": 125,
+      "y": 295,
+      "w": 108,
+      "h": 28,
+      "kind": "road",
+      "group": 0,
+      "floor": 320
+    },
+    {
+      "id": "chips",
+      "x": 211,
+      "y": 288,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 0,
+      "floor": 320
+    },
+    {
+      "id": "ivy",
+      "x": 294,
+      "y": 265,
+      "w": 42,
+      "h": 58,
+      "kind": "road",
+      "group": 0,
+      "floor": 320
+    },
+    {
+      "id": "lichen",
+      "x": 545,
+      "y": 299,
+      "w": 96,
+      "h": 24,
+      "kind": "road",
+      "group": 1,
+      "floor": 320
+    },
+    {
+      "id": "urn",
+      "x": 619,
+      "y": 271,
+      "w": 46,
+      "h": 52,
+      "kind": "road",
+      "group": 1,
+      "floor": 320
+    },
+    {
+      "id": "moss",
+      "x": 672,
+      "y": 295,
+      "w": 108,
+      "h": 28,
+      "kind": "road",
+      "group": 1,
+      "floor": 320
+    },
+    {
+      "id": "cross",
+      "x": 1065,
+      "y": 262,
+      "w": 43,
+      "h": 61,
+      "kind": "road",
+      "group": 2,
+      "floor": 320
+    },
+    {
+      "id": "moss",
+      "x": 1115,
+      "y": 295,
+      "w": 108,
+      "h": 28,
+      "kind": "road",
+      "group": 2,
+      "floor": 320
+    },
+    {
+      "id": "candle",
+      "x": 1201,
+      "y": 279,
+      "w": 29,
+      "h": 44,
+      "kind": "road",
+      "group": 2,
+      "floor": 320
+    },
+    {
+      "id": "candle",
+      "x": 2125,
+      "y": 599,
+      "w": 29,
+      "h": 44,
+      "kind": "road",
+      "group": 3,
+      "floor": 640
+    },
+    {
+      "id": "ivy",
+      "x": 2161,
+      "y": 585,
+      "w": 42,
+      "h": 58,
+      "kind": "road",
+      "group": 3,
+      "floor": 640
+    },
+    {
+      "id": "candles",
+      "x": 730,
+      "y": 777,
+      "w": 44,
+      "h": 58,
+      "kind": "road",
+      "group": 4,
+      "floor": 832
+    },
+    {
+      "id": "urn",
+      "x": 781,
+      "y": 783,
+      "w": 46,
+      "h": 52,
+      "kind": "road",
+      "group": 4,
+      "floor": 832
+    },
+    {
+      "id": "chips",
+      "x": 834,
+      "y": 800,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 4,
+      "floor": 832
+    },
+    {
+      "id": "cross",
+      "x": 1100,
+      "y": 774,
+      "w": 43,
+      "h": 61,
+      "kind": "road",
+      "group": 5,
+      "floor": 832
+    },
+    {
+      "id": "candle",
+      "x": 1150,
+      "y": 791,
+      "w": 29,
+      "h": 44,
+      "kind": "road",
+      "group": 5,
+      "floor": 832
+    },
+    {
+      "id": "lichen",
+      "x": 1186,
+      "y": 811,
+      "w": 96,
+      "h": 24,
+      "kind": "road",
+      "group": 5,
+      "floor": 832
+    },
+    {
+      "id": "urn",
+      "x": 1430,
+      "y": 783,
+      "w": 46,
+      "h": 52,
+      "kind": "road",
+      "group": 6,
+      "floor": 832
+    },
+    {
+      "id": "candles",
+      "x": 1483,
+      "y": 777,
+      "w": 44,
+      "h": 58,
+      "kind": "road",
+      "group": 6,
+      "floor": 832
+    },
+    {
+      "id": "shards",
+      "x": 1534,
+      "y": 795,
+      "w": 73,
+      "h": 40,
+      "kind": "road",
+      "group": 6,
+      "floor": 832
+    },
+    {
+      "id": "chips",
+      "x": 95,
+      "y": 1248,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 7,
+      "floor": 1280
+    },
+    {
+      "id": "shards",
+      "x": 178,
+      "y": 1243,
+      "w": 73,
+      "h": 40,
+      "kind": "road",
+      "group": 7,
+      "floor": 1280
+    },
+    {
+      "id": "moss",
+      "x": 258,
+      "y": 1255,
+      "w": 108,
+      "h": 28,
+      "kind": "road",
+      "group": 7,
+      "floor": 1280
+    },
+    {
+      "id": "urn",
+      "x": 560,
+      "y": 1231,
+      "w": 46,
+      "h": 52,
+      "kind": "road",
+      "group": 8,
+      "floor": 1280
+    },
+    {
+      "id": "chips",
+      "x": 613,
+      "y": 1248,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 8,
+      "floor": 1280
+    },
+    {
+      "id": "candle",
+      "x": 696,
+      "y": 1239,
+      "w": 29,
+      "h": 44,
+      "kind": "road",
+      "group": 8,
+      "floor": 1280
+    },
+    {
+      "id": "cross",
+      "x": 1490,
+      "y": 1222,
+      "w": 43,
+      "h": 61,
+      "kind": "road",
+      "group": 9,
+      "floor": 1280
+    },
+    {
+      "id": "shards",
+      "x": 1540,
+      "y": 1243,
+      "w": 73,
+      "h": 40,
+      "kind": "road",
+      "group": 9,
+      "floor": 1280
+    },
+    {
+      "id": "chips",
+      "x": 1620,
+      "y": 1248,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 9,
+      "floor": 1280
+    },
+    {
+      "id": "lichen",
+      "x": 1703,
+      "y": 1259,
+      "w": 96,
+      "h": 24,
+      "kind": "road",
+      "group": 9,
+      "floor": 1280
+    },
+    {
+      "id": "chips",
+      "x": 2060,
+      "y": 1248,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 10,
+      "floor": 1280
+    },
+    {
+      "id": "urn",
+      "x": 2143,
+      "y": 1231,
+      "w": 46,
+      "h": 52,
+      "kind": "road",
+      "group": 10,
+      "floor": 1280
+    },
+    {
+      "id": "shards",
+      "x": 2196,
+      "y": 1243,
+      "w": 73,
+      "h": 40,
+      "kind": "road",
+      "group": 10,
+      "floor": 1280
+    },
+    {
+      "id": "candle",
+      "x": 2570,
+      "y": 1239,
+      "w": 29,
+      "h": 44,
+      "kind": "road",
+      "group": 11,
+      "floor": 1280
+    },
+    {
+      "id": "chips",
+      "x": 2606,
+      "y": 1248,
+      "w": 76,
+      "h": 35,
+      "kind": "road",
+      "group": 11,
+      "floor": 1280
+    },
+    {
+      "id": "moss",
+      "x": 2689,
+      "y": 1255,
+      "w": 108,
+      "h": 28,
+      "kind": "road",
+      "group": 11,
+      "floor": 1280
+    },
+    {
+      "id": "crack",
+      "x": 180,
+      "y": 348,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 260,
+      "y": 356,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 635,
+      "y": 351,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 1220,
+      "y": 352,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 2190,
+      "y": 710,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 810,
+      "y": 855,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 1190,
+      "y": 852,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 1530,
+      "y": 857,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 145,
+      "y": 1305,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 255,
+      "y": 1310,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 625,
+      "y": 1300,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 1500,
+      "y": 1312,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 1690,
+      "y": 1305,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 2110,
+      "y": 1307,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "moss",
+      "x": 2280,
+      "y": 1305,
+      "w": 108,
+      "h": 28,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 2670,
+      "y": 1310,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "crack",
+      "x": 2910,
+      "y": 1230,
+      "w": 65,
+      "h": 58,
+      "kind": "surface"
+    },
+    {
+      "id": "trailing",
+      "x": 82,
+      "y": 331,
+      "w": 34,
+      "h": 62,
+      "kind": "hanging"
+    },
+    {
+      "id": "chain",
+      "x": 1550,
+      "y": 342,
+      "w": 22,
+      "h": 62,
+      "kind": "hanging"
+    },
+    {
+      "id": "trailing",
+      "x": 655,
+      "y": 845,
+      "w": 34,
+      "h": 62,
+      "kind": "hanging"
+    },
+    {
+      "id": "chain",
+      "x": 2395,
+      "y": 728,
+      "w": 22,
+      "h": 62,
+      "kind": "hanging"
+    }
+  ]
+}
