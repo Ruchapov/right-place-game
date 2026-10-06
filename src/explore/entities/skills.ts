@@ -294,7 +294,9 @@ type Projectile = {
 type BleedState = {
   enemy: Enemy | null
   msLeft: number
-  tickMsLeft: number
+  // Сколько тиков уже отдано. Срок следующего выводится из msLeft, второго
+  // счётчика времени рядом НЕТ намеренно — см. updateBleeds.
+  ticksDone: number
 }
 
 // Создаётся ОДИН раз в setup() (после того как определены worldContainer/
@@ -581,26 +583,28 @@ export function createSkillsSystem(deps: SkillsDeps) {
   }
 
   // НЕ стакается: если цель уже кровоточит — сбрасываем таймер на полную
-  // длительность и фазу тика на целую секунду, второй записи не заводим.
+  // длительность и счёт тиков на ноль (первый снова через целую секунду),
+  // второй записи не заводим.
   // Так же вело себя присваивание `bleedingRef.current = 5` в Battle.tsx
   // (присваивание, а не +=).
   function applyBleed(target: { enemy: Enemy | null }) {
     const existing = bleeds.find((b) => b.enemy === target.enemy)
     if (existing) {
       existing.msLeft = C.BLEED_DURATION_MS
-      existing.tickMsLeft = C.BLEED_TICK_MS
+      existing.ticksDone = 0
       return
     }
     bleeds.push({
       enemy: target.enemy,
       msLeft: C.BLEED_DURATION_MS,
-      tickMsLeft: C.BLEED_TICK_MS,
+      ticksDone: 0,
     })
   }
 
   // ⚠️ ВИЗУАЛА У КРОВОТЕЧЕНИЯ НЕТ — намеренно. Петля Bleeding_Loop была
   // подключена и снята: капли на цели не читались. Механика ниже работает
-  // полностью (тики 3% макс. hp раз в секунду, 5 секунд, без стака), но
+  // полностью (пять тиков, по одному в секунду, без стака; урон тика — от
+  // статов героя, см. deps.skillDamage), но
   // ИГРОК СЕЙЧАС НИКАК НЕ ВИДИТ, что цель кровоточит и что урон идёт: ни
   // спрайта, ни цифр, ни подсветки — только медленно убывающая полоса HP.
   // Показ нужно чем-то заменить (другой VFX, тинт цели, всплывающие числа
@@ -618,9 +622,21 @@ export function createSkillsSystem(deps: SkillsDeps) {
         continue
       }
       bleed.msLeft = Math.max(0, bleed.msLeft - dt)
-      bleed.tickMsLeft -= dt
-      if (bleed.tickMsLeft <= 0) {
-        bleed.tickMsLeft = C.BLEED_TICK_MS
+      // Сколько тиков ПОЛОЖЕНО к этому кадру — из прошедшего времени, одного
+      // счётчика на всё. Тики приходятся ровно на 1-ю, 2-ю … 5-ю секунду, и
+      // последний — на кадр, где остаток обнулился: 5000 / 1000 даёт ровно 5.
+      //
+      // ⚠️ До 07.10.2026 здесь был второй счётчик (tickMsLeft), который после
+      // тика СБРАСЫВАЛСЯ на секунду, теряя перелёт за кадр. Каждый тик приходил
+      // на кадр позже предыдущего, пятый — на ≈5.08 с, а кровотечение живёт
+      // ровно 5000 мс: тиков выходило ЧЕТЫРЕ вместо пяти, на любом устройстве.
+      // Перенос перелёта лечил бы это не до конца: два счётчика, идущие
+      // порознь, могут разойтись на последнем кадре в младшем разряде.
+      const ticksDue = Math.floor((C.BLEED_DURATION_MS - bleed.msLeft) / C.BLEED_TICK_MS)
+      // if, а не цикл: шаг времени тикера не длиннее 100 мс, двух тиков за кадр
+      // не бывает. Нечисло в msLeft даёт ticksDue = NaN, сравнение ложно — тика нет.
+      if (bleed.ticksDone < ticksDue) {
+        bleed.ticksDone += 1
         // Урон — ТОЛЬКО через вынесенные damageEnemy/damageBoss, общую точку с
         // обычной атакой: клэмп, смерть, HP-бар и анимация трупа уже там,
         // здесь не дублируются. Аккумулятор — skillDamageDealt (растит
