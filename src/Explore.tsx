@@ -49,7 +49,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createZvonarSystem } from './explore/entities/zvonar'
 import type { ZvonarFrames } from './explore/entities/zvonar'
-import { createGatekeeperSystem, gatekeeperDoorBlocks } from './explore/entities/gatekeeper'
+import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
@@ -4285,10 +4285,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number, via: DamageVia): boolean {
         // ДВЕРЬ ПРИВРАТНИКА — здесь, в единственной общей точке списания HP,
         // чтобы правило было одно на все источники, а не по копии у меча, у
-        // взрыва и у рывка. Пока дверь поднята и удар пришёл СПЕРЕДИ:
+        // взрыва и у рывка. Дверь поднята ВСЕГДА (окна после удара нет), и
+        // пока удар пришёл СПЕРЕДИ:
         //   меч       — урона нет вовсе, герой отскакивает;
         //   навык     — разовое попадание наносит половину;
         //   тик крови — дверь его не замечает (урон идёт изнутри).
+        // Полный урон проходит в трёх случаях: он оглушён отбитым ударом,
+        // заморожен льдом (см. gatekeeperIsOpen) или удар пришёл в спину.
         // В обоих принятых случаях Привратник вздрагивает, а хитстана не
         // получает: пометку guarded читает applyEnemyHitReaction сразу следом.
         const gatekeeper = enemy.gatekeeper
@@ -4438,12 +4441,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Периодический урон (тик кровотечения slash) их НЕ зовёт намеренно —
       // тик идёт раз в секунду пять секунд подряд и держал бы цель в стан-локе.
       function applyEnemyHitReaction(enemy: Enemy) {
-        // Привратник: удар, принятый дверью, хитстана не даёт (он за щитом), а
-        // при ОПУЩЕННОЙ двери — в окне после удара и в оглушении — он и так
-        // открыт: урон уже прошёл целиком, а сбивать окно хитстаном значило бы
-        // продлевать его каждым ударом. Остаётся один случай — удар в спину при
-        // поднятой двери: он идёт дальше, по общим правилам зверя.
-        if (enemy.gatekeeper && (enemy.gatekeeper.guarded || !enemy.gatekeeper.doorUp)) return
+        // Привратник: удар, принятый дверью, хитстана не даёт (он за щитом). Пока
+        // он ОТКРЫТ станом — оглушён отбитым ударом или заморожен льдом — реакции
+        // на попадание тоже нет: урон уже прошёл целиком, а он и так стоит.
+        // Хитстан поверх стана ничего бы не добавил, зато после льда сбивал бы
+        // замах, который лёд по правилу только ставит на паузу. Остаётся один
+        // случай — удар в спину: он идёт дальше, по общим правилам зверя.
+        if (enemy.gatekeeper && (enemy.gatekeeper.guarded || gatekeeperIsOpen(enemy))) return
         // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
         // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
         // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
