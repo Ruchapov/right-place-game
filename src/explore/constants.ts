@@ -1557,3 +1557,125 @@ export const ZVONAR_KEEP_DIST_TILES = 3
 // Отход — медленнее бега героя (MOVE_SPEED = 4), иначе дистанцию было бы не
 // сократить никогда. Быстрее патруля зверя, но медленнее его погони.
 export const ZVONAR_RETREAT_SPEED = 1.6
+
+// ============================================================================
+// ПРИВРАТНИК — третий враг, БЛИЖНИЙ БОЙ С ДВЕРЬЮ-ЩИТОМ (06.10.2026)
+// ============================================================================
+// Тощая фигура в капюшоне несёт перед собой дверь от часовни. Пока дверь
+// поднята, спереди его почти не взять: меч она гасит целиком, навыки режет
+// вдвое. Бить его надо в ОКНО после его же удара либо отбив этот удар. Арт и
+// числа листов — docs/art-session-2026-09-enemies.md, разбор поведения —
+// docs/explore-engine.md.
+
+const GATEKEEPER_DIR = `${import.meta.env.BASE_URL}assets/sprites/gatekeeper/`
+
+/**
+ * ⚠️ ОДИН МНОЖИТЕЛЬ НА ВСЕ ЛИСТЫ — как ZVONAR_SCALE и по той же причине: у пяти
+ * листов пять клеток с высотами 288 / 286 / 283 / 283 / 286, и деление на высоту
+ * клетки дало бы скачок размера при каждой смене анимации.
+ *
+ * Откуда 0.478: рост фигуры на экране приравнен к росту ГЕРОЯ (решение
+ * дизайнера). Герой — 272 px в клетке 296 при HERO_DRAW_H 140, то есть 128.65 px
+ * на экране; Привратник в кадре 0 idle — 269 px (замер по альфе, порог 128), и
+ * 128.65 / 269 = 0.4783. Перерисуют любой из двух — перезамерить и пересчитать.
+ */
+export const GATEKEEPER_SCALE = 0.478
+
+// Физический бокс. Фигура на экране ≈ 82×129 (дверь несётся наискось и торчит
+// за спину), бокс уже: ±32 от линии ступней — ровно до переднего края двери в
+// стойке, а задний её угол в бокс не входит. Высота как у Звонаря.
+export const GATEKEEPER_WIDTH = 64
+export const GATEKEEPER_HEIGHT = 120
+
+// Сила — множители поверх зверя ТОГО ЖЕ уровня (решение дизайнера 05.10.2026).
+// HP_MULT — ручная копия есть на сервере (server/src/game.ts, потолок урона).
+export const GATEKEEPER_HP_MULT = 1.5
+export const GATEKEEPER_DMG_MULT = 1.2
+
+/**
+ * ЦИКЛ АТАКИ — три фазы, заданные ВРЕМЕНЕМ, а не скоростью анимации (в цикле
+ * есть удержание кадра, и animationSpeed его не выражает):
+ *
+ *   замах   800 мс — кадры 0→21, дверь ПОДНЯТА. На 21-м удар;
+ *   окно   1200 мс — кадры 21→30 с удержанием 25-го, дверь ОПУЩЕНА;
+ *   возврат 500 мс — кадры 31→47, дверь снова поднята.
+ *
+ * Сумма 2500 мс = GATEKEEPER_ATTACK_INTERVAL_MS, то есть цикл укладывается в
+ * интервал ровно: пока герой рядом, удары идут раз в 2.5 с от начала до начала.
+ * ⚠️ Увеличишь любую из трёх фаз — цикл станет ДЛИННЕЕ интервала (следующий
+ * замах ждёт и кулдауна, и конца возврата); уменьшишь — появится пауза.
+ *
+ * Замах 800 мс — МИНИМУМ, заданный дизайнером («чтобы успеть парировать»), а не
+ * подобранное число: окно парирования у героя PARRY_WINDOW_MS = 250 мс.
+ */
+export const GATEKEEPER_ATTACK_INTERVAL_MS = 2500
+export const GATEKEEPER_ATTACK_COUNT = 48
+// Кадр удара дверью. Сверен замером: шаг силуэта максимален на 19→20 (10680 px)
+// и 20→21 (7581), а на 21→22 падает до 2107 — дверь дошла.
+export const GATEKEEPER_STRIKE_FRAME = 21
+export const GATEKEEPER_WINDUP_MS = 800
+export const GATEKEEPER_WINDOW_MS = 1200
+// Кадр, который держится всё окно: самый дальний вынос двери (211 px от якоря).
+export const GATEKEEPER_WINDOW_HOLD_FRAME = 25
+export const GATEKEEPER_WINDOW_LAST_FRAME = 30
+// Вход в удержание (кадры 21→25) и выход из него (25→30) — внутри окна.
+export const GATEKEEPER_WINDOW_IN_MS = 120
+export const GATEKEEPER_WINDOW_OUT_MS = 150
+export const GATEKEEPER_RECOVER_MS = 500
+// Отбитый удар. СВОЁ число, а не общее PARRY_STUN_MS (700): решение дизайнера —
+// отбить Привратника трудно, и награда за это длиннее.
+export const GATEKEEPER_PARRY_STUN_MS = 2500
+
+// Дальность. Дверь на кадре удара вынесена на 200 px листа = 95.6 px экрана от
+// линии ступней; с полушириной героя (27) кромки сходятся на 122.6 между
+// центрами. 112 — удар засчитывается, когда дверь зашла в героя хотя бы на 10 px.
+export const GATEKEEPER_ATTACK_RANGE = 112
+// Где он перестаёт сближаться и начинает замах. Ближе дальности удара на 28 px:
+// это запас, который герой может отыграть шагом назад за время замаха.
+export const GATEKEEPER_STOP_DIST = 84
+
+// --- Дверь ---
+// Разовое попадание навыка в поднятую дверь спереди. Меч в неё не наносит урона
+// вовсе, тик кровотечения её не замечает (см. DamageVia в types.ts).
+export const GATEKEEPER_DOOR_SKILL_MULT = 0.5
+// Встряска спрайта от удара в дверь — единственная реакция на блок, отдельной
+// анимации у блока нет.
+export const GATEKEEPER_DOOR_SHAKE_MS = 180
+export const GATEKEEPER_DOOR_SHAKE_PX = 3
+// Отскок героя от двери после удара мечом: ≈25 px (скорость × ~7 кадров).
+export const GATEKEEPER_RECOIL_MS = 120
+export const GATEKEEPER_RECOIL_SPEED = 3.5
+
+// --- Скорости анимаций ---
+// Idle — «естественные» 8 кадров/с из README арт-сессии.
+export const GATEKEEPER_IDLE_ANIM_SPEED = 8 / 60
+export const GATEKEEPER_WALK_ANIM_PATROL = 0.2
+// Погоня быстрее патруля ровно во столько же раз, во сколько быстрее сам шаг —
+// иначе ноги скользили бы по полу (тот же принцип, что у WALK_ANIM_CHASE зверя).
+export const GATEKEEPER_WALK_ANIM_CHASE = GATEKEEPER_WALK_ANIM_PATROL * (ENEMY_CHASE_SPEED / ENEMY_PATROL_SPEED)
+// Хитстан. Не «естественная» скорость листа (16 кадров при 12 кадрах/с дали бы
+// 1.33 с): между зверем (≈351 мс) и Звонарём (≈595 мс). Число под живую проверку.
+export const GATEKEEPER_HURT_COUNT = 16
+export const GATEKEEPER_HURT_ANIM_SPEED = 0.6
+export const GATEKEEPER_HURT_MS = (1000 * GATEKEEPER_HURT_COUNT) / (60 * GATEKEEPER_HURT_ANIM_SPEED) // ≈444мс
+// Смерть: 31 кадр за ≈1.0 с; последний кадр держится DEATH_HOLD_MS, как у всех.
+export const GATEKEEPER_DEATH_ANIM_SPEED = 0.52
+
+/**
+ * Листы Привратника одной таблицей — как ZVONAR_SHEETS и по той же причине.
+ *
+ * ⚠️ `cols` у каждого листа СВОЙ (9/11/12/8/8) — дефолт loadSheetFrames равен 12
+ * и верен только для атаки.
+ * ⚠️ У листа атаки `speed` равен 0 намеренно: его кадры ставит код по времени
+ * фазы (см. GatekeeperState.phaseMs), сам AnimatedSprite его не проигрывает.
+ * ⚠️ Якоря — числа README арт-сессии. Замер переходов «стойка → анимация» даёт
+ * расхождение между листами до 1.2 px листа, то есть до 0.6 px на экране.
+ */
+export const GATEKEEPER_SHEETS = {
+  idle: { src: `${GATEKEEPER_DIR}Gatekeeper_Idle.webp`, cellW: 214, cellH: 288, cols: 9, count: 27, anchorX: 0.456, anchorY: 0.985, speed: GATEKEEPER_IDLE_ANIM_SPEED, loop: true },
+  walk: { src: `${GATEKEEPER_DIR}Gatekeeper_Walk.webp`, cellW: 214, cellH: 286, cols: 11, count: 22, anchorX: 0.428, anchorY: 0.978, speed: GATEKEEPER_WALK_ANIM_PATROL, loop: true },
+  attack: { src: `${GATEKEEPER_DIR}Gatekeeper_Attack.webp`, cellW: 336, cellH: 283, cols: 12, count: GATEKEEPER_ATTACK_COUNT, anchorX: 0.656, anchorY: 0.985, speed: 0, loop: false },
+  hurt: { src: `${GATEKEEPER_DIR}Gatekeeper_Hurt.webp`, cellW: 222, cellH: 283, cols: 8, count: GATEKEEPER_HURT_COUNT, anchorX: 0.484, anchorY: 0.985, speed: GATEKEEPER_HURT_ANIM_SPEED, loop: false },
+  death: { src: `${GATEKEEPER_DIR}Gatekeeper_Death.webp`, cellW: 246, cellH: 286, cols: 8, count: 31, anchorX: 0.531, anchorY: 0.971, speed: GATEKEEPER_DEATH_ANIM_SPEED, loop: false },
+} as const
+

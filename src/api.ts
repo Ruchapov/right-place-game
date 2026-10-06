@@ -298,10 +298,11 @@ export async function confirmRunReady(token: string): Promise<{ confirmed: boole
 export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
 /**
- * Чья группа врагов — только у kind === 'enemy' (04.10.2026). Бросает СЕРВЕР
- * (ZVONAR_GROUP_CHANCE живёт только там), клиент получает готовый ответ.
+ * Чья группа врагов — только у kind === 'enemy' (04.10.2026; Привратник —
+ * 06.10.2026). Бросает СЕРВЕР (веса ENEMY_GROUP_WEIGHTS живут только там),
+ * клиент получает готовый ответ.
  */
-export type StartExploreEnemyKind = 'beast' | 'zvonar'
+export type StartExploreEnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
 
 export type StartExploreEvent = {
   kind: StartExploreEventKind
@@ -1350,21 +1351,21 @@ export function readRunDrops(raw: unknown): RunDrop[] {
 /**
  * Разбор вида врагов в событии (04.10.2026).
  *
- * ⚠️ Три входа, два исхода, и «тихим фолбэком» это не является:
+ * ⚠️ Три входа, и «тихим фолбэком» это не является:
  *   поля НЕТ         -> 'beast'. Это единственное, чем может быть группа у
  *                       сервера, который Звонаря не знал, — отсутствие поля
  *                       ЗНАЧИТ «звери», а не «неизвестно»;
- *   'beast'/'zvonar' -> как сказано;
+ *   'beast'/'zvonar'/'gatekeeper' -> как сказано;
  *   что угодно иное  -> 'beast' И ГРОМКАЯ ошибка в консоль. Молчать нельзя:
  *                       это рассинхрон каталогов, и он обязан быть виден.
  *
  * Почему не null, как у readConsumables: у склада «неизвестно» — рабочее
- * состояние экрана, а здесь выбор между двумя наборами спрайт-листов, и забег
- * без врагов хуже забега со зверями вместо Звонарей.
+ * состояние экрана, а здесь выбор между наборами спрайт-листов, и забег без
+ * врагов хуже забега со зверями вместо Звонарей или Привратников.
  */
 export function readEnemyKind(raw: unknown): StartExploreEnemyKind {
   if (raw === undefined || raw === null) return 'beast'
-  if (raw === 'beast' || raw === 'zvonar') return raw
+  if (raw === 'beast' || raw === 'zvonar' || raw === 'gatekeeper') return raw
   console.error('api: неизвестный вид врагов в событии', raw, '— считаем зверями')
   return 'beast'
 }

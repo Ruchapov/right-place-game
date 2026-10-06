@@ -564,3 +564,33 @@ export async function loadZvonarAssets(isCancelled: () => boolean): Promise<Zvon
     impact,
   }
 }
+
+/**
+ * Листы Привратника — отдельной функцией по той же причине, что у Звонаря:
+ * 5.8 МБ на врага, который есть только в четверти групп, грузятся лишь когда
+ * сервер назвал хотя бы одну его группу (enemyKind === 'gatekeeper').
+ *
+ * Листы — WebP БЕЗ ПОТЕРЬ (пиксели совпадают с исходными PNG арт-сессии):
+ * тот же loadSheetFrames, формат ему безразличен.
+ */
+export type GatekeeperAssets = Record<keyof typeof C.GATEKEEPER_SHEETS, Texture[]>
+
+export async function loadGatekeeperAssets(isCancelled: () => boolean): Promise<GatekeeperAssets | null> {
+  const sheets = {} as GatekeeperAssets
+  for (const key of Object.keys(C.GATEKEEPER_SHEETS) as (keyof typeof C.GATEKEEPER_SHEETS)[]) {
+    const spec = C.GATEKEEPER_SHEETS[key]
+    const frames = await loadSheetFrames(spec.src, spec.cellW, spec.cellH, spec.count, spec.cols)
+    if (isCancelled()) return null
+    assertSheetSize(
+      spec.src.split('/').pop() ?? spec.src,
+      frames,
+      spec.cellW,
+      spec.cellH,
+      spec.count,
+      spec.cols,
+      Math.ceil(spec.count / spec.cols),
+    )
+    sheets[key] = frames
+  }
+  return sheets
+}

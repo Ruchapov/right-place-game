@@ -23,6 +23,7 @@ import type {
   BossWave,
   MapEvent,
   EnemyKind,
+  DamageVia,
 } from './explore/types'
 import {
   isSolid,
@@ -41,13 +42,15 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadExploreAssets, loadZvonarAssets } from './explore/assets'
+import { loadExploreAssets, loadZvonarAssets, loadGatekeeperAssets } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createZvonarSystem } from './explore/entities/zvonar'
 import type { ZvonarFrames } from './explore/entities/zvonar'
+import { createGatekeeperSystem, gatekeeperDoorBlocks } from './explore/entities/gatekeeper'
+import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
@@ -552,20 +555,38 @@ const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop | null> = {
  *   'always' — все группы забега Звонарьи (проверять его и только его);
  *   'never'  — все группы звериные (проверять, что ничего не сломалось зверям).
  *
- * ⚠️ TEMP_DEV_ZVONAR_CHANCE — НЕ копия серверной ZVONAR_GROUP_CHANCE и сверять
- * их не надо: доля живёт только на сервере (см. его комментарий), а здесь стоит
- * похожее число просто чтобы офлайн-забег был похож на настоящий. Забег на
- * заглушке и так помечен оранжевой плашкой.
+ * ⚠️ TEMP_DEV_ZVONAR_CHANCE — НЕ копия серверной доли (ENEMY_GROUP_WEIGHTS в
+ * server/src/runEvents.ts) и сверять их не надо: доля живёт только на сервере,
+ * а здесь стоит похожее число просто чтобы офлайн-забег был похож на настоящий.
+ * Забег на заглушке и так помечен оранжевой плашкой.
  *
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
  */
 const TEMP_DEV_ZVONAR_GROUPS: 'roll' | 'always' | 'never' = 'roll'
 const TEMP_DEV_ZVONAR_CHANCE = 0.3
+/**
+ * То же для групп ПРИВРАТНИКОВ, теми же тремя значениями. 'always' у Привратника
+ * главнее 'always' у Звонаря (группа одна, вид у неё один); 'roll' у обоих —
+ * один общий бросок, как на сервере.
+ *
+ * ⚠️ TEMP_DEV_GATEKEEPER_CHANCE — тоже НЕ копия серверной доли
+ * (ENEMY_GROUP_WEIGHTS в server/src/runEvents.ts) и сверять их не надо.
+ *
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
+ */
+const TEMP_DEV_GATEKEEPER_GROUPS: 'roll' | 'always' | 'never' = 'roll'
+const TEMP_DEV_GATEKEEPER_CHANCE = 0.25
 
 function devEnemyKind(): EnemyKind {
+  if (TEMP_DEV_GATEKEEPER_GROUPS === 'always') return 'gatekeeper'
   if (TEMP_DEV_ZVONAR_GROUPS === 'always') return 'zvonar'
-  if (TEMP_DEV_ZVONAR_GROUPS === 'never') return 'beast'
-  return Math.random() < TEMP_DEV_ZVONAR_CHANCE ? 'zvonar' : 'beast'
+  // Один бросок на оба вида: у кого стоит 'never', у того доля нулевая.
+  const gatekeeperShare = TEMP_DEV_GATEKEEPER_GROUPS === 'roll' ? TEMP_DEV_GATEKEEPER_CHANCE : 0
+  const zvonarShare = TEMP_DEV_ZVONAR_GROUPS === 'roll' ? TEMP_DEV_ZVONAR_CHANCE : 0
+  const roll = Math.random()
+  if (roll < gatekeeperShare) return 'gatekeeper'
+  if (roll < gatekeeperShare + zvonarShare) return 'zvonar'
+  return 'beast'
 }
 
 function devEventReward(kind: EventKind): { trophies: number | null; drop: RunDrop | null } {
@@ -1033,6 +1054,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // назвал хотя бы одну группу его (8.7 МБ, см. loadZvonarAssets). null — это
   // «в этом забеге Звонарей нет», а не «не успели загрузиться».
   const zvonarFramesRef = useRef<ZvonarFrames | null>(null)
+  // Листы Привратника — тот же приём и то же условие загрузки (см.
+  // loadGatekeeperAssets): null значит «в этом забеге его групп нет».
+  const gatekeeperFramesRef = useRef<GatekeeperFrames | null>(null)
   // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
   // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
   const landTimerRef = useRef(0)
@@ -2369,6 +2393,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let skills: ReturnType<typeof createSkillsSystem> | null = null
     let enemySystem: ReturnType<typeof createEnemySystem> | null = null
     let zvonarSystem: ReturnType<typeof createZvonarSystem> | null = null
+    let gatekeeperSystem: ReturnType<typeof createGatekeeperSystem> | null = null
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
 
@@ -2713,6 +2738,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Нужны ли тяжёлые листы Звонаря. Решается ЗДЕСЬ, до загрузки ассетов, —
       // в этом и был смысл того, что вид врагов приезжает со старта забега.
       const needsZvonarSheets = eventEnemyKinds.includes('zvonar')
+      const needsGatekeeperSheets = eventEnemyKinds.includes('gatekeeper')
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
@@ -3038,6 +3064,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         characterLevel: characterLevelRef,
       })
 
+      // Привратник (см. explore/entities/gatekeeper.ts) — третья система на тот
+      // же список врагов. Создаётся всегда, как и Звонарь, и по той же причине.
+      gatekeeperSystem = createGatekeeperSystem({
+        phys,
+        getPlayerCombatBox,
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
+        findGroundSurfaceY,
+        closeEvent,
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
+        // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
+        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        events: eventsRef,
+        worldContainer,
+        grid,
+        frames: gatekeeperFramesRef,
+        enemies: enemiesRef,
+        characterLevel: characterLevelRef,
+      })
+
       // Вся последовательная загрузка спрайт-листов (герой/зверь/сундук/
       // смуглер/обелиск/босс/шип/волна/иконки наград) вынесена в
       // loadExploreAssets — числа/пути/порядок/try-catch там те же, что
@@ -3078,6 +3123,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const zvonarAssets = await loadZvonarAssets(() => cancelled)
         if (!zvonarAssets) return // размонтировали посреди загрузки
         zvonarFramesRef.current = zvonarAssets
+      }
+      // Листы Привратника — по тому же правилу и в той же очереди: 5.8 МБ
+      // только тем забегам, где сервер назвал его группу.
+      if (needsGatekeeperSheets) {
+        const gatekeeperAssets = await loadGatekeeperAssets(() => cancelled)
+        if (!gatekeeperAssets) return // размонтировали посреди загрузки
+        gatekeeperFramesRef.current = gatekeeperAssets
       }
       // Аура лечения — в ref, откуда её читает система скиллов (создана выше
       // по файлу, до загрузки ассетов; см. healAuraFramesRef).
@@ -3532,11 +3584,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // просили ровно по этому же признаку — поэтому отдельной проверки
           // «а есть ли кадры» здесь нет, она была бы недостижимой веткой.
           const groupKind = eventEnemyKinds[eventIndex] ?? 'beast'
-          points.forEach(([ex, ey]) =>
-            groupKind === 'zvonar'
-              ? zvonarSystem!.spawn(ex, ey, eventIndex)
-              : enemySystem!.spawn(ex, ey, eventIndex),
-          )
+          points.forEach(([ex, ey]) => {
+            if (groupKind === 'gatekeeper') gatekeeperSystem!.spawn(ex, ey, eventIndex)
+            else if (groupKind === 'zvonar') zvonarSystem!.spawn(ex, ey, eventIndex)
+            else enemySystem!.spawn(ex, ey, eventIndex)
+          })
           return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drop: reward.drop }
         }
 
@@ -4197,6 +4249,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         return true
       }
 
+      // Отскок героя от двери Привратника: сколько ещё длится и в какую сторону.
+      // Обычные переменные setup(), а не рефы: пишет их damageEnemy ниже, читает
+      // блок движения в тикере, и оба живут в этом же замыкании. Новый забег —
+      // новый setup(), так что сбрасывать их отдельно нечем и незачем.
+      let heroRecoilMs = 0
+      let heroRecoilDir: 1 | -1 = 1
+
       // Нанесение урона по врагу/боссу — ВЫНЕСЕНО из applyAttackHit, чтобы
       // ту же арифметику не пришлось писать третий раз, когда урон начнут
       // наносить скиллы (см. explore/entities/skills.ts). Чистый перенос:
@@ -4214,11 +4273,40 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // skillDamageDealtRef (растит ловкость). Возвращает "умер ли" —
       // вызывающий сам решает, что делать дальше.
       // sourceX — X ИСТОЧНИКА урона в мировых координатах (центр игрока для
-      // меча/рывка/тика кровотечения, точка взрыва для fireball). Параметр
+      // меча/рывка/тика кровотечения, позиция СТРЕЛКА на момент выстрела для
+      // снаряда — не точка взрыва, см. applyBlast в skills.ts). Параметр
       // ОБЯЗАТЕЛЬНЫЙ, без значения по умолчанию: подставить сюда молчаливую
       // заглушку (позицию цели, ноль) значило бы отправить врага расследовать
       // не туда, и заметить это в игре было бы почти нельзя.
-      function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number): boolean {
+      // via — ЧЕМ нанесён урон (меч / разовое попадание навыка / тик
+      // кровотечения). Тоже ОБЯЗАТЕЛЬНЫЙ и по той же причине, что sourceX:
+      // нужен он двери Привратника, и забытый источник молча считался бы
+      // не тем, чем был.
+      function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number, via: DamageVia): boolean {
+        // ДВЕРЬ ПРИВРАТНИКА — здесь, в единственной общей точке списания HP,
+        // чтобы правило было одно на все источники, а не по копии у меча, у
+        // взрыва и у рывка. Пока дверь поднята и удар пришёл СПЕРЕДИ:
+        //   меч       — урона нет вовсе, герой отскакивает;
+        //   навык     — разовое попадание наносит половину;
+        //   тик крови — дверь его не замечает (урон идёт изнутри).
+        // В обоих принятых случаях Привратник вздрагивает, а хитстана не
+        // получает: пометку guarded читает applyEnemyHitReaction сразу следом.
+        const gatekeeper = enemy.gatekeeper
+        if (gatekeeper) {
+          gatekeeper.guarded = via !== 'tick' && gatekeeperDoorBlocks(enemy, sourceX)
+          if (gatekeeper.guarded) {
+            gatekeeper.shakeMs = C.GATEKEEPER_DOOR_SHAKE_MS
+            if (via === 'sword') {
+              // Отскок — ОТ Привратника, а не «назад по взгляду героя»: герой
+              // мог успеть развернуться за время замаха.
+              heroRecoilDir = phys.x + C.PLAYER_WIDTH / 2 < enemy.x + enemy.width / 2 ? -1 : 1
+              heroRecoilMs = C.GATEKEEPER_RECOIL_MS
+              return false
+            }
+            // Вниз: округление урона по врагу не идёт в пользу игрока.
+            amount = Math.floor(amount * C.GATEKEEPER_DOOR_SKILL_MULT)
+          }
+        }
         // Фактически снятое, не заявленный урон — тот же приём, что в
         // takeDamage: добивающий удар не должен раздувать счётчик сверх
         // реального остатка HP врага.
@@ -4250,6 +4338,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               const spec = C.ZVONAR_SHEETS.death
               enemy.zvonarAnim = 'death'
               enemy.sprite.textures = zf.death
+              enemy.sprite.anchor.set(spec.anchorX, spec.anchorY)
+              enemy.sprite.animationSpeed = spec.speed
+              enemy.sprite.loop = false
+              enemy.sprite.gotoAndPlay(0)
+            }
+          } else if (enemy.kind === 'gatekeeper') {
+            // То же, что у Звонаря: лист и ЯКОРЬ меняются вместе.
+            const gf = gatekeeperFramesRef.current
+            if (gf && enemy.gatekeeper) {
+              const spec = C.GATEKEEPER_SHEETS.death
+              enemy.gatekeeper.anim = 'death'
+              enemy.sprite.textures = gf.death
               enemy.sprite.anchor.set(spec.anchorX, spec.anchorY)
               enemy.sprite.animationSpeed = spec.speed
               enemy.sprite.loop = false
@@ -4338,6 +4438,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Периодический урон (тик кровотечения slash) их НЕ зовёт намеренно —
       // тик идёт раз в секунду пять секунд подряд и держал бы цель в стан-локе.
       function applyEnemyHitReaction(enemy: Enemy) {
+        // Привратник: удар, принятый дверью, хитстана не даёт (он за щитом), а
+        // при ОПУЩЕННОЙ двери — в окне после удара и в оглушении — он и так
+        // открыт: урон уже прошёл целиком, а сбивать окно хитстаном значило бы
+        // продлевать его каждым ударом. Остаётся один случай — удар в спину при
+        // поднятой двери: он идёт дальше, по общим правилам зверя.
+        if (enemy.gatekeeper && (enemy.gatekeeper.guarded || !enemy.gatekeeper.doorUp)) return
         // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
         // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
         // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
@@ -4367,7 +4473,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           }
           // Хитстан — свой у каждого вида: он выведен из скорости СВОЕЙ
           // hurt-анимации, и общее число разошлось бы с картинкой.
-          enemy.hurtTimer = enemy.kind === 'zvonar' ? C.ZVONAR_HURT_MS : C.ENEMY_HURT_MS
+          enemy.hurtTimer =
+            enemy.kind === 'zvonar' ? C.ZVONAR_HURT_MS
+              : enemy.kind === 'gatekeeper' ? C.GATEKEEPER_HURT_MS
+                : C.ENEMY_HURT_MS
           enemy.windingUp = false
           enemy.windupTimer = 0
           enemy.attackAnimPlaying = false
@@ -4451,7 +4560,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // Смерть — тот же continue, что был инлайн: на смертельном
               // ударе встряски нет, hurt не идёт поверх death.
               // Источник — сам игрок: центр его хитбокса на момент удара.
-              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)) continue
+              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')) continue
               applyEnemyHitReaction(enemy)
             }
           }
@@ -4671,6 +4780,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
         const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED
+        // Отскок от двери Привратника (см. damageEnemy): на GATEKEEPER_RECOIL_MS
+        // перебивает ввод и едет по ОБЩЕМУ пути ниже — те же стены, тот же clamp.
+        // Рывок главнее (строкой ниже он перепишет скорость), смерть — тоже.
+        if (heroRecoilMs > 0) {
+          heroRecoilMs = Math.max(0, heroRecoilMs - ticker.deltaMS)
+          if (!deathRef.current) phys.vx = heroRecoilDir * C.GATEKEEPER_RECOIL_SPEED
+        }
         // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
         // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
         // столкновений, тот же clamp по краям карты. Своей геометрии у dash
@@ -5083,6 +5199,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // масштабами времени. Волны он двигает внутри себя, последним шагом
         // своего же update (тот же порядок, что у босса с шипами).
         zvonarSystem!.update(dt, ticker.deltaMS)
+
+        // Привратник — третьим по тому же списку врагов, теми же двумя
+        // масштабами времени. Снарядов у него нет, порядок внутри не важен.
+        gatekeeperSystem!.update(dt, ticker.deltaMS)
 
         // Босс карты C (см. explore/entities/boss.ts) — вызов на ТОМ ЖЕ
         // месте кадра, где раньше стоял AI-блок + шипы + волны: сразу после
@@ -5557,6 +5677,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       skills?.dispose()
       enemySystem?.dispose()
       zvonarSystem?.dispose()
+      gatekeeperSystem?.dispose()
       bossSystem?.dispose()
       manaSystem?.dispose()
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —

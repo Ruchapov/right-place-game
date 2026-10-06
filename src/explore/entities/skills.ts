@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { AnimatedSprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { Grid } from '../types'
-import type { PlayerPhysics, Enemy, Boss } from '../types'
+import type { PlayerPhysics, Enemy, Boss, DamageVia } from '../types'
 import * as C from '../constants'
 
 // Скиллы игрока (heal/fireball/iceball/slash/dash) — модуль подключён к
@@ -64,10 +64,13 @@ export type SkillsDeps = {
   // трясти цель или нет.
   // sourceX — X ИСТОЧНИКА урона в мировых координатах: от него враг решает,
   // куда идти расследовать (см. INVESTIGATE_MS и поля investigate* у
-  // Enemy/Boss). Для скиллов это НЕ всегда игрок: у взрыва fireball источник
-  // — точка взрыва, а не тот, кто его запустил. Параметр обязательный, без
-  // умолчания: молчаливая заглушка увела бы врага не туда.
-  damageEnemy: (enemy: Enemy, amount: number, accumulator: MutableRefObject<number>, sourceX: number) => boolean
+  // Enemy/Boss), и по нему же дверь Привратника решает, спереди ли прилетело.
+  // У взрыва снаряда это позиция СТРЕЛКА на момент выстрела (fb.originX), а не
+  // точка взрыва — см. applyBlast. Параметр обязательный, без умолчания:
+  // молчаливая заглушка увела бы врага не туда.
+  // via — ЧЕМ нанесён урон (см. DamageVia): его читает дверь Привратника. Взрыв
+  // снаряда и рывок — 'skill', тик кровотечения — 'tick'; босса это не касается.
+  damageEnemy: (enemy: Enemy, amount: number, accumulator: MutableRefObject<number>, sourceX: number, via: DamageVia) => boolean
   damageBoss: (amount: number, accumulator: MutableRefObject<number>, sourceX: number) => boolean
   // Реакция цели на РАЗОВОЕ попадание (вспышка/хитстан/стан-резист, у зверя
   // ещё и прерывание замаха) — те же closure-функции из setup(), что зовёт
@@ -636,7 +639,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // успевает уйти, и вести врага к месту, где его давно нет, незачем.
         const bleedSourceX = deps.phys.x + C.PLAYER_WIDTH / 2
         const died = bleed.enemy
-          ? deps.damageEnemy(bleed.enemy, dmg, deps.skillDamageDealt, bleedSourceX)
+          ? deps.damageEnemy(bleed.enemy, dmg, deps.skillDamageDealt, bleedSourceX, 'tick')
           : deps.damageBoss(dmg, deps.skillDamageDealt, bleedSourceX)
         if (died) {
           bleeds.splice(i, 1)
@@ -843,7 +846,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // от неё, так что зверь доходил до места взрыва за ~0.75с, вставал и
       // возвращался в патруль, ни на шаг не приблизившись к игроку.
       blastHitAny = true
-      const died = deps.damageEnemy(enemy, deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX)
+      const died = deps.damageEnemy(enemy, deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX, 'skill')
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Взрыв разовый, поэтому стан-лока он не даёт: каждая
       // цель проходит этот цикл один раз за взрыв.
@@ -989,7 +992,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ровно для одного: не трясти труп (см. ниже).
       // Источник — сам игрок: рывок это контактный удар телом.
       countDashUse()
-      const died = deps.damageEnemy(enemy, deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+      const died = deps.damageEnemy(enemy, deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2, 'skill')
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Ровно один раз за рывок на цель: дедуп тот же
       // dashHitTargets, что и у урона — цель добавлена в набор строкой выше.

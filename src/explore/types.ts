@@ -12,11 +12,11 @@ export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'ob
 // points[0]) — нужны, чтобы заспавнить весь кластер, а не одного врага.
 /**
  * Чья группа врагов — только для kind === 'enemy'. Бросает СЕРВЕР на старте
- * забега (ZVONAR_GROUP_CHANCE в server/src/runEvents.ts), копии доли на клиенте
+ * забега (ENEMY_GROUP_WEIGHTS в server/src/runEvents.ts), копии долей на клиенте
  * нет: он получает готовый ответ. Разбирать ТОЛЬКО через readEnemyKind
  * (src/api.ts) — поля может не быть вовсе (старый сервер), и это значит «звери».
  */
-export type EnemyKind = 'beast' | 'zvonar'
+export type EnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
 
 export type EventCandidate = {
   kind: EventKind
@@ -38,6 +38,58 @@ export type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'deat
 // Листы Звонаря. Ровно ключи ZVONAR_SHEETS (constants.ts) — вид анимации и
 // набор листов у него одно и то же, отдельного состояния вроде 'run' нет.
 export type ZvonarAnimKind = 'idle' | 'walk' | 'attack' | 'hurt' | 'death'
+
+// Листы Привратника — ровно ключи GATEKEEPER_SHEETS (constants.ts).
+export type GatekeeperAnimKind = 'idle' | 'walk' | 'attack' | 'hurt' | 'death'
+
+/**
+ * Фаза Привратника. От неё зависит и кадр листа атаки, и главное — поднята ли
+ * дверь (см. GatekeeperState.doorUp):
+ *   'ready'   — не атакует: стоит, идёт, гонится. Дверь поднята;
+ *   'windup'  — замах до кадра удара. Дверь поднята;
+ *   'window'  — окно после удара: дверь ОПУЩЕНА, весь урон проходит;
+ *   'recover' — возврат двери на место после окна. Дверь снова поднята;
+ *   'stunned' — оглушён отбитым ударом: дверь ОПУЩЕНА, весь урон проходит.
+ */
+export type GatekeeperPhase = 'ready' | 'windup' | 'window' | 'recover' | 'stunned'
+
+/**
+ * Всё состояние Привратника сверх общего Enemy — ОДНИМ вложенным объектом.
+ * Так у типа Enemy появилось одно необязательное поле, а не семь обязательных:
+ * семь пришлось бы инициализировать ещё и в spawn зверя и Звонаря, которым
+ * дверь не нужна вовсе.
+ */
+export type GatekeeperState = {
+  // Какой лист сейчас на спрайте — та же роль, что zvonarAnim: у пяти листов
+  // пять разных якорей, и ставить якорь можно только при смене листа.
+  anim: GatekeeperAnimKind
+  phase: GatekeeperPhase
+  // Сколько мс идёт текущая фаза. Кадр листа атаки выводится из него, а не
+  // из animationSpeed: в цикле есть удержание кадра, и скоростью проигрывания
+  // его не выразить.
+  phaseMs: number
+  // Поднята ли дверь. Читает общая точка урона (damageEnemy в Explore.tsx);
+  // пишет только setPhase в entities/gatekeeper.ts, вместе с фазой.
+  doorUp: boolean
+  // До следующего замаха, мс. Взводится на СТАРТЕ замаха и тикает всегда:
+  // интервал считается от начала до начала.
+  cooldownMs: number
+  // Встряска спрайта после удара в поднятую дверь, мс. Только вид.
+  shakeMs: number
+  // ПОСЛЕДНЕЕ попадание принято дверью. Ставит damageEnemy на каждом
+  // попадании, читает applyEnemyHitReaction сразу следом: удар в дверь не
+  // даёт хитстана.
+  guarded: boolean
+}
+
+/**
+ * Чем нанесён урон врагу. Нужен ровно одному — двери Привратника: меч она
+ * гасит целиком, разовое попадание навыка режет вдвое, а тик кровотечения не
+ * замечает вовсе. Параметр damageEnemy ОБЯЗАТЕЛЬНЫЙ, без умолчания — по той же
+ * причине, что sourceX: забытый источник молча считался бы «мечом» или
+ * «навыком», и дверь работала бы не так, как написано.
+ */
+export type DamageVia = 'sword' | 'skill' | 'tick'
 
 // Плавающий попап награды над объектом (Explore офлайн — НИКАКОГО начисления
 // player.gold/trophies/crystals, только визуал поверх мира, см. spawnRewardFloat
@@ -146,6 +198,12 @@ export type Enemy = {
    * вовсе — у всех его листов якорь один.
    */
   zvonarAnim: ZvonarAnimKind | null
+  /**
+   * ⚠️ ТОЛЬКО у kind === 'gatekeeper': дверь, фаза атаки и всё прочее, чего нет
+   * у остальных (см. GatekeeperState). У зверя и Звонаря поля НЕТ — и это и есть
+   * признак «двери у него не бывает», а не забытая инициализация.
+   */
+  gatekeeper?: GatekeeperState
   // >0 — идёт hurt (хитстан от урона игрока), в мс, тикает вниз в ticker'е.
   // Главнее attack (перебивает/отменяет замах, см. applyAttackHit) и
   // блокирует новый windup/движение, пока не истечёт — см. приоритет в

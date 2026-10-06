@@ -38,6 +38,17 @@ export function scaledZvonarWaveDamage(level: number): number {
 // Босс не растёт по level САМ ПО СЕБЕ — его характеристики являются
 // множителем поверх уже отмасштабированных характеристик обычного врага НА
 // ТОМ ЖЕ уровне (см. задачу: "HP босса = round(2.5 * HP обычного врага)").
+// Привратник — множители поверх зверя ТОГО ЖЕ уровня, как у Звонаря и босса:
+// своей линейной формулы нет намеренно. HP — та же формула на сервере
+// (scaledGatekeeperMaxHp в server/src/game.ts, ручная копия для потолка урона).
+export function scaledGatekeeperMaxHp(level: number): number {
+  return Math.round(C.GATEKEEPER_HP_MULT * scaledEnemyMaxHp(level))
+}
+
+export function scaledGatekeeperDamage(level: number): number {
+  return Math.ceil(C.GATEKEEPER_DMG_MULT * scaledEnemyAttackDamage(level))
+}
+
 export function scaledBossMaxHp(level: number): number {
   return Math.round(C.BOSS_HP_MULT * scaledEnemyMaxHp(level))
 }
