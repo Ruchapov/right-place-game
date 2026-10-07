@@ -2900,8 +2900,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
       if (bgMid !== null && midTexture !== null) {
         bgMid.tileScale.set(backdropScale(midTexture.height))
-        // Прозрачность ближнего слоя — по теме (см. backdropLook): у кладбища
-        // 0.55, как в одобренном предпросмотре, у остальных тем слой непрозрачен.
+        // Прозрачность ближнего слоя — по теме (см. backdropLook). С 08.10.2026
+        // слой непрозрачен у всех тем, включая кладбище.
         bgMid.alpha = look.midAlpha
         app.stage.addChild(bgMid)
       }

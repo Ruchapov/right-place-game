@@ -90,9 +90,13 @@ export function backdropPaths(preset: BackdropPreset): { far: string; mid: strin
  * Как фон темы кладётся под карту: прозрачность ближнего слоя, вуаль поверх
  * обоих слоёв и масштаб картинки.
  *
- * У кладбища всё взято из ОДОБРЕННОГО предпросмотра карт A и F: ближний слой
- * 0.55, вуаль rgba(24,22,30,0.22), а картинка фона высотой 1800 px МИРА — слой
- * платформ этих карт подбирался именно под такой фон и такое кадрирование.
+ * У кладбища вуаль rgba(24,22,30,0.22) и картинка фона высотой 1800 px МИРА
+ * взяты из ОДОБРЕННОГО предпросмотра карт A и F — слой платформ этих карт
+ * подбирался именно под такое кадрирование.
+ * ⚠️ Ближний слой кладбища — НЕПРОЗРАЧНЫЙ (решение дизайнера 08.10.2026), хотя в
+ * предпросмотре он лежал с 0.55: в игре с 0.55 фон выглядел полупрозрачным и
+ * блёклым. Прозрачные участки самой картинки остаются прозрачными — дальний
+ * слой виден сквозь них, а не сквозь камень.
  * Остальные темы живут как жили: ближний слой непрозрачен, вуаль 0x0e0c13 на
  * 0.42, картинка растянута по высоте экрана.
  * ⚠️ Параллакс (0.15 / 0.4) сюда не входит и от темы не зависит.
@@ -105,7 +109,7 @@ export function backdropPaths(preset: BackdropPreset): { far: string; mid: strin
 export type BackdropLook = { midAlpha: number; dimColor: number; dimAlpha: number; worldHeight: number | null };
 
 const BACKDROP_LOOK: Record<BackdropPreset, BackdropLook> = {
-  graveyard: { midAlpha: 0.55, dimColor: 0x18161e, dimAlpha: 0.22, worldHeight: 1800 },
+  graveyard: { midAlpha: 1, dimColor: 0x18161e, dimAlpha: 0.22, worldHeight: 1800 },
   throne_room: { midAlpha: 1, dimColor: 0x0e0c13, dimAlpha: 0.42, worldHeight: null },
   flooded_crypt: { midAlpha: 1, dimColor: 0x0e0c13, dimAlpha: 0.42, worldHeight: null },
 };
