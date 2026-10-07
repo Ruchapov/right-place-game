@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
 import { renderMapToCanvas, renderSpikeTile, backdropPaths, backdropLook } from './mapRenderer'
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
@@ -1203,6 +1203,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // было принять за настоящий (см. задачу: тихий фолбэк — отложенная
   // потеря времени).
   const [localEventFallback, setLocalEventFallback] = useState(false)
+  // Игра рисуется ЗАПАСНЫМ рендерером PixiJS на Canvas2D: WebGL в этом браузере
+  // недоступен. PixiJS переходит на него молча (порядок webgl → webgpu → canvas),
+  // а выглядит это как «игра тормозит и фон с обводкой»: кадр стоит в десятки раз
+  // дороже, и у повторяющегося фона светлеют полупрозрачные края. Играть можно,
+  // поэтому забег не валим, но говорим об этом плашкой (см. ниже, под HP-плитой).
+  const [canvasFallback, setCanvasFallback] = useState(false)
   // Сверка глотков с сервером (POST /run/sip, см. sendSip). null — сбоев и
   // расхождений в этом забеге не было, плашки нет. Счётчики живут в рефе
   // sipSyncRef — его читают асинхронные ответы; state — только копия для
@@ -2858,6 +2864,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
       containerRef.current.appendChild(app.canvas)
       app.canvas.style.touchAction = 'none'
+
+      // Какой рендерер PixiJS взял на самом деле. Запасной (Canvas2D) он берёт
+      // МОЛЧА, когда WebGL недоступен, — здесь это делается громким: плашка в
+      // забеге и строка в консоли. Ставится на каждом запуске setup(), в обе
+      // стороны: смена карты пересоздаёт приложение, и рендерер мог смениться.
+      const onCanvasRenderer = app.renderer.type === RendererType.CANVAS
+      if (onCanvasRenderer) {
+        console.warn(
+          'Explore: WebGL недоступен, PixiJS рисует запасным рендерером Canvas2D — ' +
+          'кадр в десятки раз дороже, у повторяющегося фона светлеют края. ' +
+          'В Chrome проверить chrome://gpu и перезапустить браузер.',
+        )
+      }
+      setCanvasFallback(onCanvasRenderer)
 
       // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
       // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
@@ -5983,8 +6003,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           pointerEvents none. Сама не гаснет: держится до конца забега (сброс
           только в setup()). Стоит под HP-плитой, чтобы не закрывать HUD
           обелисков сверху. Рассинхрон (отказ сервера по лимиту или другой счёт
-          выпитого) — красным: это баг счёта, а не сеть. */}
-      {(sipSync || progressStalled) && (() => {
+          выпитого) — красным: это баг счёта, а не сеть.
+          Здесь же — строка о запасном рендерере без WebGL (см. canvasFallback):
+          она для игрока, поэтому стоит там же, где остальные предупреждения
+          забега, и держится весь забег. */}
+      {(sipSync || progressStalled || canvasFallback) && (() => {
         const desync = sipSync !== null && (sipSync.limitRejected || sipSync.mismatched > 0)
         const color = desync ? '#E0353B' : '#F08A24'
         return (
@@ -6012,9 +6035,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
                 fontSize: 'clamp(9px, 2.6vw, 11px)',
                 fontWeight: 700,
                 letterSpacing: '0.03em',
+                // Явный интервал: унаследованный рассчитан на крупный текст меню,
+                // и строка о запасном рендерере (на узком экране она в три
+                // строки) с ним занимала втрое больше места, чем нужно.
+                lineHeight: 1.35,
                 textAlign: 'center',
               }}
             >
+              {canvasFallback &&<div>⚠ Графика без ускорения (нет WebGL): игра идёт медленнее и с огрехами в картинке. Перезапусти браузер или Telegram</div>}
               {sipSync && sipSync.failed > 0 && <div>⚠ Глоток не сохранён на сервере ({sipSync.failed})</div>}
               {sipSync && sipSync.limitRejected && <div>РАССИНХРОН: сервер отказал по лимиту глотков — клиент насчитал иначе</div>}
               {sipSync && sipSync.mismatched > 0 && <div>РАССИНХРОН: сервер насчитал выпитое иначе ({sipSync.mismatched})</div>}
