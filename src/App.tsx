@@ -736,7 +736,10 @@ export default function App() {
       // рядом, чтобы сравнивать их вживую. Слотов ровно два, поэтому heal,
       // slash и dash временно сняты. Влияет ТОЛЬКО на офлайн-заглушку
       // DevTester — в Telegram скиллы приходят с сервера и этой строкой не
-      // задеваются. ПЕРЕД РЕЛИЗОМ вернуть ['heal', 'dash'].
+      // задеваются. ПЕРЕД РЕЛИЗОМ убрать вместе со всей заглушкой: «вернуть
+      // ['heal', 'dash']» больше не значит ничего — навык бывает только от
+      // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
+      // ПЕРЕД РЕЛИЗОМ»).
       setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
