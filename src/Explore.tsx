@@ -43,7 +43,8 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadExploreAssets, loadZvonarAssets, loadGatekeeperAssets } from './explore/assets'
+import { loadCommonAssets, loadEventAssets } from './explore/assets'
+import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
 import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
@@ -1048,15 +1049,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const heroSpriteRef = useRef<AnimatedSprite | null>(null)
   // Кадры зверя (см. BeastFrames выше) — загружены один раз в setup(),
   // доступны отовсюду (enemySystem.spawn, applyAttackHit) через этот ref,
-  // как deathFramesRef у героя.
+  // как deathFramesRef у героя. С 09.10.2026 бывает null: листы зверя
+  // грузятся, только если в забеге есть группа зверей (см. loadEventAssets).
   const beastFramesRef = useRef<BeastFrames | null>(null)
   // Кадры Звонаря — тот же приём, что у beastFramesRef, но ref здесь нужен ещё
   // и потому, что листов может не быть ВОВСЕ: они грузятся, только если сервер
-  // назвал хотя бы одну группу его (8.7 МБ, см. loadZvonarAssets). null — это
+  // назвал хотя бы одну группу его (8.7 МБ, см. loadEventAssets). null — это
   // «в этом забеге Звонарей нет», а не «не успели загрузиться».
   const zvonarFramesRef = useRef<ZvonarFrames | null>(null)
   // Листы Привратника — тот же приём и то же условие загрузки (см.
-  // loadGatekeeperAssets): null значит «в этом забеге его групп нет».
+  // loadEventAssets): null значит «в этом забеге его групп нет».
   const gatekeeperFramesRef = useRef<GatekeeperFrames | null>(null)
   // >0 — проигрывается land (короткая анимация приземления), в мс. Тикает
   // вниз в ticker'е; движение/прыжок прерывают её досрочно (landTimerRef = 0).
@@ -1524,7 +1526,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // звать обязана актуальную версию функции (см. createSkillsSystem ниже).
   const healPlayerRef = useRef<(amount: number) => number>(() => 0)
   // Кадры ауры лечения. Ref, а не плоское значение: createSkillsSystem
-  // вызывается в setup() РАНЬШЕ, чем резолвится loadExploreAssets() — на
+  // вызывается в setup() РАНЬШЕ, чем загрузятся листы (loadCommonAssets) — на
   // момент сборки deps кадров ещё нет. Тот же приём, что beastFramesRef.
   const healAuraFramesRef = useRef<Texture[] | null>(null)
   // Кадры VFX скилла slash — те же рефы и по той же причине, что healAuraFramesRef.
@@ -1652,8 +1654,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Обелиски (карта F, см. type Obelisk выше) — событие рулетки "3 события",
   // как сундук/смуглер (см. eventsRef.current.map в setup()). Burning-кадры
   // загружены заранее, переключаются на них по удару (см. applyAttackHit).
+  // Отдельного ref под них больше нет: оба листа обелиска грузятся вместе,
+  // только в забег с обелиском, и читаются из одного места (obeliskSheets).
   const obelisksRef = useRef<Obelisk[]>([])
-  const obeliskBurningFramesRef = useRef<Texture[]>([])
   // Состояние события "сбить все обелиски" (см. задачу) — рефы, не state,
   // читаются/пишутся КАЖДЫЙ кадр в ticker'е. Кандидаты и точка стартового
   // обелиска нужны для доспавна: остальные точки берутся из кандидатов
@@ -2531,6 +2534,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       charmReviveFracRef.current = 0
       setCharmReady(false)
 
+      // Листы, нужные ЛЮБОМУ забегу (герой, эффекты навыков, иконки наград, шар
+      // маны), начинают грузиться ЗДЕСЬ — раньше ответа /run/start-explore и
+      // раньше сетки карты. От событий забега они не зависят, а запрос старта
+      // на проснувшемся Render идёт секунды: ждать его, ничего не качая,
+      // незачем. Дожидаемся их ниже — там же, где раньше стояла вся загрузка.
+      // ⚠️ Пустой .catch — НЕ глушилка: саму ошибку поднимет await ниже, и она
+      // уйдёт в экран ошибки, как раньше. Он нужен только затем, чтобы сбой,
+      // случившийся раньше этого await, браузер не записал в «необработанные».
+      // Выйдет setup() раньше по другой причине (отказ старта, размонтирование) —
+      // покажут ту причину, а листы останутся в кэше Assets до следующего раза.
+      const commonAssetsLoad = loadCommonAssets()
+      commonAssetsLoad.catch(() => {})
+
       let resolvedMapFile = mapFile
       let startExploreResult: StartExploreResult | null = null
       if (mapFile === '') {
@@ -2560,6 +2576,26 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           'картинка платформ не совпадёт со столкновениями. Пересобрать: node tools/build_map_art.mjs',
         )
       }
+
+      // Фон и готовый слой карты начинают грузиться ЗДЕСЬ, как только карта
+      // известна, а не после app.init(): им не нужны ни холст, ни приложение, и
+      // идти они могут одновременно с запросом старта ниже, листами спрайтов,
+      // отрисовкой холста карты и запуском PixiJS. Дожидаемся их там же, где
+      // раньше, — перед сборкой слоёв фона.
+      // null у слоя фона — его просто не будет (см. loadBackdropLayer): забег без
+      // картинки фона играется, забега с экраном ошибки — нет.
+      // ⚠️ Готовый слой карты — БЕЗ такой поблажки: это сами платформы, без него
+      // игрок шёл бы по невидимой земле. Его промах валит setup() в экран ошибки,
+      // как промах сетки или листов спрайтов. Пустой .catch — по той же причине,
+      // что у commonAssetsLoad выше: ошибку поднимет await.
+      const mapTheme = backdropForMap(resolvedMapFile)
+      const backdropUrls = backdropPaths(mapTheme)
+      const backdropLoad = Promise.all([
+        loadBackdropLayer(backdropUrls.far, 'far'),
+        loadBackdropLayer(backdropUrls.mid, 'mid'),
+        mapArt ? (Assets.load(mapArt.src) as Promise<Texture>) : Promise.resolve(null),
+      ])
+      backdropLoad.catch(() => {})
 
       // Карта была известна заранее (debug-панель/mapFile-проп) — запрос
       // выше не делался (mapFile !== ''), делаем его теперь для уже
@@ -2756,10 +2792,26 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const eventEnemyKinds: (EnemyKind | null)[] = chosenEvents.map((ev) =>
         ev.kind === 'enemy' ? readEnemyKind(ev.enemyKind) : null,
       )
-      // Нужны ли тяжёлые листы Звонаря. Решается ЗДЕСЬ, до загрузки ассетов, —
-      // в этом и был смысл того, что вид врагов приезжает со старта забега.
-      const needsZvonarSheets = eventEnemyKinds.includes('zvonar')
-      const needsGatekeeperSheets = eventEnemyKinds.includes('gatekeeper')
+      // Какие листы «под событие» нужны ЭТОМУ забегу. Решается ЗДЕСЬ, как только
+      // события известны, — в этом и был смысл того, что вид врагов приезжает со
+      // старта забега, — и по тому же списку, по которому ниже идёт спавн: что
+      // спавнится, то и грузится, ничего сверх того. Раньше условными были
+      // только Звонарь и Привратник, а босс (15.5 МБ листов) качался в каждый
+      // забег; теперь условие общее на всё, что принадлежит одному виду события
+      // (см. explore/assets.ts). Загрузка стартует сразу, параллельно общим
+      // листам, холсту карты и фону; дожидаемся её там же, где общие.
+      // Пустой .catch — по той же причине, что у commonAssetsLoad выше.
+      const runAssetNeeds: RunAssetNeeds = {
+        beast: eventEnemyKinds.includes('beast'),
+        zvonar: eventEnemyKinds.includes('zvonar'),
+        gatekeeper: eventEnemyKinds.includes('gatekeeper'),
+        chest: chosenEvents.some((ev) => ev.kind === 'chest'),
+        smuggler: chosenEvents.some((ev) => ev.kind === 'smuggler'),
+        obelisk: chosenEvents.some((ev) => ev.kind === 'obelisk'),
+        boss: bossWillSpawn,
+      }
+      const eventAssetsLoad = loadEventAssets(runAssetNeeds)
+      eventAssetsLoad.catch(() => {})
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
@@ -2781,21 +2833,28 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Assets.load асинхронен, и подгрузка в кадре смерти врага дала бы либо
       // пропуск всплывашки, либо просадку ровно в бою (см. CLAUDE.md, задача про
       // догрузку текстур). Их максимум три на забег.
-      // try/catch на КАЖДОЙ иконке: 404 одной не должен обрывать setup() — забег
-      // важнее картинки, и без текстуры строка добычи просто не нарисуется.
+      // Свой обработчик на КАЖДОЙ иконке: 404 одной не должен обрывать setup() —
+      // забег важнее картинки, и без текстуры строка добычи просто не нарисуется.
+      // Иконки качаются разом и вместе с листами, а не по одной перед ними:
+      // дожидаемся их ниже, одним await с листами (до спавна и до показа забега).
       const dropIconTextures = new Map<string, Texture>()
+      const dropIconsRequested = new Set<string>()
+      const dropIconLoads: Promise<void>[] = []
       for (const reward of eventRewards) {
         if (reward.drop === null) continue
         const key = dropIconKey(reward.drop)
-        if (dropIconTextures.has(key)) continue
+        if (dropIconsRequested.has(key)) continue
         const src = dropView(reward.drop).iconSrc
         if (src === null) continue
-        try {
-          dropIconTextures.set(key, await Assets.load(src))
-        } catch (e) {
-          console.error('Explore: не загрузилась иконка добычи', src, e)
-        }
+        dropIconsRequested.add(key)
+        dropIconLoads.push(
+          (Assets.load(src) as Promise<Texture>).then(
+            (texture) => { dropIconTextures.set(key, texture) },
+            (e) => { console.error('Explore: не загрузилась иконка добычи', src, e) },
+          ),
+        )
       }
+      const dropIconsLoad = Promise.all(dropIconLoads)
 
       const startRaw = slots?.start
       if (
@@ -2813,7 +2872,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Холст карты — плитка, декор и шипы — есть только у карт БЕЗ готового слоя.
       // У карты со слоем плитка и декор уже в нём, а шипы (их вставили в сетку
       // выше) рисуются отдельными спрайтами одной клетки, см. ниже.
-      const mapTheme = backdropForMap(resolvedMapFile)
+      // (mapTheme — тема карты — посчитана выше, там же, где стартует загрузка фона.)
       let mapCanvas: HTMLCanvasElement | null = null
       let spikeTile: HTMLCanvasElement | null = null
       const spikeCells: [number, number][] = []
@@ -2882,19 +2941,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
       // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
       // глубины. Пресет фиксирован по карте (см. BACKDROP_BY_MAP выше).
-      const preset = mapTheme
-      const { far: farUrl, mid: midUrl } = backdropPaths(preset)
-      const look = backdropLook(preset)
-      // null у любого слоя — его просто не будет (см. loadBackdropLayer):
-      // забег без картинки фона играется, забега с экраном ошибки — нет.
-      // ⚠️ Готовый слой карты грузится здесь же, но БЕЗ такой поблажки: это сами
-      // платформы, без него игрок шёл бы по невидимой земле. Его промах валит
-      // setup() в экран ошибки, как промах сетки или листов спрайтов.
-      const [farTexture, midTexture, artTexture] = await Promise.all([
-        loadBackdropLayer(farUrl, 'far'),
-        loadBackdropLayer(midUrl, 'mid'),
-        mapArt ? (Assets.load(mapArt.src) as Promise<Texture>) : Promise.resolve(null),
-      ])
+      const look = backdropLook(mapTheme)
+      // Загрузка двух слоёв фона и готового слоя карты стартовала выше, как
+      // только стала известна карта (backdropLoad) — здесь её только дожидаемся.
+      // null у слоя фона — его нет; промах готового слоя карты — ошибка, и она
+      // поднимается этим await.
+      const [farTexture, midTexture, artTexture] = await backdropLoad
       if (mapArt && artTexture && (artTexture.width !== mapArt.width || artTexture.height !== mapArt.height)) {
         throw new Error(
           `Готовый слой карты ${resolvedMapFile} не того размера: ${artTexture.width}×${artTexture.height}, ` +
@@ -3181,17 +3233,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         characterLevel: characterLevelRef,
       })
 
-      // Вся последовательная загрузка спрайт-листов (герой/зверь/сундук/
-      // смуглер/обелиск/босс/шип/волна/иконки наград) вынесена в
-      // loadExploreAssets — числа/пути/порядок/try-catch там те же, что
-      // были здесь. Фон карты (bgFar/bgMid) НЕ входит туда, грузится отдельно
-      // чуть выше — иначе карта/фон появлялись бы на экране позже, дожидаясь
-      // всех остальных, более тяжёлых листов (см. задачу).
-      const assets = await loadExploreAssets(() => cancelled)
-      if (!assets) {
-        // Компонент размонтировался, пока грузились ассеты — не создаём
-        // спрайты и не трогаем worldContainer (см. cancelled-проверки внутри
-        // loadExploreAssets, они сохранили прежнее поведение 1:1).
+      // Все листы спрайтов дожидаются ЗДЕСЬ, одним await: общие (стартовали в
+      // самом начале setup()), листы «под событие» (стартовали, как только стали
+      // известны события) и иконки добычи. Грузятся они параллельно друг другу,
+      // фону и запуску PixiJS выше; какие листы условные и почему — см.
+      // explore/assets.ts. Любой нужный лист не загрузился — этот await бросает,
+      // и setup() уходит в экран ошибки (setup().catch), как и раньше.
+      const [assets, eventAssets] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad])
+      if (cancelled) {
+        // Компонент размонтировался (или сработал предохранитель загрузки), пока
+        // грузились листы — не создаём спрайты и не трогаем worldContainer.
         return
       }
       const idleFrames = assets.hero.idle
@@ -3207,28 +3258,28 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const blockFrames = assets.hero.block
       const parrySparkFrames = assets.parrySpark
 
-      beastFramesRef.current = assets.beast
+      // Листы «под событие» бывают null: события этого вида в забеге нет, и
+      // лист не запрашивался. Спрашивать его можно только там, куда без события
+      // не дойти — в спавне и в ветках, идущих по своему списку объектов
+      // (сундуки, обелиски, босс). null в таком месте значит, что условие
+      // загрузки (runAssetNeeds выше) разошлось со списком событий: это ошибка
+      // программы, и она обязана быть ГРОМКОЙ, а не пустым или чужим спрайтом.
+      function sheetsFor<T>(sheets: T | null, what: string): T {
+        if (sheets === null) {
+          throw new Error(`Explore: листы «${what}» понадобились, но не загружены — условие загрузки разошлось со списком событий забега`)
+        }
+        return sheets
+      }
 
-      // Листы Звонаря — ТОЛЬКО если в этом забеге есть хотя бы одна его группа.
-      // 8.7 МБ на врага, которого с вероятностью 70% в забеге нет вовсе, —
-      // грузить их всегда значило бы удлинить «ПОДГОТОВКУ» каждому игроку ради
-      // меньшинства забегов. Вид группы называет сервер (enemyKind), клиент
-      // только читает (см. readEnemyKind).
-      // Стоит ПОСЛЕ основной загрузки, а не параллельно ей: порядок тут —
-      // очередь на один канал, и ранний старт тяжёлых листов задержал бы героя
-      // и карту.
-      if (needsZvonarSheets) {
-        const zvonarAssets = await loadZvonarAssets(() => cancelled)
-        if (!zvonarAssets) return // размонтировали посреди загрузки
-        zvonarFramesRef.current = zvonarAssets
-      }
-      // Листы Привратника — по тому же правилу и в той же очереди: 5.8 МБ
-      // только тем забегам, где сервер назвал его группу.
-      if (needsGatekeeperSheets) {
-        const gatekeeperAssets = await loadGatekeeperAssets(() => cancelled)
-        if (!gatekeeperAssets) return // размонтировали посреди загрузки
-        gatekeeperFramesRef.current = gatekeeperAssets
-      }
+      // Листы врагов — в refs, откуда их читают три системы врагов (созданы выше
+      // по файлу, до загрузки). Пишутся ВСЕ ТРИ на каждом запуске setup(), в том
+      // числе null: переключатель карт запускает setup() заново, и листы
+      // прошлого забега не должны выглядеть как листы этого.
+      // Звери с 09.10.2026 условны так же, как Звонарь (8.7 МБ) и Привратник
+      // (5.8 МБ): группа бывает и без зверей, а их листы — ещё 2 МБ.
+      beastFramesRef.current = eventAssets.beast
+      zvonarFramesRef.current = eventAssets.zvonar
+      gatekeeperFramesRef.current = eventAssets.gatekeeper
       // Аура лечения — в ref, откуда её читает система скиллов (создана выше
       // по файлу, до загрузки ассетов; см. healAuraFramesRef).
       healAuraFramesRef.current = assets.healAura
@@ -3251,19 +3302,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       })
       clearManaOrbsRef.current = manaSystem.clear
 
-      const chestFrames = assets.chest
-      const chestTrapFrames = assets.chestTrap
-      const smugglerFrames = assets.smuggler
-      const obeliskIdleFrames = assets.obeliskIdle
-      obeliskBurningFramesRef.current = assets.obeliskBurning
-
-      const bossFramesByKind = assets.boss
-      const bossIdleFrames = bossFramesByKind.idle
-
-      const bossSpikeTexture = assets.bossSpikeTexture
-      const bossSpikeImpactFrames = assets.bossSpikeImpactFrames
-      const bossWaveLeftFrames = assets.bossWaveLeftFrames
-      const bossWaveRightFrames = assets.bossWaveRightFrames
+      // Сундук, Контрабандист, обелиск и босс — листы «под событие»: null, если
+      // такого события в забеге нет. Ниже их спрашивают только через sheetsFor —
+      // в спавне и в ветках по своим спискам объектов.
+      const chestSheets = eventAssets.chest
+      const smugglerSheet = eventAssets.smuggler
+      const obeliskSheets = eventAssets.obelisk
+      const bossAssets = eventAssets.boss
 
       // Переключатель анимаций босса (см. задачу) — по образцу playSpriteAnim
       // выше, но ДОПОЛНИТЕЛЬНО ставит anchor.x И anchor.y из BOSS_ANCHOR_X/
@@ -3279,8 +3324,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Уже эта анимация — не рестартить (см. задачу шаг 3: hurt/idle
         // читаются из ticker'а КАЖДЫЙ тик, без гейта это отматывало бы
         // анимацию на кадр 0 каждый тик, как playSpriteAnim у зверя выше).
-        if (boss.sprite.textures === bossFramesByKind[kind]) return
-        boss.sprite.textures = bossFramesByKind[kind]
+        const kindFrames = sheetsFor(bossAssets, 'босс').frames[kind]
+        if (boss.sprite.textures === kindFrames) return
+        boss.sprite.textures = kindFrames
         boss.sprite.anchor.set(C.BOSS_ANCHOR_X[kind], C.BOSS_ANCHOR_Y[kind])
         boss.sprite.loop = C.BOSS_ANIM_LOOP[kind]
         boss.sprite.animationSpeed = C.BOSS_ANIM_SPEED[kind]
@@ -3564,7 +3610,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const left = centerX - drawW / 2
         const footGuess = (tileY + 1) * C.TILE_SIZE
         const floorY = findGroundSurfaceY(left, drawW, footGuess) ?? footGuess
-        const sprite = new AnimatedSprite(obeliskIdleFrames)
+        const sprite = new AnimatedSprite(sheetsFor(obeliskSheets, 'обелиск').idle)
         sprite.anchor.set(0.5, 1.0)
         sprite.height = C.OBELISK_DRAW_H
         sprite.width = drawW
@@ -3608,8 +3654,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // BOSS_ANCHOR_X_RANGED/BOSS_ANCHOR_Y_RANGED (числа подобраны живым
         // тюнером, тюнер убран — см. историю выше). Остальные анимации этот
         // блок не трогает.
-        const isRanged = boss.sprite.textures === bossFramesByKind.ranged
-        const scale = (C.BOSS_DRAW_H / bossIdleFrames[0].height) * (isRanged ? C.BOSS_SCALE_FIX_RANGED : 1)
+        const bossFrames = sheetsFor(bossAssets, 'босс').frames
+        const isRanged = boss.sprite.textures === bossFrames.ranged
+        const scale = (C.BOSS_DRAW_H / bossFrames.idle[0].height) * (isRanged ? C.BOSS_SCALE_FIX_RANGED : 1)
         // Арт смотрит ВЛЕВО по умолчанию (facing===-1, без зеркала) — как
         // зверь. Флип по facing===1 — не в этой фазе (AI ещё нет, см. задачу).
         boss.sprite.scale.set(scale)
@@ -3632,13 +3679,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         boss.hpBarFill.y = boss.hpBarBg.y
       }
 
-      // Босс (см. explore/entities/boss.ts) — создаётся здесь, ПОСЛЕ того,
-      // как известны bossFramesByKind/bossSpikeTexture/bossSpikeImpactFrames/
-      // bossWaveLeftFrames/bossWaveRightFrames (обычные const, не рефы —
-      // потому и позже, чем skills/enemySystem, см. задачу). playBossAnim/
+      // Босс (см. explore/entities/boss.ts) — создаётся здесь, ПОСЛЕ загрузки
+      // листов: его кадры и эффекты — обычные значения, не рефы (потому и
+      // позже, чем skills/enemySystem, см. задачу). playBossAnim/
       // applyBossLayout передаются депами — они НЕ переезжают в модуль
       // (applyAttackHit держит прямые вызовы к ним по имени, см. задачу).
-      bossSystem = createBossSystem({
+      // ⚠️ С 09.10.2026 система босса создаётся ТОЛЬКО в забеге с боссом: его
+      // листы (15.5 МБ) грузятся лишь туда, где босс есть среди событий, а без
+      // листов системе не из чего собрать спрайт. Нет босса — bossSystem
+      // остаётся null, тикер и cleanup это знают (bossSystem?.…), а списки шипов
+      // и волн пусты и без неё.
+      bossSystem = bossAssets === null ? null : createBossSystem({
         phys,
         getPlayerCombatBox,
         // Та же обёртка, что и у врага выше — рывок проходит сквозь босса.
@@ -3656,11 +3707,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         bossEventIndex: bossEventIndexRef,
         worldContainer,
         grid,
-        bossFrames: bossFramesByKind,
-        bossSpikeTexture,
-        bossSpikeImpactFrames,
-        bossWaveLeftFrames,
-        bossWaveRightFrames,
+        bossFrames: bossAssets.frames,
+        bossSpikeTexture: bossAssets.spikeTexture,
+        bossSpikeImpactFrames: bossAssets.spikeImpactFrames,
+        bossWaveLeftFrames: bossAssets.waveLeftFrames,
+        bossWaveRightFrames: bossAssets.waveRightFrames,
         characterLevel: characterLevelRef,
       })
 
@@ -3678,10 +3729,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // сервер не знает состав кластера.
           // Чья группа — та система её и спавнит. Группа ОДНОРОДНАЯ: смешанных
           // нет ни на сервере, ни здесь.
-          // Листы Звонаря могли не загрузиться только если их и не просили, а
-          // просили ровно по этому же признаку — поэтому отдельной проверки
-          // «а есть ли кадры» здесь нет, она была бы недостижимой веткой.
+          // Листы группы грузятся по этому же признаку (runAssetNeeds выше), так
+          // что не загрузиться они могли только при ошибке в самом условии. С
+          // 09.10.2026 условны листы всех трёх видов, включая зверей, поэтому
+          // проверка здесь стоит: без неё расхождение упало бы внутри spawn на
+          // чтении null — тем же экраном ошибки, но без понятного текста.
           const groupKind = eventEnemyKinds[eventIndex] ?? 'beast'
+          const groupSheets = groupKind === 'gatekeeper' ? gatekeeperFramesRef.current
+            : groupKind === 'zvonar' ? zvonarFramesRef.current
+              : beastFramesRef.current
+          sheetsFor(groupSheets, `враги (${groupKind})`)
           points.forEach(([ex, ey]) => {
             if (groupKind === 'gatekeeper') gatekeeperSystem!.spawn(ex, ey, eventIndex)
             else if (groupKind === 'zvonar') zvonarSystem!.spawn(ex, ey, eventIndex)
@@ -3701,7 +3758,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Реальный спрайт сундука ПОВЕРХ маркера (маркер остаётся зоной
         // толчка/хитбоксом визуально скрытым — сам touch-цикл ниже событие
         // 'chest' больше НЕ закрывает, см. там же). AnimatedSprite на
-        // chestFrames, но НЕ играет — открытие запускается ударом игрока,
+        // листе сундука, но НЕ играет — открытие запускается ударом игрока,
         // см. applyAttackHit ниже.
         if (ev.kind === 'chest') {
           marker.visible = false // визуал теперь несёт спрайт, не кружок
@@ -3710,7 +3767,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           const chestLeft = chestCenterX - chestDrawW / 2
           const chestFootGuess = (ev.y + 1) * C.TILE_SIZE
           const floorY = findGroundSurfaceY(chestLeft, chestDrawW, chestFootGuess) ?? chestFootGuess
-          const chestSprite = new AnimatedSprite(chestFrames)
+          const chestSprite = new AnimatedSprite(sheetsFor(chestSheets, 'сундук').open)
           chestSprite.x = chestCenterX
           chestSprite.loop = false
           worldContainer.addChild(chestSprite)
@@ -3750,7 +3807,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           const smugglerLeft = smugglerCenterX - smugglerDrawW / 2
           const smugglerFootGuess = (ev.y + 1) * C.TILE_SIZE
           const floorY = findGroundSurfaceY(smugglerLeft, smugglerDrawW, smugglerFootGuess) ?? smugglerFootGuess
-          const smugglerSprite = new AnimatedSprite(smugglerFrames)
+          const smugglerSprite = new AnimatedSprite(sheetsFor(smugglerSheet, 'Контрабандист'))
           smugglerSprite.anchor.set(0.5, 1.0)
           smugglerSprite.height = C.SMUGGLER_DRAW_H
           smugglerSprite.width = smugglerDrawW
@@ -3800,7 +3857,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // босс есть в тройке.
       const bossPoint = (slots as { boss?: unknown } | null)?.boss
       if (bossWillSpawn && isPointXY(bossPoint)) {
-        bossSystem!.spawn(bossPoint[0], bossPoint[1])
+        // Система босса создаётся по тому же признаку, что его листы (см. выше).
+        // Босс среди событий есть, а системы нет — условия разошлись: громко.
+        sheetsFor(bossSystem, 'босс').spawn(bossPoint[0], bossPoint[1])
       } else {
         bossRef.current = null
       }
@@ -4723,13 +4782,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             chest.isMimic = Math.random() < C.CHEST_MIMIC_CHANCE
             chest.trapDamaged = false
             if (chest.isMimic) {
-              chest.sprite.textures = chestTrapFrames
+              chest.sprite.textures = sheetsFor(chestSheets, 'сундук').trap
               applyChestLayout(chest)
               chest.sprite.loop = false
               chest.sprite.animationSpeed = C.CHEST_TRAP_ANIM_SPEED
               chest.sprite.gotoAndPlay(0)
             } else {
-              chest.sprite.textures = chestFrames
+              chest.sprite.textures = sheetsFor(chestSheets, 'сундук').open
               applyChestLayout(chest)
               chest.sprite.loop = false
               chest.sprite.animationSpeed = C.CHEST_ANIM_SPEED
@@ -4759,7 +4818,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             obelisk.struck = true
             obelisk.burning = true
             obeliskLastStruckRef.current = obelisk
-            playSpriteAnim(obelisk.sprite, obeliskBurningFramesRef.current, C.OBELISK_ANIM_SPEED, true)
+            playSpriteAnim(obelisk.sprite, sheetsFor(obeliskSheets, 'обелиск').burning, C.OBELISK_ANIM_SPEED, true)
 
             if (!obeliskEventActiveRef.current) {
               // Первый удар по любому обелиску запускает событие: таймер,
@@ -4816,7 +4875,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // поджоге — anchor/x/y/height/width не трогаем.
             for (const obelisk of obelisksRef.current) {
               obelisk.burning = false
-              playSpriteAnim(obelisk.sprite, obeliskIdleFrames, C.OBELISK_ANIM_SPEED, true)
+              playSpriteAnim(obelisk.sprite, sheetsFor(obeliskSheets, 'обелиск').idle, C.OBELISK_ANIM_SPEED, true)
             }
             // Награду всплывает сам closeEvent, числами сервера. Координаты —
             // последний зажжённый обелиск; его нет (теоретически) — попапа не
@@ -5313,7 +5372,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // AI → шипы → волны в этом порядке — КРИТИЧНО не менять (ranged/
         // stomp-ветки AI рождают снаряд в этом же кадре, шипы/волны должны
         // получить его физический шаг сразу, не на следующем кадре).
-        bossSystem!.update(dt, ticker.deltaMS)
+        // ?. — системы босса нет в забеге без босса (его листы туда не грузятся,
+        // см. создание bossSystem выше); обновлять тогда нечего.
+        bossSystem?.update(dt, ticker.deltaMS)
 
         // Шары маны — ПОСЛЕ всех трёх систем врагов: выпадение случается
         // внутри них (там, где труп снимается со сцены), и шар, родившийся в
@@ -5338,7 +5399,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // с ПРАВИЛЬНЫМ набором, иначе мимик (14 кадров) либо обрывается
           // раньше времени, либо никогда не считается "доигравшим" по длине
           // доброго набора (13 кадров).
-          const activeFrames = chest.isMimic ? chestTrapFrames : chestFrames
+          const chestKindSheets = sheetsFor(chestSheets, 'сундук')
+          const activeFrames = chest.isMimic ? chestKindSheets.trap : chestKindSheets.open
 
           // Урон мимика — на strike-кадре взрыва, неизбежен (без уклонения,
           // без i-frames шипов — отдельный источник урона). Бьёт РОВНО один
@@ -5729,7 +5791,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       })
 
       // Тикер зарегистрирован — игра реально может идти. cancelled здесь
-      // не может стать true асинхронно (после loadExploreAssets выше это
+      // не может стать true асинхронно (после загрузки листов выше это
       // единственный оставшийся await-поинт... его и вовсе нет — до конца
       // функции всё синхронно), но проверяем для консистентности с
       // остальными cancelled-гейтами этой функции.

@@ -20,7 +20,7 @@ export type ManaDeps = {
   phys: PlayerPhysics
   worldContainer: Container
   // Картинка шара. Готовая текстура, а не реф (в отличие от кадров в
-  // skills.ts): эта система создаётся в setup() уже ПОСЛЕ loadExploreAssets(),
+  // skills.ts): эта система создаётся в setup() уже ПОСЛЕ загрузки общих листов,
   // а без самой картинки забег не стартует вовсе — загрузка упала бы раньше.
   orbTexture: Texture
   // Мёртв ли герой — тот же deathRef, что гейтит анимации в Explore.tsx.

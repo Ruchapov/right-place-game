@@ -30,7 +30,7 @@ export function redrawBossHpBar(boss: Boss) {
 // переезжают: applyAttackHit() держит прямые вызовы к ним по имени
 // (playBossAnim('death'), applyBossLayout(boss)), и единственный способ
 // перенести их "по-честному" — сменить сигнатуру (playBossAnim сама читает
-// bossRef.current, ей неоткуда взять bossFramesByKind без closure), что
+// bossRef.current, ей неоткуда взять листы босса без closure), что
 // означало бы править applyAttackHit. Передаются депами — та же функция,
 // тот же побочный эффект, applyAttackHit не тронута ни на строку.
 export type BossDeps = {
@@ -86,9 +86,12 @@ export type BossDeps = {
 // Создаётся ОДИН раз в setup(), ПОЗЖЕ, чем createSkillsSystem/
 // createEnemySystem — bossFrames и остальные кадровые deps здесь ПЛОСКИЕ
 // значения (не рефы, в отличие от beastFrames у enemy.ts), потому что
-// bossFramesByKind в Explore.tsx — обычная const, известная только ПОСЛЕ
-// того, как loadExploreAssets() резолвится, а не сразу после
+// листы босса в Explore.tsx — обычное значение, известное только ПОСЛЕ
+// загрузки (loadEventAssets в ../assets.ts), а не сразу после
 // getPlayerCombatBox, как у skills/enemySystem.
+// ⚠️ С 09.10.2026 листы босса грузятся только в забег, где босс есть среди
+// событий, и система создаётся только там же: в забеге без босса её НЕТ
+// (bossSystem === null в Explore.tsx), а не «есть, но спит».
 export function createBossSystem(deps: BossDeps) {
   const worldWidthPx = deps.grid[0].length * C.TILE_SIZE
 

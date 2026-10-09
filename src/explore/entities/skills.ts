@@ -13,11 +13,10 @@ import * as C from '../constants'
 //
 // Арт всех пяти скиллов лежит в public/assets/skills — 8 листов (снаряд +
 // импакт у fireball и iceball, аура heal, взмах slash, капли Bleeding_Loop,
-// Dash_Strike), размеры сверены по заголовкам PNG. Грузятся ПЯТЬ листов:
-// Heal_Aura, Slash_Streak, Dash_Strike и пара Fireball_Projectile/
-// Fireball_Impact (см. loadExploreAssets в ../assets.ts). Не грузятся два
-// листа iceball (механики нет) и Bleeding_Loop (визуал снят намеренно, см.
-// updateBleeds).
+// Dash_Strike), размеры сверены по заголовкам PNG. Грузятся СЕМЬ листов:
+// Heal_Aura, Slash_Streak, Dash_Strike и по паре Projectile/Impact у fireball
+// и iceball (см. loadCommonAssets в ../assets.ts). Не грузится один —
+// Bleeding_Loop (визуал снят намеренно, см. updateBleeds).
 export type SkillId = 'heal' | 'fireball' | 'iceball' | 'slash' | 'dash'
 
 export type SkillsDeps = {
@@ -143,7 +142,7 @@ export type SkillsDeps = {
   healPlayer: (amount: number) => number
   // Кадры ауры лечения (Heal_Aura, 14 кадров). РЕФ, а не плоский массив (в
   // отличие от bossFrames в boss.ts): createSkillsSystem вызывается в setup()
-  // РАНЬШЕ, чем резолвится loadExploreAssets() — на момент сборки deps кадров
+  // РАНЬШЕ, чем загрузятся листы (loadCommonAssets) — на момент сборки deps кадров
   // ещё нет. Тот же приём, что beastFrames в enemy.ts.
   healAuraFrames: MutableRefObject<Texture[] | null>
 
