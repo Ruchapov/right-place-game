@@ -3276,7 +3276,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // числе null: переключатель карт запускает setup() заново, и листы
       // прошлого забега не должны выглядеть как листы этого.
       // Звери с 09.10.2026 условны так же, как Звонарь (8.7 МБ) и Привратник
-      // (8.1 МБ): группа бывает и без зверей, а их листы — ещё 2 МБ.
+      // (6.9 МБ): группа бывает и без зверей, а их листы — ещё 2 МБ.
       beastFramesRef.current = eventAssets.beast
       zvonarFramesRef.current = eventAssets.zvonar
       gatekeeperFramesRef.current = eventAssets.gatekeeper
