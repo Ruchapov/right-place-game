@@ -11,13 +11,16 @@ import { redrawEnemyHpBar } from './enemy'
 /**
  * ПРИВРАТНИК — третий враг, ближний бой с дверью-щитом (06.10.2026).
  *
- * Спереди его почти не взять: меч дверь гасит целиком, разовое попадание
- * навыка режет вдвое. Дверь поднята ВСЕГДА — окна после удара нет (решение
- * дизайнера 05.10.2026, отменило прежнее). Полный урон проходит в трёх случаях:
- * он оглушён отбитым ударом, он заморожен льдом, удар пришёл в спину. Всё, что
- * про дверь и урон, решает ОДНА точка, общая для всех источников: damageEnemy в
- * Explore.tsx, а отсюда она берёт только ответ «дверь сейчас закрывает его от
- * этой стороны?» (gatekeeperDoorBlocks ниже).
+ * Дверь бывает опущена и поднята (12.10.2026). Пока он героя не видит, она
+ * опущена и удары проходят. Заметил — поднимает её (лист raiseGuard, ≈1.33 с),
+ * и только с последнего кадра подъёма она держит: меч гасит целиком, разовое
+ * попадание навыка режет вдвое. С поднятой дверью полный урон проходит в трёх
+ * случаях: он оглушён отбитым ударом, он заморожен льдом, удар пришёл в спину;
+ * окна после его удара нет (решение дизайнера 05.10.2026). Потерял героя —
+ * опускает её тем же листом задом наперёд, и блок снят с первого кадра
+ * опускания. Всё, что про дверь и урон, решает ОДНА точка, общая для всех
+ * источников: damageEnemy в Explore.tsx, а отсюда она берёт только ответ «дверь
+ * сейчас закрывает его от этой стороны?» (gatekeeperDoorBlocks ниже).
  *
  * Лежит в том же списке `enemiesRef`, что зверь и Звонарь, — по той же причине
  * и с той же ценой (см. шапку zvonar.ts): модуль обслуживает только
@@ -35,13 +38,18 @@ import { redrawEnemyHpBar } from './enemy'
  * applyEnemyHitReaction), смерть с DEATH_HOLD_MS, маной и закрытием события,
  * тело как мягкая стена по X, посадка спрайта на поверхность тайла + FOOT_TUNE.
  *
- * Что СВОЁ: дверь; атака, заданная временем (замах, потом выпад и возврат тем
- * же темпом); оглушение от парирования на 2.5 с стойкой на 25-м кадре вместо
- * hurt; кадры листа атаки, которые ставит код, а не AnimatedSprite; якорь,
- * меняющийся с листом; ДВЕ ходьбы — в погоне он идёт листом walkGuard, с дверью
- * стоймя (10.10.2026), а в патруле и в расследовании прежним walk.
+ * Что СВОЁ: дверь и её подъём с опусканием; атака, заданная временем (замах,
+ * потом выпад и возврат тем же темпом) и только с поднятой дверью; оглушение от
+ * парирования на 2.5 с стойкой на 25-м кадре вместо hurt; кадры листов атаки и
+ * подъёма, которые ставит код, а не AnimatedSprite; якорь, меняющийся с листом;
+ * ДВЕ стойки и ДВЕ ходьбы — с поднятой дверью idleGuard и walkGuard, с
+ * опущенной (патруль, расследование) прежние idle и walk.
  */
 export type GatekeeperFrames = Record<GatekeeperAnimKind, Texture[]>
+
+// Листы, кадры которых ставит код по времени (см. showFrame): звать на них
+// play() нельзя — спрайт доиграл бы лист сам, темпом прошлого листа.
+type CodeDrivenAnim = 'attack' | 'raiseGuard'
 
 export type GatekeeperDeps = {
   phys: PlayerPhysics
@@ -69,13 +77,16 @@ export type GatekeeperDeps = {
 }
 
 /**
- * Открыт ли Привратник: дверь не защищает его НИ С КАКОЙ стороны.
+ * Открыт ли Привратник СТАНОМ: поднятая дверь не защищает его ни с какой
+ * стороны.
  *
  * Ровно два случая, оба — станы, и оба читаются из таймеров общего Enemy:
  *   parryStunTimer — оглушён отбитым ударом (GATEKEEPER_PARRY_STUN_MS);
  *   stunTimer      — заморожен ледяным шаром, всё время заморозки.
- * Своего поля «дверь опущена» у него нет намеренно: два источника правды
- * однажды разошлись бы, и он стоял бы оглушённый за глухой дверью.
+ * Своего поля на это у него нет намеренно: два источника правды однажды
+ * разошлись бы, и он стоял бы оглушённый за глухой дверью.
+ * ⚠️ Опущенная дверь — НЕ этот случай и сюда не входит: где дверь, говорит
+ * GatekeeperState.guard, и читает его gatekeeperDoorBlocks ниже.
  *
  * ⚠️ Сам ледяной шар, который его заморозил, приходит ещё в поднятую дверь и
  * спереди режется вдвое: damageEnemy зовётся ДО того, как skills.ts выставит
@@ -86,10 +97,22 @@ export function gatekeeperIsOpen(enemy: Enemy): boolean {
 }
 
 /**
+ * Дверь в движении: поднимается или опускается. Блока в это время нет, а
+ * попадание движение не прерывает — хитстана он не получает (причина — у
+ * GATEKEEPER_RAISE_MS в constants.ts). Читает applyEnemyHitReaction.
+ */
+export function gatekeeperIsShiftingGuard(enemy: Enemy): boolean {
+  const g = enemy.gatekeeper
+  return g !== undefined && (g.guard === 'raising' || g.guard === 'lowering')
+}
+
+/**
  * Закрывает ли дверь Привратника от удара, пришедшего из точки sourceX.
  *
- * Два условия: он не открыт (см. gatekeeperIsOpen) и источник СПЕРЕДИ — с той
- * стороны, куда Привратник смотрит. Удар в спину дверь не закрывает никогда.
+ * Три условия: дверь ПОДНЯТА ДО КОНЦА (guard === 'up' — не опущена, не
+ * поднимается и не опускается), он не открыт станом (см. gatekeeperIsOpen) и
+ * источник СПЕРЕДИ — с той стороны, куда Привратник смотрит. Удар в спину дверь
+ * не закрывает никогда.
  * Ровно над ним (sourceX в центре) считается «спереди»: спорный случай отдан
  * двери, иначе стоящий вплотную герой бил бы сквозь неё.
  *
@@ -101,7 +124,7 @@ export function gatekeeperIsOpen(enemy: Enemy): boolean {
  * системе: зовёт её damageEnemy из Explore.tsx, общая точка урона всех врагов.
  */
 export function gatekeeperDoorBlocks(enemy: Enemy, sourceX: number): boolean {
-  if (!enemy.gatekeeper || gatekeeperIsOpen(enemy)) return false
+  if (!enemy.gatekeeper || enemy.gatekeeper.guard !== 'up' || gatekeeperIsOpen(enemy)) return false
   const centerX = enemy.x + enemy.width / 2
   return enemy.facing === 1 ? sourceX >= centerX : sourceX <= centerX
 }
@@ -123,7 +146,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
 
   /**
    * Смена листа вместе с якорем — тот же приём и та же причина, что playAnim у
-   * Звонаря: клетки у шести листов разные.
+   * Звонаря: клетки у восьми листов разные.
    */
   function playAnim(enemy: Enemy, kind: GatekeeperAnimKind, frames: GatekeeperFrames) {
     const g = enemy.gatekeeper!
@@ -138,22 +161,28 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
   }
 
   /**
-   * Кадр листа атаки. Ставится КОДОМ по времени фазы, а не проигрывается:
-   * оглушение держит 25-й кадр, и отдать это AnimatedSprite нельзя. Спрайт
-   * трогает только на смену кадра.
+   * Кадр листа, который ставит КОД по времени, а не проигрывает AnimatedSprite.
+   * Таких листа два: атака (оглушение держит 25-й кадр) и подъём двери (он же
+   * идёт задом наперёд на опускании). Спрайт трогает только на смену кадра.
    */
-  function showAttackFrame(enemy: Enemy, frame: number, frames: GatekeeperFrames) {
+  function showFrame(enemy: Enemy, kind: CodeDrivenAnim, frame: number, frames: GatekeeperFrames) {
     const g = enemy.gatekeeper!
-    if (g.anim !== 'attack') {
-      const spec = C.GATEKEEPER_SHEETS.attack
-      g.anim = 'attack'
-      enemy.sprite.textures = frames.attack
+    if (g.anim !== kind) {
+      const spec = C.GATEKEEPER_SHEETS[kind]
+      g.anim = kind
+      enemy.sprite.textures = frames[kind]
       enemy.sprite.anchor.set(spec.anchorX, spec.anchorY)
       enemy.sprite.loop = false
       enemy.sprite.gotoAndStop(frame)
       return
     }
     if (enemy.sprite.currentFrame !== frame) enemy.sprite.gotoAndStop(frame)
+  }
+
+  // Кадр листа подъёма по тому, сколько двери поднято: вперёд на подъёме, назад
+  // на опускании — одно и то же число.
+  function raiseFrameOf(guardMs: number): number {
+    return clamp(Math.floor(guardMs / C.GATEKEEPER_RAISE_FRAME_MS), 0, C.GATEKEEPER_RAISE_COUNT - 1)
   }
 
   // Один темп на весь лист: сколько кадров прошло за phaseMs.
@@ -234,6 +263,9 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       gatekeeper: {
         anim: 'idle',
         phase: 'ready',
+        // Появляется с опущенной дверью: героя он ещё не видел.
+        guard: 'down',
+        guardMs: 0,
         phaseMs: 0,
         cooldownMs: 0,
         shakeMs: 0,
@@ -355,8 +387,9 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       // Всё время заморозки он ОТКРЫТ: дверь не защищает ни с какой стороны
       // (gatekeeperIsOpen читает этот же stunTimer). Фаза и её время стоят
       // вместе со всем остальным — замах, застигнутый льдом, после него
-      // доигрывает и бьёт, как у зверя. Не разворачивается: до решений ниже
-      // этот кадр не доходит.
+      // доигрывает и бьёт, как у зверя; дверь, застигнутая на подъёме или на
+      // опускании, после него продолжает с того же кадра. Не разворачивается:
+      // до решений ниже этот кадр не доходит.
       const wasStunned = enemy.stunTimer > 0
       enemy.stunTimer = Math.max(0, enemy.stunTimer - deltaMS)
       if (enemy.stunTimer > 0) {
@@ -378,7 +411,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       if (enemy.parryStunTimer > 0) {
         if (g.phase !== 'stunned') setPhase(enemy, 'stunned')
         g.phaseMs += deltaMS
-        if (frames) showAttackFrame(enemy, attackFrameOf('stunned', g.phaseMs), frames)
+        if (frames) showFrame(enemy, 'attack', attackFrameOf('stunned', g.phaseMs), frames)
         pushPlayerOut(enemy, deps.getPlayerCombatBox())
         syncVisual(enemy)
         continue
@@ -390,9 +423,10 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         setPhase(enemy, 'follow', (C.GATEKEEPER_STUN_HOLD_FRAME - C.GATEKEEPER_STRIKE_FRAME) * C.GATEKEEPER_ATTACK_FRAME_MS)
       }
       // Выход из стана льда: вернуть проигрывание тому, что проигрывается.
-      // ⚠️ Лист атаки НЕ проигрывается никогда (кадры ставит код), и play() на
-      // нём запустил бы его от текущего кадра до конца сам по себе.
-      if (wasStunned && !enemy.sprite.playing && g.anim !== 'attack') enemy.sprite.play()
+      // ⚠️ Листы атаки и подъёма двери НЕ проигрываются никогда (кадры ставит
+      // код), и play() на них запустил бы лист от текущего кадра до конца сам
+      // по себе.
+      if (wasStunned && !enemy.sprite.playing && g.anim !== 'attack' && g.anim !== 'raiseGuard') enemy.sprite.play()
 
       const prevX = enemy.x
 
@@ -453,9 +487,12 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
 
       // Хитстан сбил замах или возврат двери (applyEnemyHitReaction уже снял
       // windingUp и attackAnimPlaying) — фаза обязана уйти следом, иначе по
-      // выходе из хитстана он продолжил бы удар с прерванного места. Хитстан у
-      // него бывает только от удара в спину: дверь его не даёт, а пока он
-      // открыт станом, реакции на попадание нет вовсе (см. applyEnemyHitReaction).
+      // выходе из хитстана он продолжил бы удар с прерванного места. Хитстан в
+      // атаке у него бывает только от удара в спину: поднятая дверь его не
+      // даёт, а пока он открыт станом, реакции на попадание нет вовсе (см.
+      // applyEnemyHitReaction). С опущенной дверью хитстан даёт любой удар, но
+      // там он и не бьёт. Дверь хитстан НЕ трогает: какой была, такой и
+      // осталась.
       if (enemy.hurtTimer > 0 && g.phase !== 'ready') setPhase(enemy, 'ready')
 
       // --- Решения (хитстан замораживает их целиком, как у зверя) ---
@@ -482,7 +519,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             const inReach = Math.abs(playerCenterX - (enemy.x + enemy.width / 2)) < C.GATEKEEPER_ATTACK_RANGE
             const strikeVertical = strikeBox.y < enemy.y + enemy.height && strikeBox.y + strikeBox.h > enemy.y
             // Попал, промахнулся или герой ушёл — дальше выпад и возврат двери,
-            // и дверь всё это время ПОДНЯТА: окна после удара нет. Открывает его
+            // и дверь всё это время ДЕРЖИТ: окна после удара нет. Открывает его
             // только отбитый удар — оглушением.
             if ((inReach || bodiesTouchingX) && strikeVertical && playerInFront && deps.takeDamage(enemy.attackDamage)) {
               enemy.parryStunTimer = C.GATEKEEPER_PARRY_STUN_MS
@@ -500,7 +537,42 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         }
 
         if (g.phase === 'ready') {
-          if (aggroed) {
+          // --- ДВЕРЬ: заметил героя — поднимает, потерял — опускает ---
+          // Решается только здесь, в 'ready': начатую атаку он доводит до конца
+          // с поднятой дверью и опускает её уже после возврата. Хитстан это
+          // движение замораживает вместе с остальными решениями, а прервать его
+          // попаданием нельзя (см. gatekeeperIsShiftingGuard).
+          if (aggroed && g.guard !== 'up') {
+            if (g.guard !== 'raising') {
+              // Лицом к герою — в момент решения; до конца подъёма он больше
+              // не разворачивается, как и на замахе.
+              const toPlayer = Math.sign(dx)
+              if (toPlayer !== 0) enemy.facing = toPlayer as 1 | -1
+              g.guard = 'raising'
+            }
+            g.guardMs += deltaMS
+            // БЛОК включается здесь и только здесь — когда доигран последний
+            // кадр подъёма (gatekeeperDoorBlocks читает guard === 'up').
+            if (g.guardMs >= C.GATEKEEPER_RAISE_MS) {
+              g.guardMs = C.GATEKEEPER_RAISE_MS
+              g.guard = 'up'
+            }
+          } else if (!aggroed && g.guard !== 'down') {
+            // Блок снят с ЭТОГО кадра — с первого кадра опускания, а не с
+            // последнего. Вернётся герой — подъём пойдёт с того кадра, до
+            // которого дверь успела опуститься, и блок снова придёт в конце.
+            g.guard = 'lowering'
+            g.guardMs -= deltaMS
+            if (g.guardMs <= 0) {
+              g.guardMs = 0
+              g.guard = 'down'
+            }
+          }
+
+          // Что он делает, решает дверь: 'up' здесь бывает только в агро,
+          // 'down' — только без него (ветки выше); пока дверь в движении, он
+          // стоит.
+          if (g.guard === 'up') {
             // Разворот к герою — сразу, без задержки, как у остальных врагов.
             const toPlayer = Math.sign(dx)
             if (toPlayer !== 0) enemy.facing = toPlayer as 1 | -1
@@ -512,6 +584,23 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
               const leadingX = dir > 0 ? nextX + enemy.width : nextX
               if (!wallAhead(enemy, leadingX)) enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
             }
+
+            // СТАРТ ЗАМАХА — условие зверя: стоп-дистанция или касание тел,
+            // плюс перекрытие по вертикали. Только с ПОДНЯТОЙ дверью: без неё
+            // он не бьёт вовсе. Взгляд с этого момента зафиксирован до конца
+            // анимации (замах, выпад, возврат — ≈1.83 с): обежать его за это
+            // время — законный способ и уклониться, и зайти в спину.
+            if ((reachedStopDist || bodiesTouchingX) && verticalReach && g.cooldownMs <= 0) {
+              setPhase(enemy, 'windup')
+              // Кулдаун — СРАЗУ, на старте: «от начала до начала».
+              g.cooldownMs = C.GATEKEEPER_ATTACK_INTERVAL_MS
+              enemy.windingUp = true
+              enemy.windupTimer = 0
+              enemy.attackAnimPlaying = true
+              enemy.attackHitApplied = false
+            }
+          } else if (g.guard !== 'down') {
+            // Дверь поднимается или опускается — стоит на месте.
           } else if (enemy.investigateTimer > 0 && enemy.investigateX !== null) {
             // РАССЛЕДОВАНИЕ — перенос от зверя: идёт к точке скоростью погони.
             const toTarget = enemy.investigateX - (enemy.x + enemy.width / 2)
@@ -549,50 +638,41 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             }
             enemy.facing = enemy.patrolDir
           }
-
-          // СТАРТ ЗАМАХА — условие зверя: стоп-дистанция или касание тел, плюс
-          // перекрытие по вертикали. Взгляд с этого момента зафиксирован до
-          // конца анимации (замах, выпад, возврат — ≈1.83 с): обежать его за это
-          // время — законный способ и уклониться, и зайти в спину.
-          if ((reachedStopDist || bodiesTouchingX) && verticalReach && g.cooldownMs <= 0) {
-            setPhase(enemy, 'windup')
-            // Кулдаун — СРАЗУ, на старте: «от начала до начала».
-            g.cooldownMs = C.GATEKEEPER_ATTACK_INTERVAL_MS
-            enemy.windingUp = true
-            enemy.windupTimer = 0
-            enemy.attackAnimPlaying = true
-            enemy.attackHitApplied = false
-          }
         }
       }
 
       // Тело как мягкая стена по X — после всех перемещений, как у зверя.
       pushPlayerOut(enemy, playerBox)
 
-      // --- Визуал: hurt > атака (замах, выпад, возврат) > ходьба/стойка ---
+      // --- Визуал: hurt > атака (замах, выпад, возврат) > дверь в движении >
+      // ходьба/стойка, свои у поднятой и у опущенной двери ---
+      // ⚠️ hurt и лист атаки — СТАРЫЕ, с дверью наискось: из агро-стойки в них
+      // и обратно дверь перескакивает за один кадр (не чинилось, ждёт арта).
       if (frames) {
         if (enemy.hurtTimer > 0) {
           enemy.hurtTimer = Math.max(0, enemy.hurtTimer - deltaMS)
           playAnim(enemy, 'hurt', frames)
         } else if (g.phase !== 'ready') {
-          showAttackFrame(enemy, attackFrameOf(g.phase, g.phaseMs), frames)
-        } else if (enemy.x !== prevX && aggroed) {
-          // ПОГОНЯ — ходьба с ПОДНЯТОЙ дверью, свой лист. В агро он двигается
-          // только погоней (ветка `aggroed` в решениях выше), поэтому признак
-          // тот же самый, а не вторая догадка по длине шага. Скорость одна, и
-          // темп листа выведен из неё — playAnim ставит его вместе с листом.
-          playAnim(enemy, 'walkGuard', frames)
+          showFrame(enemy, 'attack', attackFrameOf(g.phase, g.phaseMs), frames)
+        } else if (g.guard === 'raising' || g.guard === 'lowering') {
+          // Один лист на оба направления: кадр — по тому, сколько двери поднято.
+          showFrame(enemy, 'raiseGuard', raiseFrameOf(g.guardMs), frames)
+        } else if (g.guard === 'up') {
+          // ДВЕРЬ ПОДНЯТА — свои листы. С ней он двигается только погоней,
+          // скорость одна, и темп ходьбы выведен из неё — playAnim ставит его
+          // вместе с листом.
+          playAnim(enemy, enemy.x !== prevX ? 'walkGuard' : 'idleGuard', frames)
         } else if (enemy.x !== prevX) {
-          // БЕЗ АГРО — прежний лист: патруль и расследование. Темп ног — по
-          // ФАКТИЧЕСКОМУ шагу, как у зверя: расследование идёт скоростью погони,
-          // патруль — своей.
+          // ДВЕРЬ ОПУЩЕНА — прежний лист: патруль и расследование. Темп ног —
+          // по ФАКТИЧЕСКОМУ шагу, как у зверя: расследование идёт скоростью
+          // погони, патруль — своей.
           const moved = Math.abs(enemy.x - prevX)
           const fast = moved > ((C.ENEMY_PATROL_SPEED + C.ENEMY_CHASE_SPEED) / 2) * dt
           playAnim(enemy, 'walk', frames)
           enemy.sprite.animationSpeed = fast ? C.GATEKEEPER_WALK_ANIM_CHASE : C.GATEKEEPER_WALK_ANIM_PATROL
         } else {
-          // После атаки и после hurt стойка идёт с кадра 0 — playAnim так и
-          // делает при смене листа.
+          // После hurt стойка идёт с кадра 0 — playAnim так и делает при смене
+          // листа.
           playAnim(enemy, 'idle', frames)
         }
       }

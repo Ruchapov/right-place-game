@@ -51,7 +51,7 @@ import { createEnemySystem, redrawEnemyHpBar } from './explore/entities/enemy'
 import type { BeastFrames } from './explore/entities/enemy'
 import { createZvonarSystem } from './explore/entities/zvonar'
 import type { ZvonarFrames } from './explore/entities/zvonar'
-import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen } from './explore/entities/gatekeeper'
+import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekeeperIsShiftingGuard } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
@@ -3276,7 +3276,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // числе null: переключатель карт запускает setup() заново, и листы
       // прошлого забега не должны выглядеть как листы этого.
       // Звери с 09.10.2026 условны так же, как Звонарь (8.7 МБ) и Привратник
-      // (6.5 МБ): группа бывает и без зверей, а их листы — ещё 2 МБ.
+      // (8.1 МБ): группа бывает и без зверей, а их листы — ещё 2 МБ.
       beastFramesRef.current = eventAssets.beast
       zvonarFramesRef.current = eventAssets.zvonar
       gatekeeperFramesRef.current = eventAssets.gatekeeper
@@ -4442,13 +4442,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number, via: DamageVia): boolean {
         // ДВЕРЬ ПРИВРАТНИКА — здесь, в единственной общей точке списания HP,
         // чтобы правило было одно на все источники, а не по копии у меча, у
-        // взрыва и у рывка. Дверь поднята ВСЕГДА (окна после удара нет), и
-        // пока удар пришёл СПЕРЕДИ:
+        // взрыва и у рывка. Держит она только ПОДНЯТАЯ ДО КОНЦА (он заметил
+        // героя и доиграл подъём; окна после его удара нет), и пока удар
+        // пришёл СПЕРЕДИ:
         //   меч       — урона нет вовсе, герой отскакивает;
         //   навык     — разовое попадание наносит половину;
         //   тик крови — дверь его не замечает (урон идёт изнутри).
-        // Полный урон проходит в трёх случаях: он оглушён отбитым ударом,
-        // заморожен льдом (см. gatekeeperIsOpen) или удар пришёл в спину.
+        // Полный урон проходит, когда дверь опущена, поднимается или
+        // опускается, и ещё в трёх случаях с поднятой: он оглушён отбитым
+        // ударом, заморожен льдом (см. gatekeeperIsOpen) или удар пришёл в
+        // спину. Всё это — один ответ gatekeeperDoorBlocks.
         // В обоих принятых случаях Привратник вздрагивает, а хитстана не
         // получает: пометку guarded читает applyEnemyHitReaction сразу следом.
         const gatekeeper = enemy.gatekeeper
@@ -4602,9 +4605,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // он ОТКРЫТ станом — оглушён отбитым ударом или заморожен льдом — реакции
         // на попадание тоже нет: урон уже прошёл целиком, а он и так стоит.
         // Хитстан поверх стана ничего бы не добавил, зато после льда сбивал бы
-        // замах, который лёд по правилу только ставит на паузу. Остаётся один
-        // случай — удар в спину: он идёт дальше, по общим правилам зверя.
-        if (enemy.gatekeeper && (enemy.gatekeeper.guarded || gatekeeperIsOpen(enemy))) return
+        // замах, который лёд по правилу только ставит на паузу. Пока дверь
+        // ПОДНИМАЕТСЯ или ОПУСКАЕТСЯ, реакции тоже нет: урон проходит целиком,
+        // но движение двери попадание не прерывает — иначе герой держал бы его
+        // ударами с опущенной дверью до смерти (см. GATEKEEPER_RAISE_MS).
+        // Остаются два случая — удар в спину и удар по опущенной двери: они
+        // идут дальше, по общим правилам зверя.
+        if (enemy.gatekeeper && (enemy.gatekeeper.guarded || gatekeeperIsOpen(enemy) || gatekeeperIsShiftingGuard(enemy))) return
         // "Точка невозврата" (POISE_POINT) — защита от stun-lock: если
         // враг СЕЙЧАС в замахе (windingUp) И уже прошёл его достаточно
         // далеко (windupProgress >= POISE_POINT), урон его больше НЕ
