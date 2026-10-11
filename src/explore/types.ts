@@ -39,8 +39,9 @@ export type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'deat
 // набор листов у него одно и то же, отдельного состояния вроде 'run' нет.
 export type ZvonarAnimKind = 'idle' | 'walk' | 'attack' | 'hurt' | 'death'
 
-// Листы Привратника — ровно ключи GATEKEEPER_SHEETS (constants.ts).
-export type GatekeeperAnimKind = 'idle' | 'walk' | 'attack' | 'hurt' | 'death'
+// Листы Привратника — ровно ключи GATEKEEPER_SHEETS (constants.ts). Ходьбы две:
+// 'walkGuard' — в погоне, дверь поднята; 'walk' — патруль и расследование.
+export type GatekeeperAnimKind = 'idle' | 'walk' | 'walkGuard' | 'attack' | 'hurt' | 'death'
 
 /**
  * Фаза Привратника — что он сейчас делает и какой кадр листа атаки показывать:
@@ -62,8 +63,8 @@ export type GatekeeperPhase = 'ready' | 'windup' | 'follow' | 'stunned'
  * дверь не нужна вовсе.
  */
 export type GatekeeperState = {
-  // Какой лист сейчас на спрайте — та же роль, что zvonarAnim: у пяти листов
-  // пять разных якорей, и ставить якорь можно только при смене листа.
+  // Какой лист сейчас на спрайте — та же роль, что zvonarAnim: у шести листов
+  // шесть разных якорей, и ставить якорь можно только при смене листа.
   anim: GatekeeperAnimKind
   phase: GatekeeperPhase
   // Сколько мс идёт текущая фаза. Кадр листа атаки выводится из него, а не

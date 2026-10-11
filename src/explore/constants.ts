@@ -1570,8 +1570,8 @@ export const ZVONAR_RETREAT_SPEED = 1.6
 const GATEKEEPER_DIR = `${import.meta.env.BASE_URL}assets/sprites/gatekeeper/`
 
 /**
- * ⚠️ ОДИН МНОЖИТЕЛЬ НА ВСЕ ЛИСТЫ — как ZVONAR_SCALE и по той же причине: у пяти
- * листов пять клеток с высотами 288 / 286 / 283 / 283 / 286, и деление на высоту
+ * ⚠️ ОДИН МНОЖИТЕЛЬ НА ВСЕ ЛИСТЫ — как ZVONAR_SCALE и по той же причине: у шести
+ * листов клетки с высотами 288 / 286 / 274 / 283 / 283 / 286, и деление на высоту
  * клетки дало бы скачок размера при каждой смене анимации.
  *
  * Откуда 0.478: рост фигуры на экране приравнен к росту ГЕРОЯ (решение
@@ -1660,6 +1660,28 @@ export const GATEKEEPER_WALK_ANIM_PATROL = 0.2
 // Погоня быстрее патруля ровно во столько же раз, во сколько быстрее сам шаг —
 // иначе ноги скользили бы по полу (тот же принцип, что у WALK_ANIM_CHASE зверя).
 export const GATEKEEPER_WALK_ANIM_CHASE = GATEKEEPER_WALK_ANIM_PATROL * (ENEMY_CHASE_SPEED / ENEMY_PATROL_SPEED)
+
+// --- Ходьба В АГРО: дверь поднята (10.10.2026) ---
+// Свой лист (walkGuard), а не тот же walk: в погоне он идёт пригнувшись за
+// дверью, поставленной стоймя, — прежний лист нёс её наискось, и картинка
+// говорила «открыт», хотя меч в это время блокировался. Листом walk он ходит
+// по-прежнему там, где агро нет: в патруле и в расследовании.
+//
+// На сколько пикселей ЛИСТА опорная стопа уезжает назад за один кадр. Замер по
+// нижним строкам кадров: носок опорной стопы в кадрах 10 → 16 → 0 → 2 проходит
+// 111 px за 9 кадров, пятка в кадрах 10 → 15 — 60 px за 5. Проверено в игре: за
+// опорную фазу (25 тиков, тело ушло на 47.5 px) носок сдвинулся на 0.15 px.
+export const GATEKEEPER_WALK_GUARD_FOOT_STEP = 12.2
+// Скорость кадров ВЫВЕДЕНА из скорости погони, а не задана вторым числом: за
+// один кадр листа стопа проходит FOOT_STEP × масштаб пикселей мира, и ровно
+// столько же за это время обязано пройти тело — иначе ступни скользят по земле.
+// ≈0.326 кадра за тик (19.5 кадра/с, цикл из 17 кадров — 0.87 с). Сменят
+// ENEMY_CHASE_SPEED — темп ног поедет следом сам.
+// ⚠️ «Родной» темп листа — 12 кадров/с (README арт-сессии): при нём ступни не
+// скользили бы на скорости 1.17 px за тик, а погоня идёт на 1.9. Скорость
+// движения здесь не менялась — лист просто играет в 1.63 раза быстрее.
+export const GATEKEEPER_WALK_GUARD_ANIM_SPEED = ENEMY_CHASE_SPEED / (GATEKEEPER_WALK_GUARD_FOOT_STEP * GATEKEEPER_SCALE)
+
 // Хитстан. Не «естественная» скорость листа (16 кадров при 12 кадрах/с дали бы
 // 1.33 с): между зверем (≈351 мс) и Звонарём (≈595 мс). Число под живую проверку.
 export const GATEKEEPER_HURT_COUNT = 16
@@ -1671,16 +1693,27 @@ export const GATEKEEPER_DEATH_ANIM_SPEED = 0.52
 /**
  * Листы Привратника одной таблицей — как ZVONAR_SHEETS и по той же причине.
  *
- * ⚠️ `cols` у каждого листа СВОЙ (9/11/12/8/8) — дефолт loadSheetFrames равен 12
- * и верен только для атаки.
+ * ⚠️ `cols` у каждого листа СВОЙ (9/11/17/12/8/8) — дефолт loadSheetFrames равен
+ * 12 и верен только для атаки.
  * ⚠️ У листа атаки `speed` равен 0 намеренно: его кадры ставит код по времени
  * фазы (см. GatekeeperState.phaseMs), сам AnimatedSprite его не проигрывает.
  * ⚠️ Якоря — числа README арт-сессии. Замер переходов «стойка → анимация» даёт
  * расхождение между листами до 1.2 px листа, то есть до 0.6 px на экране.
+ * ⚠️ У walkGuard anchorX — НЕ число его README (там 0.7455), а ЗАМЕР: с числом
+ * README ноги стояли на 41 px листа (19.6 px экрана) ВПЕРЕДИ ног стойки, и на
+ * каждой смене «стойка ↔ ходьба» фигура прыгала бы вперёд. 0.559 ставит ноги и
+ * подол туда же, где они в стойке (центр масс полосы 8–55 px над линией ступней,
+ * среднее по циклу; у старого walk это расхождение со стойкой — 1.5 px листа).
+ * anchorY из README верен: низ ступней на 268–269 px из 274.
+ * Масштаб у листа ТОТ ЖЕ, отдельного множителя нет: дверь, единственная жёсткая
+ * деталь, в нём 175.2 px высотой против 175.6 в листе атаки. Фигура при этом
+ * НИЖЕ стойки (117–124 px экрана против 128–130) — он пригнулся за дверь, а не
+ * уменьшился; подгонять рост множителем значило бы увеличить дверь.
  */
 export const GATEKEEPER_SHEETS = {
   idle: { src: `${GATEKEEPER_DIR}Gatekeeper_Idle.webp`, cellW: 214, cellH: 288, cols: 9, count: 27, anchorX: 0.456, anchorY: 0.985, speed: GATEKEEPER_IDLE_ANIM_SPEED, loop: true },
   walk: { src: `${GATEKEEPER_DIR}Gatekeeper_Walk.webp`, cellW: 214, cellH: 286, cols: 11, count: 22, anchorX: 0.428, anchorY: 0.978, speed: GATEKEEPER_WALK_ANIM_PATROL, loop: true },
+  walkGuard: { src: `${GATEKEEPER_DIR}Gatekeeper_WalkGuard.webp`, cellW: 220, cellH: 274, cols: 17, count: 17, anchorX: 0.559, anchorY: 0.979, speed: GATEKEEPER_WALK_GUARD_ANIM_SPEED, loop: true },
   attack: { src: `${GATEKEEPER_DIR}Gatekeeper_Attack.webp`, cellW: 336, cellH: 283, cols: 12, count: GATEKEEPER_ATTACK_COUNT, anchorX: 0.656, anchorY: 0.985, speed: 0, loop: false },
   hurt: { src: `${GATEKEEPER_DIR}Gatekeeper_Hurt.webp`, cellW: 222, cellH: 283, cols: 8, count: GATEKEEPER_HURT_COUNT, anchorX: 0.484, anchorY: 0.985, speed: GATEKEEPER_HURT_ANIM_SPEED, loop: false },
   death: { src: `${GATEKEEPER_DIR}Gatekeeper_Death.webp`, cellW: 246, cellH: 286, cols: 8, count: 31, anchorX: 0.531, anchorY: 0.971, speed: GATEKEEPER_DEATH_ANIM_SPEED, loop: false },

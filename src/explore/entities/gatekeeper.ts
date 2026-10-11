@@ -38,7 +38,8 @@ import { redrawEnemyHpBar } from './enemy'
  * Что СВОЁ: дверь; атака, заданная временем (замах, потом выпад и возврат тем
  * же темпом); оглушение от парирования на 2.5 с стойкой на 25-м кадре вместо
  * hurt; кадры листа атаки, которые ставит код, а не AnimatedSprite; якорь,
- * меняющийся с листом.
+ * меняющийся с листом; ДВЕ ходьбы — в погоне он идёт листом walkGuard, с дверью
+ * стоймя (10.10.2026), а в патруле и в расследовании прежним walk.
  */
 export type GatekeeperFrames = Record<GatekeeperAnimKind, Texture[]>
 
@@ -122,7 +123,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
 
   /**
    * Смена листа вместе с якорем — тот же приём и та же причина, что playAnim у
-   * Звонаря: клетки у пяти листов разные.
+   * Звонаря: клетки у шести листов разные.
    */
   function playAnim(enemy: Enemy, kind: GatekeeperAnimKind, frames: GatekeeperFrames) {
     const g = enemy.gatekeeper!
@@ -575,9 +576,16 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
           playAnim(enemy, 'hurt', frames)
         } else if (g.phase !== 'ready') {
           showAttackFrame(enemy, attackFrameOf(g.phase, g.phaseMs), frames)
+        } else if (enemy.x !== prevX && aggroed) {
+          // ПОГОНЯ — ходьба с ПОДНЯТОЙ дверью, свой лист. В агро он двигается
+          // только погоней (ветка `aggroed` в решениях выше), поэтому признак
+          // тот же самый, а не вторая догадка по длине шага. Скорость одна, и
+          // темп листа выведен из неё — playAnim ставит его вместе с листом.
+          playAnim(enemy, 'walkGuard', frames)
         } else if (enemy.x !== prevX) {
-          // Темп ног — по ФАКТИЧЕСКОМУ шагу, как у зверя: погоня и расследование
-          // идут одной скоростью, патруль — другой.
+          // БЕЗ АГРО — прежний лист: патруль и расследование. Темп ног — по
+          // ФАКТИЧЕСКОМУ шагу, как у зверя: расследование идёт скоростью погони,
+          // патруль — своей.
           const moved = Math.abs(enemy.x - prevX)
           const fast = moved > ((C.ENEMY_PATROL_SPEED + C.ENEMY_CHASE_SPEED) / 2) * dt
           playAnim(enemy, 'walk', frames)
