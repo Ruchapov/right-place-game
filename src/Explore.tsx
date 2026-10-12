@@ -1358,9 +1358,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // происходит: 'pending', пока запрос в пути; 'saved' с числами сервера после
   // ответа; 'failed' или 'alreadyClosed' при отказе. Без токена (DevTester вне
   // Telegram) на сервер не ходим вообще — saveStatus='offline'.
-  function sendFinishExplore(died: boolean) {
+  //
+  // ⚠️ Смерть всегда важнее (12.10.2026): забег уходит пройденным, только если
+  // герой ЖИВ в момент завершения. Держит это вызывающий — конец тика зовёт
+  // sendFinishExplore(false) только при живом герое (см. allEventsClosed в
+  // setup). Проверка ниже — вторая линия на случай нового вызывающего: мёртвого
+  // героя она завершает смертью и ГРОМКО, а не молча.
+  function sendFinishExplore(diedArg: boolean) {
     if (finishExploreSentRef.current) return
     finishExploreSentRef.current = true
+
+    const died = diedArg || deathRef.current
+    if (died !== diedArg) {
+      console.error('Explore: забег завершали пройденным при мёртвом герое — завершён смертью')
+    }
 
     // Тикер больше не нужен — забег кончился, дальнейшая физика/AI под
     // экраном итогов только сажали бы батарею телефона без всякой пользы.
@@ -3821,6 +3832,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             opening: false,
             opened: false,
             trapDamaged: false,
+            trapKilled: false,
             eventIndex,
             floorY,
           }
@@ -4285,6 +4297,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // worldX/worldY не заданы — попапа нет вовсе: так закрывается
       // Контрабандист (у него своя всплывашка с итогом сделки) и события,
       // закрытые касанием, у которых награды нет по построению.
+      //
+      // allEventsClosed — «закрыто последнее событие, забег можно завершать
+      // пройденным». Ставит closeEvent, читает ОДНО место: самый конец тика, и
+      // завершает забег, только если герой к этому концу жив (12.10.2026).
+      // Отложено до конца тика намеренно: событие и смертельный удар бывают в
+      // ОДНОМ тике, причём закрытие идёт первым — доиграла смерть босса, а
+      // следом, в том же bossSystem.update, прилетел его шип; исчез последний
+      // труп Звонаря, а следом долетела его волна. Смерть важнее: такой тик —
+      // смерть, а не пройденный забег.
+      // Переменная setup(), а не ref: закрытие и тикер живут в одном замыкании,
+      // и новый запуск setup() начинает с false сам.
+      let allEventsClosed = false
       function closeEvent(index: number, worldX?: number, worldY?: number) {
         const ev = eventsRef.current[index]
         if (!ev || ev.closed) return
@@ -4309,17 +4333,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           next[index] = true
           return next
         })
-        if (!runCompleteFiredRef.current && eventsRef.current.every((e) => e.closed)) {
-          runCompleteFiredRef.current = true
-          // onRunCompleteRef (App.tsx) раньше сразу переключало экран на
-          // старый results-стаб — теперь итоги показывает сам Explore
-          // (ResultsScreen, см. sendFinishExplore/runResult выше), поэтому
-          // ЗДЕСЬ его больше не дёргаем напрямую — иначе App.tsx размонтировал
-          // бы Explore раньше, чем игрок увидит этот экран. onRunCompleteRef
-          // всё же вызывается, но позже и из другого места — внутри
-          // sendFinishExplore, когда придёт настоящий ответ сервера (см. там,
-          // обновляет player в App.tsx).
-          sendFinishExplore(false)
+        if (eventsRef.current.every((e) => e.closed)) {
+          // Все события закрыты — но «забег пройден» решает НЕ это место, а
+          // конец тика, и только для живого героя (см. allEventsClosed у
+          // объявления и проверку в самом конце тикера). До 12.10.2026 финиш
+          // уходил прямо отсюда и про героя не спрашивал: последнее событие,
+          // закрывшееся, пока герой падал замертво, завершало забег пройденным.
+          //
+          // onRunCompleteRef (App.tsx) отсюда не зовётся: итоги показывает сам
+          // Explore (ResultsScreen, см. sendFinishExplore/runResult выше), а
+          // App.tsx размонтировал бы Explore раньше, чем игрок увидит этот
+          // экран. Он вызывается позже — внутри sendFinishExplore, когда придёт
+          // настоящий ответ сервера (обновляет player в App.tsx).
+          allEventsClosed = true
         } else {
           // Забег продолжается — снимаем срез счётчиков (см. sendProgress):
           // событие это самый крупный шаг забега, и именно после него обиднее
@@ -4811,6 +4837,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // на повторных кадрах, пока opening держит цикл закрытым выше.
             chest.isMimic = Math.random() < C.CHEST_MIMIC_CHANCE
             chest.trapDamaged = false
+            chest.trapKilled = false
             if (chest.isMimic) {
               chest.sprite.textures = sheetsFor(chestSheets, 'сундук').trap
               applyChestLayout(chest)
@@ -5476,6 +5503,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // Взрыв ловушки — НЕ удар оружием, парировать его нечем (см.
             // takeDamageUnblockable): тот же разряд, что шипы карты.
             takeDamageUnblockableRef.current(maxHp * C.CHEST_TRAP_DAMAGE_FRAC)
+            // Исход сундука решается ЗДЕСЬ, сразу после удара: герой его не
+            // пережил — сундук не даёт ничего (см. Chest.trapKilled). deathRef, а
+            // не hp: оберег поднимает героя с нуля, и спасённый оберегом ловушку
+            // ПЕРЕЖИЛ — сундук его; бессмертие отладки и рывок, съевшие урон, —
+            // тоже. Сюда же попадает герой, убитый чем-то другим ещё до взрыва.
+            chest.trapKilled = deathRef.current
           }
 
           if (chest.opening && (chest.sprite.currentFrame >= activeFrames.length - 1 || !chest.sprite.playing)) {
@@ -5495,7 +5528,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // строка трофеев не появится сама собой. Клиентский `chest.isMimic`
             // (свой бросок, см. CHEST_MIMIC_CHANCE) остался решать только
             // ВИДИМУЮ сторону — какие кадры играть и бьёт ли ловушка.
-            closeEvent(chest.eventIndex, chest.sprite.x, chest.sprite.y - chest.sprite.height)
+            //
+            // ⚠️ Ловушка УБИЛА героя — событие не закрывается вовсе (12.10.2026):
+            // взрыв доигран, сундук стоит открытым, но ни всплывашки, ни гнезда
+            // в HUD, ни индекса в closedEvents финиша — а значит, сервер не
+            // начислит за него ни трофеев, ни добычи. До правки сундук закрывался
+            // через ≈0.9 с после смертельного удара, уже при мёртвом герое.
+            if (!chest.trapKilled) {
+              closeEvent(chest.eventIndex, chest.sprite.x, chest.sprite.y - chest.sprite.height)
+            }
           }
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }
@@ -5849,6 +5890,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         }
 
         updateCamera(dt)
+
+        // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:
+        // после всех источников урона этого кадра. Герой мёртв — не завершаем
+        // вовсе: его смерть доиграет и сама отправит финиш смертью (ветка
+        // deathRef в приоритете анимаций выше). Флаг при этом не сбрасываем —
+        // мёртвый не оживает, и условие больше не выполнится никогда.
+        // Закрытие вне тика (кнопки и ответы Контрабандиста) попадает сюда же,
+        // на ближайшем тике.
+        if (allEventsClosed && !runCompleteFiredRef.current && !deathRef.current) {
+          runCompleteFiredRef.current = true
+          sendFinishExplore(false)
+        }
       })
 
       // Тикер зарегистрирован — игра реально может идти. cancelled здесь
