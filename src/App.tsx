@@ -31,6 +31,10 @@ import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import SkillLevelNote from './ui/SkillLevelNote'
+import { useMediaQuery } from './ui/useMediaQuery'
+// Только число: «низкий горизонтальный экран» — одно условие на меню, боевые
+// кнопки и камеру забега (см. комментарий у константы).
+import { LOW_LANDSCAPE_MAX_H } from './explore/constants'
 import './App.css'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number
@@ -460,6 +464,55 @@ const REFUGE_HERO_KEYFRAMES = Array.from({ length: REFUGE_HERO_FRAMES }, (_, i) 
 
 const REFUGE_HERO_DURATION = 2.0 // s — подобрано вживую временным ползунком, зашито
 
+// Низкий горизонтальный экран (телефон набок): вкладка «Исследовать» собрана
+// иначе — см. exploreLow в компоненте. Сцена там мельче: 0.30 вместо 0.42, то
+// есть 107 px высоты вместо 149 — столько остаётся на экране 390 px после
+// энергии, гнёзд, кнопки старта и нижней панели (при 0.31 середина вкладки
+// прокручивалась на 2 px).
+const REFUGE_SCENE_SCALE_LOW = 0.30
+const LOW_LANDSCAPE_QUERY = `(orientation: landscape) and (max-height: ${LOW_LANDSCAPE_MAX_H}px)`
+
+/**
+ * Сцена убежища: герой у костра. ЧИСТЫЙ CSS: спрайт-лист как background
+ * элемента, никаких JS-таймеров. Рисует себя НАД точкой-якорем родителя
+ * (translate(-50%, -100%)) и ужимается scale — родитель обязан быть нулевым
+ * боксом (см. комментарий у якоря на вкладке «Исследовать»).
+ */
+function RefugeScene({ scale }: { scale: number }) {
+  return (
+    <div style={{
+      position:'relative',
+      width: REFUGE_FIRE_OFFSET_X + REFUGE_FIRE_FRAME_W,
+      height: REFUGE_HERO_FRAME_H,
+      transform:`translate(-50%, -100%) scale(${scale})`,
+      transformOrigin:'bottom center',
+    }}>
+      {/* Герой — вдох/выдох, alternate (вперёд/назад по кадрам) */}
+      <div style={{
+        position:'absolute', left:0, bottom:0,
+        width:REFUGE_HERO_FRAME_W, height:REFUGE_HERO_FRAME_H,
+        backgroundImage:`url(${import.meta.env.BASE_URL}assets/refuge_hero_idle.png)`,
+        backgroundSize:`${REFUGE_HERO_FRAME_W * REFUGE_HERO_COLS}px ${REFUGE_HERO_FRAME_H * REFUGE_HERO_ROWS}px`,
+        backgroundPosition:'0 0',
+        backgroundRepeat:'no-repeat',
+        animation:`refugeHeroIdle ${REFUGE_HERO_DURATION}s steps(1) infinite alternate`,
+      }} />
+      {/* Костёр — цикл горения, обычное направление */}
+      <div style={{
+        position:'absolute',
+        left:REFUGE_FIRE_OFFSET_X, bottom:0,
+        width:REFUGE_FIRE_FRAME_W, height:REFUGE_FIRE_FRAME_H,
+        transform:`translate(${REFUGE_FIRE_TUNE_X}px, ${REFUGE_FIRE_TUNE_Y}px)`,
+        backgroundImage:`url(${import.meta.env.BASE_URL}assets/refuge_fire_idle.png)`,
+        backgroundSize:`${REFUGE_FIRE_FRAME_W * REFUGE_FIRE_FRAMES}px ${REFUGE_FIRE_FRAME_H}px`,
+        backgroundPosition:'0 0',
+        backgroundRepeat:'no-repeat',
+        animation:'refugeFireIdle 1.5s steps(14) infinite',
+      }} />
+    </div>
+  )
+}
+
 /**
  * Энергия на экране: база с сервера плюс целые шаги, прошедшие с момента
  * отсчёта. Потолок и темп — из общей с сервером пары (`src/energy.ts`), поэтому
@@ -698,6 +751,10 @@ export default function App() {
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
   const [energyBaseAt, setEnergyBaseAt] = useState(() => Date.now())
   const [now, setNow] = useState(() => Date.now())
+  // Низкий горизонтальный экран (телефон набок) — от него зависит только сборка
+  // вкладки «Исследовать»: остальные вкладки одинаковы в обоих положениях и
+  // обходятся колонкой по центру, без рендера по повороту.
+  const exploreLow = useMediaQuery(LOW_LANDSCAPE_QUERY)
 
   useEffect(() => {
     // Предзагрузка каменной рамки экрана ошибки (Explore, позже — экран
@@ -1782,7 +1839,14 @@ export default function App() {
         maskImage: 'linear-gradient(to bottom, black calc(100% - 96px - var(--rp-safe-bottom, 0px)), transparent calc(100% - 56px - var(--rp-safe-bottom, 0px)))',
       }}>
       {activeTab !== 'explore' && (
-        <div>
+        // КОЛОНКА МЕНЮ (решение Андрея 12.10.2026): в горизонтали содержимое
+        // вкладки — колонка шириной с вертикальный экран, по центру, по бокам
+        // каменный фон. 100vmin — короткая сторона экрана, то есть ширина этого
+        // же телефона в вертикали; 40 px — поля контейнера прокрутки (по 20).
+        // В вертикали колонка и так уже этого предела — там не меняется ничего.
+        // Прокручивается по-прежнему весь экран, а не колонка: палец на боковом
+        // поле тоже крутит вкладку.
+        <div style={{ maxWidth:'calc(100vmin - 40px)', margin:'0 auto' }}>
           {activeTab === 'hero' && (() => {
             // player === null здесь означает, что данные реально отсутствуют
             // (после initial-loading guard выше по файлу это уже не должно
@@ -3439,9 +3503,6 @@ export default function App() {
           position:'fixed', top:0, left:0, right:0, bottom:0,
           display:'flex', flexDirection:'column',
           backgroundColor:C.appBg,
-          padding:'20px 8px 0',
-          // Сверху — безопасная зона: в полном экране там кнопки Telegram.
-          paddingTop:'calc(20px + var(--rp-safe-top, 0px))',
           zIndex:1,
         }}>
 
@@ -3482,6 +3543,32 @@ export default function App() {
               to { background-position: -${REFUGE_FIRE_FRAME_W * REFUGE_FIRE_FRAMES}px 0; }
             }
           `}</style>
+          {/* КОЛОНКА вкладки (12.10.2026): всё, кроме фона, живёт в ней. В
+              вертикали она во весь экран — раскладка та же, что была. В
+              горизонтали колонка шириной с короткую сторону экрана стоит по
+              центру, фон вкладки остаётся на весь экран по бокам (решение
+              Андрея). position:relative — от неё считаются проценты якоря сцены
+              (раньше их считали от самого экрана, и в вертикали это одно и то
+              же). Своего z-index у колонки НЕТ намеренно: с ним она стала бы
+              отдельным слоем, и её дети (2 и 3) перестали бы упорядочиваться
+              со слоями фона (0 и 1). */}
+          <div style={{
+            position:'relative',
+            flex:1, minHeight:0,
+            width:'100%', maxWidth:'100vmin', alignSelf:'center',
+            boxSizing:'border-box',
+            display:'flex', flexDirection:'column',
+            padding: exploreLow ? '8px 8px 0' : '20px 8px 0',
+            // Сверху — безопасная зона: в полном экране там кнопки Telegram.
+            paddingTop: `calc(${exploreLow ? 8 : 20}px + var(--rp-safe-top, 0px))`,
+          }}>
+
+          {/* Обычный экран: сцена — якорем на 64% высоты колонки, между
+              энергией и подготовкой (место под неё держит «зона арта» ниже).
+              В низком горизонтальном экране якорь не годится: высоты не хватает,
+              и гнёзда подготовки ложились прямо на героя и костёр (замер s17) —
+              там сцена стоит в потоке, см. ниже. */}
+          {!exploreLow && (
           <div style={{
             position:'absolute', zIndex:2, pointerEvents:'none',
             left:`calc(50% + ${REFUGE_SCENE_H_OFFSET_PCT}%)`,
@@ -3503,39 +3590,13 @@ export default function App() {
             // его ширины.
             width: 0, height: 0,
           }}>
-            <div style={{
-              position:'relative',
-              width: REFUGE_FIRE_OFFSET_X + REFUGE_FIRE_FRAME_W,
-              height: REFUGE_HERO_FRAME_H,
-              transform:`translate(-50%, -100%) scale(${REFUGE_SCENE_SCALE})`,
-              transformOrigin:'bottom center',
-            }}>
-              {/* Герой — вдох/выдох, alternate (вперёд/назад по кадрам) */}
-              <div style={{
-                position:'absolute', left:0, bottom:0,
-                width:REFUGE_HERO_FRAME_W, height:REFUGE_HERO_FRAME_H,
-                backgroundImage:`url(${import.meta.env.BASE_URL}assets/refuge_hero_idle.png)`,
-                backgroundSize:`${REFUGE_HERO_FRAME_W * REFUGE_HERO_COLS}px ${REFUGE_HERO_FRAME_H * REFUGE_HERO_ROWS}px`,
-                backgroundPosition:'0 0',
-                backgroundRepeat:'no-repeat',
-                animation:`refugeHeroIdle ${REFUGE_HERO_DURATION}s steps(1) infinite alternate`,
-              }} />
-              {/* Костёр — цикл горения, обычное направление */}
-              <div style={{
-                position:'absolute',
-                left:REFUGE_FIRE_OFFSET_X, bottom:0,
-                width:REFUGE_FIRE_FRAME_W, height:REFUGE_FIRE_FRAME_H,
-                transform:`translate(${REFUGE_FIRE_TUNE_X}px, ${REFUGE_FIRE_TUNE_Y}px)`,
-                backgroundImage:`url(${import.meta.env.BASE_URL}assets/refuge_fire_idle.png)`,
-                backgroundSize:`${REFUGE_FIRE_FRAME_W * REFUGE_FIRE_FRAMES}px ${REFUGE_FIRE_FRAME_H}px`,
-                backgroundPosition:'0 0',
-                backgroundRepeat:'no-repeat',
-                animation:'refugeFireIdle 1.5s steps(14) infinite',
-              }} />
-            </div>
+            <RefugeScene scale={REFUGE_SCENE_SCALE} />
           </div>
+          )}
 
-          {/* Слой 3 — контент. 1. Логотип */}
+          {/* Слой 3 — контент. 1. Логотип. В низком горизонтальном экране его
+              нет: это украшение, а 48 px высоты там нужнее сцене и гнёздам. */}
+          {!exploreLow && (
           <div style={{
             position:'relative', zIndex:3,
             padding:'8px 0 12px', textAlign:'center',
@@ -3543,6 +3604,7 @@ export default function App() {
           }}>
             ⚔️ Right Place
           </div>
+          )}
 
           {/* 2. Энергия */}
           <div style={{ position:'relative', zIndex:3 }}>
@@ -3565,13 +3627,45 @@ export default function App() {
           </div>
 
           {/* 3. Зона арта — держит высоту между энергией и подготовкой */}
+          {!exploreLow && (
           <div style={{
             flex:1, minHeight:0, margin:'16px 0',
             position:'relative', zIndex:3,
           }} />
+          )}
+
+          {/* НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН: сцена и подготовка — одна прокручиваемая
+              середина, в потоке, друг под другом; кнопка «Начать забег» стоит
+              ПОД ней и видна всегда. Так гнёзда не ложатся на героя ни при какой
+              высоте: не влезло — середина прокручивается (на 390 px влезает
+              целиком, на 360 прокрутка около 30 px). display:contents в обычном
+              экране убирает эту обёртку из раскладки вовсе — там подготовка
+              остаётся прямым ребёнком колонки, как и была. */}
+          <div style={exploreLow ? {
+            flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch',
+            margin:'6px 0', position:'relative', zIndex:3,
+          } : { display:'contents' }}>
+
+          {exploreLow && (
+            // Сцена в потоке: блок высотой с ужатую сцену, якорь — на его
+            // нижней кромке (сцена сама поднимается над якорем на свою высоту).
+            <div style={{
+              position:'relative', flexShrink:0, pointerEvents:'none',
+              height: REFUGE_HERO_FRAME_H * REFUGE_SCENE_SCALE_LOW,
+            }}>
+              <div style={{
+                position:'absolute',
+                left:`calc(50% + ${REFUGE_SCENE_H_OFFSET_PCT}%)`, top:'100%',
+                // Тот же нулевой бокс-якорь, что у сцены обычного экрана выше.
+                width:0, height:0,
+              }}>
+                <RefugeScene scale={REFUGE_SCENE_SCALE_LOW} />
+              </div>
+            </div>
+          )}
 
           {/* 4. Подготовка */}
-          <div style={{ position:'relative', zIndex:3, marginBottom:12 }}>
+          <div style={{ position:'relative', zIndex:3, marginBottom: exploreLow ? 4 : 12 }}>
             <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY }}>ПОДГОТОВКА</div>
             {/* Пять ОДИНАКОВЫХ гнёзд, без разделителя: прежние 3+2 обещали
                 деление на «зелья» и «прочее», которого нет — зелья в гнёзда не
@@ -3670,8 +3764,12 @@ export default function App() {
             })()}
           </div>
 
-          {/* 5. Главная кнопка */}
-          <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + var(--rp-safe-bottom, 0px))' }}>
+          </div>
+
+          {/* 5. Главная кнопка. Отступ снизу — место под нижнюю панель: в
+              обычном экране прежние 96 px, в низком горизонтальном — 81 (панель
+              75 px и зазор), там каждый пиксель высоты на счету. */}
+          <div style={{ position:'relative', zIndex:3, marginBottom:`calc(${exploreLow ? 81 : 96}px + var(--rp-safe-bottom, 0px))` }}>
             <div
               onClick={() => { if (!runBlocked) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
               style={{
@@ -3715,6 +3813,8 @@ export default function App() {
                 )}
               </div>
             )}
+          </div>
+
           </div>
 
           {/* Debug: тестовая панель карт — свёрнута по умолчанию.
@@ -3786,6 +3886,10 @@ export default function App() {
 
       <div style={{
         position:'fixed', bottom:0, left:0, right:0,
+        // В горизонтали панель — той же ширины, что колонка вкладок, и тоже по
+        // центру (при left:0 и right:0 авто-поля центрируют бокс с пределом
+        // ширины). В вертикали предел равен ширине экрана — всё как было.
+        maxWidth:'100vmin', margin:'0 auto',
         display:'flex',
         paddingTop:14,
         // Панель поднята над полосой жеста «домой»: до 12.10.2026 она лежала
