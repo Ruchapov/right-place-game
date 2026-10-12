@@ -4,7 +4,7 @@ import { renderMapToCanvas, renderSpikeTile, backdropPaths, backdropLook } from 
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
-import TouchControls, { paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
+import TouchControls, { LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
   Grid,
@@ -38,7 +38,7 @@ import {
 } from './explore/collision'
 import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from './explore/mapEvents'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier } from './potions'
-import { clamp, pickRandom } from './explore/utils'
+import { clamp, isLowLandscape, pickRandom, worldScaleFor } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
@@ -2996,6 +2996,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           `ожидался ${mapArt.width}×${mapArt.height}. Пересобрать: node tools/build_map_art.mjs`,
         )
       }
+      // ВИД ЗАБЕГА ПОД ТЕКУЩИЙ ЭКРАН (12.10.2026): масштаб мира и признак
+      // низкого горизонтального экрана. Считаются здесь и заново — на каждой
+      // смене размера холста (поворот телефона, полный экран Telegram), см.
+      // onBgResize ниже. Раньше масштаб был константой C.WORLD_SCALE; теперь в
+      // вертикали он равен ей же, а в горизонтали идёт от высоты экрана
+      // (worldScaleFor). Все, кому нужен масштаб, читают viewScale: камера, фон
+      // и рамки панели Контрабандиста.
+      let viewScale = worldScaleFor(app.screen.width, app.screen.height)
+      let viewLow = isLowLandscape(app.screen.width, app.screen.height)
+      // Что ещё пересчитать, когда вид сменился: масштаб контейнера мира, поля
+      // камеры и сама камера. Назначается ниже, после updateCamera, — они
+      // объявлены позже по коду, а обработчик размера нужен уже здесь, фону.
+      let onViewChanged: (() => void) | null = null
+
       // Масштаб картинки фона. Обычно — по высоте экрана. У темы с worldHeight
       // (кладбище) картинка привязана к МИРУ, как в одобренном предпросмотре, и от
       // экрана не зависит; экранная высота остаётся нижней границей — на экране
@@ -3003,7 +3017,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const backdropScale = (textureHeight: number) => {
         const byScreen = app!.screen.height / textureHeight
         if (look.worldHeight === null) return byScreen
-        return Math.max(byScreen, (look.worldHeight * C.WORLD_SCALE) / textureHeight)
+        return Math.max(byScreen, (look.worldHeight * viewScale) / textureHeight)
       }
       const bgFar = farTexture === null ? null
         : new TilingSprite({ texture: farTexture, width: app.screen.width, height: app.screen.height })
@@ -3029,6 +3043,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
       onBgResize = () => {
         const w = app!.screen.width, h = app!.screen.height
+        // Сначала вид: фон кладбища привязан к масштабу мира (backdropScale).
+        viewScale = worldScaleFor(w, h)
+        viewLow = isLowLandscape(w, h)
         if (bgFar !== null && farTexture !== null) {
           bgFar.width = w; bgFar.height = h
           bgFar.tileScale.set(backdropScale(farTexture.height))
@@ -3038,12 +3055,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           bgMid.tileScale.set(backdropScale(midTexture.height))
         }
         bgDim.clear().rect(0, 0, w, h).fill({ color: look.dimColor, alpha: look.dimAlpha })
+        // И мир с камерой — последними: камера двигает слои фона (параллакс), а
+        // их размер должен быть уже новым.
+        onViewChanged?.()
       }
       app.renderer.on('resize', onBgResize)
 
       // Мир: фон-карта и игрок в одном контейнере, двигаются вместе камерой.
       const worldContainer = new Container()
-      worldContainer.scale.set(C.WORLD_SCALE)
+      worldContainer.scale.set(viewScale)
       app.stage.addChild(worldContainer)
 
       // Готовый слой платформ и декора (карты A и F) — первым, в (0, 0) и без
@@ -4233,8 +4253,54 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
-      const worldWidth = grid[0].length * C.TILE_SIZE * worldContainer.scale.x
-      const worldHeight = grid.length * C.TILE_SIZE * worldContainer.scale.y
+      // БОКОВЫЕ ПОЛЯ КАМЕРЫ (px экрана) — только в низком горизонтальном экране,
+      // см. C.CAMERA_FIELD_GAP. Меряются по самим кнопкам: правый край ▶ и левый
+      // край прыжка уже включают безопасные зоны, раскладку и всё, что на них
+      // повлияет потом. HUD ещё нет в дереве (экран «ПОДГОТОВКА») — берутся числа
+      // раскладки без безопасных зон; как только кнопки появятся, замер их
+      // уточнит, и камера доедет плавно (по X у неё lerp).
+      // ⚠️ Замер читает раскладку DOM, поэтому зовётся РЕДКО: на смене вида и раз
+      // в CAMERA_FIELDS_EVERY_MS из тикера (и только в низком экране) — этого
+      // хватает, чтобы поймать безопасные зоны, которые Telegram сообщает позже
+      // самого поворота. В тикере каждый кадр ему не место.
+      let cameraFieldLeft = 0
+      let cameraFieldRight = 0
+      let cameraFieldsAgeMs = 0
+      const CAMERA_FIELDS_EVERY_MS = 500
+      // Безопасная зона сбоку в px — для запасного пути, пока кнопок нет в
+      // дереве. Значение переменной --rp-safe-* (max() из env() и чисел SDK)
+      // скрипту напрямую не прочитать, поэтому его меряет невидимая проба с
+      // такой шириной. Без этого на телефоне с чёлкой первый кадр забега стоял
+      // бы без поправки на неё, и камера доезжала бы на ширину чёлки уже на
+      // глазах у игрока (замер с подставленными зонами: 59 px за первую секунду).
+      const safeInsetPx = (side: 'left' | 'right'): number => {
+        const host = containerRef.current
+        if (!host) return 0
+        const probe = document.createElement('div')
+        probe.style.cssText = `position:absolute;visibility:hidden;pointer-events:none;height:0;width:var(--rp-safe-${side}, 0px)`
+        host.appendChild(probe)
+        const width = probe.getBoundingClientRect().width
+        probe.remove()
+        return width
+      }
+      const measureCameraFields = () => {
+        cameraFieldsAgeMs = 0
+        if (!viewLow) {
+          cameraFieldLeft = 0
+          cameraFieldRight = 0
+          return
+        }
+        const screenW = app!.screen.width
+        const hudRoot = containerRef.current?.parentElement ?? null
+        const moveRightBtn = hudRoot?.querySelector('[aria-label="Вправо"]') ?? null
+        const jumpBtn = hudRoot?.querySelector('[data-btn="jump"]') ?? null
+        const leftEdge = moveRightBtn ? moveRightBtn.getBoundingClientRect().right : LEFT_BLOCK_EDGE + safeInsetPx('left')
+        const rightEdge = jumpBtn ? screenW - jumpBtn.getBoundingClientRect().left : RIGHT_BLOCK_EDGE + safeInsetPx('right')
+        const pad = C.CAMERA_FIELD_GAP + C.CAMERA_FIELD_HERO_PAD * viewScale
+        cameraFieldLeft = leftEdge + pad
+        cameraFieldRight = rightEdge + pad
+      }
+      measureCameraFields()
 
       // dt — deltaTime тика (как везде в файле); при первом вызове (до старта
       // ticker'а) передаём Infinity, чтобы camera-lerp ниже сразу СНАПНУЛ в
@@ -4243,7 +4309,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // player.x/y и player.width/height — координаты МИРА (локальные для
         // worldContainer), а worldContainer.x/y — координаты ЭКРАНА. При
         // scale != 1 их нельзя смешивать без множителя s.
-        const s = C.WORLD_SCALE
+        const s = viewScale
+        // Размер карты на экране — от ТЕКУЩЕГО масштаба: он меняется при повороте.
+        const worldWidth = grid[0].length * C.TILE_SIZE * s
+        const worldHeight = grid.length * C.TILE_SIZE * s
 
         // LOOK-AHEAD (только X): целимся не в игрока, а в точку на
         // LOOKAHEAD_TILES тайлов ВПЕРЕДИ по факту движения. facingRef — уже
@@ -4252,7 +4321,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // упреждение остаётся прежним, а не прыгает к центру.
         const lookaheadPx = facingRef.current * C.LOOKAHEAD_TILES * C.TILE_SIZE
         const focusX = player.x + player.width / 2 + lookaheadPx
-        const targetX = clamp(app!.screen.width / 2 - focusX * s, app!.screen.width - worldWidth, 0)
+        // Края: в обычном экране карта упирается в края экрана (поля нулевые), в
+        // низком горизонтальном — останавливается раньше, на ширину блоков кнопок.
+        const targetX = clamp(
+          app!.screen.width / 2 - focusX * s,
+          app!.screen.width - worldWidth - cameraFieldRight,
+          cameraFieldLeft,
+        )
         // Плавно догоняем target (lerp), а не прыгаем скачком. Коэффициент
         // масштабирован по dt (не зависит от fps) и зажат в [0,1] — на первом
         // вызове (dt=Infinity) это даёт factor=1, то есть мгновенный снап.
@@ -4260,7 +4335,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         worldContainer.x += (targetX - worldContainer.x) * smoothFactor
 
         // Вертикаль — БЕЗ look-ahead и без lerp, как было (не трогаем).
-        const targetY = app!.screen.height * C.CAMERA_V_ANCHOR - (player.y + player.height / 2) * s
+        const anchorV = viewLow ? C.CAMERA_V_ANCHOR_LOW : C.CAMERA_V_ANCHOR
+        const targetY = app!.screen.height * anchorV - (player.y + player.height / 2) * s
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
 
         // Параллакс: far/mid ползут МЕДЛЕННЕЕ карты — доля от движения камеры,
@@ -4282,6 +4358,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
 
       updateCamera(Infinity)
+
+      // Вид сменился (поворот, полный экран): новый масштаб — контейнеру мира,
+      // поля — заново по кнопкам, камера — СРАЗУ на место, без доезда: иначе
+      // после поворота мир секунду плыл бы к герою из прежнего положения.
+      onViewChanged = () => {
+        worldContainer.scale.set(viewScale)
+        measureCameraFields()
+        updateCamera(Infinity)
+      }
 
       // Общие для обоих способов закрытия события (касание — chest/т.п.,
       // убийство кластера — enemy): красит HUD-иконку и проверяет "все 3
@@ -5600,12 +5685,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             const clampedScreenX = clamp(
               topLeftScreen.x,
               C.SMUGGLER_PANEL_MARGIN,
-              app!.screen.width - C.SMUGGLER_PANEL_W * C.WORLD_SCALE - C.SMUGGLER_PANEL_MARGIN
+              app!.screen.width - C.SMUGGLER_PANEL_W * viewScale - C.SMUGGLER_PANEL_MARGIN
             )
             const clampedScreenY = clamp(
               topLeftScreen.y,
               C.SMUGGLER_PANEL_MARGIN,
-              app!.screen.height - C.SMUGGLER_PANEL_H * C.WORLD_SCALE - C.SMUGGLER_PANEL_MARGIN
+              app!.screen.height - C.SMUGGLER_PANEL_H * viewScale - C.SMUGGLER_PANEL_MARGIN
             )
             const clampedWorld = worldContainer.toLocal({ x: clampedScreenX, y: clampedScreenY })
             smugglerPanel.x = clampedWorld.x
@@ -5889,6 +5974,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           rewardFloatsRef.current = stillActive
         }
 
+        // Поля камеры — редкий повторный замер по кнопкам (см.
+        // measureCameraFields); в обычном экране не делается вовсе.
+        if (viewLow) {
+          cameraFieldsAgeMs += ticker.deltaMS
+          if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
+        }
         updateCamera(dt)
 
         // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:
