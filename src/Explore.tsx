@@ -248,7 +248,7 @@ const ERROR_FRAME_SRC = `${import.meta.env.BASE_URL}assets/error_frame.png`
 // что у HP-плиты (ломает %-позиционирование абсолютных детей в некоторых
 // WebView): высота считается от вычисленной ширины через calc().
 const ERROR_FRAME_ASPECT = 446 / 612
-const ERROR_FRAME_W = 'clamp(280px, 92vw, 420px)'
+const ERROR_FRAME_W = 'clamp(280px, 92vmin, 420px)'
 const ERROR_FRAME_H = `calc(${ERROR_FRAME_W} * ${ERROR_FRAME_ASPECT})`
 // Внутреннее поле рамки — доли от размера рамки, замерено по файлу.
 const ERROR_FIELD_X = 0.145
@@ -272,9 +272,18 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
         height: '100vh',
         zIndex: 1000,
         background: Theme.appBg,
+        // Рамка выше экрана (телефон набок: 520 px рамки на 390 px высоты) —
+        // экран прокручивается, и кнопка под рамкой достижима. До 13.10.2026
+        // рамка центрировалась без прокрутки, и в горизонтали «В МЕНЮ» уходила
+        // за нижний край: выйти с итогов можно было, только повернув телефон.
+        // Центрирует рамку её собственный margin:auto, а не alignItems:
+        // выровненное по центру содержимое, которое выше контейнера, обрезается
+        // сверху, и до его верха не докрутить.
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        padding: '8px 0',
+        boxSizing: 'border-box',
       }}
     >
       {pulse && (
@@ -295,6 +304,7 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
           position: 'relative',
           width: ERROR_FRAME_W,
           height: ERROR_FRAME_H,
+          margin: 'auto',
         }}
       >
         <img
@@ -304,9 +314,11 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
         />
         {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
-            иначе текст/кнопка вылезают на камень. Шрифты — clamp(...vw...),
+            иначе текст/кнопка вылезают на камень. Шрифты — clamp(...vmin...),
             не фиксированные px, чтобы масштабировались вместе с рамкой
-            (та же зависимость от vw, что и сама ERROR_FRAME_W). */}
+            (та же зависимость от короткой стороны экрана, что и сама
+            ERROR_FRAME_W: в вертикали это ширина, как и было, а в горизонтали
+            рамка и текст остаются размера вертикального экрана). */}
         <div
           style={{
             position: 'absolute',
@@ -318,7 +330,7 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 'clamp(6px, 2.5vw, 14px)',
+            gap: 'clamp(6px, 2.5vmin, 14px)',
             textAlign: 'center',
             animation: pulse ? 'exploreFramePulse 2s ease-in-out infinite' : undefined,
           }}
@@ -326,7 +338,7 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
           <div
             style={{
               fontFamily: C.FONT_DISPLAY,
-              fontSize: 'clamp(13px, 4.4vw, 19px)',
+              fontSize: 'clamp(13px, 4.4vmin, 19px)',
               fontWeight: 700,
               color: Theme.textMain,
               lineHeight: 1.15,
@@ -334,9 +346,9 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
           >
             {title}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(3px, 1.2vw, 6px)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'clamp(3px, 1.2vmin, 6px)' }}>
             {lines.map((line, i) => (
-              <div key={i} style={{ fontSize: 'clamp(10px, 3.2vw, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
+              <div key={i} style={{ fontSize: 'clamp(10px, 3.2vmin, 13px)', color: Theme.textDim, lineHeight: 1.35 }}>
                 {line}
               </div>
             ))}
@@ -361,7 +373,7 @@ const RESULTS_PLATE_SRC = `${import.meta.env.BASE_URL}assets/results_plate.png`
 // что у ERROR_FRAME/HP-плиты (ломает %-позиционирование абсолютных детей в
 // некоторых WebView).
 const RESULTS_FRAME_ASPECT = 596 / 420
-const RESULTS_FRAME_W = 'clamp(300px, 94vw, 400px)'
+const RESULTS_FRAME_W = 'clamp(300px, 94vmin, 400px)'
 const RESULTS_FRAME_H = `calc(${RESULTS_FRAME_W} * ${RESULTS_FRAME_ASPECT})`
 // Внутреннее поле рамки — доли (0..1) от размера рамки, замерено по файлу.
 const RESULTS_FIELD_X = 0.105
@@ -653,12 +665,21 @@ function ResultsScreen({
         height: '100vh',
         zIndex: 2000,
         background: Theme.appBg,
+        // Рамка выше экрана (телефон набок: 520 px рамки на 390 px высоты) —
+        // экран прокручивается, и кнопка под рамкой достижима. До 13.10.2026
+        // рамка центрировалась без прокрутки, и в горизонтали «В МЕНЮ» уходила
+        // за нижний край: выйти с итогов можно было, только повернув телефон.
+        // Центрирует рамку её собственный margin:auto, а не alignItems:
+        // выровненное по центру содержимое, которое выше контейнера, обрезается
+        // сверху, и до его верха не докрутить.
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        padding: '8px 0',
+        boxSizing: 'border-box',
       }}
     >
-      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H }}>
+      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
         <img
           src={RESULTS_FRAME_SRC}
           alt=""
@@ -698,7 +719,7 @@ function ResultsScreen({
               style={{
                 fontFamily: C.FONT_DISPLAY,
                 fontWeight: 900,
-                fontSize: 'clamp(19px, 6.2vw, 26px)',
+                fontSize: 'clamp(19px, 6.2vmin, 26px)',
                 letterSpacing: '0.08em',
                 color: result.died ? Theme.danger : Theme.textMain,
                 textAlign: 'center',
@@ -710,7 +731,7 @@ function ResultsScreen({
                 неотличимой от успеха, больше нет (см. SaveStatus выше). */}
             <div
               style={{
-                fontSize: 'clamp(10px, 3vw, 12px)',
+                fontSize: 'clamp(10px, 3vmin, 12px)',
                 fontStyle: 'italic',
                 textAlign: 'center',
                 color: SAVE_STATUS_VIEW[saveStatus].color,
@@ -726,7 +747,7 @@ function ResultsScreen({
             {localEventFallback && (
               <div
                 style={{
-                  fontSize: 'clamp(9px, 2.8vw, 11px)',
+                  fontSize: 'clamp(9px, 2.8vmin, 11px)',
                   fontWeight: 700,
                   letterSpacing: '0.04em',
                   textAlign: 'center',
@@ -752,7 +773,7 @@ function ResultsScreen({
               же, что весь забег были в HUD, игрок их уже знает; а два
               одинаковых кластера врагов давали бы "Враг"/"Враг" подряд,
               что читается как ошибка. */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 'clamp(18px, 6.5vw, 30px)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 'clamp(18px, 6.5vmin, 30px)', flexShrink: 0 }}>
             {eventClosed.map((closed, i) => {
               const kind = eventKinds[i]
               if (!kind) return null
@@ -763,7 +784,7 @@ function ResultsScreen({
                   alt=""
                   draggable={false}
                   style={{
-                    width: 'clamp(42px, 13vw, 56px)',
+                    width: 'clamp(42px, 13vmin, 56px)',
                     aspectRatio: '1',
                     objectFit: 'contain',
                     flexShrink: 0,
@@ -801,7 +822,7 @@ function ResultsScreen({
                 gap: 2,
               }}
             >
-              <div style={{ fontSize: 'clamp(8px, 2.4vw, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
+              <div style={{ fontSize: 'clamp(8px, 2.4vmin, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
                 {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -809,7 +830,7 @@ function ResultsScreen({
                   style={{
                     fontFamily: C.FONT_DISPLAY,
                     fontWeight: 900,
-                    fontSize: 'clamp(19px, 5.8vw, 25px)',
+                    fontSize: 'clamp(19px, 5.8vmin, 25px)',
                     color: result.died ? Theme.danger : Theme.glowCore,
                     lineHeight: 1,
                   }}
@@ -827,7 +848,7 @@ function ResultsScreen({
           {saveStatus !== 'saved' && (
             <div
               style={{
-                fontSize: 'clamp(9px, 2.6vw, 11px)',
+                fontSize: 'clamp(9px, 2.6vmin, 11px)',
                 fontStyle: 'italic',
                 color: Theme.textDim,
                 textAlign: 'center',
@@ -849,7 +870,7 @@ function ResultsScreen({
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                 <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
                   ПРОКАЧКА
                 </div>
                 <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
@@ -859,7 +880,7 @@ function ResultsScreen({
                   style={{
                     fontFamily: C.FONT_DISPLAY,
                     fontWeight: 900,
-                    fontSize: 'clamp(14px, 4.4vw, 18px)',
+                    fontSize: 'clamp(14px, 4.4vmin, 18px)',
                     letterSpacing: '0.06em',
                     color: Theme.glowCore,
                   }}
@@ -874,7 +895,7 @@ function ResultsScreen({
               ]
                 .filter((stat) => stat.value > 0)
                 .map((stat) => (
-                  <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}>
+                  <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}>
                     +{stat.value} {stat.label}
                   </div>
                 ))}
@@ -888,7 +909,7 @@ function ResultsScreen({
               {result.skillLevelUps.map((up) => (
                 <div
                   key={up.skillId}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}
                 >
                   <img
                     src={skillSealSrc(up.skillId)}
@@ -916,7 +937,7 @@ function ResultsScreen({
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                 <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
                   ДОБЫЧА
                 </div>
                 <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
@@ -942,7 +963,7 @@ function ResultsScreen({
                         style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
                       />
                     )}
-                    <div style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain, minWidth: 0 }}>
+                    <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, minWidth: 0 }}>
                       {view.name}
                     </div>
                   </div>
@@ -955,7 +976,7 @@ function ResultsScreen({
               {result.dropsLost.length > 0 && (
                 <div
                   style={{
-                    fontSize: 'clamp(10px, 2.9vw, 12px)',
+                    fontSize: 'clamp(10px, 2.9vmin, 12px)',
                     color: Theme.danger,
                     textAlign: 'center',
                     lineHeight: 1.45,
@@ -986,7 +1007,7 @@ function ResultsScreen({
                   color: Theme.glowCore,
                   fontFamily: C.FONT_DISPLAY,
                   fontWeight: 700,
-                  fontSize: 'clamp(13px, 4vw, 15px)',
+                  fontSize: 'clamp(13px, 4vmin, 15px)',
                   letterSpacing: '0.06em',
                   cursor: 'pointer',
                 }}
@@ -1005,7 +1026,7 @@ function ResultsScreen({
                 color: Theme.glowCore,
                 fontFamily: C.FONT_DISPLAY,
                 fontWeight: 700,
-                fontSize: 'clamp(13px, 4vw, 15px)',
+                fontSize: 'clamp(13px, 4vmin, 15px)',
                 letterSpacing: '0.06em',
                 cursor: saveStatus === 'pending' ? 'default' : 'pointer',
                 opacity: saveStatus === 'pending' ? 0.5 : 1,
@@ -6120,7 +6141,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         {setupError && (
           <div
             style={{
-              fontSize: 'clamp(9px, 2.6vw, 11px)',
+              fontSize: 'clamp(9px, 2.6vmin, 11px)',
               color: Theme.textDim,
               lineHeight: 1.3,
               whiteSpace: 'normal',
@@ -6138,7 +6159,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             border: `2px solid ${Theme.glowEdge}`,
             background: Theme.nicheDeep,
             color: Theme.glowCore,
-            fontSize: 'clamp(12px, 3.8vw, 14px)',
+            fontSize: 'clamp(12px, 3.8vmin, 14px)',
             fontWeight: 700,
             cursor: 'pointer',
             whiteSpace: 'nowrap',

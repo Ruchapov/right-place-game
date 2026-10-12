@@ -30,7 +30,7 @@ export type PastRunNoticeData =
 const RESULTS_FRAME_SRC = `${import.meta.env.BASE_URL}assets/results_frame.png`
 const RESULTS_PLATE_SRC = `${import.meta.env.BASE_URL}assets/results_plate.png`
 const RESULTS_FRAME_ASPECT = 596 / 420
-const RESULTS_FRAME_W = 'clamp(300px, 94vw, 400px)'
+const RESULTS_FRAME_W = 'clamp(300px, 94vmin, 400px)'
 const RESULTS_FRAME_H = `calc(${RESULTS_FRAME_W} * ${RESULTS_FRAME_ASPECT})`
 const RESULTS_FIELD_X = 0.105
 const RESULTS_FIELD_Y = 0.075
@@ -55,7 +55,7 @@ const NOTICE_CSS = `
     color: ${Theme.glowCore};
     font-family: ${C.FONT_DISPLAY};
     font-weight: 700;
-    font-size: clamp(13px, 4vw, 15px);
+    font-size: clamp(13px, 4vmin, 15px);
     letter-spacing: 0.06em;
     cursor: pointer;
   }
@@ -108,13 +108,22 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
         height: '100vh',
         zIndex: 2000,
         background: Theme.appBg,
+        // (Как у ResultsScreen — менять вместе.) Рамка выше экрана (телефон набок: 520 px рамки на 390 px высоты) —
+        // экран прокручивается, и кнопка под рамкой достижима. До 13.10.2026
+        // рамка центрировалась без прокрутки, и в горизонтали «В МЕНЮ» уходила
+        // за нижний край: выйти с итогов можно было, только повернув телефон.
+        // Центрирует рамку её собственный margin:auto, а не alignItems:
+        // выровненное по центру содержимое, которое выше контейнера, обрезается
+        // сверху, и до его верха не докрутить.
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        padding: '8px 0',
+        boxSizing: 'border-box',
       }}
     >
       <style>{NOTICE_CSS}</style>
-      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H }}>
+      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
         <img
           src={RESULTS_FRAME_SRC}
           alt=""
@@ -148,7 +157,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
               style={{
                 fontFamily: C.FONT_DISPLAY,
                 fontWeight: 900,
-                fontSize: 'clamp(19px, 6.2vw, 26px)',
+                fontSize: 'clamp(19px, 6.2vmin, 26px)',
                 letterSpacing: '0.08em',
                 color: died ? Theme.danger : Theme.textMain,
                 textAlign: 'center',
@@ -158,7 +167,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
             </div>
             <div
               style={{
-                fontSize: 'clamp(10px, 3vw, 12px)',
+                fontSize: 'clamp(10px, 3vmin, 12px)',
                 fontStyle: 'italic',
                 textAlign: 'center',
                 color: Theme.textDim,
@@ -195,7 +204,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                   gap: 2,
                 }}
               >
-                <div style={{ fontSize: 'clamp(8px, 2.4vw, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
+                <div style={{ fontSize: 'clamp(8px, 2.4vmin, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
                   {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -203,7 +212,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                     style={{
                       fontFamily: C.FONT_DISPLAY,
                       fontWeight: 900,
-                      fontSize: 'clamp(19px, 5.8vw, 25px)',
+                      fontSize: 'clamp(19px, 5.8vmin, 25px)',
                       color: trophyLossView ? Theme.danger : Theme.glowCore,
                       lineHeight: 1,
                     }}
@@ -228,7 +237,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                   <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                  <div style={{ fontSize: 'clamp(9px, 2.6vw, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
                     ПРОКАЧКА
                   </div>
                   <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
@@ -238,7 +247,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                     style={{
                       fontFamily: C.FONT_DISPLAY,
                       fontWeight: 900,
-                      fontSize: 'clamp(14px, 4.4vw, 18px)',
+                      fontSize: 'clamp(14px, 4.4vmin, 18px)',
                       letterSpacing: '0.06em',
                       color: Theme.glowCore,
                     }}
@@ -253,7 +262,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                 ]
                   .filter((stat) => stat.value > 0)
                   .map((stat) => (
-                    <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}>
+                    <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}>
                       +{stat.value} {stat.label}
                     </div>
                   ))}
@@ -265,7 +274,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                 {notice.result.skillLevelUps.map((up) => (
                   <div
                     key={up.skillId}
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}
                   >
                     <img
                       src={skillSealSrc(up.skillId)}
@@ -283,7 +292,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
               вернулась. Ноль не показываем: "+0" читается как поломка, а не
               как "возвращать было нечего". */}
           {notice.kind === 'abandoned' && notice.summary.energyRefunded > 0 && (
-            <div style={{ fontSize: 'clamp(11px, 3.2vw, 13px)', color: Theme.textMain, textAlign: 'center', flexShrink: 0 }}>
+            <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', flexShrink: 0 }}>
               Энергия возвращена: +{notice.summary.energyRefunded}
             </div>
           )}

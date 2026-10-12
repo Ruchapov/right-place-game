@@ -86,9 +86,13 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
             inset: 0,
             zIndex: 5000,
             background: 'rgba(0,0,0,0.55)',
+            // Рамка не ниже 340 px, а экран телефона набок бывает ниже (с шапкой
+            // Telegram — 325): тогда панель прокручивается, и «Выйти» достижима.
+            // Центрирует рамку её margin:auto — выровненное по центру содержимое
+            // выше контейнера обрезалось бы сверху без возможности докрутить.
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
           }}
         >
           <div
@@ -97,6 +101,9 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
               position: 'relative',
               width: C.SETTINGS_FRAME_W,
               height: C.SETTINGS_FRAME_H,
+              // Сжиматься по ширине рамке НЕ запрещаем: на узком экране она
+              // шире его (399 px на 390) и ужимается сама — так было всегда.
+              margin: 'auto',
             }}
           >
             <img
