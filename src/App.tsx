@@ -1772,9 +1772,14 @@ export default function App() {
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
         padding: 20,
-        paddingBottom: 'calc(96px + env(safe-area-inset-bottom))',
-        WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 96px), transparent calc(100% - 56px))',
-        maskImage: 'linear-gradient(to bottom, black calc(100% - 96px), transparent calc(100% - 56px))',
+        // Безопасные зоны (src/index.css, «БЕЗОПАСНЫЕ ЗОНЫ ЭКРАНА»): сверху в
+        // полном экране лежат кнопки Telegram, снизу — полоса жеста «домой».
+        // Нижняя панель поднята на ту же зону (см. навбар ниже), поэтому и
+        // затухание содержимого под ней сдвинуто вместе с ней.
+        paddingTop: 'calc(20px + var(--rp-safe-top, 0px))',
+        paddingBottom: 'calc(96px + var(--rp-safe-bottom, 0px))',
+        WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 96px - var(--rp-safe-bottom, 0px)), transparent calc(100% - 56px - var(--rp-safe-bottom, 0px)))',
+        maskImage: 'linear-gradient(to bottom, black calc(100% - 96px - var(--rp-safe-bottom, 0px)), transparent calc(100% - 56px - var(--rp-safe-bottom, 0px)))',
       }}>
       {activeTab !== 'explore' && (
         <div>
@@ -3435,6 +3440,8 @@ export default function App() {
           display:'flex', flexDirection:'column',
           backgroundColor:C.appBg,
           padding:'20px 8px 0',
+          // Сверху — безопасная зона: в полном экране там кнопки Telegram.
+          paddingTop:'calc(20px + var(--rp-safe-top, 0px))',
           zIndex:1,
         }}>
 
@@ -3664,7 +3671,7 @@ export default function App() {
           </div>
 
           {/* 5. Главная кнопка */}
-          <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + env(safe-area-inset-bottom))' }}>
+          <div style={{ position:'relative', zIndex:3, marginBottom:'calc(96px + var(--rp-safe-bottom, 0px))' }}>
             <div
               onClick={() => { if (!runBlocked) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
               style={{
@@ -3714,7 +3721,7 @@ export default function App() {
               Прижата к верху, ширина всегда в пределах экрана (left+right:8),
               maxHeight ограничивает панель верхней частью экрана — нижняя
               половина должна оставаться свободной для оценки затемнения. */}
-          <div style={{ position:'fixed', top:8, left:8, right:8, zIndex:1001, display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4 }}>
+          <div style={{ position:'fixed', top:'calc(8px + var(--rp-safe-top, 0px))', left:8, right:8, zIndex:1001, display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4 }}>
             <div
               onClick={() => setShowExploreDebug(v => !v)}
               style={{
@@ -3781,6 +3788,10 @@ export default function App() {
         position:'fixed', bottom:0, left:0, right:0,
         display:'flex',
         paddingTop:14,
+        // Панель поднята над полосой жеста «домой»: до 12.10.2026 она лежала
+        // прямо в ней, и нижний ряд иконок на iPhone делил место с жестом.
+        // Содержимое вкладок отступает на ту же зону (paddingBottom выше).
+        paddingBottom:'var(--rp-safe-bottom, 0px)',
         zIndex:999
       }}>
         {([

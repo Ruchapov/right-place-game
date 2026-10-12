@@ -40,8 +40,10 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
       <div
         style={{
           position: 'fixed',
-          top: 'calc(env(safe-area-inset-top) + 6px)',
-          left: 8,
+          // Отступы от безопасных зон — общие переменные из index.css: сверху в
+          // полном экране лежат кнопки Telegram, слева в горизонтали — чёлка.
+          top: 'calc(var(--rp-safe-top, 0px) + 6px)',
+          left: 'calc(var(--rp-safe-left, 0px) + 8px)',
           zIndex: 1001,
           width: C.HP_FRAME_W,
           height: C.HP_FRAME_H,

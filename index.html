@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: страница занимает экран целиком, включая область под
+         чёлкой и полосой жеста, а браузер начинает отдавать env(safe-area-inset-*).
+         Без него env() всегда 0. Отступы от этих зон игра ставит сама — см.
+         «БЕЗОПАСНЫЕ ЗОНЫ ЭКРАНА» в src/index.css. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&display=swap" rel="stylesheet" />

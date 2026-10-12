@@ -55,8 +55,9 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
         aria-label="Настройки"
         style={{
           position: 'fixed',
-          top: 'calc(env(safe-area-inset-top) + 6px)',
-          right: C.SETTINGS_BTN_RIGHT,
+          // Те же отступы от безопасных зон, что у плиты HP (index.css).
+          top: 'calc(var(--rp-safe-top, 0px) + 6px)',
+          right: `calc(var(--rp-safe-right, 0px) + ${C.SETTINGS_BTN_RIGHT}px)`,
           zIndex: 1001,
           width: C.SETTINGS_BTN_SIZE,
           height: C.SETTINGS_BTN_SIZE,

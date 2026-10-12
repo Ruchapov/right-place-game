@@ -6108,7 +6108,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         <div
           style={{
             position: 'fixed',
-            top: 'env(safe-area-inset-top)',
+            top: 'var(--rp-safe-top, 0px)',
             left: 0,
             right: 0,
             zIndex: 1002,
@@ -6146,7 +6146,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         <div
           style={{
             position: 'fixed',
-            top: 'env(safe-area-inset-top)',
+            top: 'var(--rp-safe-top, 0px)',
             left: 0,
             right: 0,
             zIndex: 1002,
@@ -6190,7 +6190,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           <div
             style={{
               position: 'fixed',
-              top: `calc(env(safe-area-inset-top) + 6px + ${C.HP_FRAME_H} + 6px)`,
+              top: `calc(var(--rp-safe-top, 0px) + 6px + ${C.HP_FRAME_H} + 6px)`,
               left: 0,
               right: 0,
               zIndex: 1002,
@@ -6256,13 +6256,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         <div
           style={{
             position: 'fixed',
-            top: 'calc(env(safe-area-inset-top) + 6px)',
+            top: 'calc(var(--rp-safe-top, 0px) + 6px)',
             // Центр по ПРОСВЕТУ между HP-плитой (left:8 + HP_FRAME_W) и
             // шестерёнкой (SETTINGS_BTN_RIGHT + SETTINGS_BTN_SIZE от правого
             // края) — left+right без width, браузер сам считает ширину блока
             // как промежуток между границами (не left:50%+transform).
-            left: `calc(8px + ${C.HP_FRAME_W} + 8px)`,
-            right: C.SETTINGS_BTN_RIGHT + C.SETTINGS_BTN_SIZE + 8,
+            // Отступы от безопасных зон — те же, что у самих плиты и шестерёнки:
+            // просвет считается между ними, где бы они ни стояли.
+            left: `calc(var(--rp-safe-left, 0px) + 8px + ${C.HP_FRAME_W} + 8px)`,
+            right: `calc(var(--rp-safe-right, 0px) + ${C.SETTINGS_BTN_RIGHT + C.SETTINGS_BTN_SIZE + 8}px)`,
             zIndex: 1001,
             display: 'flex',
             flexDirection: 'column',

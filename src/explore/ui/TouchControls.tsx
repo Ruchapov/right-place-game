@@ -442,28 +442,19 @@ export default function TouchControls({
           (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
           refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
           dodgePressedRef) — меняется только вид, не способ ввода. */}
-      {/* Панель кнопок поднята над низом экрана на safe-area + 16px.
-          ⚠️ Источников отступа ЧЕТЫРЕ, и берётся МАКСИМУМ: ни один не работает
-          везде, а измеряют они одно и то же, поэтому складывать нельзя —
-          получился бы двойной отступ там, где доступны сразу два.
-            --tg-viewport-safe-area-inset-bottom и
-            --tg-viewport-content-safe-area-inset-bottom — РАБОЧИЙ источник в
-              нашем случае. Имена именно такие: их заводит @telegram-apps/sdk
-              (bindViewportCssVars в main.tsx), и без того вызова переменных нет
-              вовсе;
-            --tg-safe-area-inset-bottom — имя из собственного скрипта Telegram
-              (telegram-web-app.js). Мы его не грузим, но оставлено на случай
-              запуска в обёртке, которая его подставляет;
-            env(safe-area-inset-bottom) — у нас ВСЕГДА 0: в index.html у
-              <meta name="viewport"> нет viewport-fit=cover, а без него браузер
-              insets не отдаёт. Оставлен на случай, если cover добавят;
-            16px — собственный отступ. Он же и есть весь подъём там, где все
-              остальные нули (браузер, старый клиент Telegram).
-          Все значения приходят С ЕДИНИЦАМИ (SDK пишет `${n}px`) — иначе max()
-          стал бы невалидным и правило отвалилось бы целиком. */}
+      {/* Панель кнопок поднята над низом экрана на безопасную зону + 16px.
+          Сама зона — общая переменная --rp-safe-bottom (src/index.css, раздел
+          «БЕЗОПАСНЫЕ ЗОНЫ ЭКРАНА»): там же записано, из каких четырёх источников
+          она берётся и почему между ними max, а не сумма. Формула та же, что
+          стояла здесь до 12.10.2026, — переехала, чтобы её читали и остальные
+          края экрана.
+          16px — собственный отступ. Он же и есть весь подъём там, где зона
+          нулевая (браузер, старый клиент Telegram).
+          Запасное значение в var() — на случай, если переменной нет вовсе: без
+          него calc() стал бы невалидным и панель легла бы на нижний край. */}
       <div data-touch-controls="" style={{
         position: 'absolute',
-        bottom: 'calc(16px + max(env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px), var(--tg-viewport-content-safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px)))',
+        bottom: 'calc(16px + var(--rp-safe-bottom, 0px))',
         left: 0, right: 0, height: PANEL_H, zIndex: 1001, pointerEvents: 'none',
       }}>
         {/* Движение — левый блок */}
@@ -495,7 +486,9 @@ export default function TouchControls({
             // прыжка и веера справа: раньше ◀/▶ были 52px при атаке 56px и
             // веере 44px, и нижний ряд читался неровным.
             // Координаты прежние (left 23 / bottom 12) — их правка была лишней.
-            position: 'absolute', left: 23, bottom: 12,
+            // Слева прибавлена безопасная зона: в горизонтали там чёлка или
+            // скруглённый угол экрана (в вертикали она нулевая).
+            position: 'absolute', left: 'calc(23px + var(--rp-safe-left, 0px))', bottom: 12,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -529,8 +522,9 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            // Координаты прежние (left 90 / bottom 12).
-            position: 'absolute', left: 90, bottom: 12,
+            // Координаты прежние (left 90 / bottom 12), плюс та же безопасная
+            // зона слева, что у ◀.
+            position: 'absolute', left: 'calc(90px + var(--rp-safe-left, 0px))', bottom: 12,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -694,7 +688,10 @@ export default function TouchControls({
 
             bindTap(pot, () => { drinkPressedRef.current = true })
           }}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}
+          // right — безопасная зона справа: кнопки блока стоят от ПРАВОГО края
+          // этого контейнера (см. «ПРАВЫЙ БЛОК» вверху файла), и сдвиг самого
+          // контейнера уводит их из-под чёлки всем блоком сразу.
+          style={{ position: 'absolute', top: 0, left: 0, right: 'var(--rp-safe-right, 0px)', bottom: 0, pointerEvents: 'none' }}
         />
       </div>
     </>

@@ -50,6 +50,51 @@
   }
 }
 
+/* БЕЗОПАСНЫЕ ЗОНЫ ЭКРАНА — одно место на всю игру (12.10.2026).
+   Сколько отступить от каждого края, чтобы не попасть под чёлку, скруглённый
+   угол, полосу жеста «домой» и под собственные кнопки Telegram. Читают их плита
+   HP, шестерёнка, обе группы боевых кнопок, нижняя панель меню и верх меню.
+
+   Источников три, и ни один не работает везде:
+     env(safe-area-inset-*)            — браузер; отдаёт числа только при
+                                         viewport-fit=cover (стоит в index.html);
+     --tg-viewport-safe-area-inset-*   — @telegram-apps/sdk, чёлка и полоса жеста
+                                         (появляются после bindViewportCssVars в
+                                         main.tsx);
+     --tg-viewport-content-safe-area-inset-* — он же: место под кнопки самого
+                                         Telegram. В полном экране они лежат
+                                         сверху.
+   --tg-safe-area-inset-* / --tg-content-safe-area-inset-* — те же числа под
+   именами собственного скрипта Telegram; мы его не грузим, оставлены на случай
+   обёртки, которая их подставляет.
+
+   ⚠️ env() и --tg-…-safe-area меряют ОДНО И ТО ЖЕ (вырез экрана), поэтому между
+   ними max, а не сумма: сложение удвоило бы отступ там, где доступны оба.
+   ⚠️ Сверху зона кнопок Telegram ПРИБАВЛЯЕТСЯ к вырезу: кнопки стоят под
+   чёлкой, а не вместо неё. По остальным сторонам своих элементов Telegram не
+   рисует, и там взят общий max — так нижний отступ считался и до этой правки
+   (проверен на iPhone 29.09.2026), менять его формулу незачем.
+   ⚠️ Все значения приходят С ЕДИНИЦАМИ (SDK пишет `${n}px`), запасные — тоже
+   `0px`: голый 0 сделал бы max() невалидным, и правило отвалилось бы целиком. */
+:root {
+  --rp-safe-top: calc(
+    max(env(safe-area-inset-top, 0px), var(--tg-viewport-safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px))
+    + max(var(--tg-viewport-content-safe-area-inset-top, 0px), var(--tg-content-safe-area-inset-top, 0px))
+  );
+  --rp-safe-right: max(
+    env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px),
+    var(--tg-viewport-content-safe-area-inset-right, 0px), var(--tg-safe-area-inset-right, 0px)
+  );
+  --rp-safe-bottom: max(
+    env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px),
+    var(--tg-viewport-content-safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px)
+  );
+  --rp-safe-left: max(
+    env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px),
+    var(--tg-viewport-content-safe-area-inset-left, 0px), var(--tg-safe-area-inset-left, 0px)
+  );
+}
+
 #root {
   width: 1126px;
   max-width: 100%;
