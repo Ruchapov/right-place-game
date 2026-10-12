@@ -1511,6 +1511,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
   // ⚠️ Возвращает boolean: true — герой ПАРИРОВАЛ, урона не было (см. takeDamage).
   const takeDamageRef = useRef<(amount: number) => boolean>(() => false)
+  // Таран Привратника — своя парируемая точка, с широким окном (см. takeRamDamage).
+  const takeRamDamageRef = useRef<(amount: number, enemy: Enemy) => boolean>(() => false)
   // Непарируемый урон (волна босса, шипы карты, ловушка мимика) — отдельная
   // ссылка, чтобы на вызове было видно решение, а не забытый аргумент.
   const takeDamageUnblockableRef = useRef<(amount: number) => void>(() => {})
@@ -1713,6 +1715,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // КОРОЧЕ анимации: после его закрытия герой ещё стоит в блоке, но уже уязвим.
   const parryWindowRef = useRef(0)
   const parryCooldownRef = useRef(0) // мс — остаток кулдауна самой кнопки
+  // Номер принятого нажатия 🔄, растёт на каждом. Нужен одному — широкому окну
+  // парирования у ТАРАНА Привратника (см. takeRamDamage): нажатие, сделанное во
+  // время тарана, записывается этим номером на самого Привратника, и удар
+  // отбит, только если стойка ТОГО ЖЕ нажатия ещё стоит.
+  const parryPressRef = useRef(0)
   // Какой кадр ЛИСТА блока (0..8) показан прямо сейчас. Считается в блоке
   // таймеров парирования, читается двумя местами: веткой анимации (что рисовать)
   // и искрой отбива (где у меча клинок на этом кадре).
@@ -2164,6 +2171,30 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   }
 
   /**
+   * Удар ТАРАНОМ Привратника — парируемый, но с ШИРОКИМ окном (решение Андрея
+   * 12.10.2026; число и причина — GATEKEEPER_PARRY_LEAD_MS в constants.ts).
+   *
+   * Отбит, если герой встал в стойку ВО ВРЕМЯ этого тарана (не раньше 100 мс от
+   * его начала) и стойка того же нажатия ещё стоит: номер нажатия записан на
+   * Привратнике в момент нажатия (см. блок 🔄 в тикере), а стойку до удара
+   * держит блок таймеров парирования там же. Иначе — обычная takeDamage, то
+   * есть общее окно в 250 мс от нажатия: оно покрывает последние 250 мс тарана
+   * и так, отдельного случая здесь нет.
+   *
+   * ⚠️ Отдельная функция, а не параметр takeDamage: широкое окно — решение про
+   * ОДНУ атаку одного врага. У зверя, Звонаря и босса окно прежнее, и получить
+   * широкое случайно, забыв аргумент или передав лишний, они не должны.
+   */
+  function takeRamDamage(amount: number, enemy: Enemy): boolean {
+    const g = enemy.gatekeeper
+    if (g && g.parryPress !== 0 && g.parryPress === parryPressRef.current && parryingRef.current) {
+      spawnParrySparkRef.current()
+      return true
+    }
+    return takeDamage(amount)
+  }
+
+  /**
    * НЕПАРИРУЕМЫЙ урон: волна топота босса, шипы карты, ловушка мимика.
    *
    * Отдельная функция, а не флаг у takeDamage: на вызове видно, что
@@ -2292,6 +2323,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // актуальную версию.
   useEffect(() => {
     takeDamageRef.current = takeDamage
+    takeRamDamageRef.current = takeRamDamage
     takeDamageUnblockableRef.current = takeDamageUnblockable
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
@@ -3223,8 +3255,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         findGroundSurfaceY,
         closeEvent,
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
-        // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
-        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        // Обёртка над рефом — по той же причине, что takeDamage у зверя. Точка
+        // своя: у тарана широкое окно парирования (см. takeRamDamage).
+        takeRamDamage: (amount: number, enemy: Enemy) => takeRamDamageRef.current(amount, enemy),
         events: eventsRef,
         worldContainer,
         grid,
@@ -3563,6 +3596,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       parryWindowRef.current = 0
       parryCooldownRef.current = 0
       parryFrameRef.current = 0
+      parryPressRef.current = 0
       // Сверка глотков с сервером — тоже на забег (см. sendSip). Поколение и
       // очередь общие с срезами прогресса (см. runWriteQueueRef).
       runWriteGenRef.current += 1
@@ -4406,13 +4440,6 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         return true
       }
 
-      // Отскок героя от двери Привратника: сколько ещё длится и в какую сторону.
-      // Обычные переменные setup(), а не рефы: пишет их damageEnemy ниже, читает
-      // блок движения в тикере, и оба живут в этом же замыкании. Новый забег —
-      // новый setup(), так что сбрасывать их отдельно нечем и незачем.
-      let heroRecoilMs = 0
-      let heroRecoilDir: 1 | -1 = 1
-
       // Нанесение урона по врагу/боссу — ВЫНЕСЕНО из applyAttackHit, чтобы
       // ту же арифметику не пришлось писать третий раз, когда урон начнут
       // наносить скиллы (см. explore/entities/skills.ts). Чистый перенос:
@@ -4445,7 +4472,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // взрыва и у рывка. Держит она только ПОДНЯТАЯ ДО КОНЦА (он заметил
         // героя и доиграл подъём; окна после его удара нет), и пока удар
         // пришёл СПЕРЕДИ:
-        //   меч       — урона нет вовсе, герой отскакивает;
+        //   меч       — урона нет вовсе; герой остаётся где стоял (отскока от
+        //               двери нет с 12.10.2026, решение Андрея);
         //   навык     — разовое попадание наносит половину;
         //   тик крови — дверь его не замечает (урон идёт изнутри).
         // Полный урон проходит, когда дверь опущена, поднимается или
@@ -4459,13 +4487,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           gatekeeper.guarded = via !== 'tick' && gatekeeperDoorBlocks(enemy, sourceX)
           if (gatekeeper.guarded) {
             gatekeeper.shakeMs = C.GATEKEEPER_DOOR_SHAKE_MS
-            if (via === 'sword') {
-              // Отскок — ОТ Привратника, а не «назад по взгляду героя»: герой
-              // мог успеть развернуться за время замаха.
-              heroRecoilDir = phys.x + C.PLAYER_WIDTH / 2 < enemy.x + enemy.width / 2 ? -1 : 1
-              heroRecoilMs = C.GATEKEEPER_RECOIL_MS
-              return false
-            }
+            // Меч в дверь: урона нет, дверь вздрагивает — и всё.
+            if (via === 'sword') return false
             // Вниз: округление урона по врагу не идёт в пользу игрока.
             amount = Math.floor(amount * C.GATEKEEPER_DOOR_SKILL_MULT)
           }
@@ -4948,13 +4971,6 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
         const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED
-        // Отскок от двери Привратника (см. damageEnemy): на GATEKEEPER_RECOIL_MS
-        // перебивает ввод и едет по ОБЩЕМУ пути ниже — те же стены, тот же clamp.
-        // Рывок главнее (строкой ниже он перепишет скорость), смерть — тоже.
-        if (heroRecoilMs > 0) {
-          heroRecoilMs = Math.max(0, heroRecoilMs - ticker.deltaMS)
-          if (!deathRef.current) phys.vx = heroRecoilDir * C.GATEKEEPER_RECOIL_SPEED
-        }
         // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
         // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
         // столкновений, тот же clamp по краям карты. Своей геометрии у dash
@@ -5263,7 +5279,31 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // игра ужесточалась бы ровно там, где и так тяжело.
         parryWindowRef.current = Math.max(0, parryWindowRef.current - ticker.deltaMS)
         if (parryingRef.current) {
-          parryElapsedRef.current += ticker.deltaMS
+          // СТОЙКА ДЕРЖИТСЯ ДО УДАРА ТАРАНА (широкое окно, см. takeRamDamage):
+          // пока хоть один Привратник, которому засчитано ЭТО нажатие, ещё ведёт
+          // свой таран, счётчик стойки не идёт дальше её середины — верхнего
+          // кадра блока. Таран ударил, сорвался или Привратника заморозили —
+          // счётчик идёт дальше, и стойка доигрывает возврат сама.
+          // ⚠️ Счётчик по-прежнему ОДИН: он просто придержан. Конец стойки ниже
+          // считает его же, поэтому зависнуть в стойке можно, только пока идёт
+          // чей-то замах, а он конечен (GATEKEEPER_WINDUP_MS) и стан его снимает.
+          // Общее окно в 250 мс при этом тикает как обычно: от ЧУЖИХ ударов
+          // удержание не защищает, а пропущенный удар стойку сбивает.
+          const parryPeakMs = C.PARRY_ANIM_MS / 2
+          let nextParryElapsed = parryElapsedRef.current + ticker.deltaMS
+          if (parryElapsedRef.current <= parryPeakMs && nextParryElapsed > parryPeakMs) {
+            const press = parryPressRef.current
+            const foes = enemiesRef.current
+            for (let i = 0; i < foes.length; i++) {
+              const foe = foes[i]
+              const g = foe.gatekeeper
+              if (g && g.parryPress === press && g.phase === 'windup' && !foe.dead && foe.stunTimer <= 0 && foe.hurtTimer <= 0) {
+                nextParryElapsed = parryPeakMs
+                break
+              }
+            }
+          }
+          parryElapsedRef.current = nextParryElapsed
           // Шаг последовательности «туда и обратно» по накопленному времени.
           // Деление на ДЛИНУ (не на длину-1) плюс clamp по последнему элементу:
           // иначе на последнем тике индекс вылетел бы за массив.
@@ -5341,6 +5381,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               parryElapsedRef.current = 0
               parryWindowRef.current = C.PARRY_WINDOW_MS
               parryCooldownRef.current = C.PARRY_COOLDOWN_MS
+              // ШИРОКОЕ ОКНО ТАРАНА: нажатие засчитывается каждому Привратнику,
+              // чей таран идёт уже дольше GATEKEEPER_PARRY_LEAD_MS, — номером
+              // нажатия на нём самом. Замороженному льдом не засчитывается:
+              // его замах стоит и ударит через секунды, а держать стойку столько
+              // значило бы запереть героя.
+              parryPressRef.current += 1
+              const foes = enemiesRef.current
+              for (let i = 0; i < foes.length; i++) {
+                const foe = foes[i]
+                const g = foe.gatekeeper
+                if (g && g.phase === 'windup' && g.phaseMs >= C.GATEKEEPER_PARRY_LEAD_MS && !foe.dead && foe.stunTimer <= 0) {
+                  g.parryPress = parryPressRef.current
+                }
+              }
             }
           }
         }

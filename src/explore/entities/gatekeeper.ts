@@ -39,9 +39,9 @@ import { redrawEnemyHpBar } from './enemy'
  * тело как мягкая стена по X, посадка спрайта на поверхность тайла + FOOT_TUNE.
  *
  * Что СВОЁ: дверь и её подъём с опусканием; атака — таран с дверью стоймя,
- * заданная временем (быстрый замах, медленный вынос двери, удар, возврат родным
- * темпом листа) и только с поднятой дверью; оглушение от парирования на 2.5 с
- * стойкой на кадре удара вместо hurt; кадры листов атаки и подъёма, которые
+ * заданная временем (замах и вынос двери, удар, возврат — родным темпом листа)
+ * и только с поднятой дверью; широкое окно парирования у тарана; оглушение от
+ * парирования на 2.5 с стойкой на кадре удара вместо hurt; кадры листов атаки и подъёма, которые
  * ставит код, а не AnimatedSprite; якорь, меняющийся с листом;
  * ДВЕ стойки и ДВЕ ходьбы — с поднятой дверью idleGuard и walkGuard, с
  * опущенной (патруль, расследование) прежние idle и walk.
@@ -64,11 +64,17 @@ export type GatekeeperDeps = {
   // Мана с убитого — то же, что у зверя (см. EnemyDeps в enemy.ts).
   dropMana: (worldX: number, worldY: number) => void
   /**
-   * ПАРИРУЕМЫЙ урон — та же общая точка, что у удара зверя. Возвращает true,
-   * если герой ОТБИЛ: урона не было, и последствия отбива накладывает этот
-   * модуль — оглушение на GATEKEEPER_PARRY_STUN_MS, всё это время он открыт.
+   * ПАРИРУЕМЫЙ урон ТАРАНА. Возвращает true, если герой ОТБИЛ: урона не было, и
+   * последствия отбива накладывает этот модуль — оглушение на
+   * GATEKEEPER_PARRY_STUN_MS, всё это время он открыт.
+   *
+   * ⚠️ Не общая takeDamage, а своя точка: у тарана ШИРОКОЕ окно парирования
+   * (GATEKEEPER_PARRY_LEAD_MS). Отбит он и нажатием в последние 250 мс, как удар
+   * любого врага, и нажатием, сделанным раньше, но уже во время этого тарана, —
+   * его узнают по enemy.gatekeeper.parryPress. Поэтому второй параметр — сам
+   * Привратник.
    */
-  takeDamage: (amount: number) => boolean
+  takeRamDamage: (amount: number, enemy: Enemy) => boolean
   events: MutableRefObject<MapEvent[]>
   worldContainer: Container
   grid: Grid
@@ -187,25 +193,16 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     return clamp(Math.floor(guardMs / C.GATEKEEPER_RAISE_FRAME_MS), 0, C.GATEKEEPER_RAISE_COUNT - 1)
   }
 
-  // Кадр тарана по времени фазы. Темп у листа НЕ один (см. «ЦИКЛ АТАКИ» в
-  // constants.ts): кадры до выноса двери идут быстро, два кадра выноса держатся,
-  // после удара — родной темп.
+  // Кадр тарана по времени фазы. Темп один на весь лист, родной (см. «ЦИКЛ
+  // АТАКИ» в constants.ts): сколько кадров прошло за phaseMs.
   function attackFrameOf(phase: GatekeeperPhase, phaseMs: number): number {
-    if (phase === 'windup') {
-      const leadMs = C.GATEKEEPER_WINDUP_MS - C.GATEKEEPER_THRUST_MS
-      // До выноса: кадры 0…6 делят leadMs поровну.
-      if (phaseMs < leadMs) return Math.min(C.GATEKEEPER_THRUST_FRAME - 1, Math.floor(phaseMs / C.GATEKEEPER_LEAD_FRAME_MS))
-      // ВЫНОС ДВЕРИ: кадры 7 и 8, каждый держится. До кадра удара включительно
-      // НЕ доходит — 9-й ставит сам удар.
-      return Math.min(
-        C.GATEKEEPER_STRIKE_FRAME - 1,
-        C.GATEKEEPER_THRUST_FRAME + Math.floor((phaseMs - leadMs) / C.GATEKEEPER_THRUST_FRAME_MS),
-      )
-    }
     const passed = Math.floor(phaseMs / C.GATEKEEPER_ATTACK_FRAME_MS)
+    // Замах и вынос двери: до кадра удара включительно НЕ доходит — 9-й ставит
+    // сам удар.
+    if (phase === 'windup') return Math.min(C.GATEKEEPER_STRIKE_FRAME - 1, passed)
     // Оглушён: стоит на кадре удара (он же STUN_HOLD_FRAME) всё оглушение.
     if (phase === 'stunned') return Math.min(C.GATEKEEPER_STUN_HOLD_FRAME, C.GATEKEEPER_STRIKE_FRAME + passed)
-    // Возврат двери: с кадра удара до конца листа родным темпом.
+    // Возврат двери: с кадра удара до конца листа тем же темпом.
     return Math.min(C.GATEKEEPER_ATTACK_COUNT - 1, C.GATEKEEPER_STRIKE_FRAME + passed)
   }
 
@@ -279,6 +276,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         // Появляется с опущенной дверью: героя он ещё не видел.
         guard: 'down',
         guardMs: 0,
+        parryPress: 0,
         phaseMs: 0,
         cooldownMs: 0,
         shakeMs: 0,
@@ -492,8 +490,8 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       // от начала замаха до начала замаха.
       // ⚠️ Под обоими заслонами выше (стан льда, оглушение) он СТОИТ — туда этот
       // код не доходит. Поэтому после отбитого удара Привратник не бьёт сразу:
-      // от замаха прошло 800 мс, остаток 1700 мс дотикивает за возврат двери
-      // (1250 мс) и ещё ≈450 мс стойки. У зверя и босса так же — кулдаун после
+      // от замаха прошло 750 мс, остаток 1750 мс дотикивает за возврат двери
+      // (1250 мс) и ещё ≈500 мс стойки. У зверя и босса так же — кулдаун после
       // стана парирования остаётся взведённым.
       g.cooldownMs = Math.max(0, g.cooldownMs - deltaMS)
 
@@ -533,7 +531,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             // Попал, промахнулся или герой ушёл — дальше возврат двери, и дверь
             // всё это время ДЕРЖИТ: окна после удара нет. Открывает его
             // только отбитый удар — оглушением.
-            if ((inReach || bodiesTouchingX) && strikeVertical && playerInFront && deps.takeDamage(enemy.attackDamage)) {
+            if ((inReach || bodiesTouchingX) && strikeVertical && playerInFront && deps.takeRamDamage(enemy.attackDamage, enemy)) {
               enemy.parryStunTimer = C.GATEKEEPER_PARRY_STUN_MS
               setPhase(enemy, 'stunned')
             } else {
@@ -600,10 +598,12 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             // СТАРТ ЗАМАХА — условие зверя: стоп-дистанция или касание тел,
             // плюс перекрытие по вертикали. Только с ПОДНЯТОЙ дверью: без неё
             // он не бьёт вовсе. Взгляд с этого момента зафиксирован до конца
-            // анимации (замах, вынос, возврат — 2.05 с): обежать его за это
+            // анимации (замах, вынос, возврат — 2 с): обежать его за это
             // время — законный способ и уклониться, и зайти в спину.
             if ((reachedStopDist || bodiesTouchingX) && verticalReach && g.cooldownMs <= 0) {
               setPhase(enemy, 'windup')
+              // Новый таран — нажатие 🔄, засчитанное прошлому, ему не годится.
+              g.parryPress = 0
               // Кулдаун — СРАЗУ, на старте: «от начала до начала».
               g.cooldownMs = C.GATEKEEPER_ATTACK_INTERVAL_MS
               enemy.windingUp = true
