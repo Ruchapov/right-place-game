@@ -315,6 +315,13 @@ export type StartExploreEvent = {
    */
   enemyKind?: StartExploreEnemyKind
   /**
+   * Ловушка или обычный сундук — только у kind === 'chest' (13.10.2026). Бросает
+   * СЕРВЕР на старте забега; клиент по этому полю играет взрыв и бьёт героя, а
+   * своего броска не делает. Разбирать ТОЛЬКО через readChestMimic ниже: у
+   * сундука без решения забег не показывается вовсе.
+   */
+  isMimic?: boolean
+  /**
    * Сколько трофеев даст это событие. Разыграно СЕРВЕРОМ на старте — именно это
    * число всплывает в момент закрытия события и именно оно начислится на финише.
    *
@@ -333,12 +340,14 @@ export type StartExploreEvent = {
   drop?: RunDrop | null
 }
 
-// Response shape of POST /run/start-explore (server/src/routes/run.ts).
+// Response shape of POST /run/start-explore (server/src/routes/run.ts; форму
+// события на сервере держит ClientRunEvent в server/src/runEvents.ts — менять
+// только парой).
 // ⚠️ С 30.09.2026 награды ОТДАЮТСЯ (trophyReward + drop у каждого события) —
 // прежнее решение «сервер держит их у себя» отменено: всплывашка в бою должна
-// показывать то же число, что потом начислится. isMimic по-прежнему не
-// отдаётся, хотя по trophyReward мимик и вычисляется (у него ровно 0) — эта
-// утечка принята дизайнером, см. комментарий в самом эндпоинте.
+// показывать то же число, что потом начислится. С 13.10.2026 отдаётся и isMimic
+// у сундука: мимик и так вычислялся по trophyReward (у него ровно 0) — эта
+// утечка принята дизайнером, см. clientRunEvents на сервере.
 export type StartExploreResult = {
   energy: number
   mapFile: string
@@ -1368,6 +1377,22 @@ export function readEnemyKind(raw: unknown): StartExploreEnemyKind {
   if (raw === 'beast' || raw === 'zvonar' || raw === 'gatekeeper') return raw
   console.error('api: неизвестный вид врагов в событии', raw, '— считаем зверями')
   return 'beast'
+}
+
+/**
+ * Решение сервера по сундуку из ответа старта: ловушка (true) или обычный
+ * (false). Спрашивать только у события kind === 'chest'.
+ *
+ * null — сервер решения НЕ назвал: поля нет (сервер старше 13.10.2026) или в нём
+ * не boolean. ⚠️ Это не «обычный сундук» и не повод бросить самому: свой бросок
+ * клиента и был багом — сундук взрывался, а сервер считал его обычным и
+ * начислял трофеи, и наоборот. Вызывающий обязан отказаться показывать забег
+ * (см. setup() в Explore.tsx).
+ */
+export function readChestMimic(raw: unknown): boolean | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const m = (raw as Record<string, unknown>).isMimic
+  return typeof m === 'boolean' ? m : null
 }
 
 export function readEventReward(raw: unknown): { trophies: number | null; drop: RunDrop | null } {

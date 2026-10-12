@@ -450,10 +450,13 @@ export const CHEST_WALL_W = 40
 // 0.25 "на глаз", слишком быстро.
 export const CHEST_ANIM_SPEED = 0.15
 
-// Мимик — бросок решается ОДИН раз на первом ударе по сундуку (см.
-// applyAttackHit): CHEST_MIMIC_CHANCE шанс, что сундук окажется ловушкой
-// (Chest_Trap_Explode, урон, без награды) вместо доброго (Chest_Open).
+// Мимик — сундук-ловушка (Chest_Trap_Explode, урон) вместо доброго (Chest_Open).
+// Какой сундук ловушка, решает СЕРВЕР на старте забега и называет полем isMimic
+// события (13.10.2026); клиент своего броска в настоящей сессии не делает.
 export const CHEST_TRAP_SRC = `${import.meta.env.BASE_URL}assets/objects/Chest_Trap_Explode.png`
+// ⚠️ Читает ТОЛЬКО офлайн-заглушка вне Telegram (Explore.tsx, setup()): она
+// бросает сама, как сервер, — на старте забега, один раз на сундук. Число —
+// копия серверного CHEST_MIMIC_CHANCE (server/src/runEvents.ts).
 export const CHEST_MIMIC_CHANCE = 0.2
 export const CHEST_TRAP_DAMAGE_FRAC = 0.2 // урон мимика — 20% maxHp, без уклонения
 export const CHEST_TRAP_STRIKE_FRAME = 5 // кадр взрыва (0-based) в Chest_Trap_Explode

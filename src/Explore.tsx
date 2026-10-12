@@ -55,7 +55,7 @@ import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekee
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
@@ -603,9 +603,11 @@ function devEnemyKind(): EnemyKind {
   return 'beast'
 }
 
-function devEventReward(kind: EventKind): { trophies: number | null; drop: RunDrop | null } {
+// chestIsMimic — решение заглушки по сундуку (для остальных событий false).
+// Правило сервера: у ловушки трофеев нет, добыча та же, что у обычного сундука.
+function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: number | null; drop: RunDrop | null } {
   const mult = kind === 'enemy' ? C.TROPHY_MULT_ENEMY
-    : kind === 'chest' ? C.TROPHY_MULT_CHEST
+    : kind === 'chest' ? (chestIsMimic ? 0 : C.TROPHY_MULT_CHEST)
       : kind === 'obelisk' ? C.TROPHY_MULT_OBELISK
         : kind === 'boss' ? C.TROPHY_MULT_BOSS
           : 0
@@ -2845,8 +2847,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
         // Вид врагов офлайн бросает сам клиент — сервера, который назвал бы его,
         // здесь нет (см. devEnemyKind и плашку «ЗАГЛУШКА»).
+        // Ловушку у сундука — тоже, и КАК СЕРВЕР: здесь, на старте забега, один
+        // раз на сундук, а не на первом ударе (см. rollRunEvents на сервере).
         chosenEvents = chosenEvents.map((ev) =>
-          ev.kind === 'enemy' ? { ...ev, enemyKind: devEnemyKind() } : ev,
+          ev.kind === 'enemy' ? { ...ev, enemyKind: devEnemyKind() }
+            : ev.kind === 'chest' ? { ...ev, isMimic: Math.random() < C.CHEST_MIMIC_CHANCE }
+              : ev,
         )
       }
       // Вид врагов КАЖДОГО события, разобранный один раз здесь — ровно как
@@ -2856,6 +2862,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const eventEnemyKinds: (EnemyKind | null)[] = chosenEvents.map((ev) =>
         ev.kind === 'enemy' ? readEnemyKind(ev.enemyKind) : null,
       )
+      // Ловушка или обычный — у КАЖДОГО сундука, тоже один раз здесь и одной
+      // формой на оба пути. null — событие не сундук.
+      // ⚠️ Сундук без решения — ГРОМКИЙ отказ, а не свой бросок и не «обычный»
+      // (13.10.2026): свой бросок клиента и был багом — взорвавшийся сундук
+      // сервер считал обычным и начислял за него трофеи, а мирно открывшийся мог
+      // посчитать ловушкой и не дать ни одного. Так выглядит ответ сервера старше
+      // 13.10.2026. Забег на сервере в этот момент уже создан, но не подтверждён
+      // (confirmed: false): вход закроет его без штрафа и вернёт энергию.
+      const eventChestMimic: (boolean | null)[] = chosenEvents.map((ev, eventIndex) => {
+        if (ev.kind !== 'chest') return null
+        const isMimic = readChestMimic(ev)
+        if (isMimic === null) {
+          throw new Error(
+            `Сервер не назвал, ловушка ли сундук (событие ${eventIndex}, isMimic=${String(ev.isMimic)}). ` +
+            'Забег не показан; он закроется без штрафа, энергия вернётся.',
+          )
+        }
+        return isMimic
+      })
       // Какие листы «под событие» нужны ЭТОМУ забегу. Решается ЗДЕСЬ, как только
       // события известны, — в этом и был смысл того, что вид врагов приезжает со
       // старта забега, — и по тому же списку, по которому ниже идёт спавн: что
@@ -2882,7 +2907,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Награда КАЖДОГО события, разобранная один раз здесь: и серверный путь, и
       // офлайн-заглушка дают дальше одну и ту же форму, поэтому закрытие события
       // не знает, откуда взялись числа.
-      const eventRewards = chosenEvents.map((ev) =>
+      const eventRewards = chosenEvents.map((ev, eventIndex) =>
         startExploreResult
           ? readEventReward(ev)
           // Офлайн-заглушка (вне Telegram): сервера нет, и показать нечего —
@@ -2890,7 +2915,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // настоящей сессии. Числа его никуда не уходят (финиш в этом режиме на
           // сервер не идёт вовсе), и оранжевая плашка «ЗАГЛУШКА» уже говорит
           // игроку, что забег ненастоящий.
-          : devEventReward(ev.kind),
+          : devEventReward(ev.kind, eventChestMimic[eventIndex] === true),
       )
 
       // Иконки выпавшего — ЗАРАНЕЕ, здесь, а не в момент закрытия события:
@@ -3858,6 +3883,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           chestSprite.loop = false
           worldContainer.addChild(chestSprite)
 
+          // Решение по сундуку разобрано выше (eventChestMimic), и у сундука оно
+          // есть всегда — отказ там же. null здесь значил бы, что список решений
+          // разошёлся со списком событий: молча считать сундук обычным нельзя.
+          const chestIsMimic = eventChestMimic[eventIndex]
+          if (chestIsMimic === null) {
+            throw new Error(`Explore: у сундука (событие ${eventIndex}) нет решения «ловушка или обычный» — забег не показан.`)
+          }
+
           const chest: Chest = {
             sprite: chestSprite,
             // Твёрдое тело — низ на той же линии, что и спрайт, центр по X
@@ -3872,6 +3905,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             },
             opening: false,
             opened: false,
+            // Назван сервером на старте забега (офлайн — заглушкой, тем же
+            // правилом). До первого удара ничего не меняет на экране.
+            isMimic: chestIsMimic,
             trapDamaged: false,
             trapKilled: false,
             eventIndex,
@@ -4186,9 +4222,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // пропорция кадра, поэтому у ловушки СВОИ CHEST_TRAP_DRAW_H/
       // CHEST_TRAP_OFFSET_Y (подобраны вживую временным тюнером, убран — см.
       // историю), у доброго сундука — CHEST_DRAW_H/CHEST_OFFSET_Y, не трогаем.
+      // ⚠️ Посадка ловушки — только когда на спрайте ЛИСТ ловушки, то есть с
+      // первого удара (opening) и дальше (opened). chest.isMimic известен с
+      // момента спавна (его называет сервер), и одно это поле здесь читать
+      // нельзя: закрытый мимик встал бы в посадку ловушки при листе доброго
+      // сундука — ниже и шире соседних, то есть был бы виден до удара.
       function applyChestLayout(chest: Chest) {
         chest.sprite.anchor.set(0.5, 1.0) // низ по центру — как у зверя/героя
-        if (chest.isMimic) {
+        if (chest.isMimic && (chest.opening || chest.opened)) {
           chest.sprite.height = C.CHEST_TRAP_DRAW_H
           chest.sprite.width = C.CHEST_TRAP_DRAW_H * (190 / 137)
           chest.sprite.y = chest.floorY + C.CHEST_TRAP_OFFSET_Y
@@ -4939,9 +4980,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               hb.y + hb.height > box.y
             if (!overlap) continue
             chest.opening = true
-            // Бросок решается ОДИН раз, на первом ударе — не перебрасывается
-            // на повторных кадрах, пока opening держит цикл закрытым выше.
-            chest.isMimic = Math.random() < C.CHEST_MIMIC_CHANCE
+            // Броска здесь БОЛЬШЕ НЕТ (13.10.2026): ловушка это или нет, сервер
+            // решил на старте забега, и chest.isMimic стоит с момента спавна.
+            // Удар только запускает ту анимацию, что уже решена. Вернуть сюда
+            // Math.random — вернуть два независимых броска: взрыв там, где
+            // сервер начислит трофеи как за обычный сундук, и наоборот.
             chest.trapDamaged = false
             chest.trapKilled = false
             if (chest.isMimic) {
@@ -5588,8 +5631,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // spawn/hit-start/complete ниже.
           applyChestLayout(chest)
 
-          // Набор кадров зависит от исхода броска (см. isMimic на первом
-          // ударе выше) — чтение currentFrame/length ниже должно сверяться
+          // Набор кадров зависит от решения по сундуку (chest.isMimic, назван
+          // сервером на старте) — чтение currentFrame/length ниже должно сверяться
           // с ПРАВИЛЬНЫМ набором, иначе мимик (14 кадров) либо обрывается
           // раньше времени, либо никогда не считается "доигравшим" по длине
           // доброго набора (13 кадров).
@@ -5631,9 +5674,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // Награду всплывает сам closeEvent, числами сервера. Прежней
             // ветки `if (!chest.isMimic)` здесь НЕТ и быть не должно: мимика
             // решает СЕРВЕР, и у его сундука trophyReward равен нулю, то есть
-            // строка трофеев не появится сама собой. Клиентский `chest.isMimic`
-            // (свой бросок, см. CHEST_MIMIC_CHANCE) остался решать только
-            // ВИДИМУЮ сторону — какие кадры играть и бьёт ли ловушка.
+            // строка трофеев не появится сама собой. С 13.10.2026 и
+            // `chest.isMimic` — то же решение сервера, а не свой бросок: взрыв
+            // и нулевые трофеи теперь всегда у одного и того же сундука.
             //
             // ⚠️ Ловушка УБИЛА героя — событие не закрывается вовсе (12.10.2026):
             // взрыв доигран, сундук стоит открытым, но ни всплывашки, ни гнезда
