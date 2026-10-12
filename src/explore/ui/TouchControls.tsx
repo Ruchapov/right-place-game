@@ -81,6 +81,22 @@ const JUMP_POS = { rx: ATK_POS.rx + FAN_D + BTN_R + 30, y: ATK_POS.y }
 // панели (PANEL_H) посчитана так, чтобы эта кнопка в неё умещалась целиком.
 const POTION_POS = { rx: fanPos(FAN_ANGLES[2]).rx, y: fanPos(FAN_ANGLES[2]).y - BTN_R - BTN_R - POT_GAP }
 
+// --- НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН (телефон набок, см. C.LOW_LANDSCAPE_MAX_H) ---
+//
+// Размер кнопок прежний (52 px — под палец), меняется только раскладка: блок в
+// вертикальной раскладке занимал половину высоты экрана 844×390 (замер s17:
+// 50%, с шапкой Telegram 60%). Высоту ему даёт одна кнопка — зелье, стоящее
+// третьим этажом над веером. В низком экране оно переезжает на место над
+// прыжком: блок остаётся в два этажа, 128 px от низа экрана (33% от 390, 36% от
+// 360). Атака, веер и прыжок стоят где стояли — пальцу переучиваться не надо.
+// Зазор до прыжка тот же, что между атакой и веером: зона захвата прыжка
+// (радиус BTN_R + JUMP_ZONE_PAD) кончается ровно у круга зелья.
+const POTION_POS_LOW = { rx: JUMP_POS.rx, y: JUMP_POS.y - 2 * BTN_R - FAN_GAP }
+// Подъём панели над низом экрана в низком экране (в обычном — 16 px): высоты
+// мало, и лишние 8 px отданы игре. Безопасная зона прибавляется так же.
+const PANEL_BOTTOM_LOW = 8
+const LOW_LANDSCAPE_MEDIA = `(orientation: landscape) and (max-height: ${C.LOW_LANDSCAPE_MAX_H}px)`
+
 /**
  * Общий вид круглой кнопки. ОДНА функция на все пять видов — иначе размеры
  * снова разъедутся по пяти копиям cssText, как это уже случилось.
@@ -211,6 +227,21 @@ const PRESS_CSS = `
      opacity:1, которую пишет в инлайн roundButtonCss. */
   [data-touch-controls] [${NO_MANA_ATTR}="1"] {
     opacity: ${NO_MANA_OPACITY} !important;
+  }
+  /* Низкий горизонтальный экран — см. POTION_POS_LOW вверху файла.
+     Правилом, а не из кода: поворот телефона рендера React не вызывает, а
+     медиа-запрос браузер применяет сам, в том же кадре (та же причина, по
+     которой правый блок стоит от правого края).
+     !important перебивает инлайн: bottom панели пишет React, right/top зелья —
+     roundButtonCss, и оба переписываются на каждом рендере. */
+  @media ${LOW_LANDSCAPE_MEDIA} {
+    [data-touch-controls] {
+      bottom: calc(${PANEL_BOTTOM_LOW}px + var(--rp-safe-bottom, 0px)) !important;
+    }
+    [data-touch-controls] [data-btn="potion"] {
+      right: ${POTION_POS_LOW.rx - BTN_R}px !important;
+      top: ${POTION_POS_LOW.y - BTN_R}px !important;
+    }
   }
 `
 
