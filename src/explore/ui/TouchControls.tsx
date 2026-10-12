@@ -55,6 +55,32 @@ const PANEL_H = Math.max(178, Math.ceil(BTN_EDGE + BTN_R + FAN_TOP_RISE + 2 * BT
 // Насколько зона захвата ▲ шире видимой кнопки (см. PRESS_CSS).
 const JUMP_ZONE_PAD = 6
 
+// --- ПРАВЫЙ БЛОК: центры кнопок от ПРАВОГО края панели (rx) и от её верха (y) ---
+//
+// ⚠️ От правого края, а не от левого, и это не вкус. До 12.10.2026 кнопки
+// ставились по left, а left считался из window.innerWidth прямо в ref-колбэке —
+// то есть ширина экрана читалась только при рендере React. Поворот телефона
+// рендера не вызывает, и блок оставался стоять по старой ширине, пока меню не
+// перерисуется само (его таймер — раз в 15 с): замер дал 7.0 и 12.4 с, причём
+// после поворота обратно в вертикаль блок был ЗА экраном — без атаки и прыжка.
+// Расстояние от правого края от ширины экрана не зависит вовсе: браузер ставит
+// кнопку на место сам, в том же кадре, что и поворот.
+// Три угла веера: уклонение и два навыка вокруг атаки.
+const FAN_ANGLES = [FAN_MID - FAN_THETA, FAN_MID, FAN_MID + FAN_THETA] as const
+const ATK_POS = { rx: BTN_EDGE + BTN_R, y: PANEL_H - BTN_EDGE - BTN_R }
+const fanPos = (angle: number) => ({
+  // cos у всех трёх углов отрицательный или около нуля (кнопки левее атаки или
+  // над ней) — минус перед ним и даёт rx не меньше, чем у атаки.
+  rx: ATK_POS.rx - FAN_D * Math.cos(angle),
+  y: ATK_POS.y + FAN_D * Math.sin(angle),
+})
+// Прыжок — вплотную слева от всего веера (не от центра атаки), на высоте центра
+// атаки. Формула прежняя, только отсчёт от правого края.
+const JUMP_POS = { rx: ATK_POS.rx + FAN_D + BTN_R + 30, y: ATK_POS.y }
+// Зелье — НАД самым верхним навыком веера (FAN_ANGLES[2]), как и было. Высота
+// панели (PANEL_H) посчитана так, чтобы эта кнопка в неё умещалась целиком.
+const POTION_POS = { rx: fanPos(FAN_ANGLES[2]).rx, y: fanPos(FAN_ANGLES[2]).y - BTN_R - BTN_R - POT_GAP }
+
 /**
  * Общий вид круглой кнопки. ОДНА функция на все пять видов — иначе размеры
  * снова разъедутся по пяти копиям cssText, как это уже случилось.
@@ -65,6 +91,9 @@ const JUMP_ZONE_PAD = 6
  * на 1px БОЛЬШЕ константы»). С border-box номинал и факт совпадают, и все
  * зазоры ниже честные.
  *
+ * pos — центр кнопки: rx от ПРАВОГО края панели, y от её верха (см. «ПРАВЫЙ
+ * БЛОК» выше — почему именно от правого).
+ *
  * art — картинка кнопки фоном, а не <img>: у кнопок есть textContent (цифра
  * глотков, «?»), и вложенную картинку он бы затирал.
  *
@@ -73,11 +102,11 @@ const JUMP_ZONE_PAD = 6
  * камень внутри камня. Поэтому при art рамки и фона нет вовсе. Подсветку нажатия
  * в таком виде даёт яркость, а не заливка (см. PRESS_CSS).
  */
-function roundButtonCss(x: number, y: number, opts: { fontSize: number; art?: string | null; dimmed?: boolean }): string {
+function roundButtonCss(pos: { rx: number; y: number }, opts: { fontSize: number; art?: string | null; dimmed?: boolean }): string {
   return `
     position:absolute;
     box-sizing:border-box;
-    left:${x - BTN_R}px; top:${y - BTN_R}px;
+    right:${pos.rx - BTN_R}px; top:${pos.y - BTN_R}px;
     width:${BTN_R * 2}px; height:${BTN_R * 2}px;
     border-radius:50%;
     ${opts.art ? 'border:none; background:transparent;' : 'border:1px solid #3A3344; background:#221E2B;'}
@@ -525,22 +554,18 @@ export default function TouchControls({
         <div
           ref={(container) => {
             if (!container) return
-            const W = window.innerWidth
-            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА — прежняя, веером вокруг атаки
-            // (числа — для экрана 390px):
-            //   атака     (354, 142) — правый нижний угол, BTN_EDGE от краёв
-            //   парирование (297, 130) — веер, 171.7°
-            //   навык 1   (313, 101) — веер, 225°, вплотную к соседям
-            //   навык 2   (362,  85) — веер, 278.3°
-            //   прыжок    (240, 142) — слева от веера, на линии атаки
-            //   зелье     (362,  29) — НАД верхней кнопкой веера
-            // Слева на той же линии: ◀ (49, 142) и ▶ (116, 142).
+            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА — прежняя, веером вокруг атаки. Где
+            // стоит каждая кнопка — ATK_POS / fanPos / JUMP_POS / POTION_POS
+            // вверху файла: атака в правом нижнем углу, веер (парирование и два
+            // навыка) вокруг неё, прыжок слева от веера на линии атаки, зелье
+            // над верхней кнопкой веера. Слева на той же линии — ◀ и ▶.
             // Кнопки веера КАСАЮТСЯ друг друга — так было и раньше (хорда ровно
             // в два радиуса), это и держит навыки рядом с атакой.
             // Ближайшая пара «левый блок — правый кластер» это ▶ и прыжок: на
             // 390px между их кругами 72px, на 375px — 57px, на 320px — 2px.
-            const ATK = { x: W - BTN_EDGE - BTN_R, y: PANEL_H - BTN_EDGE - BTN_R }
-            const angles = [FAN_MID - FAN_THETA, FAN_MID, FAN_MID + FAN_THETA]
+            // ⚠️ Ширина экрана здесь НЕ читается (см. «ПРАВЫЙ БЛОК» вверху файла):
+            // всё, что зависит от неё, обязано быть выражено CSS.
+            const angles = FAN_ANGLES
 
             // Веер: dodge плюс ДО ДВУХ навыков. Углы фиксированы тремя
             // позициями и НЕ пересчитываются под число кнопок — хорда между
@@ -574,12 +599,10 @@ export default function TouchControls({
                 existing?.remove()
                 return
               }
-              const x = ATK.x + FAN_D * Math.cos(b.angle)
-              const y = ATK.y + FAN_D * Math.sin(b.angle)
               const el = existing || document.createElement('button')
               el.dataset.btn = b.id
               el.textContent = b.spec.label
-              el.style.cssText = roundButtonCss(x, y, {
+              el.style.cssText = roundButtonCss(fanPos(b.angle), {
                 fontSize: 20,
                 art: b.spec.art,
                 dimmed: b.spec.dimmed,
@@ -596,29 +619,18 @@ export default function TouchControls({
             const atk = atkEl || document.createElement('button')
             atk.dataset.btn = 'atk'
             atk.textContent = ''
-            atk.style.cssText = roundButtonCss(ATK.x, ATK.y, { fontSize: 20, art: C.BTN_ART_SRC.attack })
+            atk.style.cssText = roundButtonCss(ATK_POS, { fontSize: 20, art: C.BTN_ART_SRC.attack })
             if (!atkEl) container.appendChild(atk)
 
-            // Прыжок — вплотную слева от всего веера (не от центра атаки), на
-            // высоте центра атаки. Формула прежняя.
-            const jumpX = ATK.x - FAN_D - BTN_R - 30
-            const jumpY = ATK.y
-
+            // Прыжок — см. JUMP_POS вверху файла.
             const jumpEl = container.querySelector('[data-btn="jump"]') as HTMLElement
             const jump = jumpEl || document.createElement('button')
             jump.dataset.btn = 'jump'
             jump.textContent = ''
-            jump.style.cssText = roundButtonCss(jumpX, jumpY, { fontSize: 20, art: C.BTN_ART_SRC.jump })
+            jump.style.cssText = roundButtonCss(JUMP_POS, { fontSize: 20, art: C.BTN_ART_SRC.jump })
             if (!jumpEl) container.appendChild(jump)
 
-            // Зелье — НАД самым верхним скиллом веера (angles[2]), как и было.
-            // Высота панели (PANEL_H) посчитана так, чтобы эта кнопка в неё
-            // умещалась целиком.
-            const lastSkillX = ATK.x + FAN_D * Math.cos(angles[2])
-            const lastSkillY = ATK.y + FAN_D * Math.sin(angles[2])
-            const potX = lastSkillX
-            const potY = lastSkillY - BTN_R - BTN_R - POT_GAP
-
+            // Зелье — см. POTION_POS вверху файла.
             const potEl = container.querySelector('[data-btn="potion"]') as HTMLElement
             const pot = (potEl || document.createElement('button')) as HTMLButtonElement
             pot.dataset.btn = 'potion'
@@ -629,7 +641,7 @@ export default function TouchControls({
             // Подложка — пустой диск; иконку тира кладёт ПОВЕРХ неё
             // updatePotionButton вторым слоем фона (он же вызывается сразу
             // ниже, после установки cssText).
-            pot.style.cssText = roundButtonCss(potX, potY, { fontSize: 12, art: C.BTN_ART_SRC.blank })
+            pot.style.cssText = roundButtonCss(POTION_POS, { fontSize: 12, art: C.BTN_ART_SRC.blank })
             if (!potEl) container.appendChild(pot)
             // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
             // "🧪 ×N"/opacity без React-состояния (см. updatePotionButton).
