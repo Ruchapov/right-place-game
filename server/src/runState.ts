@@ -26,9 +26,10 @@ import type { ScrollId } from './scrolls.js'
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
 // the tag that identifies this shape in the JSON field.
-// `events` carries the FULL roll (trophyReward/isMimic included) — that part
-// never leaves the server; the client only ever gets the stripped-down
-// version built in /run/start-explore's response.
+// `events` carries the FULL roll. The client gets the version built by
+// clientRunEvents (runEvents.ts) in /run/start-explore's response: rewards
+// since 30.09.2026 and each chest's isMimic since 13.10.2026 do leave the
+// server; the itemId of a dropped piece of equipment does not.
 // `potions` — снимок склада ПО ТИРАМ на момент старта (длина POTION_TIER_COUNT,
 // индекс = тир-1), `sips` — сколько глотков вообще разрешено за забег
 // (MAX_SIPS_PER_RUN, но не больше суммы запаса). Раньше здесь был один скаляр,

@@ -168,7 +168,16 @@ export type RunEvent = {
   y: number
   clusterPoints?: [number, number][]
   trophyReward: number
-  isMimic?: boolean // только для kind === 'chest'
+  /**
+   * Ловушка или обычный сундук — только для kind === 'chest'.
+   *
+   * Бросок ОДИН, здесь, на старте забега (CHEST_MIMIC_CHANCE в rollRunEvents), и
+   * с 13.10.2026 он же уходит клиенту (clientRunEvents ниже): какой сундук
+   * взорвётся, решает сервер, клиент своего броска не делает. До этого клиент
+   * бросал сам, на первом ударе по сундуку, и два броска не совпадали: сундук
+   * взрывался, а сервер считал его обычным и начислял трофеи, — и наоборот.
+   */
+  isMimic?: boolean
   /**
    * Чья группа — только для kind === 'enemy' (04.10.2026).
    *
@@ -336,12 +345,15 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
     const multiplier = TROPHY_MULT_BY_KIND[ev.kind]
 
     if (ev.kind === 'chest') {
+      // ЕДИНСТВЕННЫЙ бросок «ловушка или нет» на весь забег (13.10.2026): его
+      // получает и клиент — по нему он играет взрыв и бьёт героя, — и финиш,
+      // через trophyReward ниже.
       const isMimic = Math.random() < CHEST_MIMIC_CHANCE
       return {
         ...ev,
         isMimic,
-        // Мимик — чистое наказание, без награды (Explore.tsx:2042: rollTrophies
-        // вызывается только "if (!chest.isMimic)").
+        // Мимик — без трофеев. Добыча у него разыгрывается как у обычного
+        // сундука (attachEventDrops в routes/run.ts на isMimic не смотрит).
         trophyReward: isMimic ? 0 : rollTrophies(multiplier!, characterLevel),
       }
     }
@@ -362,4 +374,66 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       trophyReward: multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0,
     }
   })
+}
+
+/**
+ * Событие в том виде, в каком его получает клиент в ответе /run/start-explore.
+ * Копия формы на клиенте — StartExploreEvent в src/api.ts; менять только парой
+ * (общего пакета нет, скрипта сверки тоже).
+ */
+export type ClientRunEvent = {
+  kind: RunEventKind
+  x: number
+  y: number
+  clusterPoints?: [number, number][]
+  enemyKind?: RunEnemyKind
+  isMimic?: boolean
+  trophyReward: number
+  drop:
+    | { category: 'equipment'; nameRu: string; slot: string; tier: number }
+    | Exclude<EventDrop, { category: 'equipment' }>
+    | null
+}
+
+/**
+ * Что из розыгрыша уезжает клиенту. Чистая функция: вынесена из обработчика
+ * /run/start-explore 13.10.2026, чтобы «что видит клиент» проверялось без базы.
+ *
+ * ⚠️ НАГРАДЫ УЕЗЖАЮТ КЛИЕНТУ (30.09.2026), и это смена решения, а не недосмотр.
+ * Раньше trophyReward намеренно оставался на сервере, чтобы игрок не видел
+ * награду через DevTools до того, как её заработал. Цена была в другом:
+ * всплывашку в бою клиент рисовал СВОИМ броском, и она не сходилась с тем, что
+ * сервер потом начислял. Дизайнер выбрал честные числа в бою; «взломанный клиент
+ * может узнать добычу заранее» принято сознательно.
+ *
+ * ⚠️ isMimic ТОЖЕ ОТДАЁТСЯ (13.10.2026) — у каждого сундука, и только у него.
+ * По нему клиент решает, играть ли взрыв и бить ли героя; своего броска у него
+ * больше нет. Новой утечки это не добавляет: мимик и раньше вычислялся по
+ * trophyReward (у него ровно 0, у обычного сундука всегда больше) — принято
+ * дизайнером 30.09.2026.
+ * Значение уходит КАК ЕСТЬ, без приведения к false: сундук без решения — ошибка
+ * розыгрыша, и клиент обязан увидеть её отсутствием поля (он отказывается
+ * показывать такой забег), а не получить выдуманное «обычный».
+ *
+ * itemId выпавшего снаряжения клиенту НЕ отдаётся: ему хватает slot+tier, чтобы
+ * собрать путь к иконке, а строка таблицы Item нужна только финишу.
+ */
+export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
+  return events.map((ev) => ({
+    kind: ev.kind,
+    x: ev.x,
+    y: ev.y,
+    ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
+    // Чья группа (04.10.2026). Отдаётся ТОЛЬКО если сервер её разыграл: у
+    // забега, начатого старым сервером, поля нет вовсе, и клиент читает это
+    // как «звери» — см. readEnemyKind в src/api.ts.
+    ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
+    ...(ev.kind === 'chest' ? { isMimic: ev.isMimic } : {}),
+    trophyReward: ev.trophyReward,
+    drop: ev.drop === undefined || ev.drop === null
+      ? null
+      : ev.drop.category === 'equipment'
+        ? { category: 'equipment' as const, nameRu: ev.drop.nameRu, slot: ev.drop.slot, tier: ev.drop.tier }
+        : ev.drop,
+  }))
 }

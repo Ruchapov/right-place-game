@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
@@ -856,37 +856,12 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(409).send({ error: 'State changed, retry' })
     }
 
-    // ⚠️ НАГРАДЫ ТЕПЕРЬ УЕЗЖАЮТ КЛИЕНТУ (30.09.2026), и это смена решения, а не
-    // недосмотр. Раньше trophyReward намеренно оставался на сервере, чтобы игрок
-    // не видел награду через DevTools до того, как её заработал. Цена была в
-    // другом: всплывашку в бою клиент рисовал СВОИМ броском, и она не сходилась
-    // с тем, что сервер потом начислял. Дизайнер выбрал честные числа в бою;
-    // «взломанный клиент может узнать добычу заранее» принято сознательно.
-    //
-    // ⚠️ isMimic по-прежнему НЕ отдаётся — но по trophyReward мимик ВЫЧИСЛЯЕТСЯ:
-    // у него он ровно 0, а у обычного сундука всегда больше нуля. Это известная
-    // и ПРИНЯТАЯ утечка (решение дизайнера 30.09.2026), а не упущение. Цена —
-    // взломанный клиент может не открывать сундук-ловушку. Закрыть её можно
-    // только дав мимику настоящие трофеи, то есть правкой баланса.
-    //
-    // itemId выпавшего снаряжения клиенту НЕ отдаётся: ему хватает slot+tier,
-    // чтобы собрать путь к иконке, а строка таблицы Item нужна только финишу.
-    const clientEvents = events.map((ev) => ({
-      kind: ev.kind,
-      x: ev.x,
-      y: ev.y,
-      ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
-      // Чья группа (04.10.2026). Отдаётся ТОЛЬКО если сервер её разыграл: у
-      // забега, начатого старым сервером, поля нет вовсе, и клиент читает это
-      // как «звери» — см. readEnemyKind в src/api.ts.
-      ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
-      trophyReward: ev.trophyReward,
-      drop: ev.drop === undefined || ev.drop === null
-        ? null
-        : ev.drop.category === 'equipment'
-          ? { category: 'equipment' as const, nameRu: ev.drop.nameRu, slot: ev.drop.slot, tier: ev.drop.tier }
-          : ev.drop,
-    }))
+    // Что из розыгрыша видит клиент — награды, вид врагов и, с 13.10.2026,
+    // решение «ловушка или обычный» у каждого сундука — собирает
+    // clientRunEvents (runEvents.ts); там же записано, почему каждое из полей
+    // отдаётся. Берётся из ТОГО ЖЕ массива events, что записан в currentRun выше:
+    // финиш начислит ровно то, что клиент сейчас получит и покажет.
+    const clientEvents = clientRunEvents(events)
 
     // Множитель урона обычной атаки на ВЕСЬ забег:
     //   attackMult = 1 + сумма attackBonus взятых расходников
