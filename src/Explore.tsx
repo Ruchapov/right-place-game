@@ -70,6 +70,10 @@ import { playerAttackDamage } from './playerDamage'
 // сервере и молча перестать совпадать.
 const SETUP_ERR_START_TIMEOUT = 'setup/start-timeout'
 const SETUP_ERR_LOAD_WATCHDOG = 'setup/load-watchdog'
+// Сервер не назвал, ловушка ли сундук (см. eventChestMimic в setup()). Свой
+// текст на экране ошибки нужен потому, что общий «Проверьте соединение» здесь
+// уводит не туда: связь в порядке, не обновился сервер.
+const SETUP_ERR_NO_CHEST_DECISION = 'setup/no-chest-decision'
 
 // Потолок на ВСЮ загрузку после успешного старта: карта, слоты, init канваса,
 // фоны, спрайт-листы. Любой из них может зависнуть навсегда (fetch в WebView
@@ -2875,7 +2879,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const isMimic = readChestMimic(ev)
         if (isMimic === null) {
           throw new Error(
-            `Сервер не назвал, ловушка ли сундук (событие ${eventIndex}, isMimic=${String(ev.isMimic)}). ` +
+            `${SETUP_ERR_NO_CHEST_DECISION}: Сервер не назвал, ловушка ли сундук ` +
+            `(событие ${eventIndex}, isMimic=${String(ev.isMimic)}). ` +
             'Забег не показан; он закроется без штрафа, энергия вернётся.',
           )
         }
@@ -6168,6 +6173,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         ? 'Сервер не ответил на старт забега. Закрой приложение полностью и открой снова: забег, который ты не увидел, закроется без потерь.'
         : setupError.startsWith(SETUP_ERR_LOAD_WATCHDOG)
         ? 'Загрузка забега не завершилась. Закрой приложение полностью и открой снова: забег, который ты не увидел, закроется без потерь.'
+        // Третий свой случай: сервер старше клиента и решения по сундуку не
+        // прислал. Связь здесь ни при чём, и забег тоже остался неподтверждённым.
+        : setupError.startsWith(SETUP_ERR_NO_CHEST_DECISION)
+        ? 'Сервер игры ещё не обновился. Закрой приложение полностью и открой снова чуть позже: забег, который ты не увидел, закроется без потерь.'
         : setupError.includes('No active explore run')
         ? 'Забег уже закрыт на сервере. Вернись в меню и начни заново.'
         : setupError.includes('A run is already in progress')
