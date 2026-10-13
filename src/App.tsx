@@ -325,11 +325,12 @@ const RUN_COST = 3 // DEV: держать в синхроне с серверо�
  * Это НЕ боевой курс и НЕ копия серверной константы: настоящий курс живёт
  * только на сервере (TROPHY_GOLD_RATE в server/src/game.ts) и приходит клиенту
  * полем trophyGoldRate в ответе логина и GET /character/profile. Здесь число
- * нужно ровно затем, чтобы вкладку "Обмен" можно было верстать в браузере, где
- * запросов к серверу нет вообще.
+ * нужно ровно затем, чтобы карточку «Обмен трофеев» (плитка у Торговца в
+ * «Убежище»; до 14.10.2026 — вкладка «Обмен») можно было верстать в браузере,
+ * где запросов к серверу нет вообще.
  *
  * Равен серверному (там тоже 1) НАМЕРЕННО: курс по дизайну 1 к 1, и тестовое
- * число, отличающееся от боевого, показывало бы в браузере не ту вкладку,
+ * число, отличающееся от боевого, показывало бы в браузере не ту карточку,
  * которую увидит игрок. Совпадение с сервером здесь — совпадение значений, а не
  * копия константы: сервер эту строку не читает, а клиент в Telegram — не
  * исполняет.
@@ -635,10 +636,14 @@ export default function App() {
   // Раскрыт ли выпадающий список фильтра. Чисто вёрсточный флаг: что выбрано,
   // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
   const [slotFilterOpen, setSlotFilterOpen] = useState(false)
-  // «Снаряжение» убрано из магазина (решение дизайнера, 29.09.2026): предметы
+  // Вкладка называется «Убежище» (14.10.2026; id вкладки и имена переменных
+  // остались историческими — 'shop', shopTab, shopSelected), и внутри неё три
+  // жителя вместо прежних разделов: Торговец — расходники и обмен трофеев,
+  // Кузнец — улучшения, Отшельник — книги навыков.
+  // «Снаряжение» из неё убрано раньше (решение дизайнера, 29.09.2026): предметы
   // там не продавались и продаваться не будут — они падают в забегах, а обратно
   // уходят продажей из инвентаря.
-  const [shopTab, setShopTab] = useState<'Расходники' | 'Улучшения' | 'Книги' | 'Обмен'>('Расходники')
+  const [shopTab, setShopTab] = useState<'Торговец' | 'Кузнец' | 'Отшельник'>('Торговец')
   // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
   // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
   const [shopSelected, setShopSelected] = useState<
@@ -675,6 +680,10 @@ export default function App() {
   // "запрос МОГ примениться" и потому блокирует ещё и покупки, а здесь блокировать
   // нечего — достаточно предложить сверку.
   const [exchangeBalanceStale, setExchangeBalanceStale] = useState(false)
+  // Открыта ли карточка обмена — её открывает плитка «Обмен трофеев» в витрине
+  // Торговца (14.10.2026; до этого обмен был отдельной вкладкой). Только флаг
+  // показа: всё, что решает, доступен ли обмен, по-прежнему в состояниях выше.
+  const [exchangeCardOpen, setExchangeCardOpen] = useState(false)
   // Тост "+N золота" после удачного обмена (N — goldGained из ответа сервера).
   // null — тоста нет.
   const [goldToast, setGoldToast] = useState<number | null>(null)
@@ -800,8 +809,8 @@ export default function App() {
       setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock() })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
-      // чтобы вкладку "Обмен" можно было верстать и проверять в браузере (вне
-      // Telegram запросов к серверу нет вовсе). Совпадает с боевым курсом (1 к 1)
+      // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
+      // (вне Telegram запросов к серверу нет вовсе). Совпадает с боевым курсом (1 к 1)
       // намеренно — см. объяснение у самой константы.
       // В Telegram эта строка не исполняется — курс приходит с логином ниже.
       setTrophyGoldRate(TEMP_DEV_TROPHY_GOLD_RATE)
@@ -1654,8 +1663,8 @@ export default function App() {
       const result = await exchangeTrophies(token)
       // Абсолютные значения из БД — не расчёт по курсу на клиенте.
       setPlayer(prev => prev ? { ...prev, gold: result.gold, trophies: result.trophies } : prev)
-      // Вкладка остаётся открытой — числа на ней просто пересчитаются от нового
-      // player (трофеи 0, золото выросло), а прибавку назовёт тост ниже.
+      // Карточка обмена остаётся открытой — числа в ней просто пересчитаются от
+      // нового player (трофеи 0, золото выросло), а прибавку назовёт тост ниже.
       setExchangeBalanceStale(false)
       showGoldToast(result.goldGained)
     } catch (e) {
@@ -2248,39 +2257,44 @@ export default function App() {
             )
           })()}
           {activeTab === 'shop' && (() => {
-            const SHOP_TABS = ['Расходники', 'Улучшения', 'Книги', 'Обмен'] as const
+            // Три жителя Убежища — три вкладки (14.10.2026). Портретов нет, только
+            // имена. Что у кого: Торговец — расходники и обмен трофеев, Кузнец —
+            // улучшения, Отшельник — книги навыков.
+            const SHOP_TABS = ['Торговец', 'Кузнец', 'Отшельник'] as const
             const playerLevel = player?.level ?? 1
-            // Вкладки, товары которых лежат в каталоге расходников, — их рисует
-            // ОДНА И ТА ЖЕ сетка ниже. Значение сужено до ConsumableShopTab
-            // (каталог), поэтому фильтр по c.shopTab типизирован, а не сравнение
-            // строк наугад: появится третья такая вкладка — её придётся добавить
-            // и в каталог, и здесь, молча забыть не выйдет.
+            // У двух жителей товары лежат в каталоге расходников — их рисует ОДНА
+            // И ТА ЖЕ сетка ниже. Раздел каталога (ConsumableShopTab) остался
+            // прежним, «Расходники» и «Книги»: каталог байт в байт общий с
+            // сервером, и имена жителей в него не входят. Житель называет свой
+            // раздел здесь; появится третий раздел каталога — его придётся
+            // добавить и в каталог, и сюда, молча забыть не выйдет.
             const gridTab: ConsumableShopTab | null =
-              shopTab === 'Расходники' || shopTab === 'Книги' ? shopTab : null
-            // Витрина «Расходники» = ДВА каталога, сведённые в один список
-            // ячеек: сначала зелья (src/potions.ts), затем расходники
-            // (src/consumables.ts). Локальных массивов товаров в компоненте нет
-            // и не должно быть — цены/уровни жили в трёх местах и уже
-            // противоречили друг другу.
-            // Ячейка одинаковая для обоих видов: иконка, ценник, замок по
-            // уровню. Различается только `select` — что положить в shopSelected.
+              shopTab === 'Торговец' ? 'Расходники' : shopTab === 'Отшельник' ? 'Книги' : null
+            // Витрина Торговца = ДВА каталога, сведённые в один список ячеек:
+            // сначала зелья (src/potions.ts), затем расходники
+            // (src/consumables.ts), и последней — плитка обмена трофеев.
+            // Локальных массивов товаров в компоненте нет и не должно быть —
+            // цены/уровни жили в трёх местах и уже противоречили друг другу.
+            // Ячейка одинаковая у всех: иконка, плашка в углу, замок по уровню.
+            // Различаются `badge` (у товара цена, у плитки обмена слово) и
+            // `select` — что открыть.
             type ShopCell = {
               key: string
               icon: string
               alt: string
-              price: number
+              badge: string
               levelRequired: number
               select: () => void
             }
-            // Зелья — только в «Расходниках»: в каталоге расходников их нет, и
-            // вкладку им назначить негде. Камень с оберегом и книги разводит поле
+            // Зелья — только у Торговца: в каталоге расходников их нет, и раздел
+            // им назначить негде. Камень с оберегом и книги разводит поле
             // shopTab самого каталога.
             const shopCells: ShopCell[] = [
               ...(gridTab === 'Расходники' ? POTION_TIERS : []).map((p) => ({
                 key: `potion-${p.tier}`,
                 icon: p.icon,
                 alt: p.nameRu,
-                price: p.price,
+                badge: String(p.price),
                 levelRequired: p.levelRequired,
                 select: () => setShopSelected({ kind: 'potion' as const, tier: p.tier }),
               })),
@@ -2288,10 +2302,22 @@ export default function App() {
                 key: `consumable-${c.id}`,
                 icon: c.icon,
                 alt: c.nameRu,
-                price: c.price,
+                badge: String(c.price),
                 levelRequired: c.levelRequired,
                 select: () => setShopSelected({ kind: 'consumable' as const, id: c.id }),
               })),
+              // Обмен трофеев — плитка в той же витрине, а не отдельная вкладка
+              // (14.10.2026). Это не товар: цены у неё нет, и на плашке вместо
+              // числа слово — иначе число читалось бы как цена в золоте. Тап
+              // открывает карточку обмена ниже.
+              ...(shopTab === 'Торговец' ? [{
+                key: 'exchange-trophies',
+                icon: 'icon_trophy.png',
+                alt: 'Обмен трофеев',
+                badge: 'обмен',
+                levelRequired: 1,
+                select: () => setExchangeCardOpen(true),
+              }] : []),
             ]
 
             // Улучшения — свой список ячеек: их «товар» это не запись каталога
@@ -2306,16 +2332,17 @@ export default function App() {
                 key: `upgrade-${kind}`,
                 icon: spec.icon,
                 alt: spec.nameRu,
-                price: upgradePrice(upgradeCounts[kind]),
+                badge: String(upgradePrice(upgradeCounts[kind])),
                 levelRequired: 1,
                 select: () => setShopSelected({ kind: 'upgrade' as const, upgradeKind: kind }),
               }
             })
-            // Что рисует сетка на открытой вкладке. Улучшения и товары каталога
-            // расходников используют ОДНУ И ТУ ЖЕ ячейку (иконка, ценник, замок
-            // по уровню) — различаются только источником списка.
-            const gridCells: ShopCell[] = shopTab === 'Улучшения' ? upgradeCells : shopCells
-            const showGrid = gridTab !== null || shopTab === 'Улучшения'
+            // Что рисует сетка у открытого жителя. Улучшения Кузнеца и товары
+            // каталога расходников используют ОДНУ И ТУ ЖЕ ячейку (иконка,
+            // плашка, замок по уровню) — различаются только источником списка.
+            // Сетка есть у всех троих: отдельного экрана без сетки (им был
+            // «Обмен») больше нет.
+            const gridCells: ShopCell[] = shopTab === 'Кузнец' ? upgradeCells : shopCells
 
             // Модель карточки — ОДНА на оба вида товара. Иначе пришлось бы
             // дублировать ~150 строк разметки вместе со степпером, строкой
@@ -2445,13 +2472,13 @@ export default function App() {
             <div style={{ padding: '0 4px' }}>
 
               {/* Шапка — только показ валют, ничего нажимаемого: обмен живёт
-                  отдельной вкладкой ниже. player === null здесь недостижим (до
+                  плиткой в витрине Торговца. player === null здесь недостижим (до
                   меню не дойти), но нуль вместо неизвестного числа читался бы
                   как "всё потратили" — самый дорогой симптом из возможных, см.
                   правило про тихие фолбэки в CLAUDE.md. Поэтому прочерк, а не
                   прежний `?? 0`. */}
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
-                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Магазин</div>
+                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Убежище</div>
                 <div style={{ display:'flex', gap:14 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                     <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
@@ -2464,47 +2491,40 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Вкладки разделов — пять в один ряд без переполнения на обычном
-                  телефоне.
-                  Места меньше, чем кажется: ширину режут ДВА родителя — контейнер
-                  прокрутки (padding 20, см. корень render'а) и обёртка вкладки
-                  (padding '0 4px'), то есть 48px из ширины экрана. На 360px ряду
-                  остаётся 312px, и при прежних padding '6px 6px'/gap 4 он требовал
-                  336–342px (замерено метриками Segoe UI и Arial на 11px) — отсюда
-                  и бралась серая полоса прокрутки под вкладками.
-                  Решение: базовый padding по X ужат до 2px (ряду нужно 288–294px),
-                  а свободное место раздаётся вкладкам через flex:'1 1 auto' — они
-                  растягиваются на всю ширину, и на 390/412px отступы внутри выходят
-                  заметно больше базовых 2px. Шрифт ОСТАВЛЕН 11px.
-                  min-width у flex-элементов НЕ обнулён намеренно: авто-минимум по
-                  содержимому не даёт сжать вкладку до обрезки текста, поэтому на
-                  очень узких экранах (320px — iPhone SE, там дефицит ~22px) ряд
-                  честно прокручивается, а не калечит подписи.
-                  className='no-scrollbar' (src/App.css) убирает саму полосу на всех
-                  ширинах, прокрутку сохраняя: webkit-псевдоэлемент инлайн-стилем не
-                  задать. */}
-              <div className="no-scrollbar" style={{ display:'flex', gap:4, overflowX:'auto', marginBottom:14, padding:'0 2px' }}>
+              {/* Три жителя — три равные вкладки в один ряд (14.10.2026; до этого
+                  здесь стояли четыре раздела: Расходники, Улучшения, Книги, Обмен).
+                  Сетка из трёх колонок minmax(0, 1fr), а не flex с шириной по
+                  подписи: у трека с нулевым минимумом вкладка не может
+                  потребовать места больше своей трети, и ряд не вытолкнет
+                  страницу вбок ни на какой ширине — прежний ряд из пяти разделов
+                  на 320 px прокручивался сам. Подпись не переносится; если бы
+                  она не влезла, её обрезало бы многоточие внутри вкладки (на
+                  320 px влезает с запасом — замер в docs/shop.md).
+                  Высота 44 px — палец: эти три вкладки теперь главное на экране,
+                  прежние 27 px были меньше правила скилла дизайна. */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:6, marginBottom:14, padding:'0 8px' }}>
                 {SHOP_TABS.map(tab => {
                   const active = shopTab === tab
                   return (
                     <div key={tab} onClick={() => setShopTab(tab)}
                       style={{
                         boxSizing:'border-box',
-                        flex:'1 1 auto', textAlign:'center',
-                        background:C.nicheDeep, borderRadius:6, padding:'6px 2px',
-                        fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
+                        minHeight:44,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        background:C.nicheDeep, borderRadius:8, padding:'0 4px',
+                        fontSize:13, cursor:'pointer',
                         border: `1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
+                        boxShadow: active ? 'inset 0 0 12px rgba(209,151,68,0.22)' : 'none',
                       }}>
-                      {tab}
+                      <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tab}</span>
                     </div>
                   )
                 })}
               </div>
 
-              {/* Витрина. Одна сетка на «Расходники» и «Книги» — различаются
-                  только товары (gridTab выше), а ячейка, ценник и замок по
-                  уровню у них общие.
+              {/* Витрина. Одна сетка на всех троих — различаются только товары
+                  (gridCells выше), а ячейка, плашка и замок по уровню общие.
                   Колонки — minmax(0, 1fr), а НЕ 1fr: иначе сетка вылезает за
                   экран на узком телефоне. `1fr` это `minmax(auto, 1fr)`, а у
                   трека с авто-минимумом грид-элемент получает min-width по
@@ -2517,167 +2537,52 @@ export default function App() {
                   С minmax(0, ...) минимум трека равен нулю, авто-минимум
                   элемента не применяется вовсе, и иконка сжимается вместе с
                   ячейкой (на 375px — 84px). */}
-              {/* Ветки покрывают ВСЕ четыре вкладки магазина: сетка товаров
-                  (Расходники, Книги, Улучшения) и Обмен. Прежней заглушки
-                  «скоро» больше нет — она осталась от вкладки «Снаряжение»,
-                  которую убрали. */}
-              {showGrid ? (
-                <>
-                {/* Цены улучшений считаются от счётчиков покупок. Нет счётчиков —
-                    нет и цен: говорим об этом, а не рисуем пустую витрину. */}
-                {shopTab === 'Улучшения' && upgradeCounts === null && (
-                  <div style={{ margin:'0 8px 10px', padding:'8px 10px', borderRadius:8, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, fontSize:11, color:C.textDim }}>
-                    Профиль не загружен — цены улучшений неизвестны.
-                  </div>
-                )}
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
-                  {gridCells.map(cell => {
-                    const unlocked = playerLevel >= cell.levelRequired
-                    return (
-                      <div key={cell.key}
-                        onClick={() => { cell.select(); setShopBuyError(null); setShopQty(1) }}
-                        style={{
-                          boxSizing:'border-box',
-                          position:'relative',
-                          aspectRatio:'1',
-                          background:C.nicheDeep,
-                          border:`1px solid ${C.stoneDark}`,
-                          borderRadius:10, padding:6, textAlign:'center',
-                          boxShadow:'inset 0 2px 6px rgba(0,0,0,0.5)',
-                          opacity: unlocked ? 1 : 0.45,
-                          cursor: 'pointer',
-                        }}>
-                        <img
-                          src={`${import.meta.env.BASE_URL}assets/icons/${cell.icon}`}
-                          alt={cell.alt}
-                          style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }}
-                        />
-                        <div style={{
-                          position:'absolute', right:4, bottom:4,
-                          background:'rgba(21,18,24,0.85)',
-                          borderRadius:5, padding:'2px 6px',
-                          fontSize:11, fontFamily:FONT_DISPLAY,
-                          color: unlocked ? C.glowCore : C.textDim,
-                        }}>
-                          {unlocked ? cell.price : `ур. ${cell.levelRequired}`}
-                        </div>
-                      </div>
-                    )
-                  })}
+              {/* Цены улучшений считаются от счётчиков покупок. Нет счётчиков —
+                  нет и цен: говорим об этом, а не рисуем пустую витрину. */}
+              {shopTab === 'Кузнец' && upgradeCounts === null && (
+                <div style={{ margin:'0 8px 10px', padding:'8px 10px', borderRadius:8, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, fontSize:11, color:C.textDim }}>
+                  Профиль не загружен — цены улучшений неизвестны.
                 </div>
-                </>
-              ) : shopTab === 'Обмен' ? (() => {
-                // Банк. player === null недостижим, но нулём его подменять
-                // нельзя: "банк неизвестен" и "банк пуст" выглядели бы одинаково
-                // (см. правило про тихие фолбэки в CLAUDE.md).
-                const bank = player === null ? null : player.trophies
-                const rateKnown = trophyGoldRate !== null
-                const nothingToExchange = bank !== null && bank <= 0
-                // Баланс под вопросом (обмен мог пройти) или сервер сказал, что
-                // показанный банк устарел — в обоих случаях нужна сверка.
-                const blocked = shopBalanceUnknown || exchangeBalanceStale
-                const exchangeDisabled =
-                  exchangePending || bank === null || !rateKnown || nothingToExchange || blocked
-                // У каждой причины свой текст: игрок должен видеть ИМЕННО свою.
-                const mainLabel =
-                  exchangePending ? 'Обмен…'
-                    : bank === null ? 'Профиль не загружен'
-                      : !rateKnown ? 'Курс обмена неизвестен'
-                        : nothingToExchange ? 'Нечего обменивать'
-                          : `Обменять ${bank} ${trophyWord(bank)}`
-
-                return (
-                <div style={{ padding:'0 8px' }}>
-                  {/* Строка обмена: трофеи → золото, ТОЛЬКО две иконки одного
-                      размера. Чисел здесь нет вовсе: банк называет текст кнопки
-                      ниже, а итоговое золото — сервер после обмена.
-                      Высота блока = высоте иконок: строка сетки ровно 56px (оба
-                      столбца — по одной картинке), alignItems:'center' ставит их на
-                      один уровень и центрует стрелку, паддинг симметричный, а
-                      display:'block' у img убирает зазор под картинкой от базовой
-                      линии строки — иначе внизу оставалась бы лишняя полоска.
-                      Колонки 1fr/auto/1fr держат стрелку точно по центру блока. */}
-                  <div style={{
-                    background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
-                    borderRadius:10, padding:'16px 12px',
-                    boxShadow:'inset 0 2px 6px rgba(0,0,0,0.55)',
-                    // minmax(0, 1fr) по краям — то же правило, что у витрины:
-                    // иконки здесь 56×56 явными width/height, поэтому вылета не
-                    // было, но трек с авто-минимумом в сетке не нужен нигде.
-                    display:'grid', gridTemplateColumns:'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems:'center', gap:8,
-                    marginBottom:14,
-                  }}>
-                    <div style={{ display:'flex', justifyContent:'center' }}>
-                      <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
-                    </div>
-                    <span style={{ fontSize:20, color:C.stoneMid }}>→</span>
-                    <div style={{ display:'flex', justifyContent:'center' }}>
-                      <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
-                    </div>
-                  </div>
-
-                  {/* Курсивом и приглушённо — тем же приёмом, что описание зелья
-                      в его карточке (там же fontStyle italic + C.textDim).
-                      &nbsp; перед тире — чтобы оно не начинало строку при переносе
-                      (сущность, а не символ: в исходнике неразрывный пробел
-                      невидим и его легко потерять при правке). */}
-                  <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
-                    Трофеи тянут к земле и манят смерть. Золото легче&nbsp;— и его у тебя уже не отнимут.
-                  </div>
-
-                  {/* Курс здесь НЕ печатается: его называет сервер, и единственное
-                      место, где его отсутствие видно игроку, — текст кнопки ниже
-                      ("Курс обмена неизвестен"). Само состояние trophyGoldRate
-                      осталось и по-прежнему решает, доступна ли кнопка. */}
-                  <div style={{ fontSize:11, color:C.textDim, marginBottom:14 }}>
-                    Меняются все трофеи разом.
-                  </div>
-
-                  {/* Основная кнопка во всю ширину. minHeight 44 — палец (правило
-                      скилла), заливка и свечение как у "Купить" в карточке зелья:
-                      одно основное действие на экран. */}
-                  <div
-                    onClick={() => { if (!exchangeDisabled) handleExchangeTrophies() }}
-                    style={{
-                      boxSizing:'border-box',
-                      minHeight:44,
-                      display:'flex', alignItems:'center', justifyContent:'center',
-                      background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
-                      borderRadius:9, padding:'11px 12px', textAlign:'center',
-                      color:C.glowCore, fontSize:15,
-                      cursor: exchangeDisabled ? 'default' : 'pointer',
-                      opacity: exchangeDisabled ? 0.5 : 1,
-                      boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
-                    }}>
-                    {mainLabel}
-                  </div>
-
-                  {exchangeError !== null && (
-                    <div style={{ marginTop:10, fontSize:11, color:C.danger, textAlign:'center' }}>
-                      {exchangeError}
-                    </div>
-                  )}
-
-                  {/* Та же кнопка и тот же обработчик, что в карточке зелья: один
-                      GET /character/profile сверяет и золото со складом, и банк
-                      трофеев с курсом. */}
-                  {blocked && (
-                    <div
-                      onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
+              )}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
+                {gridCells.map(cell => {
+                  const unlocked = playerLevel >= cell.levelRequired
+                  return (
+                    <div key={cell.key}
+                      onClick={() => { cell.select(); setShopBuyError(null); setShopQty(1) }}
                       style={{
-                        marginTop:8, background:C.nicheDeep,
-                        border:`1px solid ${C.stoneDark}`, borderRadius:9,
-                        padding:'9px 11px', textAlign:'center',
-                        color:C.textMain, fontSize:13,
-                        cursor: shopBalancePending ? 'default' : 'pointer',
-                        opacity: shopBalancePending ? 0.5 : 1,
+                        boxSizing:'border-box',
+                        position:'relative',
+                        aspectRatio:'1',
+                        background:C.nicheDeep,
+                        border:`1px solid ${C.stoneDark}`,
+                        borderRadius:10, padding:6, textAlign:'center',
+                        boxShadow:'inset 0 2px 6px rgba(0,0,0,0.5)',
+                        opacity: unlocked ? 1 : 0.45,
+                        cursor: 'pointer',
                       }}>
-                      {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
+                      <img
+                        src={`${import.meta.env.BASE_URL}assets/icons/${cell.icon}`}
+                        alt={cell.alt}
+                        style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }}
+                      />
+                      <div style={{
+                        position:'absolute', right:4, bottom:4,
+                        background:'rgba(21,18,24,0.85)',
+                        borderRadius:5, padding:'2px 6px',
+                        fontSize:11, fontFamily:FONT_DISPLAY,
+                        color: unlocked ? C.glowCore : C.textDim,
+                      }}>
+                        {unlocked ? cell.badge : `ур. ${cell.levelRequired}`}
+                      </div>
                     </div>
-                  )}
-                </div>
-                )
-              })() : null}
+                  )
+                })}
+              </div>
+
+              {/* Карточка обмена трофеев (её открывает плитка выше) рисуется НЕ
+                  здесь, а прямым потомком корня, рядом с тостом, — причина в
+                  комментарии у неё. */}
 
               {/* Карточка предмета */}
               {shopCard && (
@@ -3145,9 +3050,11 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Подвкладки. Тот же приём, что у разделов магазина выше
-                  (SHOP_TABS), и с 30.09.2026 — ТА ЖЕ раскладка, не только тот же
-                  вид: чипов стало ЧЕТЫРЕ («Страницы»), и прежний ряд с
+              {/* Подвкладки. Раскладка взята 30.09.2026 у ряда разделов магазина,
+                  каким он был тогда (с 14.10.2026 вкладка зовётся «Убежище», а в
+                  её ряду три равные вкладки сеткой — см. SHOP_TABS выше; здесь
+                  чипов четыре и подписи разной длины, поэтому прежний приём
+                  остался): чипов стало ЧЕТЫРЕ («Страницы»), и прежний ряд с
                   padding:'0 14px' у каждого перестал влезать на узкий экран.
                   Прикидка по метрикам: подписи 11px требуют ~60/60/30/48px
                   текста, со старыми отступами ряд просил ~352px — на 375 и 390
@@ -3156,7 +3063,7 @@ export default function App() {
                   авто-минимум по содержимому, и лишнее просто уехало бы вправо —
                   ровно тот отказ, из-за которого в магазине терялся третий
                   столбец (см. CLAUDE.md, Critical Gotchas).
-                  Решение взято готовым у ряда магазина: горизонтальная прокрутка
+                  Решение взято готовым у тогдашнего ряда магазина: горизонтальная прокрутка
                   (className='no-scrollbar' прячет саму полосу, src/App.css) плюс
                   flex:'1 1 auto' на чипах — на широких экранах они растягиваются
                   на всю ширину, на узких ряд честно прокручивается, а не калечит
@@ -3900,7 +3807,9 @@ export default function App() {
       }}>
         {([
           {id:'hero', label:'Персонаж', icon:'nav_hero.png'},
-          {id:'shop', label:'Магазин', icon:'nav_shop.png'},
+          // Подпись «Убежище» с 14.10.2026 (была «Магазин»); id и иконка прежние —
+          // та же причина, что у 'gear' ниже.
+          {id:'shop', label:'Убежище', icon:'nav_shop.png'},
           {id:'explore', label:'Исследовать', icon:'nav_explore.png'},
           // id 'gear' остался историческим: игроку видна только подпись, а
           // переименование идентификатора задело бы тип activeTab,
@@ -4310,15 +4219,177 @@ export default function App() {
         </div>
       )}
 
+      {/* Карточка обмена трофеев — её открывает плитка в витрине Торговца
+          (14.10.2026). Внутри то же, что было вкладкой «Обмен»: та же логика,
+          тот же запрос (handleExchangeTrophies), те же тексты отказов. Тап
+          мимо закрывает. После удачного обмена карточка остаётся открытой —
+          числа в ней пересчитываются сами, прибавку называет тост.
+          Стоит ЗДЕСЬ, прямым потомком корня, а не внутри вкладки, как карточка
+          товара: у контейнера прокрутки маска растворения снизу, а маска
+          создаёт свой контекст наложения — оверлей изнутри него гаснет в
+          нижних 96 px экрана и лежит ПОД нижней панелью (999), каким бы ни был
+          его zIndex. Карточке товара в вертикали это не мешает (она по центру
+          и до низа не достаёт), а карточка обмена на телефоне набок занимает
+          всю высоту экрана: её низ с «Обновить баланс» оказывался под панелью.
+          Отсюда же видимая разница с карточкой товара: здесь затемнение
+          накрывает и нижнюю панель, и тап по ней закрывает карточку. */}
+      {activeTab === 'shop' && exchangeCardOpen && (() => {
+        // Банк. player === null недостижим, но нулём его подменять
+        // нельзя: "банк неизвестен" и "банк пуст" выглядели бы одинаково
+        // (см. правило про тихие фолбэки в CLAUDE.md).
+        const bank = player === null ? null : player.trophies
+        const rateKnown = trophyGoldRate !== null
+        const nothingToExchange = bank !== null && bank <= 0
+        // Баланс под вопросом (обмен мог пройти) или сервер сказал, что
+        // показанный банк устарел — в обоих случаях нужна сверка.
+        const blocked = shopBalanceUnknown || exchangeBalanceStale
+        const exchangeDisabled =
+          exchangePending || bank === null || !rateKnown || nothingToExchange || blocked
+        // У каждой причины свой текст: игрок должен видеть ИМЕННО свою.
+        const mainLabel =
+          exchangePending ? 'Обмен…'
+            : bank === null ? 'Профиль не загружен'
+              : !rateKnown ? 'Курс обмена неизвестен'
+                : nothingToExchange ? 'Нечего обменивать'
+                  : `Обменять ${bank} ${trophyWord(bank)}`
+
+        return (
+        <div
+          onClick={() => setExchangeCardOpen(false)}
+          style={{
+            boxSizing:'border-box',
+            position:'fixed', top:0, left:0, right:0, bottom:0,
+            // Безопасные зоны — отступом подложки: карточка высотой во
+            // весь экран (телефон набок) иначе легла бы под чёлку и
+            // кнопки Telegram. Затемнение при этом по-прежнему на весь
+            // экран — фон красит и область отступа.
+            padding:'var(--rp-safe-top) var(--rp-safe-right) var(--rp-safe-bottom) var(--rp-safe-left)',
+            background:'rgba(0,0,0,0.55)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            zIndex:1000,
+          }}>
+        {/* maxHeight + прокрутка ВНУТРИ карточки: с текстом отказа и
+            «Обновить баланс» она высотой 410–433 px, а экран телефона
+            набок — 360–390. Без этого края карточки уходили за экран, и
+            «Обновить баланс» после потерянного ответа резалась нижним
+            краем без возможности докрутить (замер 14.10.2026, 844×390).
+            Пока обмен был вкладкой, он лежал в прокручиваемой странице;
+            у карточки своей прокрутки не было. В вертикали карточка
+            ниже экрана, и ни maxHeight, ни прокрутка не включаются. */}
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            boxSizing:'border-box',
+            maxWidth:290, width:'100%',
+            maxHeight:'100%', overflowY:'auto',
+            background:C.appBg, border:`1px solid ${C.stoneDark}`,
+            borderRadius:14, padding:16,
+          }}>
+          {/* Заголовок: на плитке в витрине подписи нет, и карточка
+              обязана сама сказать, что это. */}
+          <div style={{ fontSize:15, color:C.textMain, marginBottom:12 }}>Обмен трофеев</div>
+
+          {/* Строка обмена: трофеи → золото, ТОЛЬКО две иконки одного
+              размера. Чисел здесь нет вовсе: банк называет текст кнопки
+              ниже, а итоговое золото — сервер после обмена.
+              Высота блока = высоте иконок: строка сетки ровно 56px (оба
+              столбца — по одной картинке), alignItems:'center' ставит их на
+              один уровень и центрует стрелку, паддинг симметричный, а
+              display:'block' у img убирает зазор под картинкой от базовой
+              линии строки — иначе внизу оставалась бы лишняя полоска.
+              Колонки 1fr/auto/1fr держат стрелку точно по центру блока. */}
+          <div style={{
+            background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
+            borderRadius:10, padding:'16px 12px',
+            boxShadow:'inset 0 2px 6px rgba(0,0,0,0.55)',
+            // minmax(0, 1fr) по краям — то же правило, что у витрины:
+            // иконки здесь 56×56 явными width/height, поэтому вылета не
+            // было, но трек с авто-минимумом в сетке не нужен нигде.
+            display:'grid', gridTemplateColumns:'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems:'center', gap:8,
+            marginBottom:14,
+          }}>
+            <div style={{ display:'flex', justifyContent:'center' }}>
+              <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
+            </div>
+            <span style={{ fontSize:20, color:C.stoneMid }}>→</span>
+            <div style={{ display:'flex', justifyContent:'center' }}>
+              <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={56} height={56} style={{ display:'block', objectFit:'contain' }} />
+            </div>
+          </div>
+
+          {/* Курсивом и приглушённо — тем же приёмом, что описание зелья
+              в его карточке (там же fontStyle italic + C.textDim).
+              &nbsp; перед тире — чтобы оно не начинало строку при переносе
+              (сущность, а не символ: в исходнике неразрывный пробел
+              невидим и его легко потерять при правке). */}
+          <div style={{ fontSize:12, lineHeight:1.55, fontStyle:'italic', color:C.textDim, marginBottom:12 }}>
+            Трофеи тянут к земле и манят смерть. Золото легче&nbsp;— и его у тебя уже не отнимут.
+          </div>
+
+          {/* Курс здесь НЕ печатается: его называет сервер, и единственное
+              место, где его отсутствие видно игроку, — текст кнопки ниже
+              ("Курс обмена неизвестен"). Само состояние trophyGoldRate
+              осталось и по-прежнему решает, доступна ли кнопка. */}
+          <div style={{ fontSize:11, color:C.textDim, marginBottom:14 }}>
+            Меняются все трофеи разом.
+          </div>
+
+          {/* Основная кнопка во всю ширину. minHeight 44 — палец (правило
+              скилла), заливка и свечение как у "Купить" в карточке зелья:
+              одно основное действие на карточку. */}
+          <div
+            onClick={() => { if (!exchangeDisabled) handleExchangeTrophies() }}
+            style={{
+              boxSizing:'border-box',
+              minHeight:44,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+              borderRadius:9, padding:'11px 12px', textAlign:'center',
+              color:C.glowCore, fontSize:15,
+              cursor: exchangeDisabled ? 'default' : 'pointer',
+              opacity: exchangeDisabled ? 0.5 : 1,
+              boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+            }}>
+            {mainLabel}
+          </div>
+
+          {exchangeError !== null && (
+            <div style={{ marginTop:10, fontSize:11, color:C.danger, textAlign:'center' }}>
+              {exchangeError}
+            </div>
+          )}
+
+          {/* Та же кнопка и тот же обработчик, что в карточке зелья: один
+              GET /character/profile сверяет и золото со складом, и банк
+              трофеев с курсом. */}
+          {blocked && (
+            <div
+              onClick={() => { if (!shopBalancePending) handleRefreshBalance() }}
+              style={{
+                marginTop:8, background:C.nicheDeep,
+                border:`1px solid ${C.stoneDark}`, borderRadius:9,
+                padding:'9px 11px', textAlign:'center',
+                color:C.textMain, fontSize:13,
+                cursor: shopBalancePending ? 'default' : 'pointer',
+                opacity: shopBalancePending ? 0.5 : 1,
+              }}>
+              {shopBalancePending ? 'Сверяем...' : 'Обновить баланс'}
+            </div>
+          )}
+        </div>
+        </div>
+        )
+      })()}
+
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх
           любого экрана, включая уже открытый Explore (1000) и его экран
           итогов. */}
       {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => setPastRunNotice(null)} />}
 
-      {/* Тост об удачном обмене. Показывает goldGained ИЗ ОТВЕТА СЕРВЕРА — окно
-          обмена к этому моменту уже закрыто (см. handleExchangeTrophies), и без
-          тоста игрок увидел бы только изменившиеся числа в шапке, без объяснения.
+      {/* Тост об удачном обмене. Показывает goldGained ИЗ ОТВЕТА СЕРВЕРА: в
+          карточке обмена после него остаётся «Нечего обменивать», и без тоста
+          игрок увидел бы только изменившиеся числа в шапке, без объяснения.
           Над навигацией (999) и над оверлеем карточек (1000), но НИЖЕ окна о
           прошлом забеге (2000): то говорит о штрафе и перекрывать его нечем.
           pointerEvents:'none' — тост ничего не перехватывает, он не нажимается и
