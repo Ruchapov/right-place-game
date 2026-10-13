@@ -123,6 +123,25 @@ export function createZvonarSystem(deps: ZvonarDeps) {
     enemy.sprite.gotoAndPlay(0)
   }
 
+  /**
+   * Поза оглушения от парирования: лист hurt, ОДИН кадр, спрайт стоит (см.
+   * ZVONAR_PARRY_STUN_FRAME). Не playAnim: тот запускает лист с нуля, а кадр
+   * нужен сразу и один. На уже стоящем на этом кадре спрайте не делает ничего.
+   */
+  function holdParryStunPose(enemy: Enemy, frames: ZvonarFrames) {
+    if (enemy.zvonarAnim !== 'hurt') {
+      const spec = C.ZVONAR_SHEETS.hurt
+      enemy.zvonarAnim = 'hurt'
+      enemy.sprite.textures = frames.hurt
+      enemy.sprite.anchor.set(spec.anchorX, spec.anchorY)
+      enemy.sprite.animationSpeed = spec.speed
+      enemy.sprite.loop = spec.loop
+    }
+    if (enemy.sprite.playing || enemy.sprite.currentFrame !== C.ZVONAR_PARRY_STUN_FRAME) {
+      enemy.sprite.gotoAndStop(C.ZVONAR_PARRY_STUN_FRAME)
+    }
+  }
+
   function spawn(tileX: number, tileY: number, eventIndex: number): void {
     const worldX = tileX * C.TILE_SIZE + C.TILE_SIZE / 2 - C.ZVONAR_WIDTH / 2
     const worldY = (tileY + 1) * C.TILE_SIZE - C.ZVONAR_HEIGHT
@@ -400,15 +419,19 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       // волна отбивается без стана (см. deps.takeDamage). Ветка всё равно здесь:
       // поле общее для всех врагов, и молча игнорировать его значило бы завести
       // вид врага, у которого стан не действует, не сказав об этом нигде.
+      // Вид — как у всех: один кадр листа hurt на всё оглушение; значок стана
+      // рисует entities/stunStars.ts по этому же таймеру.
+      // ⚠️ Кто однажды начнёт накладывать это оглушение (например, за отбитую
+      // волну), обязан вместе с таймером СЖЕЧЬ атаку — attackAnimPlaying,
+      // windingUp, windupTimer, — как это делает место отбива у зверя. Заслон
+      // её не снимает, а каскад визуала ниже читает кадры ТЕКУЩЕГО листа как
+      // кадры атаки. Замер 14.10.2026 (таймер вписан без снятия атаки): после
+      // оглушения лист hurt играл дальше как атака; на его 24-м, последнем
+      // кадре стоит условие выстрела — недолетевшая волна вышла бы оттуда.
       const wasParryStunned = enemy.parryStunTimer > 0
       enemy.parryStunTimer = Math.max(0, enemy.parryStunTimer - deltaMS)
       if (enemy.parryStunTimer > 0) {
-        if (frames) {
-          playAnim(enemy, 'hurt', frames)
-          if (enemy.sprite.currentFrame >= frames.hurt.length - 1) {
-            enemy.sprite.gotoAndStop(frames.hurt.length - 1)
-          }
-        }
+        if (frames) holdParryStunPose(enemy, frames)
         pushPlayerOutOfZvonar(enemy, deps.getPlayerCombatBox())
         continue
       }

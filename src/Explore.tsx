@@ -54,6 +54,7 @@ import type { ZvonarFrames } from './explore/entities/zvonar'
 import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekeeperIsShiftingGuard } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
+import { createStunStarsSystem } from './explore/entities/stunStars'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
@@ -2476,6 +2477,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let gatekeeperSystem: ReturnType<typeof createGatekeeperSystem> | null = null
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
+    let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -3346,6 +3348,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         frames: gatekeeperFramesRef,
         enemies: enemiesRef,
         characterLevel: characterLevelRef,
+      })
+
+      // Значок стана над оглушённым парированием (см. explore/entities/
+      // stunStars.ts). Листов ему не нужно — звёзды рисует код, — поэтому
+      // создаётся здесь, до загрузки. Сам обходит и список врагов, и босса:
+      // системы врагов о нём не знают.
+      stunStarsSystem = createStunStarsSystem({
+        worldContainer,
+        enemies: enemiesRef,
+        boss: bossRef,
       })
 
       // Все листы спрайтов дожидаются ЗДЕСЬ, одним await: общие (стартовали в
@@ -6052,6 +6064,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         hero.scale.y = heroScaleMag
         hero.scale.x = heroFlipDir === 1 ? heroScaleMag : -heroScaleMag
 
+        // Значок стана над оглушёнными парированием (см. explore/entities/
+        // stunStars.ts). Стоит ЗДЕСЬ, после всего, что в этом кадре меняет
+        // врагов: системы врагов и босса (отбив и конец оглушения случаются
+        // внутри них) и удар меча героя выше (он может убить оглушённого).
+        // Поэтому звёзды появляются в кадр отбива и гаснут в кадр, когда
+        // оглушение кончилось или враг умер, — без кадра опоздания.
+        stunStarsSystem!.update(ticker.deltaMS)
+
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
         // независимая от игровой логики анимация, реальное время
         // (ticker.deltaMS), не масштабированное по dt-кадрам как движение.
@@ -6152,6 +6172,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       zvonarSystem?.dispose()
       gatekeeperSystem?.dispose()
       bossSystem?.dispose()
+      stunStarsSystem?.dispose()
       manaSystem?.dispose()
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
       // чтобы он не держал систему уже уничтоженной сцены и не звал её clear().
