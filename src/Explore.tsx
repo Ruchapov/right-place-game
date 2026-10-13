@@ -4,7 +4,7 @@ import { renderMapToCanvas, renderSpikeTile, backdropPaths, backdropLook } from 
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
-import TouchControls, { LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
+import TouchControls, { CONTROLS_BLOCK_H, LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
   Grid,
@@ -4320,18 +4320,29 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.
-      // БОКОВЫЕ ПОЛЯ КАМЕРЫ (px экрана) — только в низком горизонтальном экране,
-      // см. C.CAMERA_FIELD_GAP. Меряются по самим кнопкам: правый край ▶ и левый
-      // край прыжка уже включают безопасные зоны, раскладку и всё, что на них
-      // повлияет потом. HUD ещё нет в дереве (экран «ПОДГОТОВКА») — берутся числа
-      // раскладки без безопасных зон; как только кнопки появятся, замер их
-      // уточнит, и камера доедет плавно (по X у неё lerp).
+      // ГЕРОЙ НЕ ПОД КНОПКАМИ — два правила, по одному на положение экрана, оба
+      // меряются по самим кнопкам (они уже включают безопасные зоны, раскладку и
+      // всё, что на них повлияет потом):
+      //   низкий горизонтальный экран — БОКОВЫЕ ПОЛЯ (px экрана): камера
+      //     упирается в край карты раньше края экрана, на ширину блоков кнопок
+      //     (см. C.CAMERA_FIELD_GAP). Герой там на одной высоте с кнопками, и
+      //     поднять его некуда — высоты мало;
+      //   узкий экран (телефон в вертикали) — НИЖНЯЯ ГРАНИЦА (13.10.2026): ноги
+      //     героя не опускаются ниже верха блока кнопок (cameraFloorY). Блок
+      //     дугой шире прежнего, и на узком экране герой, глядящий влево, стоит
+      //     ровно над ним: без границы на нижнем этаже карты он оказывался под
+      //     навыками по пояс.
+      // HUD ещё нет в дереве (экран «ПОДГОТОВКА») — берутся числа раскладки и
+      // проба безопасной зоны; как только кнопки появятся, замер их уточнит.
       // ⚠️ Замер читает раскладку DOM, поэтому зовётся РЕДКО: на смене вида и раз
-      // в CAMERA_FIELDS_EVERY_MS из тикера (и только в низком экране) — этого
-      // хватает, чтобы поймать безопасные зоны, которые Telegram сообщает позже
-      // самого поворота. В тикере каждый кадр ему не место.
+      // в CAMERA_FIELDS_EVERY_MS из тикера — этого хватает, чтобы поймать
+      // безопасные зоны, которые Telegram сообщает позже самого поворота. В
+      // тикере каждый кадр ему не место.
       let cameraFieldLeft = 0
       let cameraFieldRight = 0
+      // Экранная y, ниже которой ноги героя не рисуются. Infinity — правила нет:
+      // низкий экран (там поля) и широкий (там герой до кнопок не дотягивается).
+      let cameraFloorY = Infinity
       let cameraFieldsAgeMs = 0
       const CAMERA_FIELDS_EVERY_MS = 500
       // Безопасная зона сбоку в px — для запасного пути, пока кнопок нет в
@@ -4340,7 +4351,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // такой шириной. Без этого на телефоне с чёлкой первый кадр забега стоял
       // бы без поправки на неё, и камера доезжала бы на ширину чёлки уже на
       // глазах у игрока (замер с подставленными зонами: 59 px за первую секунду).
-      const safeInsetPx = (side: 'left' | 'right'): number => {
+      const safeInsetPx = (side: 'left' | 'right' | 'bottom'): number => {
         const host = containerRef.current
         if (!host) return 0
         const probe = document.createElement('div')
@@ -4352,20 +4363,38 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
       const measureCameraFields = () => {
         cameraFieldsAgeMs = 0
-        if (!viewLow) {
-          cameraFieldLeft = 0
-          cameraFieldRight = 0
-          return
-        }
         const screenW = app!.screen.width
+        const screenH = app!.screen.height
         const hudRoot = containerRef.current?.parentElement ?? null
         const moveRightBtn = hudRoot?.querySelector('[aria-label="Вправо"]') ?? null
-        const jumpBtn = hudRoot?.querySelector('[data-btn="jump"]') ?? null
+        // Правый блок — по ВСЕМ его кнопкам: левее всех стоит навык 1 (без него —
+        // прыжок), выше всех — зелье. Какая именно, раскладка решает сама.
+        let blockLeft = Infinity
+        let blockTop = Infinity
+        hudRoot?.querySelectorAll('[data-touch-controls] [data-btn]').forEach((btn) => {
+          const r = btn.getBoundingClientRect()
+          if (r.left < blockLeft) blockLeft = r.left
+          if (r.top < blockTop) blockTop = r.top
+        })
         const leftEdge = moveRightBtn ? moveRightBtn.getBoundingClientRect().right : LEFT_BLOCK_EDGE + safeInsetPx('left')
-        const rightEdge = jumpBtn ? screenW - jumpBtn.getBoundingClientRect().left : RIGHT_BLOCK_EDGE + safeInsetPx('right')
+        const rightEdge = Number.isFinite(blockLeft) ? screenW - blockLeft : RIGHT_BLOCK_EDGE + safeInsetPx('right')
         const pad = C.CAMERA_FIELD_GAP + C.CAMERA_FIELD_HERO_PAD * viewScale
-        cameraFieldLeft = leftEdge + pad
-        cameraFieldRight = rightEdge + pad
+        if (viewLow) {
+          cameraFieldLeft = leftEdge + pad
+          cameraFieldRight = rightEdge + pad
+          cameraFloorY = Infinity
+          return
+        }
+        cameraFieldLeft = 0
+        cameraFieldRight = 0
+        // Нижняя граница нужна, только если герой вообще дотягивается до кнопок:
+        // камера держит его в стороне от середины экрана не дальше упреждения
+        // (LOOKAHEAD_TILES) плюс полфигуры. На широком экране (планшет, окно
+        // браузера) до блоков отсюда далеко, и поднимать героя незачем.
+        const reach = (C.LOOKAHEAD_TILES * C.TILE_SIZE + C.PLAYER_WIDTH / 2) * viewScale + pad
+        const overControls = screenW / 2 + reach > screenW - rightEdge || screenW / 2 - reach < leftEdge
+        const controlsTop = Number.isFinite(blockTop) ? blockTop : screenH - CONTROLS_BLOCK_H - safeInsetPx('bottom')
+        cameraFloorY = overControls ? controlsTop - C.CAMERA_FIELD_GAP : Infinity
       }
       measureCameraFields()
 
@@ -4405,6 +4434,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const anchorV = viewLow ? C.CAMERA_V_ANCHOR_LOW : C.CAMERA_V_ANCHOR
         const targetY = app!.screen.height * anchorV - (player.y + player.height / 2) * s
         worldContainer.y = clamp(targetY, app!.screen.height - worldHeight, 0)
+        // Нижняя граница (узкий экран, см. cameraFloorY): ноги героя не ниже
+        // верха блока кнопок. Применяется ПОСЛЕ зажима по карте и сильнее его:
+        // на нижнем этаже карта поднимается над низом экрана, и под ней, за
+        // кнопками, виден только фон — так же, как в боковых полях низкого
+        // экрана. Параллакс ниже считается уже от поднятой камеры.
+        const feetY = worldContainer.y + (player.y + player.height) * s
+        if (feetY > cameraFloorY) worldContainer.y -= feetY - cameraFloorY
 
         // Параллакс: far/mid ползут МЕДЛЕННЕЕ карты — доля от движения камеры,
         // не от движения игрока напрямую (иначе не совпадало бы с lerp/clamp
@@ -6043,12 +6079,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           rewardFloatsRef.current = stillActive
         }
 
-        // Поля камеры — редкий повторный замер по кнопкам (см.
-        // measureCameraFields); в обычном экране не делается вовсе.
-        if (viewLow) {
-          cameraFieldsAgeMs += ticker.deltaMS
-          if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
-        }
+        // Поля и нижняя граница камеры — редкий повторный замер по кнопкам (см.
+        // measureCameraFields). В любом положении экрана: в вертикали по ним
+        // считается нижняя граница, и первый замер после появления HUD — этот.
+        cameraFieldsAgeMs += ticker.deltaMS
+        if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
 
         // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:

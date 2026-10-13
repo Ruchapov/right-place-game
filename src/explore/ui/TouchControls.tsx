@@ -24,36 +24,60 @@ export type SkillButtonSlot = { iconSrc: string } | 'unknown' | null
 // background-color, не background целиком: у 🧪 фоном идёт иконка тира.
 // --- ГЕОМЕТРИЯ ЭКРАННЫХ КНОПОК — одно место на весь файл ---
 //
-// Все круглые кнопки ОДНОГО радиуса. Раньше их было четыре разных (атака и
-// прыжок 28, ◀/▶ 26, веер 22, зелье 20), и печати навыков рядом с атакой
-// выглядели мелкими, а ряд — неровным.
-// 26 -> кнопка 52px, заметно больше минимума 44px из дизайн-скилла.
+// Раскладка ДУГОЙ, ОДНА на вертикаль и на горизонталь (решение Андрея
+// 13.10.2026): удар — самая крупная кнопка, в правом нижнем углу; ближняя дуга
+// вокруг него — прыжок слева и парирование слева-сверху; внешняя дуга — навык 1,
+// навык 2 и зелье, от левого края блока через верх к правому краю экрана.
+// До этого в низком горизонтальном экране зелье переезжало на место над
+// прыжком: блок выходил ниже, но одна и та же кнопка стояла в двух разных
+// местах, и палец находил её только в одном положении телефона. Так нельзя:
+// место каждой кнопки от положения экрана НЕ зависит.
+//
+// Всё расставлено из трёх чисел — двух радиусов и запаса зоны касания.
+// Обычная кнопка: 26 -> 52 px, заметно больше минимума 44 px из дизайн-скилла.
 const BTN_R = 26
-// Отступ края кнопки от края экрана и от низа панели — как было до правки
-// размеров.
+// Удар — крупнее всех: 32 -> 64 px.
+const ATK_R = 32
+// Зона касания шире картинки на столько px во все стороны (невидимая, см.
+// PRESS_CSS). Зоны соседних кнопок НЕ перекрываются: расстояния между центрами
+// ниже ВЫВЕДЕНЫ из этого числа, а не подобраны, — поменяешь его, раскладка
+// разъедется сама и ровно настолько, насколько нужно.
+const ZONE_PAD = 10
+// Отступ края удара от правого края экрана и от низа панели.
 const BTN_EDGE = 10
-// Зазор между кругом атаки и кольцом веера — тоже прежний.
-const FAN_GAP = 6
-// Радиус кольца веера. Формула прежняя (ATK_R + BTN_R + зазор), просто оба
-// радиуса теперь равны BTN_R.
-const FAN_D = 2 * BTN_R + FAN_GAP
-// Середина веера — влево-вверх от атаки (y растёт ВНИЗ, поэтому 225° это
-// влево-вверх). Уклонение и два навыка стоят вокруг неё.
-const FAN_MID = 225 * Math.PI / 180
-// Шаг веера — из хорды РОВНО в два радиуса, то есть соседние кнопки веера
-// КАСАЮТСЯ. Так было и раньше; расширять веер нельзя, любое увеличение шага
-// уводит навыки от атаки, а уменьшение даёт наложение (CLAUDE.md).
-const FAN_THETA = Math.acos(1 - 2 * Math.pow(BTN_R / FAN_D, 2))
-// Насколько верхняя кнопка веера поднята над центром атаки.
-const FAN_TOP_RISE = -FAN_D * Math.sin(FAN_MID + FAN_THETA)
-// Зазор между верхней кнопкой веера и зельем над ней — прежний.
-const POT_GAP = 4
-// Высота панели. 178 — прежнее значение; max с расчётным нужен, чтобы при
-// правке радиусов верхняя кнопка (зелье) не оказалась молча срезанной: расчёт —
-// это низ + атака + подъём веера + зелье над ним.
-const PANEL_H = Math.max(178, Math.ceil(BTN_EDGE + BTN_R + FAN_TOP_RISE + 2 * BTN_R + POT_GAP + BTN_R))
-// Насколько зона захвата ▲ шире видимой кнопки (см. PRESS_CSS).
-const JUMP_ZONE_PAD = 6
+// Сколько px остаётся МЕЖДУ зонами соседних кнопок. Один пиксель, а не ноль:
+// места кнопок дробные, и при нуле зоны на бумаге касались бы, а на экране
+// сходились бы внахлёст на долю пикселя.
+const ZONE_GAP = 1
+// Ближе этого два центра стоять не могут — иначе их зоны касания наложатся:
+const NEAR_D = ATK_R + BTN_R + 2 * ZONE_PAD + ZONE_GAP // 79: удар и кнопка рядом с ним
+const STEP = 2 * BTN_R + 2 * ZONE_PAD + ZONE_GAP // 73: две обычные кнопки
+
+// Место кнопки — смещение её центра от центра УДАРА: влево и вверх, px.
+type Off = { left: number; up: number }
+// Ближняя дуга — окружность NEAR_D вокруг удара. Прыжок строго слева;
+// парирование выше по дуге ровно настолько, чтобы его зона касалась зоны
+// прыжка (хорда STEP): 55°, то есть слева-сверху.
+const NEAR_ANGLE = 2 * Math.asin(STEP / (2 * NEAR_D))
+const JUMP_OFF: Off = { left: NEAR_D, up: 0 }
+const DODGE_OFF: Off = { left: NEAR_D * Math.cos(NEAR_ANGLE), up: NEAR_D * Math.sin(NEAR_ANGLE) }
+// Внешняя дуга — окружность STEP вокруг ПАРИРОВАНИЯ, шаг 60°, отсчёт от прыжка.
+// Радиус равен шагу, поэтому соседи на ней стоят ровно в STEP друг от друга и от
+// парирования: зоны всех шести кнопок касаются, и ни одна не накладывается.
+// Ниже этого блок с такими зонами не получился ни в одной из разобранных
+// раскладок (13.10.2026): зазор между картинками нигде не больше нужного.
+// ⚠️ Четвёртого места на дуге НЕТ: следующая точка (ещё +60°) попадает в зону
+// удара и за правый край экрана. Третий навык в эту раскладку не встанет.
+const RING_FROM = Math.atan2(JUMP_OFF.up - DODGE_OFF.up, JUMP_OFF.left - DODGE_OFF.left)
+const ringOff = (k: number): Off => ({
+  left: DODGE_OFF.left + STEP * Math.cos(RING_FROM + k * Math.PI / 3),
+  up: DODGE_OFF.up + STEP * Math.sin(RING_FROM + k * Math.PI / 3),
+})
+const SKILL1_OFF = ringOff(1) // слева от парирования, на его высоте
+const SKILL2_OFF = ringOff(2) // над ними
+const POTION_OFF = ringOff(3) // над ударом — ближе всех к правому краю
+// Высота панели — ровно под самую высокую кнопку: низ + удар + подъём + кнопка.
+const PANEL_H = Math.ceil(BTN_EDGE + ATK_R + Math.max(SKILL2_OFF.up, POTION_OFF.up) + BTN_R)
 
 // --- ПРАВЫЙ БЛОК: центры кнопок от ПРАВОГО края панели (rx) и от её верха (y) ---
 //
@@ -65,44 +89,54 @@ const JUMP_ZONE_PAD = 6
 // после поворота обратно в вертикаль блок был ЗА экраном — без атаки и прыжка.
 // Расстояние от правого края от ширины экрана не зависит вовсе: браузер ставит
 // кнопку на место сам, в том же кадре, что и поворот.
-// Три угла веера: уклонение и два навыка вокруг атаки.
-const FAN_ANGLES = [FAN_MID - FAN_THETA, FAN_MID, FAN_MID + FAN_THETA] as const
-const ATK_POS = { rx: BTN_EDGE + BTN_R, y: PANEL_H - BTN_EDGE - BTN_R }
-const fanPos = (angle: number) => ({
-  // cos у всех трёх углов отрицательный или около нуля (кнопки левее атаки или
-  // над ней) — минус перед ним и даёт rx не меньше, чем у атаки.
-  rx: ATK_POS.rx - FAN_D * Math.cos(angle),
-  y: ATK_POS.y + FAN_D * Math.sin(angle),
+const posOf = (off: Off) => ({
+  rx: BTN_EDGE + ATK_R + off.left,
+  y: PANEL_H - BTN_EDGE - ATK_R - off.up,
 })
-// Прыжок — вплотную слева от всего веера (не от центра атаки), на высоте центра
-// атаки. Формула прежняя, только отсчёт от правого края.
-const JUMP_POS = { rx: ATK_POS.rx + FAN_D + BTN_R + 30, y: ATK_POS.y }
-// Зелье — НАД самым верхним навыком веера (FAN_ANGLES[2]), как и было. Высота
-// панели (PANEL_H) посчитана так, чтобы эта кнопка в неё умещалась целиком.
-const POTION_POS = { rx: fanPos(FAN_ANGLES[2]).rx, y: fanPos(FAN_ANGLES[2]).y - BTN_R - BTN_R - POT_GAP }
+const ATK_POS = posOf({ left: 0, up: 0 })
+const JUMP_POS = posOf(JUMP_OFF)
+const DODGE_POS = posOf(DODGE_OFF)
+const SKILL1_POS = posOf(SKILL1_OFF)
+const SKILL2_POS = posOf(SKILL2_OFF)
+const POTION_POS = posOf(POTION_OFF)
+
+// --- ЛЕВЫЙ БЛОК: ◀ и ▶ от ЛЕВОГО края панели, как и раньше ---
+// ▶ отстоит от ◀ ровно на STEP: их зоны касания встречаются между кнопками и не
+// накладываются (до 13.10.2026 ▶ стояла на 5 px ближе — зонам в ZONE_PAD там
+// было бы тесно).
+const MOVE_LEFT_X = 23
+const MOVE_RIGHT_X = MOVE_LEFT_X + STEP
+const MOVE_BOTTOM = 12
 
 // Сколько px от края экрана занимает каждый блок кнопок БЕЗ безопасных зон:
-// левый — до правого края ▶, правый — до левого края прыжка (в низком экране над
-// прыжком стоит зелье, край тот же). Нужны камере забега как запасные числа,
-// пока HUD ещё не в дереве и мерить нечего (см. measureCameraFields в
-// Explore.tsx); сами отступы ◀ ▶ (23 и 90) записаны в их стилях ниже.
-export const LEFT_BLOCK_EDGE = 90 + 2 * BTN_R
-export const RIGHT_BLOCK_EDGE = JUMP_POS.rx + BTN_R
+// левый — до правого края ▶, правый — до левого края самой левой кнопки (навык
+// 1; без него — прыжок, он ближе к краю). Нужны камере забега как запасные
+// числа, пока HUD ещё не в дереве и мерить нечего (см. measureCameraFields в
+// Explore.tsx).
+export const LEFT_BLOCK_EDGE = MOVE_RIGHT_X + 2 * BTN_R
+export const RIGHT_BLOCK_EDGE = Math.max(JUMP_POS.rx, SKILL1_POS.rx) + BTN_R
+// Подъём панели над низом экрана (сверх безопасной зоны): в вертикали и в низком
+// горизонтальном экране. Камере нужна высота блока целиком — см. ниже.
+const PANEL_BOTTOM = 16
+// В низком экране панель лежит прямо на безопасной зоне: высоты мало, и эти
+// 16 px отданы игре. Отступ самого удара от низа панели (BTN_EDGE) остаётся.
+const PANEL_BOTTOM_LOW = 0
+// Высота блока кнопок от низа экрана БЕЗ безопасной зоны, в вертикали — запасное
+// число для камеры, пока кнопок нет в дереве (см. measureCameraFields).
+export const CONTROLS_BLOCK_H = PANEL_BOTTOM + PANEL_H
 
 // --- НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН (телефон набок, см. C.LOW_LANDSCAPE_MAX_H) ---
 //
-// Размер кнопок прежний (52 px — под палец), меняется только раскладка: блок в
-// вертикальной раскладке занимал половину высоты экрана 844×390 (замер s17:
-// 50%, с шапкой Telegram 60%). Высоту ему даёт одна кнопка — зелье, стоящее
-// третьим этажом над веером. В низком экране оно переезжает на место над
-// прыжком: блок остаётся в два этажа, 128 px от низа экрана (33% от 390, 36% от
-// 360). Атака, веер и прыжок стоят где стояли — пальцу переучиваться не надо.
-// Зазор до прыжка тот же, что между атакой и веером: зона захвата прыжка
-// (радиус BTN_R + JUMP_ZONE_PAD) кончается ровно у круга зелья.
-const POTION_POS_LOW = { rx: JUMP_POS.rx, y: JUMP_POS.y - 2 * BTN_R - FAN_GAP }
-// Подъём панели над низом экрана в низком экране (в обычном — 16 px): высоты
-// мало, и лишние 8 px отданы игре. Безопасная зона прибавляется так же.
-const PANEL_BOTTOM_LOW = 8
+// Раскладка ТА ЖЕ, что в вертикали, до пикселя: ни одна кнопка не меняет места
+// (решение Андрея 13.10.2026). Отличие одно — панель опущена на безопасную зону
+// (PANEL_BOTTOM_LOW выше).
+// ⚠️ Цена решения: блок здесь 197.5 px от низа экрана — 51% высоты 844×390 и
+// 55% высоты 780×360 (замер 13.10.2026; с 12 по 13.10.2026 зелье стояло над
+// прыжком, и блок был 128 px, 33%). Той же раскладкой ниже не сделать: зазоры
+// между кнопками — это их зоны касания, и даже вплотную, совсем без зазоров и
+// зон, такой блок занял бы 161 px — 41% и 45%. Героя блок при этом не
+// закрывает: в низком экране камера держит его в стороне от кнопок (боковые
+// поля, см. measureCameraFields в Explore.tsx).
 const LOW_LANDSCAPE_MEDIA = `(orientation: landscape) and (max-height: ${C.LOW_LANDSCAPE_MAX_H}px)`
 
 /**
@@ -116,7 +150,8 @@ const LOW_LANDSCAPE_MEDIA = `(orientation: landscape) and (max-height: ${C.LOW_L
  * зазоры ниже честные.
  *
  * pos — центр кнопки: rx от ПРАВОГО края панели, y от её верха (см. «ПРАВЫЙ
- * БЛОК» выше — почему именно от правого).
+ * БЛОК» выше — почему именно от правого). r — радиус: ATK_R у удара, BTN_R у
+ * остальных.
  *
  * art — картинка кнопки фоном, а не <img>: у кнопок есть textContent (цифра
  * глотков, «?»), и вложенную картинку он бы затирал.
@@ -126,12 +161,12 @@ const LOW_LANDSCAPE_MEDIA = `(orientation: landscape) and (max-height: ${C.LOW_L
  * камень внутри камня. Поэтому при art рамки и фона нет вовсе. Подсветку нажатия
  * в таком виде даёт яркость, а не заливка (см. PRESS_CSS).
  */
-function roundButtonCss(pos: { rx: number; y: number }, opts: { fontSize: number; art?: string | null; dimmed?: boolean }): string {
+function roundButtonCss(pos: { rx: number; y: number }, r: number, opts: { fontSize: number; art?: string | null; dimmed?: boolean }): string {
   return `
     position:absolute;
     box-sizing:border-box;
-    right:${pos.rx - BTN_R}px; top:${pos.y - BTN_R}px;
-    width:${BTN_R * 2}px; height:${BTN_R * 2}px;
+    right:${pos.rx - r}px; top:${pos.y - r}px;
+    width:${r * 2}px; height:${r * 2}px;
     border-radius:50%;
     ${opts.art ? 'border:none; background:transparent;' : 'border:1px solid #3A3344; background:#221E2B;'}
     color:#EDE7F2; font-size:${opts.fontSize}px;
@@ -187,24 +222,29 @@ const PRESS_CSS = `
   [data-touch-controls] [data-flip="1"][data-pressed="1"] {
     transform: scaleX(-1) scale(0.88) !important;
   }
-  /* Зона захвата ▲ шире видимой кнопки на JUMP_ZONE_PAD во все стороны
-     (радиус 26 -> 32). Промах мимо прыжка стоит жизни — шипы или яма, — а лишнее
-     парирование стоит секунды кулдауна, поэтому спорный зазор отдан прыжку.
-     Считается это теперь ЧЕСТНО: с box-sizing:border-box номинальный радиус и
-     фактический совпадают (раньше рамка добавляла 1px, см. CLAUDE.md). Соседи
-     прыжка — парирование и зелье, оба на расстоянии BTN_STEP = 60px, то есть
-     между зоной прыжка (32) и их кругами (26) остаётся 2px.
+  /* ЗОНА КАСАНИЯ КАЖДОЙ кнопки шире её картинки на ZONE_PAD во все стороны
+     (52 -> 72 px, удар 64 -> 84): палец, попавший рядом с камнем, всё равно
+     попадает в кнопку. Зона невидима и видимый размер не меняет.
+     Зоны соседей НЕ перекрываются, и держит это не правило ниже, а раскладка:
+     центры кнопок стоят не ближе суммы радиусов плюс 2·ZONE_PAD (NEAR_D и STEP
+     вверху файла). Поэтому спорных точек между кнопками нет — до 13.10.2026
+     такая зона была только у прыжка, заходила на соседей и на экране 320 px
+     перехватывала касания у ▶.
+     Замер 13.10.2026 (document.elementFromPoint по 72 направлениям): браузер
+     отвечает кнопкой на 35.5…37.6 px от её центра при расчётных 36 (удар —
+     41.4…43.3 при 42), то есть граница двух зон гуляет в пределах полутора
+     пикселей — это округление самого браузера, а не раскладки.
      Почему правилом, а не инлайном: cssText скриптовых кнопок переписывается
      ЦЕЛИКОМ на каждом рендере (см. ref-колбэк ниже), инлайн-зона стёрлась бы —
      ровно та же причина, по которой подсветка выше живёт правилом.
      position:absolute здесь обязателен дважды: он и выносит псевдоэлемент за
-     границы кнопки, и не даёт ему стать флекс-элементом — иначе глиф ▲ уехал
-     бы с центра. border-radius:50% — иначе зона была бы квадратной, и углы
-     квадрата залезли бы на соседей. */
-  [data-touch-controls] [data-btn="jump"]::after {
+     границы кнопки, и не даёт ему стать флекс-элементом — иначе цифра на кнопке
+     уехала бы с центра. border-radius:50% — иначе зона была бы квадратной, и
+     углы квадрата залезли бы на соседей. */
+  [data-touch-controls] button::after {
     content: '';
     position: absolute;
-    inset: -${JUMP_ZONE_PAD}px;
+    inset: -${ZONE_PAD}px;
     border-radius: 50%;
     background: transparent;
   }
@@ -212,8 +252,8 @@ const PRESS_CSS = `
      снимает paintSkillCooldown, вид задан ЗДЕСЬ — инлайн-стиль на этой кнопке
      жил бы до первого ре-рендера (cssText переписывается целиком), ровно та же
      причина, по которой правилом задана подсветка нажатия выше.
-     Ободок ВНУТРЕННИЙ (inset): кнопки веера КАСАЮТСЯ друг друга, и внешнее
-     кольцо залезло бы на соседей.
+     Ободок ВНУТРЕННИЙ (inset): внешнее кольцо легло бы на зазор между кнопками,
+     а он принадлежит зонам касания соседей.
      Цвет — золото дизайн-системы, но вспышка на цвет не опирается: её главный
      сигнал — движение (кольцо появляется и гаснет).
      filter назван во ВСЕХ трёх кадрах намеренно: кадр без свойства берёт
@@ -236,19 +276,16 @@ const PRESS_CSS = `
   [data-touch-controls] [${NO_MANA_ATTR}="1"] {
     opacity: ${NO_MANA_OPACITY} !important;
   }
-  /* Низкий горизонтальный экран — см. POTION_POS_LOW вверху файла.
+  /* Низкий горизонтальный экран — см. PANEL_BOTTOM_LOW вверху файла: панель
+     опущена на безопасную зону, и это ВСЁ отличие от вертикали. Кнопки здесь не
+     переставляются — правило, которое двигало зелье, снято 13.10.2026.
      Правилом, а не из кода: поворот телефона рендера React не вызывает, а
      медиа-запрос браузер применяет сам, в том же кадре (та же причина, по
      которой правый блок стоит от правого края).
-     !important перебивает инлайн: bottom панели пишет React, right/top зелья —
-     roundButtonCss, и оба переписываются на каждом рендере. */
+     !important перебивает инлайн: bottom панели пишет React. */
   @media ${LOW_LANDSCAPE_MEDIA} {
     [data-touch-controls] {
       bottom: calc(${PANEL_BOTTOM_LOW}px + var(--rp-safe-bottom, 0px)) !important;
-    }
-    [data-touch-controls] [data-btn="potion"] {
-      right: ${POTION_POS_LOW.rx - BTN_R}px !important;
-      top: ${POTION_POS_LOW.y - BTN_R}px !important;
     }
   }
 `
@@ -477,8 +514,8 @@ export default function TouchControls({
     <>
       {/* Вид подсветки нажатия — см. PRESS_CSS вверху файла. */}
       <style>{PRESS_CSS}</style>
-      {/* Экранные кнопки управления — компактная раскладка в стиле Battle.tsx
-          (круглые кнопки, радиальный веер вокруг атаки). Ввод дёргает те же
+      {/* Экранные кнопки управления — круглые, справа дугой вокруг удара (см.
+          «ГЕОМЕТРИЯ ЭКРАННЫХ КНОПОК» вверху файла). Ввод дёргает те же
           refs, что и клавиатура (dirRef/jumpPressedRef/attackPressedRef/
           dodgePressedRef) — меняется только вид, не способ ввода. */}
       {/* Панель кнопок поднята над низом экрана на безопасную зону + 16px.
@@ -493,7 +530,7 @@ export default function TouchControls({
           него calc() стал бы невалидным и панель легла бы на нижний край. */}
       <div data-touch-controls="" style={{
         position: 'absolute',
-        bottom: 'calc(16px + var(--rp-safe-bottom, 0px))',
+        bottom: `calc(${PANEL_BOTTOM}px + var(--rp-safe-bottom, 0px))`,
         left: 0, right: 0, height: PANEL_H, zIndex: 1001, pointerEvents: 'none',
       }}>
         {/* Движение — левый блок */}
@@ -521,13 +558,10 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            // Тот же радиус и та же базовая линия (EDGE_Y от низа), что у атаки,
-            // прыжка и веера справа: раньше ◀/▶ были 52px при атаке 56px и
-            // веере 44px, и нижний ряд читался неровным.
-            // Координаты прежние (left 23 / bottom 12) — их правка была лишней.
-            // Слева прибавлена безопасная зона: в горизонтали там чёлка или
-            // скруглённый угол экрана (в вертикали она нулевая).
-            position: 'absolute', left: 'calc(23px + var(--rp-safe-left, 0px))', bottom: 12,
+            // Левый нижний угол, как и было; числа — MOVE_LEFT_X / MOVE_BOTTOM
+            // вверху файла. Слева прибавлена безопасная зона: в горизонтали там
+            // чёлка или скруглённый угол экрана (в вертикали она нулевая).
+            position: 'absolute', left: `calc(${MOVE_LEFT_X}px + var(--rp-safe-left, 0px))`, bottom: MOVE_BOTTOM,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -561,9 +595,10 @@ export default function TouchControls({
           }}
           onLostPointerCapture={(e) => { dirRef.current = 0; pressOff(e.currentTarget) }}
           style={{
-            // Координаты прежние (left 90 / bottom 12), плюс та же безопасная
-            // зона слева, что у ◀.
-            position: 'absolute', left: 'calc(90px + var(--rp-safe-left, 0px))', bottom: 12,
+            // В STEP от ◀ (см. MOVE_RIGHT_X вверху файла: зоны касания двух
+            // стрелок встречаются между ними и не накладываются), плюс та же
+            // безопасная зона слева, что у ◀.
+            position: 'absolute', left: `calc(${MOVE_RIGHT_X}px + var(--rp-safe-left, 0px))`, bottom: MOVE_BOTTOM,
             boxSizing: 'border-box',
             width: BTN_R * 2, height: BTN_R * 2,
             borderRadius: '50%', border: 'none', background: 'transparent',
@@ -587,24 +622,22 @@ export default function TouchControls({
         <div
           ref={(container) => {
             if (!container) return
-            // РАСКЛАДКА ПРАВОГО КЛАСТЕРА — прежняя, веером вокруг атаки. Где
-            // стоит каждая кнопка — ATK_POS / fanPos / JUMP_POS / POTION_POS
-            // вверху файла: атака в правом нижнем углу, веер (парирование и два
-            // навыка) вокруг неё, прыжок слева от веера на линии атаки, зелье
-            // над верхней кнопкой веера. Слева на той же линии — ◀ и ▶.
-            // Кнопки веера КАСАЮТСЯ друг друга — так было и раньше (хорда ровно
-            // в два радиуса), это и держит навыки рядом с атакой.
-            // Ближайшая пара «левый блок — правый кластер» это ▶ и прыжок: на
-            // 390px между их кругами 72px, на 375px — 57px, на 320px — 2px.
+            // РАСКЛАДКА ПРАВОГО БЛОКА — дугой, одна на оба положения экрана. Где
+            // стоит каждая кнопка — *_POS вверху файла: удар в правом нижнем
+            // углу, прыжок слева от него и парирование слева-сверху (ближняя
+            // дуга), навык 1, навык 2 и зелье — внешняя дуга вокруг парирования.
+            // Слева внизу — ◀ и ▶.
+            // Ближайшие пары «левый блок — правый блок» — ▶ с прыжком и ▶ с
+            // навыком 1: на экране 320 px между их зонами касания 5 и 4 px, уже
+            // 315 px зоны сошлись бы. Настоящими касаниями на 320 px проверено
+            // 13.10.2026: ▶ и прыжок друг друга не перехватывают.
             // ⚠️ Ширина экрана здесь НЕ читается (см. «ПРАВЫЙ БЛОК» вверху файла):
             // всё, что зависит от неё, обязано быть выражено CSS.
-            const angles = FAN_ANGLES
 
-            // Веер: dodge плюс ДО ДВУХ навыков. Углы фиксированы тремя
-            // позициями и НЕ пересчитываются под число кнопок — хорда между
-            // соседними кнопками веера ровно 2·BTN_R, и любое сближение даёт
-            // наложение (CLAUDE.md, Critical Gotchas про радиусы кнопок). Нет
-            // навыка — позиция просто пустует, соседи не двигаются.
+            // Парирование плюс ДО ДВУХ навыков. Места фиксированы и НЕ
+            // пересчитываются под число кнопок: нет навыка — его место просто
+            // пустует, соседи не двигаются (палец находит кнопку там же, сколько
+            // бы навыков ни было надето).
             //
             // Печать навыка — ФОНОМ, а не <img>: у кнопки textContent, и вложенную
             // картинку он затирал бы (та же причина, что у кнопки зелья).
@@ -617,10 +650,10 @@ export default function TouchControls({
               slot === null ? null
                 : slot === 'unknown' ? { label: '?', art: C.BTN_ART_SRC.blank, dimmed: true }
                   : { label: '', art: slot.iconSrc, dimmed: false }
-            const fanButtons: { id: string; angle: number; spec: { label: string; art: string | null; dimmed: boolean } | null }[] = [
-              { id: 'dodge', angle: angles[0], spec: { label: '', art: C.BTN_ART_SRC.dodge, dimmed: false } },
-              { id: 'skill1', angle: angles[1], spec: skillFan(skillSlots[0]) },
-              { id: 'skill2', angle: angles[2], spec: skillFan(skillSlots[1]) },
+            const fanButtons: { id: string; pos: { rx: number; y: number }; spec: { label: string; art: string | null; dimmed: boolean } | null }[] = [
+              { id: 'dodge', pos: DODGE_POS, spec: { label: '', art: C.BTN_ART_SRC.dodge, dimmed: false } },
+              { id: 'skill1', pos: SKILL1_POS, spec: skillFan(skillSlots[0]) },
+              { id: 'skill2', pos: SKILL2_POS, spec: skillFan(skillSlots[1]) },
             ]
 
             fanButtons.forEach(b => {
@@ -635,7 +668,7 @@ export default function TouchControls({
               const el = existing || document.createElement('button')
               el.dataset.btn = b.id
               el.textContent = b.spec.label
-              el.style.cssText = roundButtonCss(fanPos(b.angle), {
+              el.style.cssText = roundButtonCss(b.pos, BTN_R, {
                 fontSize: 20,
                 art: b.spec.art,
                 dimmed: b.spec.dimmed,
@@ -652,7 +685,9 @@ export default function TouchControls({
             const atk = atkEl || document.createElement('button')
             atk.dataset.btn = 'atk'
             atk.textContent = ''
-            atk.style.cssText = roundButtonCss(ATK_POS, { fontSize: 20, art: C.BTN_ART_SRC.attack })
+            // Удар — единственная кнопка радиуса ATK_R (64 px): она главная и
+            // нажимается чаще всех.
+            atk.style.cssText = roundButtonCss(ATK_POS, ATK_R, { fontSize: 20, art: C.BTN_ART_SRC.attack })
             if (!atkEl) container.appendChild(atk)
 
             // Прыжок — см. JUMP_POS вверху файла.
@@ -660,7 +695,7 @@ export default function TouchControls({
             const jump = jumpEl || document.createElement('button')
             jump.dataset.btn = 'jump'
             jump.textContent = ''
-            jump.style.cssText = roundButtonCss(JUMP_POS, { fontSize: 20, art: C.BTN_ART_SRC.jump })
+            jump.style.cssText = roundButtonCss(JUMP_POS, BTN_R, { fontSize: 20, art: C.BTN_ART_SRC.jump })
             if (!jumpEl) container.appendChild(jump)
 
             // Зелье — см. POTION_POS вверху файла.
@@ -674,7 +709,7 @@ export default function TouchControls({
             // Подложка — пустой диск; иконку тира кладёт ПОВЕРХ неё
             // updatePotionButton вторым слоем фона (он же вызывается сразу
             // ниже, после установки cssText).
-            pot.style.cssText = roundButtonCss(POTION_POS, { fontSize: 12, art: C.BTN_ART_SRC.blank })
+            pot.style.cssText = roundButtonCss(POTION_POS, BTN_R, { fontSize: 12, art: C.BTN_ART_SRC.blank })
             if (!potEl) container.appendChild(pot)
             // Ref на DOM-узел кнопки — чтобы ticker мог обновлять подпись
             // "🧪 ×N"/opacity без React-состояния (см. updatePotionButton).
