@@ -4,7 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Boss, BossSpike, BossWave, BossAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } from '../collision'
-import { clamp } from '../utils'
+import { clamp, parryStunFrame } from '../utils'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 
 // HP-бар босса — тот же приём, что у зверя (redrawEnemyHpBar, см.
@@ -297,16 +297,17 @@ export function createBossSystem(deps: BossDeps) {
     )
   }
 
-  // Поза оглушения от парирования: лист hurt, ОДИН кадр, спрайт стоит (см.
-  // BOSS_PARRY_STUN_FRAME). Зовётся из двух мест — в момент отбива и каждый кадр
-  // заслона. playBossAnim ставит лист и его якорь (и на уже стоящем листе не
-  // делает ничего), кадр ставится следом: сам он запустил бы лист с нуля.
+  // Кадр оглушения от парирования: лист hurt, спрайт стоит, кадр — по остатку
+  // таймера (parryStunFrame): поза (BOSS_PARRY_STUN_FRAME), а в последние
+  // PARRY_STUN_RECOVER_MS — доигрывание листа до последнего кадра. Зовётся из
+  // двух мест — в момент отбива и каждый кадр заслона. playBossAnim ставит лист
+  // и его якорь (и на уже стоящем листе не делает ничего), кадр ставится следом:
+  // сам он запустил бы лист с нуля и вёл бы кадры своим темпом.
   // ⚠️ hurtTimer не трогает и не читает: оглушение — не хитстан.
-  function holdParryStunPose(boss: Boss) {
+  function showParryStunFrame(boss: Boss) {
     deps.playBossAnim('hurt')
-    if (boss.sprite.playing || boss.sprite.currentFrame !== C.BOSS_PARRY_STUN_FRAME) {
-      boss.sprite.gotoAndStop(C.BOSS_PARRY_STUN_FRAME)
-    }
+    const frame = parryStunFrame(boss.parryStunTimer, C.BOSS_PARRY_STUN_FRAME, deps.bossFrames.hurt.length - 1)
+    if (boss.sprite.playing || boss.sprite.currentFrame !== frame) boss.sprite.gotoAndStop(frame)
   }
 
   function updateAI(dt: number, deltaMS: number): void {
@@ -364,24 +365,23 @@ export function createBossSystem(deps: BossDeps) {
         // ⚠️ hurtTimer здесь НЕ ТРОГАЕТСЯ вовсе. У босса это поле работает сразу
         // как гейт, как выбор анимации и как длительность хитстана (см. каскад
         // анимаций ниже), и записать стан туда значило бы незаметно изменить все
-        // три. Позу ставим напрямую: один кадр листа hurt на всё оглушение (см.
-        // holdParryStunPose); встаёт он на него ещё в момент отбива, ниже по
+        // три. Кадр ставим напрямую, по остатку таймера: поза листа hurt, а в
+        // конце оглушения — доигрывание листа до последнего кадра (см.
+        // showParryStunFrame); на позу он встаёт ещё в момент отбива, ниже по
         // файлу. Значок стана рисует entities/stunStars.ts по этому же таймеру.
-        const wasParryStunned = boss.parryStunTimer > 0
         boss.parryStunTimer = Math.max(0, boss.parryStunTimer - deltaMS)
         if (boss.parryStunTimer > 0) {
-          holdParryStunPose(boss)
+          showParryStunFrame(boss)
           // Тело остаётся ФИЗИЧЕСКИМ — как под станом iceball выше.
           pushPlayerOutOfBoss(boss)
           return
         }
-        // Стан кончился — снимаем удержание кадра, тем же приёмом, что у выхода
-        // из стана iceball выше. Лист hurt после этого доигрывает только в одном
-        // случае — если в оглушении босса ударили и hurtTimer взведён (тикать он
-        // начинает здесь, после оглушения): каскад ниже видит те же текстуры и
-        // не перезапускает их, хитстан идёт с кадра позы до конца листа. Во всех
-        // остальных случаях каскад в этом же кадре ставит другой лист с нуля.
-        if (wasParryStunned && !boss.sprite.playing) boss.sprite.play()
+        // Стан кончился на ПОСЛЕДНЕМ кадре листа hurt, спрайт стоит — как после
+        // обычного, доигравшего хитстана. Возобновлять нечего: каскад ниже либо
+        // ставит другой лист с нуля, либо — если в оглушении босса ударили и
+        // hurtTimer взведён (тикать он начинает здесь, после оглушения) — видит
+        // те же текстуры, не перезапускает их и держит этот последний кадр, пока
+        // хитстан не истечёт.
 
         boss.vy = Math.min(boss.vy + C.GRAVITY * dt, C.MAX_FALL)
         const prevBossFootY = boss.y + C.BOSS_HEIGHT
@@ -667,7 +667,7 @@ export function createBossSystem(deps: BossDeps) {
                 // Поза оглушения — с ЭТОГО же кадра, а не со следующего, когда
                 // её подхватит заслон: кадр удара после отбива не показывается.
                 // applyBossLayout ниже по кадру ставит спрайт уже под её якорь.
-                holdParryStunPose(boss)
+                showParryStunFrame(boss)
               }
             }
           }

@@ -4,7 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, GatekeeperPhase } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp } from '../utils'
+import { clamp, parryStunFrame } from '../utils'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
 
@@ -41,7 +41,8 @@ import { redrawEnemyHpBar } from './enemy'
  * Что СВОЁ: дверь и её подъём с опусканием; атака — таран с дверью стоймя,
  * заданная временем (замах и вынос двери, удар, возврат — родным темпом листа)
  * и только с поднятой дверью; широкое окно парирования у тарана; оглушение от
- * парирования на 2.5 с (поза — кадр листа hurt, как у всех); кадры листов атаки и подъёма, которые
+ * парирования на 2.5 с (поза — кадр листа hurt, как у всех) и стойка с поднятой
+ * дверью после него вместо возврата двери; кадры листов атаки и подъёма, которые
  * ставит код, а не AnimatedSprite; якорь, меняющийся с листом;
  * ДВЕ стойки и ДВЕ ходьбы — с поднятой дверью idleGuard и walkGuard, с
  * опущенной (патруль, расследование) прежние idle и walk.
@@ -187,17 +188,20 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
   }
 
   /**
-   * Поза оглушения от парирования: лист hurt, ОДИН кадр, спрайт стоит (см.
-   * GATEKEEPER_PARRY_STUN_FRAME). До 13.10.2026 он стоял на кадре удара тарана.
+   * Кадр оглушения от парирования: лист hurt, спрайт стоит, кадр — по остатку
+   * таймера (parryStunFrame): поза (GATEKEEPER_PARRY_STUN_FRAME), а в последние
+   * PARRY_STUN_RECOVER_MS — доигрывание листа до последнего кадра. До 13.10.2026
+   * он стоял на кадре удара тарана.
    *
    * Не showFrame: лист hurt, в отличие от атаки и подъёма двери, ещё и
    * ПРОИГРЫВАЕТСЯ (хитстан, playAnim), поэтому скорость и loop ставятся как у
    * playAnim — иначе он унаследовал бы нулевую скорость листа атаки.
    *
-   * ⚠️ Лист hurt старый, с дверью наискось, а таран идёт с дверью стоймя: на
-   * входе в оглушение и на выходе из него дверь перескакивает за один кадр.
+   * ⚠️ Лист hurt старый, с дверью наискось, а таран и стойка в агро — с дверью
+   * стоймя: в тик отбива и в первый тик после оглушения дверь перескакивает за
+   * один кадр. Кодом не подгоняется — нужен лист HurtGuard.
    */
-  function holdParryStunPose(enemy: Enemy, frames: GatekeeperFrames) {
+  function showParryStunFrame(enemy: Enemy, frames: GatekeeperFrames) {
     const g = enemy.gatekeeper!
     if (g.anim !== 'hurt') {
       const spec = C.GATEKEEPER_SHEETS.hurt
@@ -207,9 +211,8 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       enemy.sprite.animationSpeed = spec.speed
       enemy.sprite.loop = spec.loop
     }
-    if (enemy.sprite.playing || enemy.sprite.currentFrame !== C.GATEKEEPER_PARRY_STUN_FRAME) {
-      enemy.sprite.gotoAndStop(C.GATEKEEPER_PARRY_STUN_FRAME)
-    }
+    const frame = parryStunFrame(enemy.parryStunTimer, C.GATEKEEPER_PARRY_STUN_FRAME, frames.hurt.length - 1)
+    if (enemy.sprite.playing || enemy.sprite.currentFrame !== frame) enemy.sprite.gotoAndStop(frame)
   }
 
   // Кадр листа подъёма по тому, сколько двери поднято: вперёд на подъёме, назад
@@ -220,8 +223,9 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
 
   // Кадр тарана по времени фазы. Темп один на весь лист, родной (см. «ЦИКЛ
   // АТАКИ» в constants.ts): сколько кадров прошло за phaseMs.
-  // Оглушённый ('stunned') сюда не приходит: у него своя поза, с листа hurt
-  // (см. holdParryStunPose).
+  // Зовётся только для двух фаз атаки — 'windup' и 'follow': у оглушённого
+  // ('stunned') свои кадры, с листа hurt (см. showParryStunFrame), а после
+  // оглушения ('recover') он стоит в стойке.
   function attackFrameOf(phase: GatekeeperPhase, phaseMs: number): number {
     const passed = Math.floor(phaseMs / C.GATEKEEPER_ATTACK_FRAME_MS)
     // Замах и вынос двери: до кадра удара включительно НЕ доходит — 9-й ставит
@@ -436,26 +440,29 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       }
 
       // --- Оглушение от парирования ---
-      // Вид — как у всех: один кадр листа hurt на всё оглушение (см.
-      // holdParryStunPose), и встаёт он на него ещё в момент отбива — в каскаде
-      // визуала ниже. Дверь на этом кадре отбита назад, наискось; значок стана
-      // рисует entities/stunStars.ts по этому же таймеру.
-      // Открыт он по таймеру (gatekeeperIsOpen), а не по этой позе.
+      // Вид — как у всех: кадр позы листа hurt, а в конце оглушения лист
+      // доигрывается до последнего кадра (см. showParryStunFrame); на позу он
+      // встаёт ещё в момент отбива — в каскаде визуала ниже. Дверь в позе отбита
+      // назад, наискось; значок стана рисует entities/stunStars.ts по этому же
+      // таймеру. Открыт он по таймеру (gatekeeperIsOpen), а не по позе.
       const wasParryStunned = enemy.parryStunTimer > 0
       enemy.parryStunTimer = Math.max(0, enemy.parryStunTimer - deltaMS)
       if (enemy.parryStunTimer > 0) {
         if (g.phase !== 'stunned') setPhase(enemy, 'stunned')
         g.phaseMs += deltaMS
-        if (frames) holdParryStunPose(enemy, frames)
+        if (frames) showParryStunFrame(enemy, frames)
         pushPlayerOut(enemy, deps.getPlayerCombatBox())
         syncVisual(enemy)
         continue
       }
-      // Оглушение кончилось — возврат двери идёт с кадра удара родным темпом,
-      // как после обычного удара. Дверь с этого кадра снова защищает. Позу
-      // снимать руками не надо: каскад визуала ниже в этом же кадре ставит лист
-      // атаки (хитстана в оглушении он не получает — см. applyEnemyHitReaction).
-      if (wasParryStunned) setPhase(enemy, 'follow')
+      // Оглушение кончилось — он встаёт в стойку с поднятой дверью и стоит в ней
+      // GATEKEEPER_STUN_RECOVER_MS (фаза 'recover', решение Андрея 14.10.2026):
+      // не разворачивается и не идёт, дверь с этого кадра снова защищает. До
+      // этого здесь начинался возврат двери с кадра удара — после позы оглушения
+      // он выглядел как выпад. Позу снимать руками не надо: каскад визуала ниже
+      // в этом же кадре ставит лист стойки (хитстана в оглушении он не получает
+      // — см. applyEnemyHitReaction).
+      if (wasParryStunned) setPhase(enemy, 'recover')
       // Выход из стана льда: вернуть проигрывание тому, что проигрывается.
       // ⚠️ Листы атаки и подъёма двери НЕ проигрываются никогда (кадры ставит
       // код), и play() на них запустил бы лист от текущего кадра до конца сам
@@ -514,9 +521,10 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       // от начала замаха до начала замаха.
       // ⚠️ Под обоими заслонами выше (стан льда, оглушение) он СТОИТ — туда этот
       // код не доходит. Поэтому после отбитого удара Привратник не бьёт сразу:
-      // от замаха прошло 750 мс, остаток 1750 мс дотикивает за возврат двери
-      // (1250 мс) и ещё ≈500 мс стойки. У зверя и босса так же — кулдаун после
-      // стана парирования остаётся взведённым.
+      // от замаха прошло 750 мс, остаток 1750 мс дотикивает за стойку после
+      // оглушения (фаза 'recover', 1250 мс) и ещё ≈500 мс обычной стойки. У
+      // зверя и босса так же — кулдаун после стана парирования остаётся
+      // взведённым.
       g.cooldownMs = Math.max(0, g.cooldownMs - deltaMS)
 
       // Хитстан сбил замах или возврат двери (applyEnemyHitReaction уже снял
@@ -565,6 +573,15 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         } else if (g.phase === 'follow') {
           g.phaseMs += deltaMS
           if (g.phaseMs >= C.GATEKEEPER_FOLLOW_MS) {
+            setPhase(enemy, 'ready')
+            enemy.attackAnimPlaying = false
+          }
+        } else if (g.phase === 'recover') {
+          // Стойка после оглушения: столько же, сколько шёл бы возврат двери, и
+          // с тем же концом. Удар в спину выводит из неё раньше — хитстаном,
+          // строкой выше, как и из возврата двери.
+          g.phaseMs += deltaMS
+          if (g.phaseMs >= C.GATEKEEPER_STUN_RECOVER_MS) {
             setPhase(enemy, 'ready')
             enemy.attackAnimPlaying = false
           }
@@ -688,11 +705,14 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         if (enemy.parryStunTimer > 0) {
           // Отбит в ЭТОМ кадре (сюда доходит только он — дальше оглушённого
           // ведёт заслон выше): поза оглушения сразу, кадр удара не показывается.
-          holdParryStunPose(enemy, frames)
+          showParryStunFrame(enemy, frames)
         } else if (enemy.hurtTimer > 0) {
           enemy.hurtTimer = Math.max(0, enemy.hurtTimer - deltaMS)
           playAnim(enemy, 'hurt', frames)
-        } else if (g.phase !== 'ready') {
+        } else if (g.phase === 'windup' || g.phase === 'follow') {
+          // Лист атаки — только у двух фаз самой атаки. Стойка после оглушения
+          // ('recover') идёт ниже, общей веткой поднятой двери: он не двигается,
+          // и она даёт idleGuard.
           showFrame(enemy, 'attack', attackFrameOf(g.phase, g.phaseMs), frames)
         } else if (g.guard === 'raising' || g.guard === 'lowering') {
           // Один лист на оба направления: кадр — по тому, сколько двери поднято.

@@ -56,14 +56,18 @@ export type GatekeeperAnimKind = 'idle' | 'walk' | 'raiseGuard' | 'idleGuard' | 
  *   'windup'  — замах и вынос двери до кадра удара;
  *   'follow'  — возврат двери после удара, родным темпом листа;
  *   'stunned' — оглушён отбитым ударом: стоит в позе оглушения — на кадре
- *               листа hurt, а не листа атаки (см. GATEKEEPER_PARRY_STUN_FRAME).
+ *               листа hurt, а не листа атаки (см. GATEKEEPER_PARRY_STUN_FRAME);
+ *   'recover' — оглушение кончилось: стоит в стойке с поднятой дверью, не
+ *               разворачивается и не идёт (GATEKEEPER_STUN_RECOVER_MS), потом
+ *               'ready'. Механически это прежний возврат двери после
+ *               оглушения, без листа атаки.
  *
  * ⚠️ Блок от фазы НЕ зависит: замах начинается только с поднятой дверью
- * (GatekeeperGuard ниже), и во всех трёх фазах атаки она держит. Открывают его
- * два СТАНА (парирование и лёд), и читаются они прямо из таймеров общего Enemy
- * — см. gatekeeperIsOpen в entities/gatekeeper.ts.
+ * (GatekeeperGuard ниже), и во всех фазах, кроме 'ready', она поднята. Открывают
+ * его два СТАНА (парирование и лёд), и читаются они прямо из таймеров общего
+ * Enemy — см. gatekeeperIsOpen в entities/gatekeeper.ts.
  */
-export type GatekeeperPhase = 'ready' | 'windup' | 'follow' | 'stunned'
+export type GatekeeperPhase = 'ready' | 'windup' | 'follow' | 'stunned' | 'recover'
 
 /**
  * Где дверь Привратника (12.10.2026):
@@ -284,9 +288,10 @@ export type Enemy = {
    * поле значило бы либо подарить iceball отмену замаха, либо отобрать её у
    * парирования; различить потом по значению таймера было бы нечем.
    *
-   * Поведение, пока >0: никакого AI, движения и атак; спрайт стоит на ОДНОМ
-   * кадре листа hurt — позе оглушения (см. *_PARRY_STUN_FRAME в constants.ts), и
-   * над головой кружат звёздочки (entities/stunStars.ts читает это же поле).
+   * Поведение, пока >0: никакого AI, движения и атак; спрайт стоит на кадре
+   * позы листа hurt (см. *_PARRY_STUN_FRAME в constants.ts), а в последние
+   * PARRY_STUN_RECOVER_MS лист доигрывается до последнего кадра; над головой
+   * кружат звёздочки (entities/stunStars.ts читает это же поле).
    */
   parryStunTimer: number
   // dead — высший приоритет (перебивает hurt/attack/windup немедленно, см.

@@ -4,7 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp } from '../utils'
+import { clamp, parryStunFrame } from '../utils'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
 
 // Кадры зверя (Шаг "спрайт зверя") — загружаются ОДИН раз в setup(), общие
@@ -96,23 +96,23 @@ export function createEnemySystem(deps: EnemyDeps) {
   // здесь же из deps.grid, значение идентично.
   const worldWidthPx = deps.grid[0].length * C.TILE_SIZE
 
-  // Поза оглушения от парирования: лист hurt, ОДИН кадр, спрайт стоит (см.
-  // BEAST_PARRY_STUN_FRAME). Зовётся из двух мест — в момент отбива и каждый
-  // кадр заслона — и на уже стоящем на этом кадре спрайте не делает ничего.
-  // Не playSpriteAnim: тот запускает лист с нуля, а кадр нужен сразу и один.
-  // Скорость и loop ставятся здесь же: хитстан, пришедший следом за оглушением,
-  // доигрывает ЭТОТ лист с этого кадра, а playSpriteAnim на тех же текстурах
-  // loop не трогает.
-  function holdParryStunPose(enemy: Enemy, frames: BeastFrames) {
+  // Кадр оглушения от парирования: лист hurt, спрайт стоит, кадр — по остатку
+  // таймера (parryStunFrame): поза (BEAST_PARRY_STUN_FRAME), а в последние
+  // PARRY_STUN_RECOVER_MS — доигрывание листа до последнего кадра. Зовётся из
+  // двух мест — в момент отбива и каждый кадр заслона — и на спрайте, уже
+  // стоящем на нужном кадре, не делает ничего.
+  // Не playSpriteAnim: тот запускает лист с нуля и сам ведёт кадры, а здесь их
+  // ведёт таймер оглушения (под льдом он стоит — стоит и кадр). Скорость и loop
+  // ставятся как у него: playSpriteAnim на тех же текстурах loop не трогает.
+  function showParryStunFrame(enemy: Enemy, frames: BeastFrames) {
     const sprite = enemy.sprite
     if (sprite.textures !== frames.hurt) {
       sprite.textures = frames.hurt
       sprite.loop = false
       sprite.animationSpeed = C.BEAST_HURT_ANIM_SPEED
     }
-    if (sprite.playing || sprite.currentFrame !== C.BEAST_PARRY_STUN_FRAME) {
-      sprite.gotoAndStop(C.BEAST_PARRY_STUN_FRAME)
-    }
+    const frame = parryStunFrame(enemy.parryStunTimer, C.BEAST_PARRY_STUN_FRAME, frames.hurt.length - 1)
+    if (sprite.playing || sprite.currentFrame !== frame) sprite.gotoAndStop(frame)
   }
 
   // Спавнит ОДНОГО врага-прямоугольник (см. Шаг 2-1/2-2) в тайловых
@@ -365,27 +365,23 @@ export function createEnemySystem(deps: EnemyDeps) {
       // Таймер тикает БЕЗУСЛОВНО, до гейтов, как stunTimer выше — иначе стан не
       // истекал бы в хитстане.
       //
-      // Вид: один кадр листа hurt на всё оглушение (см. holdParryStunPose).
-      // Встаёт он на него ещё в момент отбива, ниже по файлу; здесь поза только
-      // удерживается. Значок стана над головой — не здесь, а в
+      // Вид: кадр позы листа hurt, а в конце оглушения — доигрывание листа до
+      // последнего кадра (см. showParryStunFrame). На позу он встаёт ещё в
+      // момент отбива, ниже по файлу. Значок стана над головой — не здесь, а в
       // entities/stunStars.ts: он читает этот же таймер.
-      const wasParryStunned = enemy.parryStunTimer > 0
       enemy.parryStunTimer = Math.max(0, enemy.parryStunTimer - deltaMS)
       if (enemy.parryStunTimer > 0) {
         const parryFrames = deps.beastFrames.current
-        if (parryFrames) holdParryStunPose(enemy, parryFrames)
+        if (parryFrames) showParryStunFrame(enemy, parryFrames)
         // Тело остаётся ФИЗИЧЕСКИМ — та же причина и тот же вызов, что под
         // станом iceball выше.
         pushPlayerOutOfEnemy(enemy, deps.getPlayerCombatBox())
         continue
       }
-      // Стан кончился — снимаем удержание кадра. Тот же приём и та же причина,
-      // что у выхода из стана iceball ниже: спрайт остался остановленным, и без
-      // возобновления следующая ветка, попавшая на ТЕ ЖЕ кадры (playSpriteAnim
-      // на одинаковых текстурах не рестартит), оставила бы его замороженным.
-      // Такая ветка одна — хитстан от удара, полученного в оглушении: он
-      // доигрывает лист hurt с кадра позы до конца.
-      if (wasParryStunned && !enemy.sprite.playing) enemy.sprite.play()
+      // Стан кончился на ПОСЛЕДНЕМ кадре листа hurt, спрайт стоит — как после
+      // обычного, доигравшего хитстана. Возобновлять нечего: каскад анимаций
+      // ниже либо ставит другой лист с нуля, либо (удар, полученный в оглушении,
+      // взвёл hurtTimer) держит этот же последний кадр, пока хитстан не истечёт.
       if (wasStunned && !enemy.sprite.playing) {
         // Стан только что кончился — возвращаем проигрывание с того кадра,
         // на котором заморозили (gotoAndPlay здесь был бы отменой: он
@@ -749,7 +745,7 @@ export function createEnemySystem(deps: EnemyDeps) {
                   enemy.windupTimer = 0
                   // Поза оглушения — с ЭТОГО же кадра, а не со следующего, когда
                   // её подхватит заслон: кадр удара после отбива не показывается.
-                  holdParryStunPose(enemy, beastFrames)
+                  showParryStunFrame(enemy, beastFrames)
                 }
               }
             }

@@ -14,6 +14,17 @@ export function pickRandom<T>(items: T[], count: number): T[] {
   return picked
 }
 
+// Кадр листа hurt, на котором стоит враг, оглушённый парированием, — по ОСТАТКУ
+// таймера оглушения. Пока остатка больше PARRY_STUN_RECOVER_MS — кадр позы;
+// дальше лист доигрывается до последнего кадра, каждому кадру равная доля, и
+// оглушение кончается на последнем (см. PARRY_STUN_RECOVER_MS в constants.ts).
+// Общая для всех четырёх врагов: у каждого свой кадр позы и своя длина листа.
+export function parryStunFrame(timerMs: number, poseFrame: number, lastFrame: number): number {
+  if (timerMs >= C.PARRY_STUN_RECOVER_MS) return poseFrame
+  const done = 1 - timerMs / C.PARRY_STUN_RECOVER_MS
+  return Math.min(lastFrame, poseFrame + Math.floor(done * (lastFrame - poseFrame + 1)))
+}
+
 // Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
 // оси), выворачивать диапазон нельзя — ставим 0.
 export function clamp(value: number, min: number, max: number): number {

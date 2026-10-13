@@ -103,12 +103,18 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
     // Макушка — точка в клетке листа; в мир её переводит то же преобразование,
     // каким Pixi рисует сам спрайт (якорь, масштаб, зеркало по scale.x), поэтому
     // значок стоит над головой и у врага, смотрящего вправо.
+    // Пока лист hurt доигрывается (конец оглушения), голова возвращается из
+    // позы в стойку — значок едет за ней от точки позы к точке последнего кадра,
+    // по той же доле таймера, по которой идут кадры (см. parryStunFrame).
     const head = C.PARRY_STUN_HEAD[kind]
+    const back = 1 - Math.min(1, owner.parryStunTimer / C.PARRY_STUN_RECOVER_MS)
+    const headX = head.x + (head.endX - head.x) * back
+    const headY = head.y + (head.endY - head.y) * back
     const sprite = owner.sprite
     const cell = sprite.texture
-    halo.node.x = sprite.x + (head.x - sprite.anchor.x * cell.width) * sprite.scale.x
+    halo.node.x = sprite.x + (headX - sprite.anchor.x * cell.width) * sprite.scale.x
     halo.node.y =
-      sprite.y + (head.y - sprite.anchor.y * cell.height) * sprite.scale.y - C.PARRY_STUN_ORBIT_LIFT * head.size
+      sprite.y + (headY - sprite.anchor.y * cell.height) * sprite.scale.y - C.PARRY_STUN_ORBIT_LIFT * head.size
     halo.node.scale.set(head.size)
 
     // Четверть оборота в запасе: в кадр отбива одна звезда стоит спереди по

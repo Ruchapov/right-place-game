@@ -4,7 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp } from '../utils'
+import { clamp, parryStunFrame } from '../utils'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
 
@@ -124,11 +124,13 @@ export function createZvonarSystem(deps: ZvonarDeps) {
   }
 
   /**
-   * Поза оглушения от парирования: лист hurt, ОДИН кадр, спрайт стоит (см.
-   * ZVONAR_PARRY_STUN_FRAME). Не playAnim: тот запускает лист с нуля, а кадр
-   * нужен сразу и один. На уже стоящем на этом кадре спрайте не делает ничего.
+   * Кадр оглушения от парирования: лист hurt, спрайт стоит, кадр — по остатку
+   * таймера (parryStunFrame): поза (ZVONAR_PARRY_STUN_FRAME), а в последние
+   * PARRY_STUN_RECOVER_MS — доигрывание листа до последнего кадра. Не playAnim:
+   * тот запускает лист с нуля и сам ведёт кадры, а здесь их ведёт таймер
+   * оглушения. На спрайте, уже стоящем на нужном кадре, не делает ничего.
    */
-  function holdParryStunPose(enemy: Enemy, frames: ZvonarFrames) {
+  function showParryStunFrame(enemy: Enemy, frames: ZvonarFrames) {
     if (enemy.zvonarAnim !== 'hurt') {
       const spec = C.ZVONAR_SHEETS.hurt
       enemy.zvonarAnim = 'hurt'
@@ -137,9 +139,8 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       enemy.sprite.animationSpeed = spec.speed
       enemy.sprite.loop = spec.loop
     }
-    if (enemy.sprite.playing || enemy.sprite.currentFrame !== C.ZVONAR_PARRY_STUN_FRAME) {
-      enemy.sprite.gotoAndStop(C.ZVONAR_PARRY_STUN_FRAME)
-    }
+    const frame = parryStunFrame(enemy.parryStunTimer, C.ZVONAR_PARRY_STUN_FRAME, frames.hurt.length - 1)
+    if (enemy.sprite.playing || enemy.sprite.currentFrame !== frame) enemy.sprite.gotoAndStop(frame)
   }
 
   function spawn(tileX: number, tileY: number, eventIndex: number): void {
@@ -419,23 +420,24 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       // волна отбивается без стана (см. deps.takeDamage). Ветка всё равно здесь:
       // поле общее для всех врагов, и молча игнорировать его значило бы завести
       // вид врага, у которого стан не действует, не сказав об этом нигде.
-      // Вид — как у всех: один кадр листа hurt на всё оглушение; значок стана
-      // рисует entities/stunStars.ts по этому же таймеру.
-      // ⚠️ Кто однажды начнёт накладывать это оглушение (например, за отбитую
-      // волну), обязан вместе с таймером СЖЕЧЬ атаку — attackAnimPlaying,
-      // windingUp, windupTimer, — как это делает место отбива у зверя. Заслон
-      // её не снимает, а каскад визуала ниже читает кадры ТЕКУЩЕГО листа как
-      // кадры атаки. Замер 14.10.2026 (таймер вписан без снятия атаки): после
-      // оглушения лист hurt играл дальше как атака; на его 24-м, последнем
-      // кадре стоит условие выстрела — недолетевшая волна вышла бы оттуда.
-      const wasParryStunned = enemy.parryStunTimer > 0
+      // Вид — как у всех: кадр позы листа hurt, в конце оглушения лист
+      // доигрывается до последнего кадра; значок стана рисует
+      // entities/stunStars.ts по этому же таймеру.
+      // ⚠️ Отбитая волна его НЕ оглушает — решение Андрея 14.10.2026. Если оно
+      // изменится: тот, кто начнёт накладывать это оглушение, обязан вместе с
+      // таймером СЖЕЧЬ атаку — attackAnimPlaying, windingUp, windupTimer, — как
+      // это делает место отбива у зверя. Заслон её не снимает, а каскад визуала
+      // ниже читает кадры ТЕКУЩЕГО листа как кадры атаки: оглушение кончается
+      // на последнем, 24-м кадре листа hurt, а 24 — это и номер кадра выстрела,
+      // так что невыпущенная волна вышла бы в первый же тик после оглушения.
       enemy.parryStunTimer = Math.max(0, enemy.parryStunTimer - deltaMS)
       if (enemy.parryStunTimer > 0) {
-        if (frames) holdParryStunPose(enemy, frames)
+        if (frames) showParryStunFrame(enemy, frames)
         pushPlayerOutOfZvonar(enemy, deps.getPlayerCombatBox())
         continue
       }
-      if (wasParryStunned && !enemy.sprite.playing) enemy.sprite.play()
+      // Оглушение кончается на последнем кадре листа hurt, спрайт стоит — как
+      // после доигравшего хитстана; возобновлять нечего (причина — у зверя).
       if (wasStunned && !enemy.sprite.playing) enemy.sprite.play()
 
       const prevX = enemy.x
