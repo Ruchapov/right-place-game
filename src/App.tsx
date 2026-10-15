@@ -1434,6 +1434,8 @@ export default function App() {
       case 'Unknown potion tier': return 'Неизвестный тир зелья.'
       case 'Unknown consumable': return 'Неизвестный расходник.'
       case 'Not unlocked': return 'Этот предмет ещё не открыт по уровню.'
+      // С 15.10.2026 место в сумке при покупке проверяет и сервер.
+      case 'Bag is full': return 'Сумка полна — освободи ячейку.'
       default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
     }
   }

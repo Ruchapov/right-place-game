@@ -93,7 +93,7 @@ type AppliedOnce<T> = { replayed: false; value: T } | { replayed: true; response
  * вторая транзакция откатывается, не списав ничего. Ответ ему — «уже сделано»
  * (replayed), вызывающий отдаёт текущее состояние из БД.
  *
- * Ключа нет (старый клиент) — действие идёт как раньше, без транзакции.
+ * Ключа нет (старый клиент) — действие идёт в своей транзакции, без строки ключа.
  *
  * Бросает RouteRejection из действия как есть и 409 'Idempotency key reused',
  * если тем же ключом уже воспользовалась ДРУГАЯ ручка (ошибка клиента: ответить
@@ -106,7 +106,9 @@ async function applyOnce<T>(
   log: FastifyRequest['log'],
   action: (db: Prisma.TransactionClient) => Promise<T>,
 ): Promise<AppliedOnce<T>> {
-  if (key === null) return { replayed: false, value: await action(prisma) }
+  // Без ключа — тоже транзакция: действие может блокировать строку персонажа
+  // (lockCharacterRow), а блокировка живёт только внутри транзакции.
+  if (key === null) return { replayed: false, value: await prisma.$transaction((tx) => action(tx)) }
   let value: T
   try {
     value = await prisma.$transaction(async (tx) => {
@@ -177,6 +179,26 @@ function runIdRejection(verdict: 'invalid' | 'mismatch'): { status: number; body
  */
 async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Character" WHERE "userId" = ${userId} FOR UPDATE`
+}
+
+/**
+ * Сколько ячеек сумки занято — ровно та же сумма, что считает клиент (bagUsed в
+ * App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника, которого
+ * не ноль. Зелья и страницы ячеек не тратят (docs/items.md, «ПРАВИЛО
+ * ВМЕСТИМОСТИ»).
+ *
+ * Одна функция на всех, кто кладёт вещь в сумку (15.10.2026): добыча на финише,
+ * сборка книги, покупка расходника, снятие предмета. Звать ВНУТРИ транзакции
+ * после lockCharacterRow и с `stock`, прочитанным под той же блокировкой, —
+ * иначе два запроса посчитают одну и ту же свободную ячейку.
+ */
+async function bagCellsUsed(
+  db: Prisma.TransactionClient,
+  characterId: number,
+  stock: Record<ConsumableId, number>,
+): Promise<number> {
+  const equipmentCells = await db.inventoryItem.count({ where: { characterId, equipped: false } })
+  return equipmentCells + Object.values(stock).filter((n) => n > 0).length
 }
 
 // Изменение склада зелий ПО ТИРАМ (индекс = тир-1) — кусками для условной
@@ -574,9 +596,8 @@ type AppliedDrops = {
  * занятость сумки — COUNT по другой таблице, фильтром записи она не
  * выражается, и до блокировки сборка книги со второго устройства могла занять
  * ту же последнюю ячейку. `db` — клиент этой транзакции.
- * ⚠️ Блокировка защищает только от тех, кто тоже блокирует (сборка книги).
- * Покупка книги и снятие предмета вместимость на сервере не проверяют вовсе —
- * это отдельная дыра, а не гонка; клиент переполнение показывает КРАСНЫМ.
+ * Блокируют и считают ячейки этой же функцией все, кто кладёт вещь в сумку:
+ * сборка книги, покупка расходника, снятие предмета (bagCellsUsed).
  */
 async function applyDrops(
   db: Prisma.TransactionClient,
@@ -600,11 +621,8 @@ async function applyDrops(
   // App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника,
   // которого не ноль. Расхождение здесь означало бы, что игрок видит «28 / 30»,
   // а сервер считает сумку полной.
-  const equipmentCells = await db.inventoryItem.count({
-    where: { characterId: character.id, equipped: false },
-  })
   const bookStock = { ...consumableStockOf(character) }
-  let cellsUsed = equipmentCells + Object.values(bookStock).filter((n) => n > 0).length
+  let cellsUsed = await bagCellsUsed(db, character.id, bookStock)
 
   for (const drop of drops) {
     switch (drop.category) {
@@ -2235,13 +2253,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!character) return 'no-character'
 
       const stock = consumableStockOf(character)
-      if (stock[bookId] === 0) {
-        const equipmentCells = await tx.inventoryItem.count({
-          where: { characterId: character.id, equipped: false },
-        })
-        const cellsUsed = equipmentCells + Object.values(stock).filter((n) => n > 0).length
-        if (cellsUsed >= BAG_CAPACITY) return 'bag-full'
-      }
+      if (stock[bookId] === 0 && await bagCellsUsed(tx, character.id, stock) >= BAG_CAPACITY) return 'bag-full'
 
       // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
       // «страниц хватает».
@@ -2435,6 +2447,17 @@ export async function runRoutes(server: FastifyInstance) {
     let applied: AppliedOnce<void>
     try {
       applied = await applyOnce(character.id, requestId, 'buy-consumable', request.log, async (db) => {
+        // Вместимость (15.10.2026). Каждый расходник занимает ячейку, но одну на
+        // вид: новая ячейка нужна, только если этого вида на складе ещё нет.
+        // Раньше не проверялось вовсе — сумку можно было переполнить покупкой.
+        // Под блокировкой строки — см. bagCellsUsed.
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        const stock = consumableStockOf(fresh)
+        if (stock[spec.id] === 0 && await bagCellsUsed(db, fresh.id, stock) >= BAG_CAPACITY) {
+          throw new RouteRejection(400, { error: 'Bag is full', capacity: BAG_CAPACITY })
+        }
         const written = await db.character.updateMany({
           where: { userId, gold: { gte: totalPrice } },
           data: {
@@ -2817,51 +2840,64 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid equip' })
     }
 
-    const inventoryItem = await prisma.inventoryItem.findUnique({
-      where: { id: inventoryItemId },
-      include: { item: true },
-    })
-    if (!inventoryItem || inventoryItem.characterId !== character.id) {
-      return reply.status(404).send({ error: 'Inventory item not found' })
-    }
+    // level больше не колонка в БД — вычисляется на месте из статов+бонуса
+    // (см. game.ts calculateLevel), никогда не читается напрямую.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
 
-    if (equip === true) {
-      // level больше не колонка в БД — вычисляется на месте из статов+бонуса
-      // (см. game.ts calculateLevel), никогда не читается напрямую.
-      const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-      if (characterLevel < inventoryItem.item.levelRequired) {
-        return reply.status(400).send({ error: 'Недостаточный уровень' })
-      }
-
-      const currentlyEquipped = await prisma.inventoryItem.findFirst({
-        where: { characterId: character.id, equipped: true, item: { slot: inventoryItem.item.slot } },
+    // Всё — одной транзакцией под блокировкой строки персонажа (15.10.2026):
+    //   • снятие кладёт предмет в сумку, и место в ней проверяет СЕРВЕР —
+    //     раньше это делал только клиент (гасил «Снять» при полной сумке), и
+    //     изменённый клиент переполнял сумку;
+    //   • надевание — две записи (снять старый, надеть новый), и порознь они
+    //     могли оставить слот пустым или, при двух надеваниях сразу, с двумя
+    //     предметами.
+    type EquipOutcome =
+      | { kind: 'ok'; equippedItemId: string | null; unequippedItemId: string | null }
+      | { kind: 'reject'; status: number; error: string }
+    const outcome = await prisma.$transaction(async (tx): Promise<EquipOutcome> => {
+      await lockCharacterRow(tx, userId)
+      const inventoryItem = await tx.inventoryItem.findUnique({
+        where: { id: inventoryItemId },
         include: { item: true },
       })
-
-      if (currentlyEquipped) {
-        await prisma.inventoryItem.update({
-          where: { id: currentlyEquipped.id },
-          data: { equipped: false },
-        })
+      if (!inventoryItem || inventoryItem.characterId !== character.id) {
+        return { kind: 'reject', status: 404, error: 'Inventory item not found' }
       }
 
-      await prisma.inventoryItem.update({
-        where: { id: inventoryItem.id },
-        data: { equipped: true },
-      })
+      if (equip) {
+        if (characterLevel < inventoryItem.item.levelRequired) {
+          return { kind: 'reject', status: 400, error: 'Недостаточный уровень' }
+        }
+        // Предмет из сумки уходит в слот, прежний из слота — в сумку: ячеек
+        // столько же, проверять вместимость не нужно.
+        const currentlyEquipped = await tx.inventoryItem.findFirst({
+          where: { characterId: character.id, equipped: true, item: { slot: inventoryItem.item.slot } },
+        })
+        if (currentlyEquipped) {
+          await tx.inventoryItem.update({ where: { id: currentlyEquipped.id }, data: { equipped: false } })
+        }
+        await tx.inventoryItem.update({ where: { id: inventoryItem.id }, data: { equipped: true } })
+        return { kind: 'ok', equippedItemId: inventoryItem.id, unequippedItemId: currentlyEquipped ? currentlyEquipped.id : null }
+      }
 
-      return reply.send({
-        success: true,
-        equippedItemId: inventoryItem.id,
-        unequippedItemId: currentlyEquipped ? currentlyEquipped.id : null,
-      })
-    } else {
-      await prisma.inventoryItem.update({
-        where: { id: inventoryItem.id },
-        data: { equipped: false },
-      })
+      // Снятие: надетый предмет займёт ячейку. Текст отказа — по-русски, как
+      // «Недостаточный уровень» выше: клиент показывает 400 этой ручки как есть.
+      if (inventoryItem.equipped) {
+        const fresh = await tx.character.findUnique({ where: { userId } })
+        if (!fresh) return { kind: 'reject', status: 404, error: 'Character not found' }
+        if (await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh)) >= BAG_CAPACITY) {
+          return { kind: 'reject', status: 400, error: 'Сумка полна — освободи ячейку.' }
+        }
+      }
+      await tx.inventoryItem.update({ where: { id: inventoryItem.id }, data: { equipped: false } })
+      return { kind: 'ok', equippedItemId: null, unequippedItemId: inventoryItem.id }
+    })
 
-      return reply.send({ success: true, equippedItemId: null, unequippedItemId: inventoryItem.id })
-    }
+    if (outcome.kind === 'reject') return reply.status(outcome.status).send({ error: outcome.error })
+    return reply.send({
+      success: true,
+      equippedItemId: outcome.equippedItemId,
+      unequippedItemId: outcome.unequippedItemId,
+    })
   })
 }

@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
-import { PrismaClient, Prisma } from '@prisma/client'
+import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
 import { energyForClient, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
@@ -22,6 +22,38 @@ import { consumableStockOf, scrollStockOf, skillLevelsOf, skillLevelGrowthColumn
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
+
+/**
+ * Записывает закрытие забега, только если под блокировкой строки персонажа
+ * забег всё ещё ОТКРЫТ (15.10.2026).
+ *
+ * Зачем блокировка: склад зелий пишется абсолютным числом, и без неё покупка
+ * зелья со второго устройства между чтением и записью затиралась снимком. Под
+ * блокировкой `build` получает СВЕЖЕГО персонажа (покупка либо уже в нём, либо
+ * ждёт коммита), и склад считается от него.
+ *
+ * Зачем проверка: финиш, успевший закрыть забег между чтением входа и этой
+ * записью, раньше перезаписывался смертью — игрок, чей забег уже сохранён,
+ * терял банк трофеев. Теперь вход видит, что забег закрыт, и ничего не пишет.
+ * Проверяется именно «закрыт», а не «точно тот же»: запоздавший глоток или
+ * срез от прежней копии клиента меняет currentRun, не закрывая его, и такой
+ * забег вход обязан закрыть, иначе он остался бы висеть. Новый забег за это
+ * время начаться не мог — старт требует пустой currentRun.
+ *
+ * null — забег уже закрыт (или персонажа нет); вызывающий перечитывает
+ * персонажа и не показывает окно о прошлом забеге.
+ */
+async function closeRunIfStillOpen(
+  characterId: number,
+  build: (fresh: Character) => Prisma.CharacterUpdateInput,
+): Promise<Character | null> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Character" WHERE "id" = ${characterId} FOR UPDATE`
+    const fresh = await tx.character.findUnique({ where: { id: characterId } })
+    if (!fresh || fresh.currentRun === null) return null
+    return tx.character.update({ where: { id: characterId }, data: build(fresh) })
+  })
+}
 
 // Итог забега, закрытого БЕЗ штрафа: игрок его не увидел (клиент не дошёл до
 // POST /run/ready — упала загрузка, оборвалась сеть, убили приложение на
@@ -133,19 +165,24 @@ export async function authRoutes(server: FastifyInstance) {
         // недобранный остаток минуты (см. refundEnergy в game.ts). Прежний
         // `new Date()` и был задачей «Возврат теряет остаток минуты».
         const refundedAt = refund.lastEnergyUpdate
-        await prisma.character.update({
-          where: { id: char.id },
-          data: {
-            currentRun: Prisma.DbNull,
-            energy: refund.energy,
-            lastEnergyUpdate: refundedAt,
-          },
-        })
-        // Зеркалим в память — ниже из char собирается блок character ответа
-        // (energy там считается energyForClient'ом от этих двух полей).
-        char.energy = refund.energy
-        char.lastEnergyUpdate = refundedAt
-        abandonedRun = { reason: 'not-confirmed', energyRefunded: refund.refunded }
+        const closed = await closeRunIfStillOpen(char.id, () => ({
+          currentRun: Prisma.DbNull,
+          energy: refund.energy,
+          lastEnergyUpdate: refundedAt,
+        }))
+        if (closed === null) {
+          // Забег закрыли между чтением и записью (финиш, отмена) — писать
+          // нечего, ответ собирается из того, что в базе сейчас.
+          request.log.info({ userId: user.id, characterId: char.id }, 'login: run was closed meanwhile, nothing to close')
+          const current = await prisma.character.findUnique({ where: { id: char.id } })
+          if (current) Object.assign(char, current)
+        } else {
+          // Зеркалим в память — ниже из char собирается блок character ответа
+          // (energy там считается energyForClient'ом от этих двух полей).
+          char.energy = refund.energy
+          char.lastEnergyUpdate = refundedAt
+          abandonedRun = { reason: 'not-confirmed', energyRefunded: refund.refunded }
+        }
       } else {
 
       // Зелья брошенного забега списываются ЗДЕСЬ — иначе убить приложение
@@ -180,7 +217,8 @@ export async function authRoutes(server: FastifyInstance) {
           )
         }
       }
-      const newPotionStock = subtractPotionStock(potionStockOf(char), potionsSpent)
+      // Склад после списания считается ПОД БЛОКИРОВКОЙ, от свежего персонажа
+      // (closeRunIfStillOpen ниже), а не от снимка начала входа.
 
       // Рост статов за брошенный забег — из последнего среза, который клиент
       // клал в currentRun.progress по ходу дела (POST /run/progress). До него
@@ -238,12 +276,10 @@ export async function authRoutes(server: FastifyInstance) {
       // выгоднее смерти. level пишется ОБЯЗАТЕЛЬНО вместе со статами: колонка
       // денормализованная, и схема требует обновлять её при любой записи
       // статов (см. комментарий к полю в schema.prisma).
-      await prisma.character.update({
-        where: { id: char.id },
-        data: {
+      const closed = await closeRunIfStillOpen(char.id, (fresh) => ({
           trophies: 0,
           currentRun: Prisma.DbNull,
-          ...potionStockToColumns(newPotionStock),
+          ...potionStockToColumns(subtractPotionStock(potionStockOf(fresh), potionsSpent)),
           strength: growth.strength,
           strengthProgress: growth.strengthProgress,
           endurance: growth.endurance,
@@ -257,8 +293,16 @@ export async function authRoutes(server: FastifyInstance) {
           // та же причина, что в финише (см. skillLevelGrowthColumns).
           ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
           ...skillUsesToColumns(skillGrowth.uses),
-        },
-      })
+      }))
+      if (closed === null) {
+        // Забег закрыл финиш между чтением и записью — его итог уже в базе, и
+        // перезаписывать его смертью нельзя. Окна о прошлом забеге нет: игрок
+        // свои итоги получил (или получит повтором финиша).
+        request.log.info({ userId: user.id, characterId: char.id }, 'login: run was closed meanwhile (finish won), not closing it again')
+        const current = await prisma.character.findUnique({ where: { id: char.id } })
+        if (current) Object.assign(char, current)
+      } else {
+      const newPotionStock = potionStockOf(closed)
       char.trophies = 0
       // Склад в памяти — вслед за записью, тем же приёмом, что char.trophies
       // выше: из char ниже собираются И ответ (character.potions, его клиент
@@ -354,6 +398,7 @@ export async function authRoutes(server: FastifyInstance) {
         skillLevels: skillGrowth.levels,
         skillUses: skillGrowth.uses,
         }
+      }
       }
     }
 
