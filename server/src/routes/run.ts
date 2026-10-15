@@ -1423,6 +1423,11 @@ export async function runRoutes(server: FastifyInstance) {
     // ключом `finish:<runId>`, и повтор с тем же runId получает ЕГО — те же
     // числа, ничего не записав второй раз. Проверка стоит ДО «есть ли открытый
     // забег»: у повтора его уже нет.
+    // Тело не объект (null, массив, строка) — отказ, а не 500 на первом же
+    // request.body.died ниже.
+    if (typeof request.body !== 'object' || request.body === null || Array.isArray(request.body)) {
+      return reply.status(400).send({ error: 'Invalid body' })
+    }
     const claimedRunId = readOptionalRequestId(request.body?.runId)
     if (claimedRunId === 'invalid') {
       return reply.status(400).send({ error: 'Invalid runId' })
@@ -2567,12 +2572,29 @@ export async function runRoutes(server: FastifyInstance) {
   // энергия не пересчитывается: расчёт энергии сдвигает lastEnergyUpdate у
   // вызывающих её эндпоинтов, а тихо терять остаток минуты на каждом обновлении
   // витрины — цена на пустом месте.
-  server.get('/character/profile', async (request, reply) => {
+  //
+  // ?requestIds=a,b (15.10.2026) — ключи покупок, исход которых клиенту
+  // неизвестен (ответ потерялся). В ответе appliedRequestIds — какие из них
+  // сервер уже применил. Клиент забывает применённые ключи, и следующая покупка
+  // того же товара — новая, а не «уже сделано» (см. keyedPurchase в src/api.ts).
+  // Только чтение, как и весь профиль.
+  server.get<{ Querystring: { requestIds?: string } }>('/character/profile', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    // Негодные id отбрасываются молча: это вопрос «что из этого уже сделано», и
+    // мусорный id честно отвечается «не сделано». Потолок — чтобы запрос не
+    // превращался в выборку по сотне ключей.
+    const askedIds = typeof request.query?.requestIds === 'string'
+      ? request.query.requestIds.split(',').map(parseRequestId).filter((id): id is string => id !== null).slice(0, 20)
+      : []
+    const appliedRequestIds = askedIds.length === 0 ? [] : (await prisma.idempotencyKey.findMany({
+      where: { characterId: character.id, key: { in: askedIds } },
+      select: { key: true },
+    })).map((row) => row.key)
 
     // gold/potions — той же формы и тем же помощником, что у buy-potion выше:
     // клиент разбирает оба ответа одним кодом. Сверх них профиль несёт ещё два
@@ -2613,6 +2635,7 @@ export async function runRoutes(server: FastifyInstance) {
       // покупки улучшения во второй вкладке экран остался бы со старыми числами.
       upgrades: upgradesOf(character),
       trophyGoldRate: TROPHY_GOLD_RATE,
+      appliedRequestIds,
     })
   })
 
@@ -2776,14 +2799,23 @@ export async function runRoutes(server: FastifyInstance) {
     })
   })
 
-  server.post<{ Body: { inventoryItemId: string; equip: boolean } }>('/character/equip', async (request, reply) => {
+  server.post<{ Body: { inventoryItemId?: unknown; equip?: unknown } | null }>('/character/equip', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
-    const { inventoryItemId, equip } = request.body
+    // Тело проверяется явно (15.10.2026): раньше недостающий или нестроковый id
+    // доходил до Prisma и отвечал 500 с её внутренним текстом.
+    const inventoryItemId = request.body?.inventoryItemId
+    const equip = request.body?.equip
+    if (typeof inventoryItemId !== 'string' || inventoryItemId === '') {
+      return reply.status(400).send({ error: 'Invalid inventoryItemId' })
+    }
+    if (typeof equip !== 'boolean') {
+      return reply.status(400).send({ error: 'Invalid equip' })
+    }
 
     const inventoryItem = await prisma.inventoryItem.findUnique({
       where: { id: inventoryItemId },
