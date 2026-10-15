@@ -1197,10 +1197,12 @@ export async function recordProgress(token: string, snapshot: RunProgressSnapsho
 // первый после — получит «уже сделано» и ничего не спишет.
 // Ответ пришёл (успех или отказ по существу) — ключ забывается, следующая
 // покупка получит новый.
-// ⚠️ Цена: если первый запрос ДОШЁЛ, игрок это увидел сверкой и сознательно
-// покупает то же самое ещё раз, первое нажатие ответит «уже сделано» без
-// покупки; второе купит. Повторять никто не будет (сервер ничего не списал), а
-// двойного списания больше нет.
+// Сверка баланса (fetchProfile) спрашивает сервер о каждом запомненном ключе
+// (15.10.2026, вторая правка): покупка с этим ключом УЖЕ применена — ключ
+// забывается, и следующее нажатие «Купить» — честная новая покупка. Без этого
+// игрок, увидевший сверкой, что первая покупка прошла, и купивший то же самое
+// ещё раз, получал «уже сделано» и строку «Сервер продал 0 из 1».
+// Не применена — ключ остаётся: первый запрос может ещё доползти.
 // ⚠️ Ключ живёт в памяти вкладки: перезагрузка его теряет (вход при этом
 // перечитывает баланс заново).
 const PURCHASE_KEY_REUSE_MS = 10 * 60 * 1000
@@ -1317,6 +1319,13 @@ export type ProfileResult = {
 // смерть, со сгоранием банка трофеев). Делать это побочным эффектом кнопки
 // «Обновить баланс» нельзя.
 export async function fetchProfile(token: string): Promise<ProfileResult> {
+  // Ключи покупок с неизвестным исходом — сервер скажет, какие из них уже
+  // применены (см. keyedPurchase). Снимок списка ДО запроса: ключ, появившийся
+  // за время запроса, сервер ещё не проверял.
+  const pending = [...pendingPurchaseKeys.entries()]
+  const query = pending.length > 0
+    ? `?requestIds=${encodeURIComponent(pending.map(([, p]) => p.key).join(','))}`
+    : ''
   const raw = await requestJson<{
     gold: number
     trophies: number
@@ -1328,11 +1337,19 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillLevels?: unknown
     skillUses?: unknown
     upgrades?: unknown
+    appliedRequestIds?: unknown
   }>(
-    `${SERVER_URL}/character/profile`,
+    `${SERVER_URL}/character/profile${query}`,
     { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
     SHOP_TIMEOUT_MS,
   )
+  // Старый сервер поля не присылает — ключи остаются, как было до правки.
+  if (Array.isArray(raw.appliedRequestIds)) {
+    const applied = new Set(raw.appliedRequestIds.filter((id): id is string => typeof id === 'string'))
+    for (const [signature, p] of pending) {
+      if (applied.has(p.key) && pendingPurchaseKeys.get(signature)?.key === p.key) pendingPurchaseKeys.delete(signature)
+    }
+  }
   return {
     gold: raw.gold,
     trophies: raw.trophies,
