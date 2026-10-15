@@ -54,7 +54,20 @@ import type { ScrollId } from './scrolls.js'
 // Хранится числом, а не берётся из RUN_COST на момент закрытия: константа
 // меняется (сейчас 3, перед релизом 10), и забег, начатый до её смены, обязан
 // вернуть списанное, а не нынешнее.
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[] }
+// `runId` (15.10.2026) — случайный id ЭТОГО забега, его называет старт и
+// клиент присылает обратно во всех запросах забега. Без него сервер не
+// отличал запоздавший запрос ПРОШЛОГО забега от запроса текущего: финиш,
+// глоток или срез, доползшие после того, как игрок начал новый забег, легли
+// бы в новый. Поля нет у забегов, начатых до 15.10.2026, — для них проверки
+// нет (читать через readRunId).
+// `startedAt` (15.10.2026) — момент старта, мс от эпохи, по часам СЕРВЕРА. От
+// него отсчитывается окно подтверждения READY_WINDOW_MS (см. ниже). Поля нет
+// у старых забегов — окна у них нет (readRunStartedAt).
+// `sipIds` (15.10.2026) — id уже записанных глотков (клиент даёт id глотку и
+// повторяет его со всеми попытками /run/sip). Повтор после таймаута, первая
+// попытка которого всё же дошла, не запишет глоток второй раз. Длина не больше
+// числа глотков за забег. Поля нет — глотков с id не было (readRunSipIds).
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[] }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -205,6 +218,79 @@ export function readRunConfirmed(run: ActiveExploreRun): boolean | null {
   if (raw === undefined) return true
   if (typeof raw !== 'boolean') return null
   return raw
+}
+
+// --- Id забега, момент старта, id глотков (15.10.2026) ---
+
+// Годный id запроса или забега: 8–64 символа из букв, цифр, '-' и '_'. Клиент
+// шлёт UUID (36 символов); правило шире, чтобы не завязываться на один формат,
+// но достаточно узкое, чтобы в БД и в лог не попадал произвольный мусор.
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
+export function parseRequestId(raw: unknown): string | null {
+  return typeof raw === 'string' && REQUEST_ID_RE.test(raw) ? raw : null
+}
+
+// Id забега. null — поля нет (забег начат до 15.10.2026) ИЛИ оно испорчено:
+// в обоих случаях проверять запросы забега не по чему, и вызывающий пропускает
+// проверку. Испорченное поле при этом не даёт ничего «лишнего» — без id
+// поведение ровно прежнее.
+export function readRunId(run: ActiveExploreRun): string | null {
+  return parseRequestId(run.runId)
+}
+
+// Момент старта (мс от эпохи). null — поля нет или оно не целое положительное
+// число: окна подтверждения у такого забега нет, поведение прежнее.
+export function readRunStartedAt(run: ActiveExploreRun): number | null {
+  const raw: unknown = run.startedAt
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) return null
+  return raw
+}
+
+// Окно подтверждения: сколько после старта забег ещё можно ПОДТВЕРДИТЬ
+// (POST /run/ready, первый глоток, первый срез) и сколько его можно отменить
+// как не показанный (POST /run/cancel-unshown).
+//
+// Зачем окно. Неподтверждённый забег вход закрывает без штрафа — так и
+// задумано для забега, который игрок не увидел. Но «не увидел» сервер знает
+// только со слов клиента: изменённый клиент мог не слать /run/ready (и ни
+// глотков, ни срезов), играть весь забег и, если всё плохо, убить приложение
+// бесплатно, а если хорошо — подтвердиться перед финишем. Теперь подтвердиться
+// можно только в первые READY_WINDOW_MS, а финиш неподтверждённого забега
+// идёт штрафным путём (см. /run/finish-explore). Бесплатная страховка
+// сжимается с «весь забег» до этого окна.
+//
+// Почему 120 с. Честный клиент шлёт /run/ready сразу после загрузки: она
+// сторожится LOAD_WATCHDOG_MS = 60 с (src/Explore.tsx), у самого подтверждения
+// бюджет 24 с (READY_TOTAL_BUDGET_MS, src/api.ts), и оба отсчёта начинаются не
+// раньше, чем сервер записал startedAt. Итого не позже 84 с; 36 с — запас.
+// ⚠️ Поднимут сторож загрузки или бюджет подтверждения — поднимать и это число,
+// иначе медленная, но честная загрузка получит отказ подтверждения.
+// ⚠️ Число — решение по балансу (сколько секунд бесплатной страховки остаётся
+// у изменённого клиента), а не только техническое.
+export const READY_WINDOW_MS = 120_000
+
+// Открыто ли ещё окно подтверждения. Забег без startedAt (старый) — окна нет,
+// подтверждать можно всегда, как раньше.
+export function readyWindowOpen(run: ActiveExploreRun, nowMs: number): boolean {
+  const startedAt = readRunStartedAt(run)
+  return startedAt === null || nowMs - startedAt <= READY_WINDOW_MS
+}
+
+// Уже записанные id глотков. Три состояния, как у readConsumablesUsed: поля
+// нет — пустой список (честное «не было»); испорчено — null, вызывающий
+// обязан отказать громко: свалить порчу в пустой список значило бы записать
+// повтор второй раз, то есть ровно ту беду, от которой поле заведено.
+export function readRunSipIds(run: ActiveExploreRun): string[] | null {
+  const raw: unknown = run.sipIds
+  if (raw === undefined) return []
+  if (!Array.isArray(raw) || raw.length > MAX_SIPS_PER_RUN) return null
+  const out: string[] = []
+  for (const id of raw) {
+    const parsed = parseRequestId(id)
+    if (parsed === null) return null
+    out.push(parsed)
+  }
+  return out
 }
 
 // Списанная этим забегом энергия. null — поля нет ИЛИ оно не целое
@@ -374,11 +460,24 @@ export function judgeInterruptedRun(run: ActiveExploreRun): InterruptedRunJudgem
   // Дальше — только неподтверждённые. Признак реальной игры закрывает
   // бесплатную страховку: клиент, который «забыл» подтвердиться, но успел
   // подраться и выпить зелье, закрывается обычным путём.
+  const spentEnergy = proveNotPlayed(run, loud)
+  if (spentEnergy === null) return penalty()
+  return { verdict: 'abandoned', spentEnergy, loud }
+}
+
+// Доказывает, что в забеге НЕ играли, и возвращает, сколько энергии вернуть.
+// null — доказать не вышло (есть признак игры, данные испорчены или неизвестно,
+// сколько списал старт); причину порчи функция дописывает в `loud`.
+// Общая для двух читателей: вход, закрывающий неподтверждённый забег
+// (judgeInterruptedRun выше), и отмена не показанного забега
+// (judgeUnshownCancel ниже). Разные правила «что считается игрой» у них
+// разъехались бы молча, а это ровно граница между штрафом и его отсутствием.
+function proveNotPlayed(run: ActiveExploreRun, loud: string[]): number | null {
   const progress = readRunProgress(run)
   if (progress === null) {
     // Испорченный срез не может ДОКАЗАТЬ отсутствие игры — значит не доказывает.
     loud.push('currentRun.progress is malformed, cannot prove the run was never played')
-    return penalty()
+    return null
   }
   // Применений навыков здесь НЕТ намеренно, и это не пробел: результативное
   // применение по построению даёт либо урон (шары, рывок, кровотечение), либо
@@ -388,24 +487,54 @@ export function judgeInterruptedRun(run: ActiveExploreRun): InterruptedRunJudgem
   const played =
     progress.attackDamageDealt > 0 || progress.skillDamageDealt > 0 ||
     progress.healedAmount > 0 || progress.damageTaken > 0
-  if (played) return penalty()
+  if (played) return null
 
   const drunk = readRunPotionsDrunk(run)
   if (drunk === null) {
     loud.push('currentRun.potionsDrunk is malformed, cannot prove the run was never played')
-    return penalty()
+    return null
   }
-  if (drunk.some((n) => n > 0)) return penalty()
+  if (drunk.some((n) => n > 0)) return null
 
   const spentEnergy = readRunSpentEnergy(run)
   if (spentEnergy === null) {
     // Вернуть нечего — сколько списали, неизвестно. Закрываем обычным путём:
     // выдумывать число (RUN_COST «на сегодня») нельзя, оно уже не то.
     loud.push('currentRun.spentEnergy is missing or malformed on an unconfirmed run, falling back to the penalty path')
-    return penalty()
+    return null
   }
+  return spentEnergy
+}
 
-  return { verdict: 'abandoned', spentEnergy, loud }
+// Можно ли отменить забег как НЕ ПОКАЗАННЫЙ (POST /run/cancel-unshown).
+//
+// Зачем. Подтверждение старта (/run/ready) могло дойти до сервера, а ответ —
+// потеряться: клиент показывает экран ошибки и игру не запускает, а забег на
+// сервере уже подтверждён, и следующий вход закрыл бы его как смерть, со
+// сгоранием всего банка трофеев. Клиент, не дождавшийся подтверждения,
+// просит отменить забег — и сервер соглашается, только если:
+//   • отмена пришла в окне подтверждения (READY_WINDOW_MS от старта);
+//   • в забеге не играли — то же доказательство, что у входа (proveNotPlayed);
+//   • сделки с Контрабандистом не было (она бывает только в показанном забеге).
+// Флаг confirmed здесь НЕ читается намеренно: отменять надо именно забег,
+// подтверждённый без ведома клиента.
+//
+// Новой лазейки это не открывает: в те же секунды изменённый клиент и так мог
+// просто не подтверждаться и закрыть забег без штрафа. Окно у обоих путей одно.
+export type UnshownCancelJudgement =
+  | { verdict: 'cancel'; spentEnergy: number; loud: string[] }
+  | { verdict: 'refuse'; reason: 'no-window' | 'window-expired' | 'played' | 'smuggler-deal'; loud: string[] }
+
+export function judgeUnshownCancel(run: ActiveExploreRun, nowMs: number): UnshownCancelJudgement {
+  const loud: string[] = []
+  // Забег без startedAt (начат до 15.10.2026) окна не имеет — отменять его
+  // нельзя вовсе: иначе «отмена» работала бы в любой момент забега.
+  if (readRunStartedAt(run) === null) return { verdict: 'refuse', reason: 'no-window', loud }
+  if (!readyWindowOpen(run, nowMs)) return { verdict: 'refuse', reason: 'window-expired', loud }
+  if (run.smugglerDeal !== undefined) return { verdict: 'refuse', reason: 'smuggler-deal', loud }
+  const spentEnergy = proveNotPlayed(run, loud)
+  if (spentEnergy === null) return { verdict: 'refuse', reason: 'played', loud }
+  return { verdict: 'cancel', spentEnergy, loud }
 }
 
 // Во что превратились потолки: сами числа плюс всё, что нужно вызывающему для

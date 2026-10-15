@@ -132,6 +132,7 @@ model Character {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   inventoryItems      InventoryItem[]
+  idempotencyKeys     IdempotencyKey[]
 }
 
 model Item {
@@ -159,4 +160,37 @@ model InventoryItem {
   acquiredAt  DateTime  @default(now())
 
   @@index([characterId])
+}
+
+// Ключ идемпотентности: запрос с таким ключом уже применён, повтор с тем же
+// ключом не применяется второй раз (миграция 20261015120000_idempotency_keys_add).
+//
+// Пишется в ТОЙ ЖЕ транзакции, что и само действие, и ПЕРВЫМ: второй запрос с
+// тем же ключом упирается в уникальный индекс (characterId, key), его
+// транзакция откатывается целиком, и он получает ответ «уже сделано», а не
+// второе списание. Отказ по существу («не хватило золота») ключ НЕ тратит —
+// транзакция откатывается вместе со строкой ключа.
+//
+// Кто пишет: покупки (buy-potion / buy-consumable / buy-upgrade, ключ из тела —
+// requestId) и финиш забега (ключ `finish:<runId>`, в response — итог забега,
+// чтобы повтор потерянного финиша получил те же числа, а не 400).
+//
+// Строки старше суток удаляются при записи нового ключа того же персонажа
+// (pruneIdempotencyKeys, routes/run.ts): клиент держит ключ для повтора
+// минуты, а не дни.
+model IdempotencyKey {
+  id          Int       @id @default(autoincrement())
+  characterId Int
+  character   Character @relation(fields: [characterId], references: [id])
+  key         String
+  // Какая ручка применила ключ. Тот же ключ на другой ручке — ошибка клиента,
+  // а не повтор: отвечать ему чужим «уже сделано» нельзя.
+  endpoint    String
+  // Сохранённый ответ — только там, где его нельзя пересчитать (итог финиша).
+  // Покупки при повторе отвечают ТЕКУЩИМ состоянием из БД, им ответ не нужен.
+  response    Json?
+  createdAt   DateTime  @default(now())
+
+  @@unique([characterId, key])
+  @@index([characterId, createdAt])
 }

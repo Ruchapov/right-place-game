@@ -1,9 +1,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
-import { regenerateEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
+import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
-import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount } from '../potions.js'
+import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
@@ -22,7 +23,6 @@ import {
   clampPotionsSpent,
   subtractPotionStock,
   potionStockOf,
-  potionStockToColumns,
   consumableStockOf,
   scrollStockOf,
   type ConsumableColumns,
@@ -34,10 +34,182 @@ import {
   readConsumablesUsed,
   readSmugglerDeal,
   type SmugglerDeal,
+  readRunProgress,
+  emptyRunProgress,
+  parseRequestId,
+  readRunId,
+  readRunStartedAt,
+  readRunSipIds,
+  readyWindowOpen,
+  judgeUnshownCancel,
 } from '../runState.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
+
+// --- Ключи идемпотентности, id забега, блокировка строки персонажа (15.10.2026) ---
+
+/**
+ * Отказ по существу, брошенный ИЗНУТРИ транзакции. Бросок откатывает её целиком
+ * — вместе со строкой ключа идемпотентности, — и обработчик превращает его в
+ * обычный ответ. Так отказ («не хватило золота») ключ не тратит: повтор с тем же
+ * ключом после пополнения золота применится, а не ответит чужим «уже сделано».
+ */
+class RouteRejection extends Error {
+  constructor(readonly status: number, readonly body: Record<string, unknown>) {
+    super(`route rejection ${status}`)
+  }
+}
+
+// Ключ сохранённого итога финиша. Двоеточия в id запроса быть не может
+// (parseRequestId), поэтому ключ покупки с ним не совпадёт никогда.
+const FINISH_ENDPOINT = 'finish-explore'
+function finishKey(runId: string): string {
+  return `finish:${runId}`
+}
+
+/** Ключи старше этого удаляются при записи нового (клиент держит ключ минуты). */
+const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Необязательный id запроса из тела. undefined — поля нет (клиент старее
+ * 15.10.2026, ключа нет — поведение прежнее); 'invalid' — поле есть, но не id:
+ * это сломанный клиент, отказ 400, а не тихое «без ключа» — иначе повтор,
+ * от которого ключ и заведён, прошёл бы молча.
+ */
+function readOptionalRequestId(raw: unknown): string | null | 'invalid' {
+  if (raw === undefined) return null
+  return parseRequestId(raw) ?? 'invalid'
+}
+
+type AppliedOnce<T> = { replayed: false; value: T } | { replayed: true; response: Prisma.JsonValue | null }
+
+/**
+ * Применяет действие РОВНО ОДИН РАЗ на ключ.
+ *
+ * Строка ключа пишется ПЕРВОЙ в той же транзакции, что и действие. Второй запрос
+ * с тем же ключом упирается в уникальный индекс (characterId, key): пока первая
+ * транзакция открыта, вставка ждёт её, а после коммита падает с P2002 — и вся
+ * вторая транзакция откатывается, не списав ничего. Ответ ему — «уже сделано»
+ * (replayed), вызывающий отдаёт текущее состояние из БД.
+ *
+ * Ключа нет (старый клиент) — действие идёт как раньше, без транзакции.
+ *
+ * Бросает RouteRejection из действия как есть и 409 'Idempotency key reused',
+ * если тем же ключом уже воспользовалась ДРУГАЯ ручка (ошибка клиента: ответить
+ * ей чужим «уже сделано» значило бы соврать).
+ */
+async function applyOnce<T>(
+  characterId: number,
+  key: string | null,
+  endpoint: string,
+  log: FastifyRequest['log'],
+  action: (db: Prisma.TransactionClient) => Promise<T>,
+): Promise<AppliedOnce<T>> {
+  if (key === null) return { replayed: false, value: await action(prisma) }
+  let value: T
+  try {
+    value = await prisma.$transaction(async (tx) => {
+      await tx.idempotencyKey.create({ data: { characterId, key, endpoint } })
+      return action(tx)
+    })
+  } catch (e) {
+    if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e
+    const stored = await prisma.idempotencyKey.findUnique({ where: { characterId_key: { characterId, key } } })
+    if (!stored) throw e // P2002 без строки — не наш случай, пусть падает громко
+    if (stored.endpoint !== endpoint) {
+      log.warn({ characterId, key, endpoint, storedEndpoint: stored.endpoint }, 'idempotency key reused on another endpoint')
+      throw new RouteRejection(409, { error: 'Idempotency key reused' })
+    }
+    log.info({ characterId, key, endpoint }, 'idempotent replay: request already applied, not applying again')
+    return { replayed: true, response: stored.response }
+  }
+  await pruneIdempotencyKeys(characterId, log)
+  return { replayed: false, value }
+}
+
+// Уборка старых ключей персонажа. Лучшее усилие: сбой здесь не отменяет уже
+// применённое действие, поэтому только громкий лог.
+async function pruneIdempotencyKeys(characterId: number, log: FastifyRequest['log']): Promise<void> {
+  try {
+    await prisma.idempotencyKey.deleteMany({
+      where: { characterId, createdAt: { lt: new Date(Date.now() - IDEMPOTENCY_KEY_TTL_MS) } },
+    })
+  } catch (e) {
+    log.error({ characterId, err: e }, 'idempotency keys: prune failed')
+  }
+}
+
+/**
+ * Сверка id забега, названного клиентом, с id открытого забега.
+ *   'ok'       — совпал, или клиент id не прислал (клиент старее 15.10.2026);
+ *   'invalid'  — прислал не id: сломанный клиент, отказ 400;
+ *   'mismatch' — id от ДРУГОГО забега: запрос запоздал и пришёл, когда игрок
+ *                уже начал новый забег. Применить его к новому забегу значило бы
+ *                закрыть, напоить или подтвердить не тот забег.
+ * У забега без id (начат старым сервером) любой присланный id — чужой: старый
+ * сервер id не выдавал, и клиент получить его мог только от другого забега.
+ */
+function checkRunId(run: ActiveExploreRun, raw: unknown): 'ok' | 'invalid' | 'mismatch' {
+  if (raw === undefined) return 'ok'
+  const claimed = parseRequestId(raw)
+  if (claimed === null) return 'invalid'
+  const actual = readRunId(run)
+  return actual !== null && actual === claimed ? 'ok' : 'mismatch'
+}
+
+// Ответ на непрошедшую сверку id забега — один текст на все ручки забега.
+function runIdRejection(verdict: 'invalid' | 'mismatch'): { status: number; body: { error: string } } {
+  return verdict === 'invalid'
+    ? { status: 400, body: { error: 'Invalid runId' } }
+    : { status: 400, body: { error: 'Run mismatch' } }
+}
+
+/**
+ * Блокирует строку персонажа до конца транзакции (SELECT … FOR UPDATE).
+ *
+ * Нужна там, где проверка не выражается фильтром условной записи — занятость
+ * сумки это COUNT по другой таблице (InventoryItem) плюс склад книг. Без
+ * блокировки два запроса, посчитавшие «29 / 30» одновременно, оба положат
+ * вещь в последнюю ячейку. С ней второй ждёт коммита первого и считает уже
+ * «30 / 30». Работает только между теми, кто блокирует: сейчас это сборка
+ * книги и финиш забега (добыча).
+ */
+async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "Character" WHERE "userId" = ${userId} FOR UPDATE`
+}
+
+// Изменение склада зелий ПО ТИРАМ (индекс = тир-1) — кусками для условной
+// записи: increment на разницу и фильтр «не уйти в минус» для тиров, где
+// разница отрицательная.
+//
+// Разница, а не абсолютное значение (potionStockToColumns), — в этом и правка
+// 15.10.2026: абсолютное значение пишется от СНИМКА, прочитанного в начале
+// обработчика, и затирает всё, что легло между чтением и записью. Так покупка
+// зелья со второго устройства в окне финиша пропадала: финиш писал склад
+// «до покупки минус выпитое».
+// Фильтр gte: в схеме нет ограничения «не меньше нуля», а снимок мог устареть и
+// в сторону уменьшения. Не сошлось — 0 строк, вызывающий отвечает 409, и
+// клиент повторяет с новым чтением.
+const POTION_COLUMNS = ['potionT1', 'potionT2', 'potionT3', 'potionT4', 'potionT5'] as const
+function potionStockDelta(delta: number[]): {
+  where: Prisma.CharacterWhereInput
+  data: Prisma.CharacterUpdateManyMutationInput
+} {
+  if (delta.length !== POTION_TIER_COUNT || POTION_COLUMNS.length !== POTION_TIER_COUNT) {
+    throw new Error(`potionStockDelta: expected ${POTION_TIER_COUNT} tiers, got ${delta.length}`)
+  }
+  const where: Prisma.CharacterWhereInput = {}
+  const data: Prisma.CharacterUpdateManyMutationInput = {}
+  POTION_COLUMNS.forEach((column, i) => {
+    const d = delta[i]
+    if (!Number.isInteger(d)) throw new Error(`potionStockDelta: non-integer delta for ${column}: ${d}`)
+    if (d === 0) return
+    data[column] = { increment: d }
+    if (d < 0) where[column] = { gte: -d }
+  })
+  return { where, data }
+}
 
 // Фильтр «запаса каждого взятого хватает» и списание — готовыми куска́ми для
 // условной записи старта забега. Оба собираются ОДНИМ проходом по списку, чтобы
@@ -398,14 +570,16 @@ type AppliedDrops = {
  * Поэтому всплывашка в бою показывает предмет ВСЕГДА, а «не влезло» игрок видит
  * только на экране итогов.
  *
- * ⚠️ Гонка с вместимостью НЕ ЗАКРЫТА и закрыта быть не может одним фильтром:
- * занятость сумки — это COUNT по другой таблице, в Prisma-фильтр записи она не
- * выражается. Между подсчётом здесь и записью ниже игрок со второго устройства
- * может купить книгу и занять последнюю ячейку. Цена промаха — одна ячейка
- * сверх тридцати; клиент такое переполнение показывает КРАСНЫМ и как есть, а не
- * обрезает (см. счётчик «N / 30» в App.tsx).
+ * Зовётся ВНУТРИ транзакции финиша, после lockCharacterRow (15.10.2026):
+ * занятость сумки — COUNT по другой таблице, фильтром записи она не
+ * выражается, и до блокировки сборка книги со второго устройства могла занять
+ * ту же последнюю ячейку. `db` — клиент этой транзакции.
+ * ⚠️ Блокировка защищает только от тех, кто тоже блокирует (сборка книги).
+ * Покупка книги и снятие предмета вместимость на сервере не проверяют вовсе —
+ * это отдельная дыра, а не гонка; клиент переполнение показывает КРАСНЫМ.
  */
 async function applyDrops(
+  db: Prisma.TransactionClient,
   drops: EventDrop[],
   character: { id: number } & ConsumableColumns,
 ): Promise<AppliedDrops> {
@@ -426,7 +600,7 @@ async function applyDrops(
   // App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника,
   // которого не ноль. Расхождение здесь означало бы, что игрок видит «28 / 30»,
   // а сервер считает сумку полной.
-  const equipmentCells = await prisma.inventoryItem.count({
+  const equipmentCells = await db.inventoryItem.count({
     where: { characterId: character.id, equipped: false },
   })
   const bookStock = { ...consumableStockOf(character) }
@@ -542,7 +716,8 @@ function getUserId(request: FastifyRequest): number | null {
 // индексы событий, закрытых к моменту обращения. Валидируются так же, как
 // closedEvents финиша (parseClosedEventIndices) — суммы наград клиент не
 // присылает вовсе.
-type SmugglerBody = { closedEvents?: number[] }
+// runId (15.10.2026) — id забега, см. checkRunId.
+type SmugglerBody = { closedEvents?: number[]; runId?: unknown }
 
 // Body shape for POST /run/start-explore. mapFile is optional — omitted →
 // the server picks one itself (pickRunMapFile); the debug map switcher
@@ -560,13 +735,16 @@ type StartExploreBody = {
 // (/run/smuggler-deal) и хранит в currentRun.smugglerDeal. Поле оставлено в
 // типе только потому, что старый клиент его ещё присылает — принять и
 // проигнорировать дешевле, чем отказывать всему финишу. Новый клиент его
-// слать не должен. attackDamageDealt/
+// слать не должен. runId (15.10.2026) — id забега из ответа старта: по нему
+// финиш отличает повтор своего же забега (отдаёт сохранённый итог) от
+// запоздавшего финиша прошлого забега (отказ 'Run mismatch'). attackDamageDealt/
 // skillDamageDealt/healedAmount/damageTaken — RAW counters accumulated by
 // the client over the whole run (Explore.tsx: attackDamageDealtRef/
 // skillDamageDealtRef/healedAmountRef/damageTakenRef), NOT pre-computed stat
 // gains — the server runs them through applyStatGrowth itself, after
 // clamping to the anti-cheat caps below (see the route).
 type FinishExploreBody = {
+  runId?: unknown
   closedEvents: number[]
   died: boolean
   smugglerOutcome?: 'gain' | 'steal'
@@ -593,7 +771,10 @@ type FinishExploreBody = {
   charmUsed?: boolean
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
-type SipBody = { tier?: number }
+// sipId (15.10.2026) — id ЭТОГО глотка, один на все попытки повтора: глоток,
+// чья первая попытка дошла, а ответ потерялся, повтор не запишет второй раз.
+// runId — id забега (см. checkRunId).
+type SipBody = { tier?: number; sipId?: unknown; runId?: unknown }
 // Shared "run result" shape — one results screen for both ways an Explore
 // run can end: the client explicitly finishing it (POST /run/finish-explore)
 // or the server finding a stale one still open on the NEXT login (POST
@@ -814,9 +995,14 @@ export async function runRoutes(server: FastifyInstance) {
     // consumablesUsed кладём ТОЛЬКО когда что-то взяли: у забега без расходников
     // поля нет вовсе, и readConsumablesUsed читает это как честное «не брали»
     // (тот же договор, что у potionsDrunk и smugglerDeal).
+    // runId — id этого забега: клиент называет его во всех запросах забега, и
+    // запрос от ПРОШЛОГО забега, доползший после старта нового, получит отказ,
+    // а не ляжет в новый (см. checkRunId). startedAt — от него отсчитывается
+    // окно подтверждения (READY_WINDOW_MS, runState.ts).
+    const runId = randomUUID()
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
-      confirmed: false, spentEnergy,
+      confirmed: false, spentEnergy, runId, startedAt: Date.now(),
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -907,6 +1093,9 @@ export async function runRoutes(server: FastifyInstance) {
       // на свой же список из гнёзд: принять сервер мог не всё, и расходиться
       // этим двум спискам нельзя.
       consumablesTaken: takenIds,
+      // Id забега (15.10.2026). Клиент возвращает его в ready / sip / progress /
+      // сделке / финише / отмене; старый клиент поле просто не читает.
+      runId,
     })
   })
 
@@ -918,7 +1107,7 @@ export async function runRoutes(server: FastifyInstance) {
   // Идемпотентен: повтор на уже подтверждённом забеге НИЧЕГО не пишет и
   // отвечает тем же 200. Так повтор после оборванного по таймауту запроса
   // безопасен — тот же приём, что у 409 на финише.
-  server.post('/run/ready', async (request, reply) => {
+  server.post<{ Body: { runId?: unknown } | undefined }>('/run/ready', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
@@ -928,6 +1117,11 @@ export async function runRoutes(server: FastifyInstance) {
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
+    }
+    const runIdCheck = checkRunId(run, request.body?.runId)
+    if (runIdCheck !== 'ok') {
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
     }
 
     const confirmed = readRunConfirmed(run)
@@ -942,6 +1136,16 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.send({ confirmed: true })
     }
 
+    // Окно подтверждения закрыто (READY_WINDOW_MS, runState.ts). Честный клиент
+    // сюда не попадает: он подтверждается сразу после загрузки, а загрузка
+    // сторожится 60 с. Опоздавшее подтверждение — признак клиента, который
+    // играл неподтверждённым и решил подтвердиться задним числом; такой забег
+    // остаётся неподтверждённым, и его финиш пойдёт штрафным путём.
+    if (!readyWindowOpen(run, Date.now())) {
+      request.log.warn({ userId, startedAt: run.startedAt }, 'ready: confirmation window expired, run stays unconfirmed')
+      return reply.status(400).send({ error: 'Ready window expired' })
+    }
+
     const nextRun: ActiveExploreRun = { ...run, confirmed: true }
 
     // Условная запись — тот же приём и те же касты, что у /run/sip ниже.
@@ -954,6 +1158,71 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     return reply.send({ confirmed: true })
+  })
+
+  // Отмена НЕ ПОКАЗАННОГО забега (15.10.2026). Клиент зовёт её, когда не
+  // дождался подтверждения старта (/run/ready) и показывает экран ошибки
+  // вместо игры. Подтверждение при этом могло ДОЙТИ (ответ потерялся по
+  // дороге) — и тогда забег на сервере подтверждён, а следующий вход закрыл
+  // бы его как смерть, сжигая весь банк трофеев за забег, которого игрок не
+  // видел. Отмена закрывает его так же, как вход закрывает неподтверждённый:
+  // без штрафа, с возвратом энергии.
+  //
+  // Условия — judgeUnshownCancel (runState.ts): окно подтверждения
+  // (READY_WINDOW_MS от старта) не прошло, в забеге не играли (ни среза с
+  // уроном или лечением, ни глотка), сделки с Контрабандистом не было.
+  // runId ОБЯЗАТЕЛЕН: отменить можно только тот забег, который клиент знает
+  // по имени, — запоздавшая отмена прошлого забега не закроет новый.
+  //
+  // Новой лазейки нет: в то же окно изменённый клиент и без этой ручки мог не
+  // подтверждаться и закрыть забег без штрафа (см. READY_WINDOW_MS).
+  server.post<{ Body: { runId?: unknown } | undefined }>('/run/cancel-unshown', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const claimed = parseRequestId(request.body?.runId)
+    if (claimed === null) return reply.status(400).send({ error: 'Invalid runId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const run = character.currentRun as unknown as ActiveExploreRun | null
+    if (!run || run.mode !== 'explore') {
+      return reply.status(400).send({ error: 'No active explore run' })
+    }
+    if (readRunId(run) !== claimed) {
+      return reply.status(400).send({ error: 'Run mismatch' })
+    }
+
+    const judgement = judgeUnshownCancel(run, Date.now())
+    for (const problem of judgement.loud) {
+      request.log.error({ userId, problem }, `cancel-unshown: ${problem}`)
+    }
+    if (judgement.verdict === 'refuse') {
+      request.log.warn({ userId, reason: judgement.reason }, 'cancel-unshown: refused')
+      return reply.status(400).send({ error: 'Run cannot be cancelled', reason: judgement.reason })
+    }
+
+    // Возврат энергии — тем же расчётом и с тем же переносом остатка, что у
+    // входа на неподтверждённом забеге (refundEnergy, game.ts). Трофеи, зелья,
+    // статы и склад в data НЕТ вовсе: забега, которого не видели, не было.
+    const refund = refundEnergy(character.energy, character.lastEnergyUpdate, judgement.spentEnergy)
+    // Условная запись по прочитанному currentRun — тот же приём, что у
+    // /run/sip: глоток или срез, успевшие лечь между чтением и записью, уже
+    // доказали игру, и отменять такой забег нельзя.
+    const written = await prisma.character.updateMany({
+      where: { userId, currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue } },
+      data: {
+        currentRun: Prisma.DbNull,
+        energy: refund.energy,
+        lastEnergyUpdate: refund.lastEnergyUpdate,
+      },
+    })
+    if (written.count === 0) {
+      return reply.status(409).send({ error: 'Run state changed, retry' })
+    }
+    request.log.info({ userId, runId: claimed, energyRefunded: refund.refunded }, 'cancel-unshown: run cancelled without penalty')
+    return reply.send({ cancelled: true, energyRefunded: refund.refunded })
   })
 
   // Зафиксировать ОДИН выпитый глоток по тиру — в currentRun, а не в складе.
@@ -975,6 +1244,12 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'No active explore run' })
     }
 
+    const runIdCheck = checkRunId(run, request.body?.runId)
+    if (runIdCheck !== 'ok') {
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
+    }
+
     const rawTier = request.body?.tier
     const tierSpec = Number.isInteger(rawTier) ? potionTierByNumber(rawTier as number) : null
     if (tierSpec === null) {
@@ -982,10 +1257,33 @@ export async function runRoutes(server: FastifyInstance) {
     }
     const tierIndex = tierSpec.tier - 1
 
+    const sipId = readOptionalRequestId(request.body?.sipId)
+    if (sipId === 'invalid') {
+      return reply.status(400).send({ error: 'Invalid sipId' })
+    }
+
     const drunk = readRunPotionsDrunk(run)
     if (drunk === null) {
       request.log.error({ userId, potionsDrunk: run.potionsDrunk }, 'sip: currentRun.potionsDrunk is malformed')
       return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+    const sipIds = readRunSipIds(run)
+    if (sipIds === null) {
+      // Испорченный список нельзя прочитать как пустой: это записало бы повтор
+      // второй раз — ровно то, от чего список заведён.
+      request.log.error({ userId, sipIds: run.sipIds }, 'sip: currentRun.sipIds is malformed')
+      return reply.status(500).send({ error: 'Corrupt run state' })
+    }
+
+    // Повтор уже записанного глотка (первая попытка дошла, ответ потерялся) —
+    // отвечаем тем, что записано, и НЕ пишем ничего. Проверка стоит ДО
+    // потолков: последний разрешённый глоток, повторённый, иначе получил бы
+    // 'No sips left', и клиент решил бы, что глоток не записан.
+    if (sipId !== null && sipIds.includes(sipId)) {
+      request.log.info({ userId, sipId }, 'sip: replay of an already recorded sip, not recording again')
+      const allowed = runSipsAllowed(run)
+      const total = drunk.reduce((sum, n) => sum + n, 0)
+      return reply.send({ potionsDrunk: drunk, sipsLeft: Math.max(0, allowed - total), replayed: true })
     }
 
     // Потолок по тиру — снимок склада на старте забега (потолок 1 clampPotionsSpent).
@@ -1009,10 +1307,15 @@ export async function runRoutes(server: FastifyInstance) {
     // Условие СТРОГО `=== false`: у забега без поля и у подтверждённого объект
     // не меняется ни на байт, иначе условная запись ниже дралась бы сама с
     // собой на ровном месте.
+    // Подтверждает только в окне подтверждения (READY_WINDOW_MS): иначе клиент,
+    // игравший неподтверждённым, подтверждался бы глотком задним числом. Вне
+    // окна глоток всё равно записывается — и как признак игры закрывает забег
+    // при входе штрафным путём.
     const nextRun: ActiveExploreRun = {
       ...run,
       potionsDrunk: nextDrunk,
-      ...(run.confirmed === false ? { confirmed: true } : {}),
+      ...(sipId !== null ? { sipIds: [...sipIds, sipId] } : {}),
+      ...(run.confirmed === false && readyWindowOpen(run, Date.now()) ? { confirmed: true } : {}),
     }
 
     // Условная запись: применяется, только если currentRun в базе всё ещё РОВНО
@@ -1059,6 +1362,12 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'No active explore run' })
     }
 
+    const runIdCheck = checkRunId(run, (request.body as { runId?: unknown } | null)?.runId)
+    if (runIdCheck !== 'ok') {
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
+    }
+
     // СТРОГО, в отличие от финиша: срез целиком наш собственный формат, и
     // частично разобранному верить нельзя — испорченное поле здесь означает
     // сломанного клиента, о котором надо узнать сразу, а не рост статов,
@@ -1070,11 +1379,12 @@ export async function runRoutes(server: FastifyInstance) {
 
     // Срез с ненулевыми счётчиками — такое же доказательство игры, что и
     // глоток выше, и подтверждает забег тем же способом и с тем же строгим
-    // `=== false` (забег без поля остаётся байт в байт прежним).
+    // `=== false` (забег без поля остаётся байт в байт прежним) — и тоже
+    // только в окне подтверждения (см. /run/sip).
     const nextRun: ActiveExploreRun = {
       ...run,
       progress,
-      ...(run.confirmed === false ? { confirmed: true } : {}),
+      ...(run.confirmed === false && readyWindowOpen(run, Date.now()) ? { confirmed: true } : {}),
     }
 
     // Условная запись — ровно та же, что у /run/sip выше, и по той же причине:
@@ -1105,25 +1415,73 @@ export async function runRoutes(server: FastifyInstance) {
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
 
+    // --- Повтор финиша того же забега (15.10.2026) ---
+    //
+    // Финиш, чья первая попытка дошла и закрыла забег, а ответ потерялся,
+    // раньше получал 400 'No active explore run', и игрок видел «Забег уже
+    // закрыт на сервере» без чисел. Теперь итог каждого финиша сохраняется под
+    // ключом `finish:<runId>`, и повтор с тем же runId получает ЕГО — те же
+    // числа, ничего не записав второй раз. Проверка стоит ДО «есть ли открытый
+    // забег»: у повтора его уже нет.
+    const claimedRunId = readOptionalRequestId(request.body?.runId)
+    if (claimedRunId === 'invalid') {
+      return reply.status(400).send({ error: 'Invalid runId' })
+    }
+    if (claimedRunId !== null) {
+      const stored = await prisma.idempotencyKey.findUnique({
+        where: { characterId_key: { characterId: character.id, key: finishKey(claimedRunId) } },
+      })
+      if (stored && stored.endpoint === FINISH_ENDPOINT && stored.response !== null) {
+        request.log.info({ userId, runId: claimedRunId }, 'finish-explore: replay of an already finished run, returning the stored result')
+        return reply.send(stored.response)
+      }
+    }
+
     // This endpoint only ever makes sense for a currentRun that
     // /run/start-explore itself created (mode: 'explore').
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
     }
-
-    // Неподтверждённый забег на финише — не отказ: игрок дошёл до конца, и
-    // отбирать награды за не долетевший /run/ready нельзя. Но знать об этом
-    // надо: либо клиент не шлёт подтверждение, либо оно систематически теряется.
-    if (readRunConfirmed(run) === false) {
-      request.log.warn({ userId }, 'finish-explore: run was never confirmed by /run/ready')
+    // Финиш ПРОШЛОГО забега, доползший после старта нового, не должен закрыть
+    // новый своими числами.
+    const runIdCheck = checkRunId(run, request.body?.runId)
+    if (runIdCheck !== 'ok') {
+      request.log.warn({ userId, claimedRunId, runId: run.runId }, 'finish-explore: runId does not match the open run')
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
     }
 
-    const died = request.body.died === true
+    // --- Неподтверждённый забег на финише (15.10.2026) ---
+    //
+    // Честный клиент неподтверждённый забег не показывает вовсе (Explore.tsx
+    // запускает игру только после ответа /run/ready), значит и финишировать
+    // его не может. Финиш неподтверждённого забега — изменённый клиент,
+    // который не подтверждался, чтобы держать бесплатную страховку: плохой
+    // забег — убить приложение (вход закроет без штрафа), хороший — прийти на
+    // финиш. Такой финиш идёт ШТРАФНЫМ путём, как у входа: смерть, ни одного
+    // закрытого события (ни трофеев, ни добычи, ни уровня босса), оберег не
+    // списан, статы и зелья — по тому, что сервер записал сам (срез и глотки),
+    // а не по телу запроса.
+    // Только у забегов нового формата (есть startedAt): забег, начатый до
+    // 15.10.2026, окна подтверждения не знал, и для него поведение прежнее —
+    // предупреждение в лог.
+    const confirmedRead = readRunConfirmed(run)
+    const unconfirmedPenalty = confirmedRead === false && readRunStartedAt(run) !== null
+    if (confirmedRead === false) {
+      request.log.warn(
+        { userId, penalty: unconfirmedPenalty },
+        unconfirmedPenalty
+          ? 'finish-explore: unconfirmed run finished, closing it on the penalty path'
+          : 'finish-explore: run was never confirmed by /run/ready (old run format, no penalty)',
+      )
+    }
+
+    const died = request.body.died === true || unconfirmedPenalty
     // Индексы закрытых событий — общая валидация (parseClosedEventIndices):
     // та же, что у обеих ручек Контрабандиста, иначе ставка и финиш посчитали бы
     // разные суммы на одних и тех же данных.
-    const closedEvents = parseClosedEventIndices(request.body.closedEvents, run)
+    const closedEvents = unconfirmedPenalty ? [] : parseClosedEventIndices(request.body.closedEvents, run)
 
     // --- Трофеи за забег ---
     //
@@ -1141,7 +1499,7 @@ export async function runRoutes(server: FastifyInstance) {
     // бою, а бой целиком на клиенте. Что сервер ПРОВЕРЯЕТ — что оберег реально
     // был взят в забег (свой список в currentRun.consumablesUsed, не слово
     // клиента). Соврать «спас» без взятого оберега нельзя.
-    const charmUsed = request.body.charmUsed === true
+    const charmUsed = !unconfirmedPenalty && request.body.charmUsed === true
     const usedRead = readConsumablesUsed(run)
     if (usedRead.kind === 'malformed') {
       // Список взятого испорчен — проверить право на списание нечем. Молча
@@ -1219,7 +1577,11 @@ export async function runRoutes(server: FastifyInstance) {
     // Четыре сырых счётчика из тела — МЯГКИЙ разбор (кривое поле становится
     // нулём, остальные живут): у старого клиента их может не быть вовсе, а
     // отказывать всему финишу из-за одного числа нельзя, забег уже сыгран.
-    const reportedProgress = coerceRunProgress(request.body)
+    // Штрафной путь неподтверждённого забега — по записанному сервером срезу,
+    // как у входа: телу такого клиента верить не в чем.
+    const reportedProgress = unconfirmedPenalty
+      ? (readRunProgress(run) ?? emptyRunProgress())
+      : coerceRunProgress(request.body)
 
     // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
     // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
@@ -1297,17 +1659,15 @@ export async function runRoutes(server: FastifyInstance) {
     // нельзя. Тот же уровень доверия клиенту, что у потолка урона выше.
     const runStock = runPotionStock(run)
     const sipsAllowed = runSipsAllowed(run)
-    const potionsSpent = clampPotionsSpent(reportedDrunk, runStock, sipsAllowed)
-    if (reportedDrunk.some((n, i) => n !== potionsSpent[i])) {
+    // Штрафной путь — выпитое по записи /run/sip, как у входа.
+    const drunkToSpend = unconfirmedPenalty ? (recordedDrunk ?? emptyPotionStock()) : reportedDrunk
+    const potionsSpent = clampPotionsSpent(drunkToSpend, runStock, sipsAllowed)
+    if (drunkToSpend.some((n, i) => n !== potionsSpent[i])) {
       request.log.warn(
         { userId, reportedDrunk, potionsSpent, runStock, sipsAllowed },
         'finish-explore: potionsDrunkByTier exceeded per-tier or sip cap, clamped',
       )
     }
-
-    // Никогда не в минус, даже если склад сдвинулся между стартом и финишем
-    // (например, покупка посреди забега) — см. subtractPotionStock.
-    const spentPotionStock = subtractPotionStock(potionStockOf(character), potionsSpent)
 
     // --- Добыча забега ---
     //
@@ -1339,14 +1699,8 @@ export async function runRoutes(server: FastifyInstance) {
       }
       return resolved
     })()
-    // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
-    // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
-    const resolvedDrops = await applyDrops(eventDrops, character)
-
-    // Выпавшие зелья складываются со складом ДО превращения в колонки, а не
-    // отдельным increment: potionStockToColumns пишет АБСОЛЮТНЫЕ значения, и
-    // increment на ту же колонку в том же data просто затёрся бы одним из двух.
-    const newPotionStock = spentPotionStock.map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
+    // Вместимость (applyDrops) и склад зелий считаются ВНУТРИ транзакции ниже,
+    // под блокировкой строки персонажа, — см. там.
 
     const growth = applyStatGrowth(
       character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
@@ -1379,7 +1733,29 @@ export async function runRoutes(server: FastifyInstance) {
     // одна. Развилка «есть предмет — транзакция, нет — просто update» дала бы
     // два пути закрытия забега, которые обязаны совпадать во всём остальном, и
     // разъехались бы при первой же правке одного из них.
-    const written = await prisma.$transaction(async (tx) => {
+    //
+    // ⚠️ С 15.10.2026 транзакция начинается с БЛОКИРОВКИ строки персонажа
+    // (lockCharacterRow) и перечитывает его под ней. Под блокировкой считаются
+    // две вещи, которые фильтром условной записи не выражаются:
+    //   • вместимость сумки (applyDrops) — COUNT по InventoryItem; без
+    //     блокировки сборка книги со второго устройства занимала ту же последнюю
+    //     ячейку;
+    //   • склад зелий — пишется РАЗНИЦЕЙ (increment), а не абсолютным
+    //     значением от снимка начала обработчика: абсолютное затирало покупку
+    //     зелья, сделанную между чтением и записью.
+    const txResult = await prisma.$transaction(async (tx) => {
+      await lockCharacterRow(tx, userId)
+      const fresh = await tx.character.findUnique({ where: { userId } })
+      if (!fresh) return null
+      // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
+      // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
+      const resolvedDrops = await applyDrops(tx, eventDrops, fresh)
+      // Склад после забега: свежий склад минус выпитое (никогда не в минус — см.
+      // subtractPotionStock) плюс выпавшее. Пишется разницей со свежим складом.
+      const freshPotions = potionStockOf(fresh)
+      const newPotionStock = subtractPotionStock(freshPotions, potionsSpent)
+        .map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
+      const potionChange = potionStockDelta(newPotionStock.map((n, i) => n - freshPotions[i]))
       const result = await tx.character.updateMany({
         where: {
           userId,
@@ -1388,6 +1764,9 @@ export async function runRoutes(server: FastifyInstance) {
           // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
           // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
           ...(charmUsed ? { charms: { gte: 1 } } : {}),
+          // Склад зелий не уйдёт в минус (под блокировкой не сдвинется, но
+          // гарантирует это фильтр, а не надежда).
+          ...potionChange.where,
         },
         data: {
           // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
@@ -1406,8 +1785,9 @@ export async function runRoutes(server: FastifyInstance) {
           // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
           // не должна становиться способом сэкономить склад (та же логика, что у
           // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
-          // разные колонки, один атомарный update.
-          ...potionStockToColumns(newPotionStock),
+          // разные колонки, один атомарный update. РАЗНИЦЕЙ, не абсолютом — см.
+          // potionStockDelta.
+          ...potionChange.data,
           // Выпавшие страницы и книги — increment'ами В ЭТОЙ ЖЕ записи. Поэтому
           // повтор финиша не может выдать добычу дважды: второй запрос либо
           // упрётся в пустой currentRun (400 выше), либо не найдёт строку по
@@ -1426,18 +1806,19 @@ export async function runRoutes(server: FastifyInstance) {
       // 0 строк — забег закрыли между чтением и записью. Возвращаемся ДО
       // создания предметов: иначе снаряжение легло бы в сумку за забег, который
       // закрыл кто-то другой.
-      if (result.count === 0) return 0
+      if (result.count === 0) return null
       for (const itemId of resolvedDrops.itemIds) {
         await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
       }
-      return result.count
-    })
-    if (written === 0) {
+      return { count: result.count, resolvedDrops, newPotionStock }
+    }, { maxWait: 10000, timeout: 15000 })
+    if (txResult === null) {
       // Тот же код и текст, что у /run/sip и /run/progress: клиент уже умеет
       // повторять финиш на 409 теми же данными (api.ts, finishRunExplore).
       // Повтор безопасен именно потому, что здесь НИЧЕГО не записано.
       return reply.status(409).send({ error: 'Run state changed, retry' })
     }
+    const { count: written, resolvedDrops, newPotionStock } = txResult
     if (written !== 1) {
       // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
       // фильтр по нему может дать только 0 или 1 строку. Если это всё же
@@ -1451,19 +1832,19 @@ export async function runRoutes(server: FastifyInstance) {
       )
     }
 
-    // Склад расходников и страниц после забега. Ничего из этих колонок не
-    // менялось (оберег не спасал, книг и страниц не выпало) — снимок точен.
-    // Менялось — ПЕРЕЧИТЫВАЕМ из БД: фильтр гарантировал только «оберег был», но
-    // не «был ровно столько, сколько в снимке» (покупка со второго устройства
-    // между чтением и записью), а decrement/increment считала база.
+    // Склад расходников, страниц и зелий после забега — ПЕРЕЧИТАННЫЙ из БД,
+    // всегда (с 15.10.2026; раньше только когда менялись расходники или
+    // страницы): склад зелий теперь пишется разницей, и итог посчитала база,
+    // включая покупку со второго устройства между чтением и записью.
     let consumablesAfterFinish = consumableStockOf(character)
     let scrollsAfterFinish = scrollStockOf(character)
-    const stockChanged = charmUsed || Object.keys(resolvedDrops.stockData).length > 0
-    if (stockChanged) {
+    let potionsAfterFinish = newPotionStock
+    {
       const reread = await prisma.character.findUnique({ where: { userId } })
       if (reread) {
         consumablesAfterFinish = consumableStockOf(reread)
         scrollsAfterFinish = scrollStockOf(reread)
+        potionsAfterFinish = potionStockOf(reread)
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
@@ -1495,7 +1876,7 @@ export async function runRoutes(server: FastifyInstance) {
       endurance: growth.endurance,
       agility: growth.agility,
       level: growth.level,
-      potions: newPotionStock,
+      potions: potionsAfterFinish,
       bonusLevels: newBonusLevels,
       consumables: consumablesAfterFinish,
       scrolls: scrollsAfterFinish,
@@ -1508,6 +1889,29 @@ export async function runRoutes(server: FastifyInstance) {
       skillLevelUps: skillGrowth.levelUps,
       skillLevels: skillGrowth.levels,
       skillUses: skillGrowth.uses,
+    }
+
+    // Итог — под ключом `finish:<runId>`, чтобы повтор этого финиша (ответ
+    // потерялся, «Повторить сохранение») получил те же числа. Отдельной
+    // записью ПОСЛЕ транзакции: итог собран из перечитанного склада. От
+    // двойного применения защищает не эта строка, а фильтр по currentRun
+    // выше; здесь — только удобство повтора, поэтому сбой — громкий лог, а не
+    // отказ уже сохранённому забегу.
+    const finishedRunId = readRunId(run)
+    if (finishedRunId !== null) {
+      try {
+        await prisma.idempotencyKey.create({
+          data: {
+            characterId: character.id,
+            key: finishKey(finishedRunId),
+            endpoint: FINISH_ENDPOINT,
+            response: result as unknown as Prisma.InputJsonValue,
+          },
+        })
+        await pruneIdempotencyKeys(character.id, request.log)
+      } catch (e) {
+        request.log.error({ userId, runId: finishedRunId, err: e }, 'finish-explore: run closed, but the result could not be stored for replay')
+      }
     }
     return reply.send(result)
   })
@@ -1535,6 +1939,11 @@ export async function runRoutes(server: FastifyInstance) {
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
+    }
+    const runIdCheck = checkRunId(run, request.body?.runId)
+    if (runIdCheck !== 'ok') {
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
     }
     if (smugglerEventIndex(run) < 0) {
       return reply.status(400).send({ error: 'No smuggler in this run' })
@@ -1577,6 +1986,11 @@ export async function runRoutes(server: FastifyInstance) {
     const run = character.currentRun as unknown as ActiveExploreRun | null
     if (!run || run.mode !== 'explore') {
       return reply.status(400).send({ error: 'No active explore run' })
+    }
+    const runIdCheck = checkRunId(run, request.body?.runId)
+    if (runIdCheck !== 'ok') {
+      const rejection = runIdRejection(runIdCheck)
+      return reply.status(rejection.status).send(rejection.body)
     }
     if (smugglerEventIndex(run) < 0) {
       return reply.status(400).send({ error: 'No smuggler in this run' })
@@ -1802,42 +2216,51 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Catalog mismatch' })
     }
 
-    const character = await prisma.character.findUnique({ where: { userId } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-
     // Вместимость — ТО ЖЕ правило, что у добычи на финише: ячейка нужна только
-    // под ПЕРВУЮ книгу этого вида. Проверка до записи, а не фильтром: занятость
-    // сумки это COUNT по другой таблице, в Prisma-фильтр она не выражается (та
-    // же незакрытая гонка, что у дропа, и та же цена промаха — одна ячейка сверх
-    // тридцати, которую клиент показывает красным).
-    const stock = consumableStockOf(character)
-    if (stock[bookId] === 0) {
-      const equipmentCells = await prisma.inventoryItem.count({
-        where: { characterId: character.id, equipped: false },
-      })
-      const cellsUsed = equipmentCells + Object.values(stock).filter((n) => n > 0).length
-      if (cellsUsed >= BAG_CAPACITY) {
-        return reply.status(400).send({ error: 'Bag is full', capacity: BAG_CAPACITY })
+    // под ПЕРВУЮ книгу этого вида. Занятость сумки — COUNT по другой таблице, в
+    // Prisma-фильтр она не выражается, поэтому с 15.10.2026 проверка и запись
+    // идут в ТРАНЗАКЦИИ под блокировкой строки персонажа (lockCharacterRow).
+    // Раньше две сборки разных книг (или сборка и финиш забега с добычей) с
+    // двух устройств одновременно видели «29 / 30» и обе занимали последнюю
+    // ячейку — 31 / 30. Теперь вторая ждёт коммита первой и видит «30 / 30».
+    type AssembleOutcome = 'ok' | 'no-character' | 'bag-full' | 'no-scrolls'
+    const outcome = await prisma.$transaction(async (tx): Promise<AssembleOutcome> => {
+      await lockCharacterRow(tx, userId)
+      const character = await tx.character.findUnique({ where: { userId } })
+      if (!character) return 'no-character'
+
+      const stock = consumableStockOf(character)
+      if (stock[bookId] === 0) {
+        const equipmentCells = await tx.inventoryItem.count({
+          where: { characterId: character.id, equipped: false },
+        })
+        const cellsUsed = equipmentCells + Object.values(stock).filter((n) => n > 0).length
+        if (cellsUsed >= BAG_CAPACITY) return 'bag-full'
       }
-    }
 
-    // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
-    // «страниц хватает»: между проверкой и записью ничего не влезет.
-    const written = await prisma.character.updateMany({
-      where: { userId, ...scrollStockFilter(scrollId, SCROLLS_PER_BOOK) },
-      data: {
-        ...scrollStockDecrement(scrollId, SCROLLS_PER_BOOK),
-        ...consumableStockIncrement(bookId, 1),
-      },
+      // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
+      // «страниц хватает».
+      const written = await tx.character.updateMany({
+        where: { userId, ...scrollStockFilter(scrollId, SCROLLS_PER_BOOK) },
+        data: {
+          ...scrollStockDecrement(scrollId, SCROLLS_PER_BOOK),
+          ...consumableStockIncrement(bookId, 1),
+        },
+      })
+      return written.count === 0 ? 'no-scrolls' : 'ok'
     })
-    if (written.count === 0) {
-      // Страниц не хватило (их могли потратить со второго устройства между
-      // чтением и записью). Персонаж точно существует — findUnique выше его
-      // нашёл, — так что различать «нет персонажа» здесь не нужно.
-      return reply.status(409).send({ error: 'State changed, retry' })
+    switch (outcome) {
+      case 'no-character':
+        return reply.status(404).send({ error: 'Character not found' })
+      case 'bag-full':
+        return reply.status(400).send({ error: 'Bag is full', capacity: BAG_CAPACITY })
+      case 'no-scrolls':
+        // Страниц не хватило. Тот же код, что и раньше: клиент на него уже
+        // перечитывает профиль.
+        return reply.status(409).send({ error: 'State changed, retry' })
+      case 'ok':
+        return await sendSkillState(request, reply, userId)
     }
-
-    return await sendSkillState(request, reply, userId)
   })
 
   // Продать ОДНУ страницу за SCROLL_SELL_PRICE золота. Без подтверждения на
@@ -1870,7 +2293,16 @@ export async function runRoutes(server: FastifyInstance) {
   // каталога (src/potions.ts, копия server/src/potions.ts), НЕ из тела запроса:
   // клиент называет только тир. Раньше эндпоинт параметров не принимал вовсе и
   // продавал одно абстрактное зелье за захардкоженные 20 золота.
-  server.post<{ Body: { tier?: number; count?: number } }>('/character/buy-potion', async (request, reply) => {
+  //
+  // ⚠️ С 15.10.2026 запись АТОМАРНАЯ и с ключом идемпотентности:
+  //   • раньше здесь был обычный update с АБСОЛЮТНЫМИ значениями от снимка
+  //     (gold: character.gold − цена, склад «прочитанный + N»). Всё, что легло
+  //     между чтением и записью — обмен трофеев, вторая покупка, финиш забега
+  //     со второго устройства, — затиралось снимком. Теперь золото — decrement
+  //     с фильтром gte (как у buy-consumable), склад — increment;
+  //   • requestId в теле — ключ идемпотентности (applyOnce): покупка, чей ответ
+  //     потерялся, при повторе с тем же ключом не спишет золото второй раз.
+  server.post<{ Body: { tier?: number; count?: number; requestId?: unknown } }>('/character/buy-potion', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
@@ -1898,25 +2330,47 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Tier not unlocked', levelRequired: tierSpec.levelRequired })
     }
 
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
     // Цена ВСЕЙ покупки. Прежний ответ 400 и то же поле price (цена за штуку —
     // клиент показывает её в строке отказа), добавился только total.
+    // Проверки «хватает ли золота» до записи БОЛЬШЕ НЕТ: её делает фильтр
+    // записи, и стоит она ПОСЛЕ ключа — повтор уже применённой покупки при
+    // нехватке золота обязан получить «уже сделано», а не 'Not enough gold'.
     const totalPrice = tierSpec.price * count
-    if (character.gold < totalPrice) {
-      return reply.status(400).send({ error: 'Not enough gold', price: tierSpec.price, total: totalPrice })
+    const gain = emptyPotionStock()
+    gain[tierSpec.tier - 1] = count
+    const stockChange = potionStockDelta(gain)
+
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'buy-potion', request.log, async (db) => {
+        const written = await db.character.updateMany({
+          where: { userId, gold: { gte: totalPrice } },
+          data: { gold: { decrement: totalPrice }, ...stockChange.data },
+        })
+        if (written.count === 0) {
+          throw new RouteRejection(400, { error: 'Not enough gold', price: tierSpec.price, total: totalPrice })
+        }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
     }
 
-    const stock = potionStockOf(character)
-    stock[tierSpec.tier - 1] += count
-
-    const updated = await prisma.character.update({
-      where: { userId },
-      data: {
-        gold: character.gold - totalPrice,
-        ...potionStockToColumns(stock),
-      },
+    // Перечитываем — decrement/increment считала база. И при повторе тоже:
+    // ответ — ТЕКУЩЕЕ состояние, а не сохранённое, чтобы экран не откатился.
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'buy-potion: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but balance could not be read' })
+    }
+    return reply.send({
+      gold: updated.gold,
+      potions: potionStockOf(updated),
+      ...(applied.replayed ? { replayed: true } : {}),
     })
-
-    return reply.send({ gold: updated.gold, potions: potionStockOf(updated) })
   })
 
   // Покупка расходника (сейчас в каталоге один — точильный камень).
@@ -1927,7 +2381,8 @@ export async function runRoutes(server: FastifyInstance) {
   // Плюс у покупки нет ключа идемпотентности (открытая задача), и разветвление
   // одного обработчика по типу товара распространило бы эту дыру на оба товара
   // сразу. Общего кода для выноса тут на три строки — дублирование дешевле.
-  server.post<{ Body: { id?: string; count?: number } }>('/character/buy-consumable', async (request, reply) => {
+  // requestId (15.10.2026) — ключ идемпотентности, см. applyOnce и buy-potion.
+  server.post<{ Body: { id?: string; count?: number; requestId?: unknown } }>('/character/buy-consumable', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
@@ -1959,6 +2414,9 @@ export async function runRoutes(server: FastifyInstance) {
 
     const totalPrice = spec.price * count
 
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
     // Запись АТОМАРНАЯ и сама себе проверка золота: условие `gold >= total`
     // стоит в фильтре, а не в if выше. Поэтому между проверкой и списанием
     // ничего не может влезть — параллельная покупка или обмен трофеев не дадут
@@ -1967,17 +2425,27 @@ export async function runRoutes(server: FastifyInstance) {
     //   запись золота была бы затёрта прочитанным снимком.
     // ⚠️ В схеме НЕТ ограничения «не меньше нуля» на gold, так что фильтр здесь —
     // единственное, что держит баланс неотрицательным. Убрать его нельзя.
-    const written = await prisma.character.updateMany({
-      where: { userId, gold: { gte: totalPrice } },
-      data: {
-        gold: { decrement: totalPrice },
-        ...consumableStockIncrement(spec.id, count),
-      },
-    })
-    if (written.count === 0) {
-      // Строка есть (findUnique выше её нашёл), значит не сошлось ИМЕННО золото.
-      // price — цена за штуку, total — за всю покупку: клиент показывает обе.
-      return reply.status(400).send({ error: 'Not enough gold', price: spec.price, total: totalPrice })
+    // С ключом (requestId) — внутри applyOnce: повтор той же покупки не спишет
+    // золото второй раз.
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'buy-consumable', request.log, async (db) => {
+        const written = await db.character.updateMany({
+          where: { userId, gold: { gte: totalPrice } },
+          data: {
+            gold: { decrement: totalPrice },
+            ...consumableStockIncrement(spec.id, count),
+          },
+        })
+        if (written.count === 0) {
+          // Строка есть (findUnique выше её нашёл), значит не сошлось ИМЕННО золото.
+          // price — цена за штуку, total — за всю покупку: клиент показывает обе.
+          throw new RouteRejection(400, { error: 'Not enough gold', price: spec.price, total: totalPrice })
+        }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
     }
 
     // Перечитываем — не вычисляем из старого снимка: decrement/increment считала
@@ -1991,7 +2459,11 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Purchase applied but balance could not be read' })
     }
 
-    return reply.send({ gold: updated.gold, consumables: consumableStockOf(updated) })
+    return reply.send({
+      gold: updated.gold,
+      consumables: consumableStockOf(updated),
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
   })
 
   // Обмен трофеев на золото — операция МЕЖДУ забегами (из меню), не путать с
@@ -2151,12 +2623,18 @@ export async function runRoutes(server: FastifyInstance) {
   // хватает» И «счётчик тот же, что прочитан» стоят в фильтре, а не в if выше.
   // Второе обязательно — иначе две параллельные покупки прошли бы обе по цене
   // первой, то есть игрок получил бы второе улучшение дешевле прейскуранта.
-  server.post<{ Body: { kind?: string } }>('/character/buy-upgrade', async (request, reply) => {
+  //
+  // requestId (15.10.2026) — ключ идемпотентности, см. applyOnce. Фильтр по
+  // счётчику от повтора НЕ спасает: запрос, доползший после сверки баланса,
+  // прочитает уже новый счётчик и купит второе улучшение по новой цене.
+  server.post<{ Body: { kind?: string; requestId?: unknown } }>('/character/buy-upgrade', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
     const kind = parseUpgradeKind(request.body?.kind)
     if (kind === null) return reply.status(400).send({ error: 'Unknown upgrade' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
 
     const character = await prisma.character.findUnique({ where: { userId } })
     if (!character) return reply.status(404).send({ error: 'Character not found' })
@@ -2181,12 +2659,20 @@ export async function runRoutes(server: FastifyInstance) {
         break
     }
 
-    const written = await prisma.character.updateMany({ where, data })
-    if (written.count === 0) {
-      // Не сошлось ЛИБО золото, ЛИБО счётчик (кто-то купил это же улучшение
-      // параллельно, и цена уже другая). Для игрока это одно и то же действие —
-      // обновить данные и решить заново, поэтому код один.
-      return reply.status(409).send({ error: 'State changed, retry', price })
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'buy-upgrade', request.log, async (db) => {
+        const written = await db.character.updateMany({ where, data })
+        if (written.count === 0) {
+          // Не сошлось ЛИБО золото, ЛИБО счётчик (кто-то купил это же улучшение
+          // параллельно, и цена уже другая). Для игрока это одно и то же действие —
+          // обновить данные и решить заново, поэтому код один.
+          throw new RouteRejection(409, { error: 'State changed, retry', price })
+        }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
     }
 
     const updated = await prisma.character.findUnique({ where: { userId } })
@@ -2194,7 +2680,11 @@ export async function runRoutes(server: FastifyInstance) {
       request.log.error({ userId }, 'buy-upgrade: character vanished between write and read-back')
       return reply.status(500).send({ error: 'Purchase applied but balance could not be read' })
     }
-    return reply.send({ gold: updated.gold, upgrades: upgradesOf(updated) })
+    return reply.send({
+      gold: updated.gold,
+      upgrades: upgradesOf(updated),
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
   })
 
   // Продажа предмета из инвентаря. Цену считает сервер (itemSellPrice), клиент
