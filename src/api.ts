@@ -5,6 +5,42 @@ import { ENERGY_REGEN_MS } from './energy'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
+// --- Id запроса и id текущего забега (15.10.2026) ---
+//
+// Случайный id для ключей идемпотентности (покупки, глоток). Сервер принимает
+// 8–64 символа из букв, цифр, '-' и '_' (parseRequestId, server/src/runState.ts);
+// UUID туда укладывается. randomUUID есть не во всех WebView, поэтому запасной
+// путь — те же 128 бит из getRandomValues в hex.
+function newRequestId(): string {
+  const c: Crypto | undefined = typeof crypto !== 'undefined' ? crypto : undefined
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  if (c && typeof c.getRandomValues === 'function') {
+    const bytes = c.getRandomValues(new Uint8Array(16))
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  }
+  // Без криптографии вовсе: id нужен только для того, чтобы отличать повтор от
+  // нового запроса одного игрока, тайны в нём нет.
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+// Id ТЕКУЩЕГО забега — из ответа /run/start-explore. Его несут все запросы
+// забега (ready, sip, progress, сделка, финиш, отмена), и сервер по нему
+// отличает запрос этого забега от запоздавшего запроса прошлого.
+//
+// Живёт здесь, в модуле, а не передаётся вызывающим: так все запросы забега
+// получают его без правок в Explore.tsx. Забег в вкладке один в каждый момент:
+// старт сбрасывает id ДО запроса и ставит новый по ответу; финиш его не
+// сбрасывает — повтор финиша («Повторить сохранение») обязан нести тот же id.
+// null — сервер id не назвал (старый сервер) или забега ещё не было: запросы
+// уходят без поля, как раньше.
+let activeRunId: string | null = null
+
+// Поле runId для тела запроса забега — пустой объект, если id нет: тогда тело
+// байт в байт прежнее.
+function runIdField(): { runId?: string } {
+  return activeRunId !== null ? { runId: activeRunId } : {}
+}
+
 // --- Общий запрос с таймаутом ---
 // Почему вообще: `fetch` сам по себе не ограничен ничем, и в WebView он может
 // не завершиться ВООБЩЕ — в авиарежиме нет ни ответа, ни ошибки, промис просто
@@ -252,8 +288,26 @@ const READY_RETRY_DELAYS_MS = [300, 900]
 const READY_ATTEMPT_TIMEOUT_MS = 8000
 const READY_TOTAL_BUDGET_MS = 24000
 
+//
+// ⚠️ Подтверждение не прошло (15.10.2026) — перед тем как сообщить об ошибке,
+// просим сервер ОТМЕНИТЬ забег как не показанный (cancelUnshownRun ниже).
+// Иначе: подтверждение дошло, ответ потерялся, игрок видит экран ошибки, а
+// забег на сервере подтверждён — и следующий вход закрыл бы его как смерть,
+// со сгоранием всего банка трофеев. Отмена — лучшее усилие: не дошла и она —
+// остаётся прежнее поведение.
 export async function confirmRunReady(token: string): Promise<{ confirmed: boolean }> {
+  try {
+    return await confirmRunReadyAttempts(token)
+  } catch (e) {
+    const runId = activeRunId
+    if (runId !== null) await cancelUnshownRun(token, runId)
+    throw e
+  }
+}
+
+async function confirmRunReadyAttempts(token: string): Promise<{ confirmed: boolean }> {
   const deadline = Date.now() + READY_TOTAL_BUDGET_MS
+  const body = JSON.stringify(runIdField())
   let retries = 0
   let lastError: RequestError | null = null
 
@@ -269,12 +323,12 @@ export async function confirmRunReady(token: string): Promise<{ confirmed: boole
         `${SERVER_URL}/run/ready`,
         {
           method: 'POST',
-          // Тело пустое по смыслу — серверу нужен только токен. Шлём `{}` с
-          // обычным json-заголовком, как все остальные запросы файла: POST
+          // Тело — только id забега (или `{}`, если сервер id не назвал). Шлём
+          // с обычным json-заголовком, как все остальные запросы файла: POST
           // вообще без Content-Type разбирается серверными парсерами
           // по-разному, и выяснять это на проде не за чем.
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: '{}',
+          body,
         },
         Math.min(READY_ATTEMPT_TIMEOUT_MS, remaining),
       )
@@ -287,6 +341,51 @@ export async function confirmRunReady(token: string): Promise<{ confirmed: boole
       lastError = e
       const delay = READY_RETRY_DELAYS_MS[retries]
       if (delay === undefined || Date.now() + delay >= deadline) throw e
+      await sleep(delay)
+      retries++
+    }
+  }
+}
+
+// Отмена забега, который клиент так и не показал (POST /run/cancel-unshown,
+// 15.10.2026). Сервер соглашается, только если с начала забега прошло меньше
+// окна подтверждения (2 минуты) и в нём не играли; иначе отвечает 400, и это
+// не ошибка для игрока — просто прежнее поведение.
+// Никогда не бросает: вызывается из пути ошибки, и её собственный сбой не
+// должен подменить исходную причину. Бюджет короткий — игрок ждёт экран ошибки.
+const CANCEL_ATTEMPT_TIMEOUT_MS = 5000
+const CANCEL_TOTAL_BUDGET_MS = 12000
+const CANCEL_RETRY_DELAYS_MS = [300, 1200]
+
+async function cancelUnshownRun(token: string, runId: string): Promise<void> {
+  const deadline = Date.now() + CANCEL_TOTAL_BUDGET_MS
+  let retries = 0
+  while (true) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      console.warn('cancelUnshownRun: time budget exhausted, the run stays as it is on the server')
+      return
+    }
+    try {
+      await requestJson<{ cancelled: boolean }>(
+        `${SERVER_URL}/run/cancel-unshown`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runId }),
+        },
+        Math.min(CANCEL_ATTEMPT_TIMEOUT_MS, remaining),
+      )
+      console.log('cancelUnshownRun: the run was cancelled on the server without penalty')
+      return
+    } catch (e) {
+      // 409 — состояние сменилось между чтением и записью; повтор безопасен.
+      const retryable = e instanceof RequestError && (e.retryable || e.status === 409)
+      const delay = CANCEL_RETRY_DELAYS_MS[retries]
+      if (!retryable || delay === undefined || Date.now() + delay >= deadline) {
+        console.warn('cancelUnshownRun: the server did not cancel the run', e)
+        return
+      }
       await sleep(delay)
       retries++
     }
@@ -379,6 +478,12 @@ export type StartExploreResult = {
    * это «ничего не принято», а не догадываться.
    */
   consumablesTaken?: string[]
+  /**
+   * Id забега (15.10.2026). Его модуль запоминает сам (activeRunId) и шлёт во
+   * всех запросах забега — вызывающему с ним делать ничего не нужно.
+   * Опциональное: старый сервер поля не присылает.
+   */
+  runId?: string
 }
 
 // mapFile необязателен — не передан → сервер сам выбирает карту (см.
@@ -407,7 +512,10 @@ export async function startRunExplore(token: string, mapFile?: string, consumabl
   const body: { mapFile?: string; consumables?: ConsumableId[] } = {}
   if (mapFile !== undefined) body.mapFile = mapFile
   if (consumables !== undefined && consumables.length > 0) body.consumables = consumables
-  return requestJson<StartExploreResult>(
+  // Id прошлого забега сбрасывается ДО запроса: упади старт — запросы, которые
+  // ещё успеют уйти, не понесут чужой id.
+  activeRunId = null
+  const result = await requestJson<StartExploreResult>(
     `${SERVER_URL}/run/start-explore`,
     {
       method: 'POST',
@@ -419,6 +527,14 @@ export async function startRunExplore(token: string, mapFile?: string, consumabl
     },
     START_EXPLORE_TIMEOUT_MS,
   )
+  // Негодный id — как его отсутствие: запросы уйдут без поля, и сервер их
+  // примет по-старому. Отказываться от забега из-за него нельзя — он уже начат.
+  const runId = typeof result.runId === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(result.runId) ? result.runId : null
+  if (result.runId !== undefined && runId === null) {
+    console.error('startRunExplore: server sent a malformed runId, run requests will go without it', result.runId)
+  }
+  activeRunId = runId
+  return result
 }
 
 // Shared "run result" shape — server/src/routes/run.ts's RunResultSummary,
@@ -640,7 +756,10 @@ export async function finishRunExplore(
   // же, что у четырёх счётчиков выше: попал ли удар, знает только клиент.
   skillUses?: Record<string, number>,
 ): Promise<FinishExploreResult> {
-  const body = JSON.stringify({ closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses })
+  // runId (15.10.2026): повтор финиша с тем же id сервер узнаёт и отдаёт
+  // сохранённый итог вместо 400 'No active explore run'. Снимается ОДИН раз,
+  // вместе с телом: все попытки этого вызова несут один и тот же id.
+  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -767,7 +886,9 @@ export async function finishRunExplore(
 }
 // Response shape of POST /run/sip (server/src/routes/run.ts): выпитое за забег
 // по тирам (индекс = тир-1) и сколько глотков ещё разрешено — по счёту СЕРВЕРА.
-export type SipResult = { potionsDrunk: number[]; sipsLeft: number }
+// replayed (15.10.2026) — глоток уже был записан раньше (первая попытка дошла,
+// ответ потерялся), и сервер записывать его второй раз не стал; числа те же.
+export type SipResult = { potionsDrunk: number[]; sipsLeft: number; replayed?: boolean }
 
 // Отказ /run/sip после всех повторов — той же формы, что RequestError выше
 // (класс отдельный, потому что эта функция на общий хелпер не переводилась:
@@ -836,7 +957,10 @@ function describeFetchError(e: unknown): string {
 }
 
 export async function recordSip(token: string, tier: number): Promise<SipResult> {
-  const body = JSON.stringify({ tier })
+  // sipId — один на ВСЕ попытки этого глотка (15.10.2026). Попытка, прерванная
+  // нашим таймаутом, могла дойти до сервера; повтор с тем же id сервер узнаёт
+  // и второй раз глоток не записывает.
+  const body = JSON.stringify({ ...runIdField(), tier, sipId: newRequestId() })
   const deadline = Date.now() + SIP_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let transientRetries = 0
@@ -1012,7 +1136,9 @@ export async function recordProgress(token: string, snapshot: RunProgressSnapsho
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(snapshot),
+      // runId (15.10.2026) — срез прошлого забега, доползший после старта
+      // нового, сервер не положит в новый.
+      body: JSON.stringify({ ...snapshot, ...runIdField() }),
       signal: controller.signal,
     })
   } catch (e) {
@@ -1057,10 +1183,63 @@ export async function recordProgress(token: string, snapshot: RunProgressSnapsho
 // функция в файле без таймаута (на голом fetch), так что заодно закрылась и
 // соответствующая открытая задача.
 
+// --- Ключ идемпотентности покупок (15.10.2026) ---
+//
+// Беда, которую он закрывает: ответ на покупку потерялся (таймаут, сеть, 5xx),
+// игрок сверяет баланс — сервер запроса ещё не видел, — и покупает снова. А
+// потом доползает первый запрос, и золото списано дважды за одну покупку.
+//
+// Как: каждая покупка несёт requestId, и сервер применяет ключ ровно один раз
+// (applyOnce, server/src/routes/run.ts). Покупка с НЕИЗВЕСТНЫМ исходом
+// оставляет свой ключ здесь, и следующая покупка ТОГО ЖЕ товара в том же
+// количестве несёт ТОТ ЖЕ ключ: дошёл первый запрос — сервер ответит «уже
+// сделано» (replayed) текущим балансом; не дошёл — применит этот; доползёт
+// первый после — получит «уже сделано» и ничего не спишет.
+// Ответ пришёл (успех или отказ по существу) — ключ забывается, следующая
+// покупка получит новый.
+// ⚠️ Цена: если первый запрос ДОШЁЛ, игрок это увидел сверкой и сознательно
+// покупает то же самое ещё раз, первое нажатие ответит «уже сделано» без
+// покупки; второе купит. Повторять никто не будет (сервер ничего не списал), а
+// двойного списания больше нет.
+// ⚠️ Ключ живёт в памяти вкладки: перезагрузка его теряет (вход при этом
+// перечитывает баланс заново).
+const PURCHASE_KEY_REUSE_MS = 10 * 60 * 1000
+const pendingPurchaseKeys = new Map<string, { key: string; at: number }>()
+
+function purchaseKeyFor(signature: string): string {
+  const pending = pendingPurchaseKeys.get(signature)
+  if (pending && Date.now() - pending.at < PURCHASE_KEY_REUSE_MS) return pending.key
+  return newRequestId()
+}
+
+// Одна покупка с ключом: запрос, а по его исходу — запомнить или забыть ключ.
+// Исход неизвестен ровно тогда, когда RequestError.retryable: таймаут, сеть,
+// 5xx, а также 200 с нечитаемым телом (у него kind 'timeout' / 'network').
+async function keyedPurchase<T>(signature: string, send: (requestId: string) => Promise<T>): Promise<T> {
+  const key = purchaseKeyFor(signature)
+  try {
+    const result = await send(key)
+    pendingPurchaseKeys.delete(signature)
+    return result
+  } catch (e) {
+    if (e instanceof RequestError && e.retryable) {
+      pendingPurchaseKeys.set(signature, { key, at: Date.now() })
+    } else {
+      pendingPurchaseKeys.delete(signature)
+    }
+    throw e
+  }
+}
+
 export type BuyPotionResult = {
   gold: number
   // Склад по тирам ПОСЛЕ покупки (индекс = тир-1) — абсолютный, как gold.
   potions: number[]
+  /**
+   * Покупка с этим ключом уже была применена раньше (ответ на неё потерялся),
+   * второй раз сервер её не применил. gold/potions — текущие, как всегда.
+   */
+  replayed?: boolean
 }
 
 // Покупка и сверка баланса — короткий таймаут: игрок стоит в магазине и ждёт
@@ -1072,12 +1251,12 @@ const SHOP_TIMEOUT_MS = 5000
 // (1..MAX_POTIONS_PER_PURCHASE). Цену, уровень открытия и потолок count сервер
 // проверяет по СВОЕЙ копии каталога, клиент называет только тир и количество.
 //
-// ПОВТОРОВ НЕТ и быть не должно: эндпоинт НЕ идемпотентен — прерванная попытка
-// могла дойти и списать золото, а повтор списал бы второй раз. Поэтому при
-// сетевом сбое вызывающий обязан не «попробовать ещё», а СВЕРИТЬ баланс
-// (fetchProfile ниже) — см. handleBuyPotion в App.tsx.
+// ПОВТОРОВ НЕТ: при сетевом сбое вызывающий обязан не «попробовать ещё», а
+// СВЕРИТЬ баланс (fetchProfile ниже) — см. handleBuyPotion в App.tsx. С
+// 15.10.2026 у покупки есть ключ идемпотентности (keyedPurchase выше), и
+// следующая такая же покупка после сбоя несёт тот же ключ.
 export async function buyPotion(token: string, tier: number, count: number): Promise<BuyPotionResult> {
-  return requestJson<BuyPotionResult>(
+  return keyedPurchase(`buy-potion:${tier}:${count}`, (requestId) => requestJson<BuyPotionResult>(
     `${SERVER_URL}/character/buy-potion`,
     {
       method: 'POST',
@@ -1085,10 +1264,10 @@ export async function buyPotion(token: string, tier: number, count: number): Pro
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ tier, count }),
+      body: JSON.stringify({ tier, count, requestId }),
     },
     SHOP_TIMEOUT_MS,
-  )
+  ))
 }
 
 /**
@@ -1240,7 +1419,7 @@ export type SmugglerDealResult = {
 // сделана», «состояние изменилось») — это окончательные ответы по существу, и
 // повтор их не исправит, а вызывающий обязан их различить.
 async function smugglerRequest<T>(path: string, token: string, closedEvents: number[]): Promise<T> {
-  const body = JSON.stringify({ closedEvents })
+  const body = JSON.stringify({ ...runIdField(), closedEvents })
   const deadline = Date.now() + SMUGGLER_TOTAL_BUDGET_MS
   let retries = 0
   let lastError: RequestError | null = null
@@ -1561,6 +1740,8 @@ export type BuyConsumableResult = {
   gold: number
   /** null — сервер не назвал склад (см. readConsumables). */
   consumables: Record<ConsumableId, number> | null
+  /** См. BuyPotionResult.replayed. */
+  replayed: boolean
 }
 
 /**
@@ -1575,7 +1756,8 @@ export type BuyConsumableResult = {
  * ещё», а СВЕРИТЬ баланс (fetchProfile).
  */
 export async function buyConsumable(token: string, id: ConsumableId, count: number): Promise<BuyConsumableResult> {
-  const raw = await requestJson<{ gold: number; consumables?: unknown }>(
+  // Ключ идемпотентности — см. keyedPurchase (15.10.2026).
+  const raw = await keyedPurchase(`buy-consumable:${id}:${count}`, (requestId) => requestJson<{ gold: number; consumables?: unknown; replayed?: unknown }>(
     `${SERVER_URL}/character/buy-consumable`,
     {
       method: 'POST',
@@ -1583,11 +1765,11 @@ export async function buyConsumable(token: string, id: ConsumableId, count: numb
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ id, count }),
+      body: JSON.stringify({ id, count, requestId }),
     },
     SHOP_TIMEOUT_MS,
-  )
-  return { gold: raw.gold, consumables: readConsumables(raw.consumables) }
+  ))
+  return { gold: raw.gold, consumables: readConsumables(raw.consumables), replayed: raw.replayed === true }
 }
 
 export type InventoryItem = {
@@ -1770,6 +1952,8 @@ export type BuyUpgradeResult = {
   gold: number
   /** null — сервер не назвал счётчики (см. readUpgrades). */
   upgrades: UpgradeCounts | null
+  /** См. BuyPotionResult.replayed. */
+  replayed: boolean
 }
 
 /**
@@ -1777,16 +1961,18 @@ export type BuyUpgradeResult = {
  * и клиентское число на неё не влияет (иначе цену можно было бы назначить себе).
  */
 export async function buyUpgrade(token: string, kind: UpgradeKind): Promise<BuyUpgradeResult> {
-  const raw = await requestJson<{ gold: number; upgrades?: unknown }>(
+  // Ключ идемпотентности — см. keyedPurchase (15.10.2026). Подпись — только
+  // вид: цену называет сервер по своему счётчику.
+  const raw = await keyedPurchase(`buy-upgrade:${kind}`, (requestId) => requestJson<{ gold: number; upgrades?: unknown; replayed?: unknown }>(
     `${SERVER_URL}/character/buy-upgrade`,
     {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify({ kind, requestId }),
     },
     UPGRADE_TIMEOUT_MS,
-  )
-  return { gold: raw.gold, upgrades: readUpgrades(raw.upgrades) }
+  ))
+  return { gold: raw.gold, upgrades: readUpgrades(raw.upgrades), replayed: raw.replayed === true }
 }
 
 export type SellItemResult = {
