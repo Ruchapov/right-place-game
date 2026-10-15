@@ -571,6 +571,73 @@ function hexToRgb(hex: string): string {
   return `${r},${g},${b}`
 }
 
+// --- Непрочитанное окно о прошлом забеге (15.10.2026) ---
+//
+// Сервер присылает итог забега, закрытого на входе, ОДИН раз: забег уже закрыт,
+// и следующий вход не пришлёт ни interruptedRun, ни abandonedRun. Раньше окно
+// жило только в памяти вкладки, и игрок, закрывший приложение, не нажав
+// «ПОНЯТНО», так и не узнавал, куда делся банк трофеев. Теперь окно лежит в
+// localStorage, пока его не закроют кнопкой.
+//
+// Хранится вместе с id игрока: на одном телефоне может войти другой аккаунт, и
+// чужое окно ему показывать нельзя. localStorage может быть недоступен
+// (приватный режим, запрет хранилища) — тогда всё работает как раньше, только
+// без переживания перезапуска; поэтому каждое обращение в try/catch.
+const PAST_RUN_NOTICE_KEY = 'rp_pastRunNotice'
+// Старше недели — не показываем: за это время игрок наверняка увидел числа сам.
+const PAST_RUN_NOTICE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function savePastRunNotice(userId: number, notice: PastRunNoticeData) {
+  try {
+    localStorage.setItem(PAST_RUN_NOTICE_KEY, JSON.stringify({ userId, savedAt: Date.now(), notice }))
+  } catch (e) {
+    console.warn('Окно о прошлом забеге не сохранено — переживёт только эту вкладку', e)
+  }
+}
+
+function clearPastRunNotice() {
+  try {
+    localStorage.removeItem(PAST_RUN_NOTICE_KEY)
+  } catch (e) {
+    console.warn('Не удалось стереть сохранённое окно о прошлом забеге', e)
+  }
+}
+
+// Сохранённое окно этого игрока или null. Чужое, просроченное и испорченное —
+// стирается: показывать его некому, а испорченное показывать нельзя.
+function loadPastRunNotice(userId: number): PastRunNoticeData | null {
+  let raw: string | null
+  try {
+    raw = localStorage.getItem(PAST_RUN_NOTICE_KEY)
+  } catch {
+    return null
+  }
+  if (raw === null) return null
+  try {
+    const parsed = JSON.parse(raw) as { userId?: unknown; savedAt?: unknown; notice?: unknown }
+    const notice = parsed.notice as { kind?: unknown; result?: unknown; summary?: unknown } | null | undefined
+    const shapeOk =
+      typeof parsed.savedAt === 'number' &&
+      typeof notice === 'object' && notice !== null &&
+      ((notice.kind === 'interrupted' && typeof notice.result === 'object' && notice.result !== null) ||
+        (notice.kind === 'abandoned' && typeof notice.summary === 'object' && notice.summary !== null))
+    if (!shapeOk) {
+      console.warn('Сохранённое окно о прошлом забеге испорчено — стёрто', parsed)
+      clearPastRunNotice()
+      return null
+    }
+    if (parsed.userId !== userId || Date.now() - (parsed.savedAt as number) > PAST_RUN_NOTICE_TTL_MS) {
+      clearPastRunNotice()
+      return null
+    }
+    return notice as PastRunNoticeData
+  } catch (e) {
+    console.warn('Сохранённое окно о прошлом забеге не читается — стёрто', e)
+    clearPastRunNotice()
+    return null
+  }
+}
+
 export default function App() {
   const [player, setPlayer] = useState<PlayerData | null>(null)
   // Итог прошлого забега, который сервер закрыл сам на этом входе — окно
@@ -869,13 +936,21 @@ export default function App() {
       console.error('App: /auth/login прислал оба итога прошлого забега сразу', data.interruptedRun, data.abandonedRun)
     }
     if (data.interruptedRun) {
-      setPastRunNotice({ kind: 'interrupted', result: data.interruptedRun })
+      const notice: PastRunNoticeData = { kind: 'interrupted', result: data.interruptedRun }
+      savePastRunNotice(data.user.id, notice)
+      setPastRunNotice(notice)
     } else if (data.abandonedRun) {
-      setPastRunNotice({ kind: 'abandoned', summary: data.abandonedRun })
+      const notice: PastRunNoticeData = { kind: 'abandoned', summary: data.abandonedRun }
+      savePastRunNotice(data.user.id, notice)
+      setPastRunNotice(notice)
+    } else {
+      // Ни одного из двух — уже показанное окно НЕ трогаем: сюда приходит и
+      // фоновый повторный вход (requestPlayerRefresh), а он не должен стирать
+      // окно, которое игрок ещё не прочитал. Если окна на экране нет — берём
+      // сохранённое: игрок закрыл приложение, не нажав «ПОНЯТНО» (15.10.2026).
+      const stored = loadPastRunNotice(data.user.id)
+      if (stored !== null) setPastRunNotice(prev => prev ?? stored)
     }
-    // Ни одного из двух — состояние НЕ трогаем (нет else!): сюда приходит и
-    // фоновый повторный вход (requestPlayerRefresh), а он не должен стирать
-    // окно, которое игрок ещё не прочитал.
     // Инвентарь — ЗДЕСЬ ЖЕ, вместе с профилем, а не лениво при первом открытии
     // вкладки "Снаряжение" (см. задачу "броня не работает" — totalArmor
     // читает inventory, и Explore должен получить его ДО первого удара, не
@@ -1617,7 +1692,23 @@ export default function App() {
       // золото, и его запас, и сверять после неё только зелья значило бы оставить
       // на экране неверное число камней. null из профиля перезаписывает намеренно
       // — сервер, перестав присылать поле, означает именно «запас неизвестен».
-      setPlayer(prev => prev ? { ...prev, gold: profile.gold, trophies: profile.trophies, potions: profile.potions, consumables: profile.consumables, scrolls: profile.scrolls } : prev)
+      // equippedSkills / skillLevels / skillUses / upgrades — с 15.10.2026, по
+      // той же причине: потерянный ответ у закалки или у действия с книгой
+      // снимается этой же сверкой, и без них цена следующей закалки, урон,
+      // надетые навыки и их уровни оставались прежними до перезахода. null
+      // перезаписывает так же намеренно — «сервер не назвал».
+      setPlayer(prev => prev ? {
+        ...prev,
+        gold: profile.gold,
+        trophies: profile.trophies,
+        potions: profile.potions,
+        consumables: profile.consumables,
+        scrolls: profile.scrolls,
+        equippedSkills: profile.equippedSkills,
+        skillLevels: profile.skillLevels,
+        skillUses: profile.skillUses,
+        upgrades: profile.upgrades,
+      } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
       // прежнее число было бы тихим фолбэком на устаревшее значение.
@@ -4387,7 +4478,7 @@ export default function App() {
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх
           любого экрана, включая уже открытый Explore (1000) и его экран
           итогов. */}
-      {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => setPastRunNotice(null)} />}
+      {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => { clearPastRunNotice(); setPastRunNotice(null) }} />}
 
       {/* Тост об удачном обмене. Показывает goldGained ИЗ ОТВЕТА СЕРВЕРА: в
           карточке обмена после него остаётся «Нечего обменивать», и без тоста
