@@ -1,5 +1,6 @@
 import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
+import { CLASS_ITEMS, type ClassItemId } from './classItems'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
 
@@ -189,6 +190,10 @@ export type LoginResponse = {
     // Опциональное по той же причине, что consumables выше. Разбирать ТОЛЬКО
     // через readScrolls.
     scrolls?: Record<string, number>
+    // Склад предметов классов — Осколок души, Печать отречения (18.10.2026),
+    // объектом по id каталога classItems.ts. Опциональное по той же причине, что
+    // scrolls выше. Разбирать ТОЛЬКО через readClassItems.
+    classItems?: Record<string, number>
     // Счётчики купленных улучшений. Опциональное по той же причине, что
     // consumables и skillLevels выше. Разбирать ТОЛЬКО через readUpgrades.
     upgrades?: { attack?: unknown; armor?: unknown }
@@ -437,6 +442,13 @@ export type StartExploreEvent = {
    * доверять ему как есть нельзя.
    */
   drop?: RunDrop | null
+  /**
+   * ВТОРАЯ добыча события, отдельным броском поверх drop (18.10.2026): сейчас
+   * только Печать отречения с босса. null — не выпало; поля нет — сервер старше
+   * 18.10.2026, второй добычи у него не было. Разбирать ТОЛЬКО через
+   * readEventReward.
+   */
+  extraDrop?: RunDrop | null
 }
 
 // Response shape of POST /run/start-explore (server/src/routes/run.ts; форму
@@ -570,6 +582,10 @@ export type RunDrop =
   | { category: 'scroll'; id: string }
   | { category: 'potion'; tier: number }
   | { category: 'book'; id: string }
+  // Предметы классов (18.10.2026): у каждой категории один вид, имя и иконка —
+  // из каталога classItems.ts.
+  | { category: 'soul_shard' }
+  | { category: 'renounce_seal' }
 
 export type RunResultSummary = {
   interrupted: boolean
@@ -620,6 +636,11 @@ export type RunResultSummary = {
    * consumables выше.
    */
   scrolls?: Record<string, number>
+  /**
+   * Склад предметов классов после забега (18.10.2026) — по той же причине, что
+   * scrolls выше. Разбирать через readClassItems.
+   */
+  classItems?: Record<string, number>
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень (02.10.2026). Пустой список —
    * самый частый исход (первый уровень стоит 30 применений), и экран итогов
@@ -1300,6 +1321,8 @@ export type ProfileResult = {
   consumables: Record<ConsumableId, number> | null
   /** null — сервер не назвал склад страниц (см. readScrolls). */
   scrolls: Record<ScrollId, number> | null
+  /** null — сервер не назвал склад предметов классов (см. readClassItems). */
+  classItems: Record<ClassItemId, number> | null
   /** null — сервер курс не назвал (см. readTrophyGoldRate). */
   trophyGoldRate: number | null
   /** null — сервер не назвал надетые навыки (см. readEquippedSkills). */
@@ -1332,6 +1355,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     potions: number[]
     consumables?: unknown
     scrolls?: unknown
+    classItems?: unknown
     trophyGoldRate?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
@@ -1356,6 +1380,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     potions: raw.potions,
     consumables: readConsumables(raw.consumables),
     scrolls: readScrolls(raw.scrolls),
+    classItems: readClassItems(raw.classItems),
     trophyGoldRate: readTrophyGoldRate(raw.trophyGoldRate),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
@@ -1536,6 +1561,8 @@ export function readRunDrops(raw: unknown): RunDrop[] {
     } else if (e.category === 'scroll' || e.category === 'book') {
       if (typeof e.id !== 'string') continue
       out.push({ category: e.category, id: e.id })
+    } else if (e.category === 'soul_shard' || e.category === 'renounce_seal') {
+      out.push({ category: e.category })
     }
   }
   return out
@@ -1591,15 +1618,18 @@ export function readChestMimic(raw: unknown): boolean | null {
   return typeof m === 'boolean' ? m : null
 }
 
-export function readEventReward(raw: unknown): { trophies: number | null; drop: RunDrop | null } {
-  if (typeof raw !== 'object' || raw === null) return { trophies: null, drop: null }
+// drops — вся добыча события, в порядке показа: сначала обычная (drop), потом
+// вторая, отдельным броском (extraDrop: Печать отречения с босса, 18.10.2026).
+// Пустой список — не выпало ничего (самый частый исход) или сервер старый.
+export function readEventReward(raw: unknown): { trophies: number | null; drops: RunDrop[] } {
+  if (typeof raw !== 'object' || raw === null) return { trophies: null, drops: [] }
   const e = raw as Record<string, unknown>
   const t = e.trophyReward
   const trophies = typeof t === 'number' && Number.isInteger(t) && t >= 0 ? t : null
-  // Одиночную добычу разбираем тем же валидатором, что список на экране итогов —
+  // Обе добычи разбираем тем же валидатором, что список на экране итогов —
   // завернув в массив: второй разбор той же формы разошёлся бы с первым.
-  const drop = readRunDrops(e.drop === undefined || e.drop === null ? [] : [e.drop])[0] ?? null
-  return { trophies, drop }
+  const listed = [e.drop, e.extraDrop].filter((d) => d !== undefined && d !== null)
+  return { trophies, drops: readRunDrops(listed) }
 }
 
 /**
@@ -1620,6 +1650,26 @@ export function readScrolls(raw: unknown): Record<ScrollId, number> | null {
   const record = raw as Record<string, unknown>
   const out = {} as Record<ScrollId, number>
   for (const spec of SCROLLS) {
+    const v = record[spec.id]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[spec.id] = v
+  }
+  return out
+}
+
+/**
+ * Разбор склада ПРЕДМЕТОВ КЛАССОВ (Осколок души, Печать отречения; 18.10.2026)
+ * из ответа сервера — логин, профиль, ручки сумки, финиш забега.
+ *
+ * Тот же контракт, что у readScrolls выше: null на всё, что не является полным и
+ * годным складом, и это значит «запас неизвестен», а не «предметов нет». Поля
+ * нет вовсе у сервера старше 18.10.2026.
+ */
+export function readClassItems(raw: unknown): Record<ClassItemId, number> | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const out = {} as Record<ClassItemId, number>
+  for (const spec of CLASS_ITEMS) {
     const v = record[spec.id]
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
     out[spec.id] = v
@@ -1888,6 +1938,8 @@ export type SkillStateResult = {
   consumables: Record<ConsumableId, number> | null
   /** null — сервер не назвал склад страниц (см. readScrolls). */
   scrolls: Record<ScrollId, number> | null
+  /** null — сервер не назвал склад предметов классов (см. readClassItems). */
+  classItems: Record<ClassItemId, number> | null
   equippedSkills: string[] | null
   skillLevels: Record<SkillBookSkillId, number> | null
 }
@@ -1897,6 +1949,7 @@ async function skillBookRequest(path: string, token: string, body: object): Prom
     gold: number
     consumables?: unknown
     scrolls?: unknown
+    classItems?: unknown
     equippedSkills?: unknown
     skillLevels?: unknown
   }>(
@@ -1915,6 +1968,7 @@ async function skillBookRequest(path: string, token: string, body: object): Prom
     gold: raw.gold,
     consumables: readConsumables(raw.consumables),
     scrolls: readScrolls(raw.scrolls),
+    classItems: readClassItems(raw.classItems),
     equippedSkills: readEquippedSkills(raw.equippedSkills),
     skillLevels: readSkillLevels(raw.skillLevels),
   }
@@ -1956,6 +2010,18 @@ export function assembleBook(token: string, id: ScrollId): Promise<SkillStateRes
 /** Продать ОДНУ страницу за SCROLL_SELL_PRICE золота. */
 export function sellScroll(token: string, id: ScrollId): Promise<SkillStateResult> {
   return skillBookRequest('/character/sell-scroll', token, { id })
+}
+
+// --- ПРЕДМЕТЫ КЛАССОВ (18.10.2026) ---
+//
+// Тем же skillBookRequest и тем же SkillStateResult, что страницы: продажа
+// меняет склад и золото, а мерж у клиента один на все ручки сумки. Повторов нет
+// по той же причине — ключа идемпотентности на сервере нет, и повтор
+// потерянного запроса продал бы вторую штуку.
+
+/** Продать ОДИН Осколок души или ОДНУ Печать отречения; цена — sellPrice каталога. */
+export function sellClassItem(token: string, id: ClassItemId): Promise<SkillStateResult> {
+  return skillBookRequest('/character/sell-class-item', token, { id })
 }
 
 // --- УЛУЧШЕНИЯ И ПРОДАЖА ПРЕДМЕТОВ ---

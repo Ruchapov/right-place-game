@@ -62,6 +62,7 @@ import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import { scrollById } from './scrolls'
+import { classItemById } from './classItems'
 import { itemIconSrc } from './itemIcons'
 import { playerAttackDamage } from './playerDamage'
 
@@ -529,6 +530,16 @@ function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string |
         iconSrc: spec === undefined ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
       }
     }
+    // Предметы классов (18.10.2026): у категории один вид, id каталога — она сама.
+    case 'soul_shard':
+    case 'renounce_seal': {
+      const spec = classItemById(drop.category)
+      return {
+        key: drop.category,
+        name: spec?.nameRu ?? drop.category,
+        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+      }
+    }
   }
 }
 
@@ -548,21 +559,26 @@ function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string |
  * уходит вовсе), а поверх игры висит оранжевая плашка «ЗАГЛУШКА».
  *
  * Добыча здесь тоже ТЕСТОВАЯ и нарочно РАЗНАЯ по категориям: без неё в браузере
- * нельзя было бы увидеть ни всплывашку с иконкой, ни блок «ДОБЫЧА» на экране
- * итогов. Вещи подобраны так, чтобы прогнать все четыре формы иконки —
- * вытянутую страницу, зелье, книгу и снаряжение, у которого путь собирается из
- * слота и тира.
+ * нельзя было бы увидеть всплывашку с иконкой. Вещи подобраны так, чтобы
+ * прогнать как можно больше форм иконки: снаряжение (путь собирается из слота и
+ * тира), зелье, книгу, Осколок души и — у босса второй строкой — Печать
+ * отречения, как на сервере (обычная добыча плюс отдельный бросок).
+ * Страницы с 18.10.2026 здесь нет: группа врагов, которая встречается чаще
+ * всего, отдана Осколку — он новый, а вытянутый свиток уже проверен.
+ *
+ * Список, а не одна вещь: у события обычная добыча и вторая (Печать), как в
+ * ответе сервера. Больше одной ОБЫЧНОЙ вещи на событие не бывает и здесь.
  *
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
  */
-const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop | null> = {
-  enemy: { category: 'scroll', id: 'scroll_fire' },
-  chest: { category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 },
-  obelisk: { category: 'potion', tier: 1 },
-  boss: { category: 'book', id: 'book_ice' },
+const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop[]> = {
+  enemy: [{ category: 'soul_shard' }],
+  chest: [{ category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 }],
+  obelisk: [{ category: 'potion', tier: 1 }],
+  boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }],
   // У Контрабандиста и загадки добычи не бывает и на сервере.
-  smuggler: null,
-  puzzle: null,
+  smuggler: [],
+  puzzle: [],
 }
 
 /**
@@ -610,7 +626,7 @@ function devEnemyKind(): EnemyKind {
 
 // chestIsMimic — решение заглушки по сундуку (для остальных событий false).
 // Правило сервера: у ловушки трофеев нет, добыча та же, что у обычного сундука.
-function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: number | null; drop: RunDrop | null } {
+function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: number | null; drops: RunDrop[] } {
   const mult = kind === 'enemy' ? C.TROPHY_MULT_ENEMY
     : kind === 'chest' ? (chestIsMimic ? 0 : C.TROPHY_MULT_CHEST)
       : kind === 'obelisk' ? C.TROPHY_MULT_OBELISK
@@ -618,7 +634,7 @@ function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: num
           : 0
   return {
     trophies: mult === 0 ? 0 : rollTrophies(mult, C.PLAYER_LEVEL_FALLBACK),
-    drop: TEMP_DEV_EVENT_DROPS[kind],
+    drops: TEMP_DEV_EVENT_DROPS[kind],
   }
 }
 
@@ -628,6 +644,8 @@ function dropIconKey(drop: RunDrop): string {
     case 'potion': return `potion:${drop.tier}`
     case 'scroll': return `scroll:${drop.id}`
     case 'book': return `book:${drop.id}`
+    case 'soul_shard': return 'soul_shard'
+    case 'renounce_seal': return 'renounce_seal'
   }
 }
 
@@ -2935,7 +2953,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Иконки выпавшего — ЗАРАНЕЕ, здесь, а не в момент закрытия события:
       // Assets.load асинхронен, и подгрузка в кадре смерти врага дала бы либо
       // пропуск всплывашки, либо просадку ровно в бою (см. CLAUDE.md, задача про
-      // догрузку текстур). Их максимум три на забег.
+      // догрузку текстур). Их максимум четыре на забег: по одной обычной на
+      // событие плюс Печать с босса.
       // Свой обработчик на КАЖДОЙ иконке: 404 одной не должен обрывать setup() —
       // забег важнее картинки, и без текстуры строка добычи просто не нарисуется.
       // Иконки качаются разом и вместе с листами, а не по одной перед ними:
@@ -2943,11 +2962,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const dropIconTextures = new Map<string, Texture>()
       const dropIconsRequested = new Set<string>()
       const dropIconLoads: Promise<void>[] = []
-      for (const reward of eventRewards) {
-        if (reward.drop === null) continue
-        const key = dropIconKey(reward.drop)
+      for (const drop of eventRewards.flatMap((reward) => reward.drops)) {
+        const key = dropIconKey(drop)
         if (dropIconsRequested.has(key)) continue
-        const src = dropView(reward.drop).iconSrc
+        const src = dropView(drop).iconSrc
         if (src === null) continue
         dropIconsRequested.add(key)
         dropIconLoads.push(
@@ -3856,7 +3874,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           const points = ev.clusterPoints ?? []
           if (points.length === 0) {
             console.error('Explore: enemy-событие без валидных точек кластера — нечего убивать', ev)
-            return { ...ev, closed: true, remainingEnemies: 0, trophyReward: reward.trophies, drop: reward.drop }
+            return { ...ev, closed: true, remainingEnemies: 0, trophyReward: reward.trophies, drops: reward.drops }
           }
           // Долей трофеев у врагов БОЛЬШЕ НЕТ: число на всё событие называет
           // сервер, и всплывает оно один раз — когда падает последний враг
@@ -3879,7 +3897,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             else if (groupKind === 'zvonar') zvonarSystem!.spawn(ex, ey, eventIndex)
             else enemySystem!.spawn(ex, ey, eventIndex)
           })
-          return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drop: reward.drop }
+          return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drops: reward.drops }
         }
 
         const marker = new Graphics()
@@ -3988,7 +4006,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           bossEventIndexRef.current = eventIndex
         }
 
-        return { ...ev, marker, closed: false, trophyReward: reward.trophies, drop: reward.drop }
+        return { ...ev, marker, closed: false, trophyReward: reward.trophies, drops: reward.drops }
       })
 
       // Босс карты C (см. type Boss/explore/entities/boss.ts) — спавн НЕ
@@ -4529,10 +4547,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             rows.push({ kind: 'trophy', amount: ev.trophyReward })
           }
           // Иконка идёт ВТОРОЙ строкой (i=1, то есть выше трофеев): так решил
-          // дизайнер. Текстуры нет — иконку не загрузили (404 или старый
-          // сервер); строку пропускаем, начисление от этого не зависит.
-          const dropTexture = ev.drop === null ? undefined : dropIconTextures.get(dropIconKey(ev.drop))
-          if (dropTexture !== undefined) rows.push({ kind: 'drop', texture: dropTexture })
+          // дизайнер. Печать отречения с босса (18.10.2026) — ещё строкой выше,
+          // в порядке drops: обычная добыча, потом вторая. Текстуры нет — иконку
+          // не загрузили (404 или старый сервер); строку пропускаем, начисление
+          // от этого не зависит.
+          for (const drop of ev.drops) {
+            const dropTexture = dropIconTextures.get(dropIconKey(drop))
+            if (dropTexture !== undefined) rows.push({ kind: 'drop', texture: dropTexture })
+          }
           if (rows.length > 0) spawnRewardFloat(worldX, worldY, rows)
         }
         setEventClosed((prev) => {

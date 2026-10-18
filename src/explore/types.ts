@@ -567,11 +567,14 @@ export type BossWave = {
 //                          трофеев НЕ будет вовсе. Ноль это НЕ то же самое —
 //                          ноль законен (так выглядит мимик) и значит «трофеев
 //                          нет», а null значит «неизвестно».
-//   drop                 — что выпадет, или null: бросок был, не выпало ничего.
+//   drops                — что выпадет, в порядке показа: обычная добыча (не
+//                          больше одной вещи) и вторая, отдельным броском
+//                          (Печать отречения с босса, 18.10.2026). Пустой
+//                          список — не выпало ничего.
 export type MapEvent = EventCandidate & {
   marker?: Graphics
   closed: boolean
   remainingEnemies?: number
   trophyReward: number | null
-  drop: RunDrop | null
+  drops: RunDrop[]
 }
