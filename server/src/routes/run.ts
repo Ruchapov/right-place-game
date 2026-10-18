@@ -8,7 +8,8 @@ import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTi
 import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
-import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
+import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
+import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -25,7 +26,9 @@ import {
   potionStockOf,
   consumableStockOf,
   scrollStockOf,
+  classItemStockOf,
   type ConsumableColumns,
+  type ClassItemColumns,
   skillLevelsOf,
   skillLevelGrowthColumns,
   skillUsesOf,
@@ -184,21 +187,52 @@ async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): P
 /**
  * Сколько ячеек сумки занято — ровно та же сумма, что считает клиент (bagUsed в
  * App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника, которого
- * не ноль. Зелья и страницы ячеек не тратят (docs/items.md, «ПРАВИЛО
- * ВМЕСТИМОСТИ»).
+ * не ноль, плюс по ячейке на каждый предмет класса с takesCell (сейчас только
+ * Печать отречения), которого не ноль. Зелья, страницы и Осколки души ячеек не
+ * тратят (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»).
  *
  * Одна функция на всех, кто кладёт вещь в сумку (15.10.2026): добыча на финише,
  * сборка книги, покупка расходника, снятие предмета. Звать ВНУТРИ транзакции
- * после lockCharacterRow и с `stock`, прочитанным под той же блокировкой, —
+ * после lockCharacterRow и со складом, прочитанным под той же блокировкой, —
  * иначе два запроса посчитают одну и ту же свободную ячейку.
+ *
+ * `classStock` обязательным параметром, а не «по умолчанию пусто»: забытая
+ * Печать у одного из четырёх вызывающих дала бы 31 / 30 молча.
  */
 async function bagCellsUsed(
   db: Prisma.TransactionClient,
   characterId: number,
   stock: Record<ConsumableId, number>,
+  classStock: Record<ClassItemId, number>,
 ): Promise<number> {
   const equipmentCells = await db.inventoryItem.count({ where: { characterId, equipped: false } })
-  return equipmentCells + Object.values(stock).filter((n) => n > 0).length
+  const classCells = CLASS_ITEMS.filter((spec) => spec.takesCell && classStock[spec.id] > 0).length
+  return equipmentCells + Object.values(stock).filter((n) => n > 0).length + classCells
+}
+
+// Прибавка к складу ОДНОГО предмета класса и фильтр/списание для продажи —
+// готовыми куска́ми для условных записей (дроп на финише, продажа). Switch по
+// ClassItemId — тот же приём, что у страниц и книг: третий предмет без ветки
+// здесь не скомпилируется.
+function classItemStockIncrement(id: ClassItemId, count: number): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'soul_shard': return { soulShards: { increment: count } }
+    case 'renounce_seal': return { renounceSeals: { increment: count } }
+  }
+}
+
+function classItemStockFilter(id: ClassItemId): Prisma.CharacterWhereInput {
+  switch (id) {
+    case 'soul_shard': return { soulShards: { gte: 1 } }
+    case 'renounce_seal': return { renounceSeals: { gte: 1 } }
+  }
+}
+
+function classItemStockDecrement(id: ClassItemId): Prisma.CharacterUpdateManyMutationInput {
+  switch (id) {
+    case 'soul_shard': return { soulShards: { decrement: 1 } }
+    case 'renounce_seal': return { renounceSeals: { decrement: 1 } }
+  }
 }
 
 // Изменение склада зелий ПО ТИРАМ (индекс = тир-1) — кусками для условной
@@ -429,6 +463,10 @@ async function sendSkillState(request: FastifyRequest, reply: FastifyReply, user
     // функцией, и отдавать им свой огрызок значило бы развести по клиенту два
     // разных мержа для одного и того же экрана сумки.
     scrolls: scrollStockOf(updated),
+    // Предметы классов (18.10.2026) — в том же ответе по той же причине, что
+    // страницы рядом: ручка их продажи отвечает этой же функцией, а мерж у
+    // клиента один на все ручки сумки.
+    classItems: classItemStockOf(updated),
     equippedSkills: updated.equippedSkills,
     skillLevels: skillLevelsOf(updated),
   })
@@ -460,6 +498,10 @@ export type RunDrop =
   | { category: 'scroll'; id: string }
   | { category: 'potion'; tier: number }
   | { category: 'book'; id: string }
+  // Предметы классов (18.10.2026): имя и иконку клиент берёт из своего каталога
+  // classItems.ts по категории — у каждой категории один вид.
+  | { category: 'soul_shard' }
+  | { category: 'renounce_seal' }
 
 /**
  * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
@@ -504,6 +546,10 @@ async function resolveDropIntent(
       return { category: 'book', id: intent.bookId }
     case 'potion':
       return { category: 'potion', tier: intent.tier }
+    case 'soul_shard':
+      return { category: 'soul_shard' }
+    case 'renounce_seal':
+      return { category: 'renounce_seal' }
   }
 }
 
@@ -514,6 +560,9 @@ async function resolveDropIntent(
  * Поле `drop` ставится ВСЕГДА, в том числе `null` («бросок был, не выпало»):
  * по наличию ключа финиш отличает такой забег от начатого старым сервером, где
  * добычи нет вовсе и её надо бросать запасным путём.
+ *
+ * `extraDrop` (18.10.2026) — вторая добыча, отдельным броском: Печать отречения
+ * с босса. Тоже ставится всегда, null у всех остальных событий.
  */
 async function attachEventDrops(
   events: RunEvent[],
@@ -525,7 +574,9 @@ async function attachEventDrops(
   for (const event of events) {
     const intent = rollEventDrop(event.kind, characterLevel, luck)
     const drop = intent === null ? null : await resolveDropIntent(intent, characterLevel, log)
-    out.push({ ...event, drop })
+    const extraIntent = rollEventExtraDrop(event.kind, luck)
+    const extraDrop = extraIntent === null ? null : await resolveDropIntent(extraIntent, characterLevel, log)
+    out.push({ ...event, drop, extraDrop })
   }
   return out
 }
@@ -556,9 +607,21 @@ function storedEventDrops(run: ActiveExploreRun, closed: number[], log: FastifyR
     const parsed = parseEventDrop(event.drop ?? null)
     if (parsed.kind === 'malformed') {
       log.error({ index, drop: event.drop }, 'finish-explore: currentRun.events[].drop is malformed')
-      continue
+    } else if (parsed.kind === 'drop') {
+      out.push(parsed.drop)
     }
-    if (parsed.kind === 'drop') out.push(parsed.drop)
+    // Вторая добыча (Печать с босса, 18.10.2026). Поля нет — забег начат
+    // сервером старше 18.10.2026, второй добычи у него не было, и запасного
+    // броска за неё не нужно (см. RunEvent.extraDrop). Испорчено — тем же
+    // громким error и пропуском, что у drop выше.
+    if (event.extraDrop !== undefined) {
+      const extra = parseEventDrop(event.extraDrop)
+      if (extra.kind === 'malformed') {
+        log.error({ index, extraDrop: event.extraDrop }, 'finish-explore: currentRun.events[].extraDrop is malformed')
+      } else if (extra.kind === 'drop') {
+        out.push(extra.drop)
+      }
+    }
   }
   return out
 }
@@ -602,7 +665,8 @@ type AppliedDrops = {
 async function applyDrops(
   db: Prisma.TransactionClient,
   drops: EventDrop[],
-  character: { id: number } & ConsumableColumns,
+  character: { id: number } & ConsumableColumns & ClassItemColumns,
+  log: FastifyRequest['log'],
 ): Promise<AppliedDrops> {
   const gained: RunDrop[] = []
   const lost: RunDrop[] = []
@@ -610,6 +674,7 @@ async function applyDrops(
   const potionGain = new Array(POTION_TIER_COUNT).fill(0) as number[]
   const scrollGain = {} as Record<ScrollId, number>
   const bookGain = {} as Record<SkillBookId, number>
+  const classGain = {} as Record<ClassItemId, number>
   // Ничего не выпало — самый частый исход, и он не должен стоить лишнего
   // запроса к БД: подсчёт занятых ячеек ниже нужен только тогда, когда есть что
   // в них класть.
@@ -622,7 +687,11 @@ async function applyDrops(
   // которого не ноль. Расхождение здесь означало бы, что игрок видит «28 / 30»,
   // а сервер считает сумку полной.
   const bookStock = { ...consumableStockOf(character) }
-  let cellsUsed = await bagCellsUsed(db, character.id, bookStock)
+  // Изменяемая копия по той же причине, что bookStock: две Печати за один забег
+  // (два босса не бывает, но правило не должно на это опираться) займут одну
+  // ячейку.
+  const classStock = { ...classItemStockOf(character) }
+  let cellsUsed = await bagCellsUsed(db, character.id, bookStock, classStock)
 
   for (const drop of drops) {
     switch (drop.category) {
@@ -664,6 +733,32 @@ async function applyDrops(
         gained.push({ category: 'potion', tier: drop.tier })
         break
       }
+      case 'soul_shard':
+      case 'renounce_seal': {
+        // Предметы классов (18.10.2026). Занимает ли ячейку — решает каталог
+        // (takesCell): Осколок — нет, как страницы; Печать — да, но, как книга,
+        // только ПЕРВАЯ штука: вторая ложится бейджем «×2» в ту же ячейку.
+        const id: ClassItemId = drop.category
+        const spec = classItemById(id)
+        if (spec === null) {
+          // Недостижимо, пока категории добычи и id каталога совпадают
+          // (switch выше не скомпилировался бы без ветки). Не начислять то,
+          // чего нет в каталоге, — громко.
+          log.error({ id }, 'finish-explore: class item drop is not in the catalog')
+          continue
+        }
+        const view: RunDrop = { category: drop.category }
+        const needsCell = spec.takesCell && classStock[id] === 0
+        if (needsCell && cellsUsed >= BAG_CAPACITY) {
+          lost.push(view)
+          continue
+        }
+        if (needsCell) cellsUsed++
+        classStock[id]++
+        classGain[id] = (classGain[id] ?? 0) + 1
+        gained.push(view)
+        break
+      }
     }
   }
 
@@ -676,6 +771,9 @@ async function applyDrops(
   }
   for (const [id, count] of Object.entries(bookGain) as [SkillBookId, number][]) {
     stockData = { ...stockData, ...consumableStockIncrement(id, count) }
+  }
+  for (const [id, count] of Object.entries(classGain) as [ClassItemId, number][]) {
+    stockData = { ...stockData, ...classItemStockIncrement(id, count) }
   }
 
   return { gained, lost, itemIds, stockData, potionGain }
@@ -870,6 +968,11 @@ export type RunResultSummary = {
    * ждать следующего логина.
    */
   scrolls: Record<string, number>
+  /**
+   * Склад предметов классов (Осколок души, Печать отречения) по id каталога
+   * после забега, 18.10.2026. Та же причина, что у scrolls рядом.
+   */
+  classItems: Record<string, number>
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
    * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
@@ -1772,7 +1875,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!fresh) return null
       // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
       // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
-      const resolvedDrops = await applyDrops(tx, eventDrops, fresh)
+      const resolvedDrops = await applyDrops(tx, eventDrops, fresh, request.log)
       // Склад после забега: свежий склад минус выпитое (никогда не в минус — см.
       // subtractPotionStock) плюс выпавшее. Пишется разницей со свежим складом.
       const freshPotions = potionStockOf(fresh)
@@ -1861,12 +1964,14 @@ export async function runRoutes(server: FastifyInstance) {
     // включая покупку со второго устройства между чтением и записью.
     let consumablesAfterFinish = consumableStockOf(character)
     let scrollsAfterFinish = scrollStockOf(character)
+    let classItemsAfterFinish = classItemStockOf(character)
     let potionsAfterFinish = newPotionStock
     {
       const reread = await prisma.character.findUnique({ where: { userId } })
       if (reread) {
         consumablesAfterFinish = consumableStockOf(reread)
         scrollsAfterFinish = scrollStockOf(reread)
+        classItemsAfterFinish = classItemStockOf(reread)
         potionsAfterFinish = potionStockOf(reread)
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
@@ -1903,6 +2008,7 @@ export async function runRoutes(server: FastifyInstance) {
       bonusLevels: newBonusLevels,
       consumables: consumablesAfterFinish,
       scrolls: scrollsAfterFinish,
+      classItems: classItemsAfterFinish,
       // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
       // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
       // собран skillLevelUps), а не всё, что успело случиться с колонкой после:
@@ -2253,7 +2359,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!character) return 'no-character'
 
       const stock = consumableStockOf(character)
-      if (stock[bookId] === 0 && await bagCellsUsed(tx, character.id, stock) >= BAG_CAPACITY) return 'bag-full'
+      if (stock[bookId] === 0 && await bagCellsUsed(tx, character.id, stock, classItemStockOf(character)) >= BAG_CAPACITY) return 'bag-full'
 
       // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
       // «страниц хватает».
@@ -2302,6 +2408,48 @@ export async function runRoutes(server: FastifyInstance) {
       },
     })
     if (written.count === 0) return reply.status(409).send({ error: 'State changed, retry' })
+
+    return await sendSkillState(request, reply, userId)
+  })
+
+  // --- ПРЕДМЕТЫ КЛАССОВ: продать один Осколок души или одну Печать отречения ---
+  //
+  // 18.10.2026. Единственное действие с ними, пока самих классов нет
+  // (docs/classes.md): применить их нечем. Цена — из общего каталога
+  // (classItems.ts: 50 и 500), а не из тела: клиент называет только id, и на
+  // его кнопке то же число, что начислит эта ручка.
+  //
+  // Тот же приём, что у sell-book: запись УСЛОВНАЯ и сама себе проверка запаса
+  // (фильтр «есть хотя бы один», списание и золото increment'ом в одном
+  // update), ответ перечитан из БД (sendSkillState). Ключа идемпотентности нет —
+  // повтор продаст вторую штуку, поэтому клиент не повторяет вовсе, а при
+  // потерянном ответе требует сверки баланса.
+  server.post<{ Body: { id?: unknown } }>('/character/sell-class-item', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const itemId = parseClassItemId(request.body?.id)
+    if (itemId === null) return reply.status(400).send({ error: 'Unknown class item' })
+    const spec = classItemById(itemId)
+    if (spec === null) {
+      request.log.error({ itemId }, 'sell-class-item: id есть в списке, но нет в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    const written = await prisma.character.updateMany({
+      where: { userId, ...classItemStockFilter(itemId) },
+      data: {
+        ...classItemStockDecrement(itemId),
+        // increment, а не вычисленное значение: иначе параллельная покупка
+        // затёрла бы золото прочитанным снимком.
+        gold: { increment: spec.sellPrice },
+      },
+    })
+    if (written.count === 0) {
+      const exists = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
+      if (!exists) return reply.status(404).send({ error: 'Character not found' })
+      return reply.status(400).send({ error: 'No class item in stock' })
+    }
 
     return await sendSkillState(request, reply, userId)
   })
@@ -2455,7 +2603,7 @@ export async function runRoutes(server: FastifyInstance) {
         const fresh = await db.character.findUnique({ where: { userId } })
         if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
         const stock = consumableStockOf(fresh)
-        if (stock[spec.id] === 0 && await bagCellsUsed(db, fresh.id, stock) >= BAG_CAPACITY) {
+        if (stock[spec.id] === 0 && await bagCellsUsed(db, fresh.id, stock, classItemStockOf(fresh)) >= BAG_CAPACITY) {
           throw new RouteRejection(400, { error: 'Bag is full', capacity: BAG_CAPACITY })
         }
         const written = await db.character.updateMany({
@@ -2642,6 +2790,9 @@ export async function runRoutes(server: FastifyInstance) {
       // тратят, и свалить их в один объект значило бы заставить клиента
       // различать «что тратит ячейку» по id, а не по источнику данных.
       scrolls: scrollStockOf(character),
+      // Предметы классов (18.10.2026) — той же формы и по той же причине, что
+      // страницы выше. Отдельным полем: свой каталог, в витрине их нет.
+      classItems: classItemStockOf(character),
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -2885,7 +3036,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (inventoryItem.equipped) {
         const fresh = await tx.character.findUnique({ where: { userId } })
         if (!fresh) return { kind: 'reject', status: 404, error: 'Character not found' }
-        if (await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh)) >= BAG_CAPACITY) {
+        if (await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)) >= BAG_CAPACITY) {
           return { kind: 'reject', status: 400, error: 'Сумка полна — освободи ячейку.' }
         }
       }

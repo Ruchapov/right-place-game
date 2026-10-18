@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, scrollStockOf, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
+import { consumableStockOf, scrollStockOf, classItemStockOf, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -390,6 +390,9 @@ export async function authRoutes(server: FastifyInstance) {
         // закрытого входом, этого списка нет вовсе (сервер не знает, что игрок
         // успел пройти). Добычи такой забег не даёт — см. drops/dropsLost выше.
         scrolls: scrollStockOf(char),
+        // Предметы классов — без изменений по той же причине, что страницы:
+        // добычи у забега, закрытого входом, нет.
+        classItems: classItemStockOf(char),
         // Уровни навыков БРОШЕННЫЙ забег растит НАСТОЯЩИМ образом — в
         // отличие от добычи выше и точно как статы: источник есть (срез
         // currentRun.progress.skillUses), и терять его значило бы сделать закрытие
@@ -451,6 +454,9 @@ export async function authRoutes(server: FastifyInstance) {
         // Запас страниц — той же формы и по той же причине, что расходники
         // выше. Отдельным полем: страницы ячейку сумки НЕ тратят.
         scrolls: scrollStockOf(char),
+        // Предметы классов (Осколок души, Печать отречения; 18.10.2026) — той же
+        // формы и по той же причине, что страницы выше.
+        classItems: classItemStockOf(char),
         // Уровни навыков — объектом по id навыка, той же формы, что в
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).

@@ -22,6 +22,7 @@ import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
+import type { ClassItemId } from './classItems.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -775,6 +776,33 @@ export function scrollStockOf(character: ScrollColumns): Record<ScrollId, number
     scroll_bleed: character.scrollBleed,
     scroll_heal: character.scrollHeal,
     scroll_dash: character.scrollDash,
+  }
+}
+
+// --- Предметы классов: колонки Character <-> объект по id каталога ---
+//
+// Осколок души и Печать отречения (18.10.2026, каталог classItems.ts). Те же
+// причины, что у страниц выше: имена колонок клиенту не нужны, форма ответа —
+// объект по id. Отдельным объектом, а не внутри consumables: каталог у них
+// свой, и в магазине их нет — сложи их в consumables, readConsumables на
+// клиенте стал бы ждать их в витрине и в гнёздах подготовки.
+export type ClassItemColumns = {
+  soulShards: number
+  renounceSeals: number
+}
+
+/**
+ * Запас предметов классов объектом по id каталога — форма ответов клиенту
+ * (логин, профиль, ручки книг/страниц/продажи, финиш забега).
+ *
+ * ⚠️ Отдавать НУЖНО ОБА id: клиентский readClassItems (src/api.ts) требует все
+ * id каталога и на неполном объекте возвращает null — та же дисциплина, что у
+ * consumableStockOf и scrollStockOf.
+ */
+export function classItemStockOf(character: ClassItemColumns): Record<ClassItemId, number> {
+  return {
+    soul_shard: character.soulShards,
+    renounce_seal: character.renounceSeals,
   }
 }
 

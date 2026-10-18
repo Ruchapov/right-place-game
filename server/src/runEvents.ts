@@ -202,6 +202,17 @@ export type RunEvent = {
    * оба импорта стираются при компиляции.
    */
   drop?: EventDrop | null
+  /**
+   * ВТОРАЯ добыча события — отдельный бросок поверх `drop` (18.10.2026). Сейчас
+   * это только Печать отречения с босса (rollEventExtraDrop в runDrops.ts), у
+   * остальных событий здесь всегда null.
+   *
+   * Те же три состояния, что у `drop`, но «поля нет» значит другое: забег начат
+   * сервером старше 18.10.2026, и второй добычи у него не было вовсе. Бросать
+   * за него кости запасным путём НЕ нужно — `drop` у такого забега уже есть, а
+   * Печати тогда в игре не существовало.
+   */
+  extraDrop?: EventDrop | null
 }
 
 type SlotsFile = {
@@ -389,11 +400,15 @@ export type ClientRunEvent = {
   enemyKind?: RunEnemyKind
   isMimic?: boolean
   trophyReward: number
-  drop:
-    | { category: 'equipment'; nameRu: string; slot: string; tier: number }
-    | Exclude<EventDrop, { category: 'equipment' }>
-    | null
+  drop: ClientEventDrop | null
+  /** Вторая добыча (Печать с босса), 18.10.2026. null — не выпало. */
+  extraDrop: ClientEventDrop | null
 }
+
+/** Добыча в том виде, в каком её видит клиент: снаряжение — без itemId. */
+type ClientEventDrop =
+  | { category: 'equipment'; nameRu: string; slot: string; tier: number }
+  | Exclude<EventDrop, { category: 'equipment' }>
 
 /**
  * Что из розыгрыша уезжает клиенту. Чистая функция: вынесена из обработчика
@@ -430,10 +445,17 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
     ...(ev.kind === 'chest' ? { isMimic: ev.isMimic } : {}),
     trophyReward: ev.trophyReward,
-    drop: ev.drop === undefined || ev.drop === null
-      ? null
-      : ev.drop.category === 'equipment'
-        ? { category: 'equipment' as const, nameRu: ev.drop.nameRu, slot: ev.drop.slot, tier: ev.drop.tier }
-        : ev.drop,
+    drop: clientEventDrop(ev.drop),
+    // Вторая добыча уходит ВСЕГДА, null у событий без неё: клиент старше
+    // 18.10.2026 незнакомое поле не читает, а новому так не нужно отличать
+    // «не выпало» от «сервер не умел» — Печать он показывает только присланной.
+    extraDrop: clientEventDrop(ev.extraDrop),
   }))
+}
+
+function clientEventDrop(drop: EventDrop | null | undefined): ClientEventDrop | null {
+  if (drop === undefined || drop === null) return null
+  return drop.category === 'equipment'
+    ? { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
+    : drop
 }
