@@ -574,7 +574,7 @@ async function attachEventDrops(
   for (const event of events) {
     const intent = rollEventDrop(event.kind, characterLevel, luck)
     const drop = intent === null ? null : await resolveDropIntent(intent, characterLevel, log)
-    const extraIntent = rollEventExtraDrop(event.kind, luck)
+    const extraIntent = rollEventExtraDrop(event.kind, characterLevel, luck)
     const extraDrop = extraIntent === null ? null : await resolveDropIntent(extraIntent, characterLevel, log)
     out.push({ ...event, drop, extraDrop })
   }

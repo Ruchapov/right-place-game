@@ -89,7 +89,7 @@ export type DropCategory = 'equipment' | 'scroll' | 'potion' | 'book' | 'soul_sh
  * ценным (Design Decisions, «Философия босса»). Снаряжение и зелье у обоих
  * одинаковы намеренно — их доля от редкости источника не зависит.
  *
- * С 18.10.2026 таблиц ЧЕТЫРЕ: с SOUL_SHARD_MIN_LEVEL уровня у обеих появляется
+ * С 18.10.2026 таблиц ЧЕТЫРЕ: с CLASS_ITEM_DROP_MIN_LEVEL уровня у обеих появляется
  * Осколок души с весом 5, и эти 5 забраны у СНАРЯЖЕНИЯ (20 → 15) — решение
  * дизайнера, docs/classes.md. Ниже порога таблицы прежние, осколок 0: «падает
  * только с 10 уровня» выражено нулевым весом, а не проверкой после броска, —
@@ -128,15 +128,20 @@ export const DROP_WEIGHTS_BOSS_WITH_SHARD: Record<DropCategory, number> = {
 }
 
 /**
- * С какого уровня героя может выпасть Осколок души. 10 — с него выбирается класс
- * (docs/classes.md, «Структура»): раньше осколок был бы просто монетой на 50
- * золота, а новичок терял бы ради него четверть шанса на снаряжение.
+ * С какого уровня героя падают предметы классов — И Осколок души, И Печать
+ * отречения (решение Андрея 19.10.2026: Печать — «как осколки»). 10 — с него
+ * выбирается класс (docs/classes.md, «Структура»): раньше оба были бы просто
+ * монетами на 50 и 500 золота, а новичок ещё и терял бы ради осколка четверть
+ * шанса на снаряжение.
+ *
+ * Одно число на оба предмета, а не по константе на каждый: порог у них один по
+ * смыслу, и два экземпляра однажды разошлись бы.
  */
-export const SOUL_SHARD_MIN_LEVEL = 10
+export const CLASS_ITEM_DROP_MIN_LEVEL = 10
 
 /** Таблица броска 2 для этого события и этого уровня героя. */
 export function dropWeightsFor(kind: RunEventKind, level: number): Record<DropCategory, number> {
-  const withShard = level >= SOUL_SHARD_MIN_LEVEL
+  const withShard = level >= CLASS_ITEM_DROP_MIN_LEVEL
   if (kind === 'boss') return withShard ? DROP_WEIGHTS_BOSS_WITH_SHARD : DROP_WEIGHTS_BOSS
   return withShard ? DROP_WEIGHTS_COMMON_WITH_SHARD : DROP_WEIGHTS_COMMON
 }
@@ -146,8 +151,8 @@ export function dropWeightsFor(kind: RunEventKind, level: number): Record<DropCa
  * «Предметы»): 5% до поправки на удачу, поверх обычной добычи и независимо от
  * неё. Обычная добыча босса от этого броска не меняется ни в шансе, ни в долях.
  *
- * Уровнем героя не ограничена — дизайн этого не просил: Печать, выпавшая до 10
- * уровня, просто лежит в сумке (или продаётся за 500), пока не появятся классы.
+ * Только с CLASS_ITEM_DROP_MIN_LEVEL уровня, как осколки (решение Андрея
+ * 19.10.2026; 18.10.2026 Печать падала и раньше — задача уровня не называла).
  */
 export const RENOUNCE_SEAL_CHANCE_BOSS = 0.05
 
@@ -228,12 +233,14 @@ export function dropChanceFor(kind: RunEventKind, luck: number): number {
 
 /**
  * Шанс Печати отречения с этого события с учётом удачи: у босса
- * RENOUNCE_SEAL_CHANCE_BOSS, у всех остальных 0. Удача множит его ТАК ЖЕ, как
- * шанс обычной добычи (docs/classes.md: «удача повышает шанс выпадения, как у
- * всей добычи») — одной функцией withLuck, а не второй копией формулы.
+ * RENOUNCE_SEAL_CHANCE_BOSS, если герою не меньше CLASS_ITEM_DROP_MIN_LEVEL, во
+ * всех остальных случаях 0. Удача множит его ТАК ЖЕ, как шанс обычной добычи
+ * (docs/classes.md: «удача повышает шанс выпадения, как у всей добычи») — одной
+ * функцией withLuck, а не второй копией формулы.
  */
-export function renounceSealChanceFor(kind: RunEventKind, luck: number): number {
-  return kind === 'boss' ? withLuck(RENOUNCE_SEAL_CHANCE_BOSS, luck) : 0
+export function renounceSealChanceFor(kind: RunEventKind, level: number, luck: number): number {
+  if (kind !== 'boss' || !(level >= CLASS_ITEM_DROP_MIN_LEVEL)) return 0
+  return withLuck(RENOUNCE_SEAL_CHANCE_BOSS, luck)
 }
 
 /** Базовый шанс, умноженный на удачу и срезанный потолком. */
@@ -323,11 +330,11 @@ export function rollEventDrop(kind: RunEventKind, level: number, luck: number): 
  * опираются всплывашка, финиш и запасной путь для старых забегов. Печать дизайн
  * просил разыгрывать «не трогая остальную добычу», то есть независимо.
  *
- * null — не выпало (у босса 95% бросков до поправки на удачу, у остальных —
- * всегда).
+ * null — не выпало (у босса с 10 уровня 95% бросков до поправки на удачу, ниже
+ * 10 уровня и у остальных событий — всегда).
  */
-export function rollEventExtraDrop(kind: RunEventKind, luck: number): DropIntent | null {
-  const chance = renounceSealChanceFor(kind, luck)
+export function rollEventExtraDrop(kind: RunEventKind, level: number, luck: number): DropIntent | null {
+  const chance = renounceSealChanceFor(kind, level, luck)
   if (!(chance > 0)) return null
   return Math.random() < chance ? { category: 'renounce_seal' } : null
 }
@@ -416,7 +423,7 @@ export function rollRunDrops(
     if (intent !== null) out.push(intent)
     // Вторая добыча (Печать с босса) — тем же отдельным броском, что на старте:
     // запасной путь не должен давать меньше обычного.
-    const extra = rollEventExtraDrop(event.kind, luck)
+    const extra = rollEventExtraDrop(event.kind, level, luck)
     if (extra !== null) out.push(extra)
   }
   return out
