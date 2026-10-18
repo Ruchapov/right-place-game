@@ -10,7 +10,7 @@ import { BAG_CAPACITY, CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE
 // Каталог СТРАНИЦ книг — тоже общая пара (src/scrolls.ts ↔ server/src/scrolls.ts).
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
-import { CLASS_ITEMS, classItemById, classItemCardLine, type ClassItemId } from './classItems'
+import { CLASS_ITEMS, classItemById, type ClassItemId } from './classItems'
 // Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
 // (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
 import { itemIconSrc } from './itemIcons'
@@ -129,6 +129,33 @@ const SLOT_ORDER: string[] = HERO_SLOTS.map((s) => s.slot)
 // её читает ещё и экран итогов забега (Explore.tsx, блок «ДОБЫЧА»), а импорт
 // App.tsx оттуда дал бы цикл. Там же разбор, почему путь НЕ берётся из
 // Item.iconPath, — если возникнет соблазн «починить», читать надо тот файл.
+
+// Подтверждение продажи из карточки сумки: «Продать <название> за <цена>?»
+// [Да] [Нет] — решение Андрея 19.10.2026, для Печати отречения и для книг.
+// Встаёт НА МЕСТО кнопки «Продать за N»: вопрос и сумма там, где палец только
+// что был, и второй случайный тап в то же место попадает в «Да» только после
+// того, как игрок прочитал вопрос. Цену называет сам вопрос (в отличие от
+// подтверждения продажи снаряжения, где написано только «пропадёт навсегда»):
+// так просил Андрей. «Да» — с красной рамкой, как «Продать» у снаряжения.
+// Высота кнопок 44 px — палец.
+function SaleConfirm({ question, onYes, onNo }: { question: string; onYes: () => void; onNo: () => void }) {
+  const button = (danger: boolean) => ({
+    flex:1, boxSizing:'border-box' as const, minHeight:44,
+    display:'flex', alignItems:'center', justifyContent:'center',
+    background:C.nicheDeep, border:`1px solid ${danger ? C.danger : C.stoneDark}`,
+    borderRadius:9, padding:'8px 11px', textAlign:'center' as const,
+    color: danger ? C.danger : C.textMain, fontSize:14, cursor:'pointer' as const,
+  })
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+      <div style={{ fontSize:13, lineHeight:1.45, color:C.textMain, textAlign:'center' }}>{question}</div>
+      <div style={{ display:'flex', gap:8 }}>
+        <div onClick={onYes} style={button(true)}>Да</div>
+        <div onClick={onNo} style={button(false)}>Нет</div>
+      </div>
+    </div>
+  )
+}
 
 // Иконка в ячейке — ОДНА точка на все места, где она рисуется: гнездо
 // "Персонажа", ячейка и карточка "Инвентаря". Разбирает оба нештатных случая:
@@ -805,6 +832,11 @@ export default function App() {
   // нельзя — тот же приём, что у «Забыть» в карточке навыка.
   const [sellConfirm, setSellConfirm] = useState<string | null>(null)
   const [sellPending, setSellPending] = useState(false)
+  // Подтверждение продажи СКЛАДСКОГО предмета (не строки инвентаря): id того, чья
+  // продажа ждёт «Да», — Печати отречения (19.10.2026). null — вопроса нет.
+  // Отдельно от sellConfirm: у снаряжения адрес — inventoryItemId строки, а
+  // здесь id каталога, и их продают разные ручки.
+  const [stockSellConfirm, setStockSellConfirm] = useState<string | null>(null)
   // Одна пара состояний на все четыре действия с книгами — они никогда не идут
   // параллельно (каждое закрывает своё окно), а два счётчика «в полёте»
   // разъехались бы.
@@ -1156,10 +1188,9 @@ export default function App() {
         kind: 'classItem' as const,
         name: spec.nameRu,
         desc: spec.desc as string | null,
-        // Текст карточки — дословно из docs/classes.md: назначение и цена
-        // продажи (classItemCardLine берёт число из того же sellPrice, что
-        // кнопка и сервер).
-        stat: classItemCardLine(spec),
+        // Текст карточки — дословно из docs/classes.md: только назначение.
+        // Цены здесь нет с 19.10.2026 (решение Андрея) — она на кнопке.
+        stat: spec.useLine,
         qty: player?.classItems?.[spec.id] ?? 0,
         iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` as string | null,
         equipped: false,
@@ -1167,6 +1198,7 @@ export default function App() {
         inventoryItemId: null as string | null,
         classItemId: spec.id,
         sellPrice: spec.sellPrice,
+        confirmSale: spec.confirmSale,
       }
     }
     // Страница — СВОЯ ветка: у неё два действия («Собрать книгу» и
@@ -4071,7 +4103,7 @@ export default function App() {
           // сбрасывается: иначе он переезжал в следующую открытую карточку и
           // читался как ответ на то, чего в ней не нажимали (так же сделано у
           // карточки навыка на «Персонаже»).
-          onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null); setSkillActionError(null) }}
+          onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null); setStockSellConfirm(null); setSkillActionError(null) }}
           style={{
             position:'fixed', top:0, left:0, right:0, bottom:0,
             background:'rgba(0,0,0,0.55)',
@@ -4125,14 +4157,24 @@ export default function App() {
             {selectedEntry.kind === 'classItem' ? (() => {
               // Предмет класса (18.10.2026): одно действие — продать ОДИН.
               // Кнопки применения нет: классов, выбора и отречения в игре ещё
-              // нет (docs/classes.md). Без подтверждения — как у книги и
-              // страницы; уходит одна штука за нажатие. Цена — из каталога,
-              // одним числом с сервером.
-              const { classItemId, sellPrice } = selectedEntry
+              // нет (docs/classes.md). Уходит одна штука за нажатие. Цена — из
+              // каталога, одним числом с сервером.
+              // Подтверждение — если оно есть в каталоге (confirmSale): у
+              // Печати да, у Осколка нет (решение Андрея 19.10.2026).
+              const { classItemId, sellPrice, confirmSale, name } = selectedEntry
+              const sell = () => { if (!skillActionPending) void handleSkillAction({ kind: 'sellClassItem', classItemId }) }
+              if (confirmSale && stockSellConfirm === classItemId) {
+                return (
+                  <SaleConfirm
+                    question={`Продать ${name} за ${sellPrice}?`}
+                    onYes={() => { setStockSellConfirm(null); sell() }}
+                    onNo={() => setStockSellConfirm(null)} />
+                )
+              }
               return (
               <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                 <div
-                  onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sellClassItem', classItemId }) }}
+                  onClick={() => { if (skillActionPending) return; if (confirmSale) setStockSellConfirm(classItemId); else sell() }}
                   style={{
                     boxSizing:'border-box', minHeight:44,
                     display:'flex', alignItems:'center', justifyContent:'center',

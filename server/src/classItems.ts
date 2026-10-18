@@ -42,13 +42,25 @@ export type ClassItem = {
   icon: string
   /** Красивое описание — курсивом в карточке (docs/classes.md, «Тексты карточек»). */
   desc: string
-  /** Что предмет даёт — строка под описанием, БЕЗ цены продажи (её добавляет classItemCardLine). */
+  /**
+   * Что предмет даёт — строка под описанием. Цены продажи в ней НЕТ: цена только
+   * на кнопке «Продать за N» (решение Андрея 19.10.2026; до этого строка
+   * кончалась «Продажа: N золота.», и цена в карточке была названа дважды).
+   */
   useLine: string
   /**
    * Сколько золота даёт продажа ОДНОЙ штуки. Одно число на клиент и сервер: на
    * кнопке написано ровно то, что начислит POST /character/sell-class-item.
    */
   sellPrice: number
+  /**
+   * Спрашивать ли «Продать <название> за <цена>?» [Да] [Нет] перед продажей
+   * (решение Андрея 19.10.2026). Печать — да: она редкая (5% боссов с 10 уровня)
+   * и нужна для отречения, а продажа необратима. Осколок — нет: их копятся
+   * десятки, как страниц, и окно на каждый было бы помехой, а не защитой.
+   * Читает только клиент; сервер продаёт одинаково.
+   */
+  confirmSale: boolean
   /**
    * Занимает ли предмет ячейку сумки (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»).
    * Осколок — нет, как страницы: их копятся десятки (на класс нужно 5, на
@@ -65,7 +77,7 @@ export type ClassItem = {
 
 /**
  * Два предмета. Тексты — дословно из docs/classes.md, «Тексты карточек».
- * Цены продажи — оттуда же («Предметы»): 50 и 500.
+ * Цены продажи — из раздела «Предметы» там же: 50 и 500.
  */
 export const CLASS_ITEMS: ClassItem[] = [
   {
@@ -76,6 +88,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     useLine: 'Нужен Отшельнику для выбора класса и возвышения.',
     sellPrice: 50,
     takesCell: false,
+    confirmSale: false,
   },
   {
     id: 'renounce_seal',
@@ -85,6 +98,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     useLine: 'Убирает класс полностью, вместе с возвышением.',
     sellPrice: 500,
     takesCell: true,
+    confirmSale: true,
   },
 ]
 
@@ -101,13 +115,4 @@ export function classItemById(id: string): ClassItem | null {
 export function parseClassItemId(raw: unknown): ClassItemId | null {
   if (typeof raw !== 'string') return null
   return (CLASS_ITEM_IDS as readonly string[]).includes(raw) ? (raw as ClassItemId) : null
-}
-
-/**
- * Строка «что даёт» в карточке — в той форме, что записана в docs/classes.md:
- * назначение и цена продажи. Число берётся из sellPrice, а не написано текстом
- * рядом: два экземпляра разошлись бы при первой правке цены.
- */
-export function classItemCardLine(spec: ClassItem): string {
-  return `${spec.useLine} Продажа: ${spec.sellPrice} золота.`
 }
