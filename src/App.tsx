@@ -138,6 +138,14 @@ const SLOT_ORDER: string[] = HERO_SLOTS.map((s) => s.slot)
 // подтверждения продажи снаряжения, где написано только «пропадёт навсегда»):
 // так просил Андрей. «Да» — с красной рамкой, как «Продать» у снаряжения.
 // Высота кнопок 44 px — палец.
+// Название книги в вопросе «Продать … за N?» — в винительном падеже: «Книга
+// огня» → «Книгу огня». Все пять книг каталога называются «Книга …»; название,
+// которое так не начинается, остаётся как есть (у Печати отречения винительный
+// и так совпадает с именительным).
+function bookNameAccusative(name: string): string {
+  return name.startsWith('Книга ') ? `Книгу ${name.slice('Книга '.length)}` : name
+}
+
 function SaleConfirm({ question, onYes, onNo }: { question: string; onYes: () => void; onNo: () => void }) {
   const button = (danger: boolean) => ({
     flex:1, boxSizing:'border-box' as const, minHeight:44,
@@ -833,7 +841,8 @@ export default function App() {
   const [sellConfirm, setSellConfirm] = useState<string | null>(null)
   const [sellPending, setSellPending] = useState(false)
   // Подтверждение продажи СКЛАДСКОГО предмета (не строки инвентаря): id того, чья
-  // продажа ждёт «Да», — Печати отречения (19.10.2026). null — вопроса нет.
+  // продажа ждёт «Да», — Печати отречения или книги (19.10.2026). null — вопроса
+  // нет. Осколки и страницы продаются без вопроса.
   // Отдельно от sellConfirm: у снаряжения адрес — inventoryItemId строки, а
   // здесь id каталога, и их продают разные ручки.
   const [stockSellConfirm, setStockSellConfirm] = useState<string | null>(null)
@@ -4239,9 +4248,10 @@ export default function App() {
                     {skillActionPending ? 'Собираю...' : `Собрать книгу (${have}/${SCROLLS_PER_BOOK})`}
                   </div>
                 )}
-                {/* Продажа БЕЗ подтверждения — как у книги: страница не
-                    уникальна, их копятся десятки, и окно на каждую было бы
-                    помехой, а не защитой. Уходит ОДНА за нажатие. */}
+                {/* Продажа БЕЗ подтверждения (у книги оно есть с 19.10.2026):
+                    страница не уникальна, их копятся десятки, и окно на
+                    каждую было бы помехой, а не защитой. Уходит ОДНА за
+                    нажатие. */}
                 <div
                   onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sellScroll', scrollId }) }}
                   style={actionStyle(false, skillActionPending)}>
@@ -4255,7 +4265,20 @@ export default function App() {
               </div>
               )
             })() : selectedEntry.kind === 'book' ? (() => {
-              const { bookId, skillId, sellPrice } = selectedEntry
+              const { bookId, skillId, sellPrice, name } = selectedEntry
+              // Продажа книги — с подтверждением «Продать <название> за <цена>?»
+              // (решение Андрея 19.10.2026), цена — та же consumableSellPrice,
+              // что на кнопке и у сервера. Вопрос встаёт на место ВСЕХ трёх
+              // действий книги, а не одной кнопки: «Продать» стоит в ряду с
+              // «Улучшить навык», и вопрос в полряда не уместился бы.
+              if (stockSellConfirm === bookId) {
+                return (
+                  <SaleConfirm
+                    question={`Продать ${bookNameAccusative(name)} за ${sellPrice}?`}
+                    onYes={() => { setStockSellConfirm(null); if (!skillActionPending) void handleSkillAction({ kind: 'sell', bookId }) }}
+                    onNo={() => setStockSellConfirm(null)} />
+                )
+              }
               // Почему «Надеть» недоступна — ТРИ разных причины, и у
               // каждой свой текст на самой кнопке (решение дизайнера).
               // null в equippedSkills значит «сервер не назвал»: гадать
@@ -4304,7 +4327,7 @@ export default function App() {
                     Улучшить навык
                   </div>
                   <div
-                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'sell', bookId }) }}
+                    onClick={() => { if (!skillActionPending) setStockSellConfirm(bookId) }}
                     style={actionStyle(false, skillActionPending)}>
                     Продать за {sellPrice}
                   </div>
