@@ -1964,3 +1964,92 @@ export const GATEKEEPER_SHEETS = {
   death: { src: `${GATEKEEPER_DIR}Gatekeeper_Death.webp`, cellW: 246, cellH: 286, cols: 8, count: 31, anchorX: 0.531, anchorY: 0.971, speed: GATEKEEPER_DEATH_ANIM_SPEED, loop: false },
 } as const
 
+
+// ============================================================================
+// АТМОСФЕРА ТЕМ — ветер, пыль, листья, зола, туман и капли (20.10.2026)
+// ============================================================================
+// Числа — из одобренного образца four-theme-atmosphere-v2 (архив арта,
+// studies/four-theme-atmosphere-v2). Его фрагменты 800×400 вырезаны из карт в
+// масштабе 1, поэтому все размеры и скорости здесь — в пикселях МИРА (64 на
+// тайл), как у образца; на экране они умножаются на масштаб мира. Плотность —
+// «столько-то на рамку образца», модуль сам пересчитывает её на видимую
+// область камеры (entities/atmosphere.ts). Болото (B2, C2) в образце есть, в
+// игре его нет — сюда не перенесено.
+export type AtmosphereThemeLook = {
+  /** Скорость сноса ветром, px мира на единицу накопленного ветра. */
+  speed: number
+  /** Сила раскачивания подвесного декора (этап 2, пока не читается). */
+  sway: number
+  /** Пылинок на рамку ATMO_DUST_BOX. */
+  dust: number
+  /** Листьев (кладбище) или хлопьев золы (литейная) на рамку ATMO_FLAKE_BOX; 0 — нет. */
+  flakes: number
+  /** Плотность тумана в центре пятна; 0 — тумана нет. */
+  fog: number
+  /** Цвет пыли, листьев, золы и тумана. */
+  color: number
+  /** Оседание пыли, px мира в секунду. */
+  dustFall: number
+  /** Оседание листьев или золы, px мира в секунду. */
+  flakeFall: number
+  /** Полуоси листа или хлопка золы, px мира. */
+  flakeRx: number
+  flakeRy: number
+  /** Капли с потолков (только склеп). */
+  drips: boolean
+}
+export const ATMOSPHERE: Record<BackdropPreset, AtmosphereThemeLook> = {
+  // Кладбище (A, F): порывы, пыль и сухие листья.
+  graveyard: { speed: 65, sway: 9, dust: 24, flakes: 22, fog: 0, color: 0xc7b182, dustFall: 3, flakeFall: 13, flakeRx: 5, flakeRy: 1.8, drips: false },
+  // Склеп (B, D_OPEN, D_SEALED): слабый сквозняк, пыль, туман у пола, капли.
+  flooded_crypt: { speed: 19, sway: 4, dust: 18, flakes: 0, fog: 0.15, color: 0xa8b9c1, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: true },
+  // Литейная (C, E): сухой ветер, пыль и зола.
+  foundry: { speed: 57, sway: 7, dust: 45, flakes: 8, fog: 0, color: 0xc7bca8, dustFall: 7, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
+}
+// Время атмосферы на старте забега, с — как у образца (там часы стартуют с 2).
+export const ATMO_START_TIME_S = 2
+// Длиннее шаг не делаем (как образец): после свёрнутого приложения ветер и
+// частицы не прыгают на секунды вперёд.
+export const ATMO_MAX_DT_S = 0.07
+// Рамки образца, на которые названа плотность (px мира): пыль заворачивается в
+// 800×400, листья и зола — в 900×450 (на 50 и 25 px шире кадра с каждой стороны).
+export const ATMO_DUST_BOX_W = 800
+export const ATMO_DUST_BOX_H = 400
+export const ATMO_FLAKE_BOX_W = 900
+export const ATMO_FLAKE_BOX_H = 450
+// Поля, на которые рамка в игре шире видимой области: частица заворачивается на
+// другой край ЗА кадром. Пыль — на 8 px (крупнее 2.6 px пылинок нет), листья и
+// зола — как у образца.
+export const ATMO_DUST_MARGIN = 8
+export const ATMO_FLAKE_MARGIN_X = 50
+export const ATMO_FLAKE_MARGIN_Y = 25
+// Капли склепа: по одному источнику на клетку потолка ('#' с воздухом под ней) —
+// это плотность образца (10 капель на 670 px). Цикл источника 2.5–4.5 с,
+// падение y = phase² × ATMO_DRIP_ACCEL, но не до фиксированной высоты, а до пола
+// под источником (решение Андрея 20.10.2026; в образце капля гасла через 363 px).
+// Штрих 1.6×9 px, ветер сносит его на 5 px за единицу фазы и наклоняет на 1.2.
+export const ATMO_DRIP_CYCLE_MIN_S = 2.5
+export const ATMO_DRIP_CYCLE_SPREAD_S = 2
+export const ATMO_DRIP_ACCEL = 300
+export const ATMO_DRIP_LEN = 9
+export const ATMO_DRIP_WIDTH = 1.6
+export const ATMO_DRIP_DRIFT = 5
+export const ATMO_DRIP_SLANT = 1.2
+export const ATMO_DRIP_COLOR = 0xb8cdda
+export const ATMO_DRIP_ALPHA = 0.72
+// Туман склепа — полоса над полом нижнего зала (решение Андрея 20.10.2026):
+// самый нижний ряд пола, где пол тянется хотя бы ATMO_FOG_MIN_CELLS клеток
+// (B — ряд 21, x 0–47; D_OPEN и D_SEALED — ряд 21, x 7–45). Пятно — эллипс
+// радиусом 175 px, сжатый по вертикали до 0.28, плотность в центре — fog темы,
+// к краю линейно до нуля (как у образца). Пятен — 6 на 1200 px полосы, шаг 205,
+// дрейф 0.8 от сноса ветром, покачивание ±22 px. Центр — на ATMO_FOG_LIFT выше
+// пола: нижняя половина пятна уходит за камень, туман лежит у ног. У концов
+// полосы пятно гаснет на длине своего радиуса.
+export const ATMO_FOG_MIN_CELLS = 8
+export const ATMO_FOG_R = 175
+export const ATMO_FOG_SQUASH = 0.28
+export const ATMO_FOG_PER_PX = 6 / 1200
+export const ATMO_FOG_STEP = 205
+export const ATMO_FOG_DRIFT = 0.8
+export const ATMO_FOG_BOB = 22
+export const ATMO_FOG_LIFT = 40

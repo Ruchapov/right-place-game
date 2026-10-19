@@ -7,8 +7,10 @@
 
 **Правило на будущее**: новые боевые механики Explore НЕ пишутся в
 `Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`.
-Готовы семь: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
-(04.10.2026), `gatekeeper.ts` (06.10.2026) и `stunStars.ts` (13.10.2026).
+Готовы восемь: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
+(04.10.2026), `gatekeeper.ts` (06.10.2026), `stunStars.ts` (13.10.2026) и
+`atmosphere.ts` (20.10.2026; не боевая механика, а вид — ветер и частицы темы,
+но устроена по тому же контракту).
 
 ### Контракт
 
@@ -20,7 +22,16 @@ createBossSystem(deps)  → { spawn, update(dt, deltaMS), dispose }
 createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame }
 createManaSystem(deps)   → { dropFrom, update(deltaMS), clear, dispose }
 createStunStarsSystem(deps) → { update(deltaMS), dispose }
+createAtmosphereSystem(deps) → { update(deltaMS, view), dispose }
 ```
+
+⚠️ `createAtmosphereSystem` кладёт свой узел в контейнер мира СРАЗУ при
+создании, поэтому создаётся ДО готового слоя карты — так частицы оказываются под
+платформами. `view` — видимая область камеры в пикселях мира, один объект на
+забег (`atmosphereView` в `Explore.tsx`), зовётся в тикере сразу после
+`updateCamera(dt)`. `dispose` уничтожает и узел, и текстуру, которую модуль
+нарисовал сам: `app.destroy` снимает только узлы. Разбор —
+`docs/explore-engine.md`, «Атмосфера тем карт».
 
 ⚠️ Три системы врагов (`enemy.ts`, `zvonar.ts`, `gatekeeper.ts`) работают по
 ОДНОМУ списку `enemiesRef` и каждая в начале цикла пропускает чужих по

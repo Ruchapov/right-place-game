@@ -55,6 +55,7 @@ import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekee
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { createStunStarsSystem } from './explore/entities/stunStars'
+import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
@@ -2503,6 +2504,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
+    let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -3141,6 +3143,24 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const worldContainer = new Container()
       worldContainer.scale.set(viewScale)
       app.stage.addChild(worldContainer)
+
+      // Атмосфера темы (ветер, пыль, листья, зола, туман, капли — см.
+      // explore/entities/atmosphere.ts) — ПЕРВЫМ узлом мира, под готовым слоем:
+      // платформы закрывают частицы сами, а бой, шипы и события всегда поверх
+      // них. Поэтому создаётся до artSprite. Выключена без WebGL (запасной
+      // рендерер и так платит за кадр в десятки раз больше) и при «уменьшении
+      // движения» в системе — решение Андрея 20.10.2026.
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+      if (!onCanvasRenderer && !reduceMotion) {
+        atmosphereSystem = createAtmosphereSystem({
+          parent: worldContainer, theme: mapTheme, grid, mapWidth: mapArt.width, mapHeight: mapArt.height,
+        })
+      } else {
+        console.info(`Explore: атмосфера темы выключена — ${onCanvasRenderer ? 'нет WebGL' : 'в системе включено уменьшение движения'}`)
+      }
+      // Видимая область камеры в пикселях мира — для атмосферы; один объект на
+      // весь забег, тикер только переписывает поля.
+      const atmosphereView: AtmosphereView = { left: 0, top: 0, width: 0, height: 0 }
 
       // Готовый слой платформ и декора — первым, в (0, 0) и без масштаба: он
       // собран пиксель в пиксель под мир игры, 64 px на тайл.
@@ -6121,6 +6141,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         cameraFieldsAgeMs += ticker.deltaMS
         if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
+        // Атмосфера — после камеры: рамка частиц — тот кадр, что будет нарисован.
+        if (atmosphereSystem !== null) {
+          atmosphereView.left = -worldContainer.x / viewScale
+          atmosphereView.top = -worldContainer.y / viewScale
+          atmosphereView.width = app!.screen.width / viewScale
+          atmosphereView.height = app!.screen.height / viewScale
+          atmosphereSystem.update(ticker.deltaMS, atmosphereView)
+        }
 
         // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:
         // после всех источников урона этого кадра. Герой мёртв — не завершаем
@@ -6190,6 +6218,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       bossSystem?.dispose()
       stunStarsSystem?.dispose()
       manaSystem?.dispose()
+      // Атмосфера сама уничтожает свою текстуру — app.destroy ниже снимает
+      // только узлы, а текстура, нарисованная модулем, осталась бы в видеопамяти
+      // на каждый повторный заход на карту.
+      atmosphereSystem?.dispose()
+      atmosphereSystem = null
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
       // чтобы он не держал систему уже уничтоженной сцены и не звал её clear().
       clearManaOrbsRef.current = () => {}
