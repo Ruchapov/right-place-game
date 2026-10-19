@@ -7,8 +7,7 @@ export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
 // Тема по карте: кладбище, затопленный склеп, умолкшая колокольная литейная.
 // Тема задаёт фон и вуаль; платформы и декор — готовый слой карты
-// (explore/mapArt.ts). ⚠️ C пока рисуется старой плиткой — см. legacyTilesFor
-// в mapRenderer.ts.
+// (explore/mapArt.ts).
 export const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
   A: 'graveyard',      // Серпантин
   B: 'flooded_crypt',  // Разлом

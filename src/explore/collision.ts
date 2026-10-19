@@ -80,7 +80,7 @@ export function isOverlappingPlatformBand(
 // Шипы '^' не твердь ни для одной из сторон (не проверяются в isSolid/
 // cellHeadBlockBottom/cellFootBlockTop выше) — игрок проходит/проваливается
 // сквозь них как через воздух. Здесь только определяем КАСАНИЕ — и только с
-// зоной ЗУБЬЕВ (нижние SPIKE_H_RATIO клетки, прижаты к низу — см. drawSpikes/
+// зоной ЗУБЬЕВ (нижние SPIKE_H_RATIO клетки, прижаты к низу — см. drawSpikeCell/
 // SPIKE_H_RATIO в mapRenderer.ts), а не со всей клеткой: иначе нельзя было бы
 // перепрыгнуть шип — урон бил бы и по воздуху над видимыми зубьями.
 export function isTouchingSpikes(
@@ -113,7 +113,7 @@ export function isTouchingSpikes(
 
 // Нижняя граница препятствия в клетке (cx,cy) для движения ВВЕРХ, или null,
 // если клетка не блокирует. '#' — вся клетка, '=' — только полоса сверху
-// (см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
+// (см. PLATFORM_H_RATIO в mapRenderer.ts).
 export function cellHeadBlockBottom(
   grid: Grid,
   tileSize: number,
@@ -133,7 +133,7 @@ export function cellHeadBlockBottom(
 
 // Верхняя граница поверхности в клетке (cx,cy) для приземления СВЕРХУ, или
 // null, если клетка не твердь. '#' — верх клетки. '=' — тоже верх клетки
-// (полоса начинается от верха, см. drawPlatform/PLATFORM_H_RATIO в mapRenderer.ts).
+// (полоса начинается от верха, см. PLATFORM_H_RATIO в mapRenderer.ts).
 export function cellFootBlockTop(
   grid: Grid,
   tileSize: number,

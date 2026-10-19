@@ -2,7 +2,8 @@ import { MAP_ART } from './mapArtManifest'
 import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
 
 /**
- * ГОТОВЫЕ СЛОИ КАРТ: A и F (07.10.2026), B, D_OPEN, D_SEALED и E (19.10.2026).
+ * ГОТОВЫЕ СЛОИ КАРТ: A и F (07.10.2026), B, D_OPEN, D_SEALED и E (19.10.2026),
+ * C (20.10.2026) — у всех шести.
  *
  * У этих карт платформы и декор — не плитка из атласа, а одна прозрачная
  * картинка на всю карту, собранная из одобренных исходников художественного
@@ -16,13 +17,10 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
  * Что от этого НЕ меняется: столкновения. Они по-прежнему считаются по сетке
  * .txt, слой — только вид. Шипы и объекты событий рисуются поверх него своим
  * кодом.
- *
- * ⚠️ Карта C слоя пока не имеет и рисуется старой плиткой — см. legacyTilesFor
- * в mapRenderer.ts.
  */
 export type MapArt = { src: string; width: number; height: number; gridChecksum: number }
 
-/** Готовый слой карты или null, если карта рисуется плиткой. */
+/** Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега). */
 export function mapArtFor(mapFile: string): MapArt | null {
   const entry = MAP_ART[mapFile] ?? MAP_ART_CRYPT_FOUNDRY[mapFile]
   if (!entry) return null
