@@ -1,4 +1,4 @@
-// Готовые слои карт склепа (B, D_OPEN, D_SEALED) и литейной (E) — из одобренных
+// Готовые слои карт склепа (B, D_OPEN, D_SEALED) и литейной (C, E) — из одобренных
 // исходников архива арта, и фоны обеих тем.
 //
 //   node tools/build_map_art_crypt_foundry.mjs           собрать, сверить, записать в public/ и src/
@@ -11,18 +11,16 @@
 // RIGHT_PLACE_ART), его ведёт Codex. Источники — замороженные одобренные версии:
 //   склеп     maps/crypt/approved_v2 (12.10.2026): export/<карта>/platforms.png
 //             (платформы и опора) + decor.png; фоны export/backgrounds/;
-//   литейная  maps/abbey/approved_v3 (15.10.2026): maps/<карта>/map-<карта>-platforms.png
-//             + map-<карта>-decor.png; фоны approved-backgrounds-v1/.
+//   литейная  E — maps/abbey/approved_v3 (15.10.2026): maps/E/map-E-platforms.png
+//             + map-E-decor.png; C — maps/abbey/approved_v4 (19.10.2026, только
+//             карта C): maps/C/map-C-platforms.png + map-C-columns.png +
+//             map-C-decor.png; фоны approved-backgrounds-v1/.
 // Контрольная сумма каждого исходника записана ниже: архив поменяли — скрипт
 // остановится, а не соберёт молча другую картинку.
 //
-// ⚠️ Карта C (литейная) здесь НАМЕРЕННО отсутствует: в approved_v3 висящая
-// колонна-стенка x=42 нарисована на 25 px левее своей клетки столкновений
-// (одобренный сдвиг, правила литейной). Решение Андрея 19.10.2026: ждать новой
-// версии от Codex, где колонна стоит на сетке, и до неё C рисуется старой
-// плиткой. Придёт версия — добавить C в MAPS ниже (слой = платформы + колонны +
-// декор, у её опоры x=27 — клетки воздуха в allowCovered), и проверка сетки
-// сама скажет, сошлось ли.
+// ⚠️ Карта C — именно approved_v4, не v3: в v3 висящая колонна-стенка x=42 стояла
+// на 25 px левее своей клетки столкновений. В v4 Codex вернул её на сетку (ствол
+// x 2688..2751, строки 15–20), и у C есть ЧЕТВЁРТАЯ проверка — wallCheck ниже.
 //
 // ЧТО ПРОВЕРЯЕТ (и падает, если хоть что-то не сошлось):
 //   1. исходники — те самые замороженные файлы (sha256);
@@ -33,7 +31,8 @@
 //      пикселей — не больше 2). Поэтому камень и декор (непрозрачные пиксели
 //      слоя) сверяются строго, ±1, а где сквозь слой виден фон — с допуском;
 //   3. слой против сетки столкновений — та же проверка, что у A и F в
-//      build_map_art.mjs (своя копия: тот скрипт этой задачей не трогается).
+//      build_map_art.mjs (своя копия: тот скрипт этой задачей не трогается);
+//   4. у карты C — колонна-стенка в своей клетке (wallCheck).
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -88,8 +87,9 @@ const THEMES = {
  * Карты. parts — слои снизу вверх, full — одобренная картинка. hero — рамка
  * фигурки героя на одобренной картинке склепа (её там нарисовали под декором),
  * в сверке не участвует. allowCovered — клетки воздуха, которые законно закрыты
- * камнем больше чем на 90% (опора — декор без столкновений); у этих четырёх карт
- * таких нет.
+ * камнем больше чем на 90% (опора — декор без столкновений, как колонна на A и
+ * F); такие есть только у C. wall — висящая колонна-стенка, которую сверяет
+ * wallCheck (только C).
  */
 const MAPS = [
   {
@@ -134,7 +134,48 @@ const MAPS = [
     hero: null,
     allowCovered: [],
   },
+  {
+    // approved_v4 — только карта C. Платформы и декор те же, что в v3 (sha
+    // совпадают); заменён слой колонн: колонна-стенка на сетке.
+    id: 'C', file: 'map_C_boss_descent.txt', theme: 'foundry',
+    parts: [
+      { file: `${ABBEY}/approved_v4/maps/C/map-C-platforms.png`, sha: 'f164da1509522abdad27d3a8b5ba5e71e65bbf4457450aca14b211db624ac361' },
+      { file: `${ABBEY}/approved_v4/maps/C/map-C-columns.png`, sha: '23a09f65f59e58edaf18d9bcbe56fe71a8dfaaafa56b8a34f601697f65225f8e' },
+      { file: `${ABBEY}/approved_v4/maps/C/map-C-decor.png`, sha: '38b46d9beca0e2742dc8a514a06353053cb6ee0bc76c577a2e71e31c6ea6ae50' },
+    ],
+    full: { file: `${ABBEY}/approved_v4/maps/C/map-C-full.png`, sha: '33c7b6764dfd6e33c709662c33cb0fcef695fb85ca7c02a40c414224091cb431' },
+    hero: null,
+    // Опора x=27 под мостом (строки 9–12) — декор без столкновений, одна на карту.
+    allowCovered: [[27, 9], [27, 10], [27, 11], [27, 12]],
+    // Колонна-стенка: клетка x=42, строки 15–20, в слое колонн (parts[1]).
+    // Капитель (89×76 по правилам литейной v4) выровнена правым краем по краю
+    // моста над ней, x=2752, и только она может выходить влево из клетки — не
+    // дальше 25 px и не ниже своей высоты; вправо из клетки — ничего.
+    wall: { part: 1, cellX: 42, rows: [15, 20], capitalH: 76, capitalOverhang: 25 },
+  },
 ]
+
+/**
+ * Колонна-стенка в своей клетке. Смотрит слой колонн в строках стенки и в
+ * окне в две клетки по обе стороны от неё: правее клетки — ни одного
+ * непрозрачного пикселя, левее — только капитель (в её высоте и не дальше
+ * capitalOverhang). Что клетка закрыта камнем сверху донизу, проверяет
+ * geometryCheck — стенка там обычная твердь '#'.
+ */
+function wallCheck(colsRaw, W, wall) {
+  const x0 = wall.cellX * TILE, x1 = x0 + TILE
+  const y0 = wall.rows[0] * TILE, y1 = (wall.rows[1] + 1) * TILE
+  let leftRows = 0, leftMaxPx = 0, leftBelowCapital = 0, rightPx = 0, exactRows = 0
+  for (let y = y0; y < y1; y++) {
+    let minX = Infinity, maxX = -1
+    for (let x = x0 - 2 * TILE; x < x1 + 2 * TILE; x++) if (colsRaw[(y * W + x) * 4 + 3] >= 128) { minX = Math.min(minX, x); maxX = Math.max(maxX, x) }
+    if (maxX < 0) continue
+    if (maxX >= x1) rightPx += maxX - x1 + 1
+    if (minX < x0) { leftRows++; leftMaxPx = Math.max(leftMaxPx, x0 - minX); if (y >= y0 + wall.capitalH) leftBelowCapital++ }
+    if (minX === x0 && maxX === x1 - 1) exactRows++
+  }
+  return { cell: [x0, x1 - 1], rows: [y0, y1 - 1], exactRows, leftRows, leftMaxPx, leftBelowCapital, rightPx }
+}
 
 const blank = (w, h, bg = '#00000000') => sharp({ create: { width: w, height: h, channels: 4, background: bg } })
 const raw = (input) => sharp(input).ensureAlpha().raw().toBuffer()
@@ -349,12 +390,22 @@ async function buildMap(m) {
   const blocked = g.airBlockedList.filter(([x, y]) => !allowed.has(`${x},${y}`))
   console.log(`  воздух: ${g.airCells} клеток, закрыто камнем больше чем на 90% — ${g.airBlockedList.length}${g.airBlockedList.length ? ' ' + JSON.stringify(g.airBlockedList) : ''}`)
   if (blocked.length) fail(`на карте ${m.id} камень закрывает клетки воздуха ${JSON.stringify(blocked)} — герой пройдёт сквозь нарисованный камень.`)
+  const missing = m.allowCovered.filter(([x, y]) => !g.airBlockedList.some(([bx, by]) => bx === x && by === y))
+  if (missing.length) console.log(`  ⚠️ из разрешённых закрытых клеток воздуха не закрыта ни одна из ${JSON.stringify(missing)} — опора сдвинулась?`)
+
+  // (4) колонна-стенка в своей клетке (только у карты с wall)
+  let wall = null
+  if (m.wall) {
+    wall = wallCheck(await raw(m.parts[m.wall.part].file), W, m.wall)
+    console.log(`  колонна-стенка: клетка x ${wall.cell[0]}..${wall.cell[1]}, y ${wall.rows[0]}..${wall.rows[1]}; строк ровно по клетке — ${wall.exactRows}; правее клетки — ${wall.rightPx} px; левее — ${wall.leftRows} строк, до ${wall.leftMaxPx} px (капитель), из них ниже капители — ${wall.leftBelowCapital}`)
+    if (wall.rightPx || wall.leftBelowCapital || wall.leftMaxPx > m.wall.capitalOverhang) fail(`колонна-стенка карты ${m.id} вышла из своей клетки x=${m.wall.cellX}.`)
+  }
 
   // Сжатие. Альфа без потерь: кромка слоя обязана остаться той же.
   const pick = await encodeUnder(layerPng, layer, W, H, MAP_LAYER_MAX, `слой карты ${m.id}`)
   console.log(`  выбрано «${pick.label}»: ${mb(pick.buf.length)} (PNG без потерь — ${mb(layerPng.length)})`)
   const srcBytes = m.parts.reduce((s, p) => s + fs.statSync(p.file).size, 0)
-  return { ...m, W, H, rows, layerPng, pick, srcBytes, fidelity: { opaque, opaqueDiff, opaqueMax, seen, seenMax, seenOver2 }, geometry: g }
+  return { ...m, W, H, rows, layerPng, pick, srcBytes, fidelity: { opaque, opaqueDiff, opaqueMax, seen, seenMax, seenOver2 }, geometry: g, wallResult: wall }
 }
 
 async function buildBackground(themeId, name) {
@@ -381,7 +432,7 @@ for (const m of maps) {
   const stem = m.file.replace(/\.txt$/, '')
   fs.writeFileSync(`${dir}/${stem}_layer_lossless.png`, m.layerPng)
   const box = await fragment(m.layerPng, m.pick.buf, m.W, m.H, `${dir}/compress_${stem}_before_after.png`, true)
-  report.maps.push({ id: m.id, file: m.file, size: [m.W, m.H], sourcePngBytes: m.srcBytes, losslessPngBytes: m.layerPng.length, webpBytes: m.pick.buf.length, quality: m.pick.label, psnr: m.pick.psnr, alphaMaxDiff: m.pick.alphaMaxDiff, detailPercent: m.pick.detail, fragmentBox: box, fidelity: m.fidelity, gridChecksum: '0x' + gridChecksum(m.rows).toString(16).padStart(8, '0') })
+  report.maps.push({ id: m.id, file: m.file, size: [m.W, m.H], sourcePngBytes: m.srcBytes, losslessPngBytes: m.layerPng.length, webpBytes: m.pick.buf.length, quality: m.pick.label, psnr: m.pick.psnr, alphaMaxDiff: m.pick.alphaMaxDiff, detailPercent: m.pick.detail, fragmentBox: box, fidelity: m.fidelity, wall: m.wallResult, gridChecksum: '0x' + gridChecksum(m.rows).toString(16).padStart(8, '0') })
 }
 for (const b of bgs) {
   const dir = THEMES[b.themeId].exportDir
@@ -401,7 +452,7 @@ for (const b of bgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgr
 
 const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art_crypt_foundry.mjs — руками не править, пересобирать скриптом.
 //
-// Готовые слои платформ и декора карт склепа (B, D_OPEN, D_SEALED) и литейной (E).
+// Готовые слои платформ и декора карт склепа (B, D_OPEN, D_SEALED) и литейной (C, E).
 // Слои карт A и F — в mapArtManifest.ts (их собирает tools/build_map_art.mjs).
 // gridChecksum — контрольная сумма сетки .txt, под которую слой собран: поменяют
 // геометрию карты и не пересоберут слой — картинка разойдётся со столкновениями,
