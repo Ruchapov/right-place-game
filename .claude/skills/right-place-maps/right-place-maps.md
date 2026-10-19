@@ -67,8 +67,10 @@ description: Map geometry rules for the Right Place Telegram roguelike — grid 
 - Сверху — твердь, встать можно (как и было).
 - Сбоку — по-прежнему свободно проходима.
 - Это осознанно расходится с интуицией "one-way platform" из других игр.
-  Рендер (`mapRenderer.ts` → `drawPlatform`, `PLATFORM_H_RATIO`) и коллизия
-  игрока (`Explore.tsx`) синхронизированы на эту модель.
+  Коллизия игрока (`explore/collision.ts`, доля полосы `PLATFORM_H_RATIO` из
+  `mapRenderer.ts`) стоит на этой модели. Рисует полку с 20.10.2026 готовый
+  слой карты (`explore/mapArt.ts`), а не код: её верх обязан быть на линии
+  клетки — это сверяют скрипты сборки слоёв (`tools/build_map_art*.mjs`).
 
 ## Правило 1 — обязательный подъём только кладкой `'#'` (ЖЁСТКОЕ требование)
 
@@ -118,8 +120,8 @@ description: Map geometry rules for the Right Place Telegram roguelike — grid 
 
 ## Когда НЕ использовать этот skill
 
-- Рендер тайлов/декора (текстуры, обводка, `PLATFORM_H_RATIO` как визуальный
-  параметр) → `mapRenderer.ts` (в репозитории, `src/`) или `render_lib.py`
+- Вид карты (готовые слои, фон, шипы) → `docs/maps.md`, `src/explore/mapArt.ts`,
+  `src/mapRenderer.ts`; плиточного рендера в игре нет с 20.10.2026. Или `render_lib.py`
   (ВНЕШНИЙ инструмент, вне репозитория, лежит у Андрея на машине — искать
   его здесь бесполезно), не сюда.
 - Физика/коллизия игрока в реальном времени (гравитация, прыжок, тач-кнопки)
