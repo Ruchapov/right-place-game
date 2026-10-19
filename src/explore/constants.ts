@@ -5,14 +5,17 @@ import { POTION_TIERS } from '../potions'
 
 export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
 
-// Фон по карте — фиксированный выбор пресета под тему каждой карты.
+// Тема по карте: кладбище, затопленный склеп, умолкшая колокольная литейная.
+// Тема задаёт фон и вуаль; платформы и декор — готовый слой карты
+// (explore/mapArt.ts). ⚠️ C пока рисуется старой плиткой — см. legacyTilesFor
+// в mapRenderer.ts.
 export const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
-  A: 'graveyard',      // Серпантин — открытый подъём, землистые тона
-  B: 'flooded_crypt',  // Разлом — тесный тёмный низ
-  C: 'throne_room',    // Спуск к боссу — драматичная арена
-  D: 'flooded_crypt',  // Тайник — подвал Смуглера
-  E: 'throne_room',    // Башни — замковая архитектура
-  F: 'graveyard',      // Святилище — алтарь и обелиски рифмуются со стелами
+  A: 'graveyard',      // Серпантин
+  B: 'flooded_crypt',  // Разлом
+  C: 'foundry',        // Спуск к боссу
+  D: 'flooded_crypt',  // Тайник
+  E: 'foundry',        // Башни
+  F: 'graveyard',      // Святилище
 }
 
 export const TILE_SIZE = 64

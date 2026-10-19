@@ -3,10 +3,10 @@
  * Перенесено из _ref/map_editor.html — редакторские функции (палитра,
  * слоты, сетка-grid, метка старта, оверлеи) сюда не включены.
  *
- * ⚠️ С 07.10.2026 плитку и декор этим модулем рисуют только темы throne_room и
- * flooded_crypt (карты B, C, D, E). У темы «кладбище» (карты A и F) платформы и
- * декор — готовый слой-картинка (см. explore/mapArt.ts), и отсюда им нужны
- * только шипы (renderSpikeTile) да фон.
+ * ⚠️ С 19.10.2026 плиткой рисуется ОДНА карта — C, временно, старым набором
+ * тронного зала (см. legacyTilesFor), пока Codex не перерисует её слой. У
+ * остальных пяти платформы и декор — готовый слой-картинка (explore/mapArt.ts),
+ * и отсюда им нужны только шипы (renderSpikeTile) да вид фона (backdropLook).
  */
 
 export interface DecorDef {
@@ -24,22 +24,16 @@ export interface DecorDef {
 // renderMapToCanvas(). chest/spikes/obelisk сюда НЕ входят — это игровые
 // объекты со своей логикой, живут отдельно от декора.
 export const DECOR: Record<string, DecorDef> = {
-  // Шести декораций кладбища (grave_*) здесь БОЛЬШЕ НЕТ: декор карт A и F — часть
-  // готового слоя (см. шапку файла), а сами картинки убраны из public/.
-  // throne_room
+  // Декораций кладбища (grave_*, 07.10.2026) и склепа (crypt_*, 19.10.2026) здесь
+  // БОЛЬШЕ НЕТ: декор этих карт — часть готового слоя (см. шапку файла), а сами
+  // картинки убраны из public/ в архив арта. Остался набор тронного зала —
+  // только для карты C, пока у неё нет слоя.
   throne_royal_chair:     { sprite: 'throne_royal_chair',     tiles: 3.0, anchor: 'bottom', label: 'Трон' },
   throne_candelabra:      { sprite: 'throne_candelabra',      tiles: 3.4, anchor: 'bottom', label: 'Канделябр' },
   throne_weapon_rack:     { sprite: 'throne_weapon_rack',     tiles: 2.4, anchor: 'bottom', label: 'Оружейная стойка' },
   throne_shield_stand:    { sprite: 'throne_shield_stand',    tiles: 3.0, anchor: 'bottom', label: 'Стойка со щитом' },
   throne_treasure_pile:   { sprite: 'throne_treasure_pile',   tiles: 1.4, anchor: 'bottom', label: 'Груда сокровищ' },
   throne_broken_crown:    { sprite: 'throne_broken_crown',    tiles: 1.2, anchor: 'bottom', label: 'Разбитая корона' },
-  // flooded_crypt
-  crypt_sarcophagus_open: { sprite: 'crypt_sarcophagus_open', tiles: 1.6, anchor: 'bottom', label: 'Вскрытый саркофаг' },
-  crypt_bone_pile:        { sprite: 'crypt_bone_pile',        tiles: 1.3, anchor: 'bottom', label: 'Груда костей' },
-  crypt_broken_column:    { sprite: 'crypt_broken_column',    tiles: 3.0, anchor: 'bottom', label: 'Сломанная колонна' },
-  crypt_hanging_chains:   { sprite: 'crypt_hanging_chains',   tiles: 3.6, anchor: 'top',    label: 'Цепи с потолка' },
-  crypt_ritual_bowl:      { sprite: 'crypt_ritual_bowl',      tiles: 2.2, anchor: 'bottom', label: 'Ритуальная чаша' },
-  crypt_drowned_statue:   { sprite: 'crypt_drowned_statue',   tiles: 3.2, anchor: 'bottom', label: 'Статуя утопленника' },
 };
 
 // Доля высоты тайла, которую занимает полоса '=' (прижата к верху клетки).
@@ -57,67 +51,94 @@ export const SPIKE_H_RATIO = 0.48;
 
 // Объекты карты — обычные public-ассеты, грузятся по сети с учётом Vite
 // BASE_URL (важно для GitHub Pages, где base — не "/").
-// 3 пресета фона. Раньше фон грузился и рисовался ЗДЕСЬ (внутри статичного
-// canvas карты, одним слоем, без глубины). Теперь это два живых PixiJS-слоя
-// (far/mid) с параллаксом, которые Explore.tsx создаёт и двигает сам вместе
-// с камерой — mapRenderer.ts тут только источник правды для путей к файлам,
-// чтобы имя файла не разъезжалось между двумя местами.
-export type BackdropPreset = 'graveyard' | 'throne_room' | 'flooded_crypt';
+// Темы карт. Фон — два живых PixiJS-слоя (far/mid) с параллаксом, которые
+// Explore.tsx создаёт и двигает сам вместе с камерой; mapRenderer.ts тут только
+// источник правды для имён файлов и вида фона, чтобы они не разъезжались между
+// двумя местами.
+// ⚠️ До 19.10.2026 тема литейной (C и E) называлась throne_room — по старой
+// плитке тронного зала. Плитка эта осталась только у C и под своим старым
+// именем (TileTheme ниже), а тема называется по новому арту.
+export type BackdropPreset = 'graveyard' | 'flooded_crypt' | 'foundry';
 
 /**
- * Темы, у которых плитку и декор рисует этот модуль. «Кладбища» среди них нет:
- * его атлас кладки и декор из игры убраны (07.10.2026), и тип не даёт вызвать
- * рендер плитки с этой темой — иначе вместо камня молча вышла бы плоская заливка.
+ * Старый набор плитки и декора, который ещё рисует этот модуль, — один, тронного
+ * зала (masonry_throne_room.png и шесть throne_*), и рисует он одну карту: C, пока
+ * у неё нет готового слоя (решение Андрея 19.10.2026: колонна-стенка в
+ * одобренном арте C стоит не на сетке, ждём новую версию от Codex). Кладка и
+ * декор кладбища убраны 07.10.2026, склепа — 19.10.2026; тип не даёт вызвать
+ * рендер плитки с ними — иначе вместо камня молча вышла бы плоская заливка.
+ * Придёт слой C — удалить этот тип, LEGACY_TILES, renderMapToCanvas с её
+ * помощниками и семь картинок throne_* / masonry_throne_room.
  */
-export type TileTheme = Exclude<BackdropPreset, 'graveyard'>;
-
-// Расширение файлов фона — по теме: одобренные слои кладбища сжаты в WebP,
-// остальные темы лежат как лежали, в PNG.
-const BACKDROP_EXT: Record<BackdropPreset, string> = {
-  graveyard: 'webp',
-  throne_room: 'png',
-  flooded_crypt: 'png',
-};
-
-export function backdropPaths(preset: BackdropPreset): { far: string; mid: string } {
-  // Имена файлов — bg_<preset>_far.<ext> / bg_<preset>_mid.<ext>.
-  const base = `${import.meta.env.BASE_URL}assets/maps/backgrounds/bg_${preset}`;
-  const ext = BACKDROP_EXT[preset];
-  return { far: `${base}_far.${ext}`, mid: `${base}_mid.${ext}` };
-}
+export type TileTheme = 'throne_room';
 
 /**
- * Как фон темы кладётся под карту: прозрачность ближнего слоя, вуаль поверх
+ * Как фон кладётся под карту: файлы, прозрачность ближнего слоя, вуаль поверх
  * обоих слоёв и масштаб картинки.
  *
- * У кладбища из ОДОБРЕННОГО предпросмотра карт A и F взяты цвет вуали
- * (24,22,30) и картинка фона высотой 1800 px МИРА — слой платформ этих карт
- * подбирался именно под такое кадрирование.
- * ⚠️ Два числа кладбища с предпросмотром РАСХОДЯТСЯ намеренно (решения дизайнера
- * 08.10.2026). Ближний слой — НЕПРОЗРАЧНЫЙ, в предпросмотре он лежал с 0.55: в
- * игре с 0.55 фон выглядел полупрозрачным и блёклым. Прозрачные участки самой
- * картинки остаются прозрачными — дальний слой виден сквозь них, а не сквозь
- * камень. Вуаль — 0.42, в предпросмотре 0.22: на плотном фоне с 0.22 платформы
- * сливались с ним (фон в 0.86 яркости платформ, с 0.42 — 0.70).
- * Остальные темы живут как жили: ближний слой непрозрачен, вуаль 0x0e0c13 на
- * 0.42, картинка растянута по высоте экрана.
+ * Всё — из ОДОБРЕННЫХ предпросмотров тем: цвет вуали (24,22,30) у всех трёх,
+ * плотность вуали и высота картинки фона в пикселях мира — та, под которую
+ * подбирался слой платформ.
+ * - Кладбище (A, F): картинка высотой 1800 px мира. ⚠️ Два числа с предпросмотром
+ *   РАСХОДЯТСЯ намеренно (решения дизайнера 08.10.2026). Ближний слой —
+ *   НЕПРОЗРАЧНЫЙ, в предпросмотре он лежал с 0.55: в игре с 0.55 фон выглядел
+ *   полупрозрачным и блёклым. Прозрачные участки самой картинки остаются
+ *   прозрачными — дальний слой виден сквозь них, а не сквозь камень. Вуаль —
+ *   0.42, в предпросмотре 0.22: на плотном фоне с 0.22 платформы сливались с ним
+ *   (фон в 0.86 яркости платформ, с 0.42 — 0.70).
+ * - Склеп (B, D) и литейная (E): как в предпросмотре — ближний слой
+ *   непрозрачный, картинка фона высотой с карту ('map': B и E — 1536 px мира,
+ *   D — 1792), вуаль 107/255 у склепа и 150/255 у литейной (правило литейной:
+ *   «вуаль предпросмотров C/E и переноса в игру — альфа 150»).
  * ⚠️ Параллакс (0.15 / 0.4) сюда не входит и от темы не зависит.
  *
  * worldHeight — высота картинки фона в пикселях мира (на экране она умножается
- * на масштаб мира); null — «по высоте экрана». ⚠️ Это нижняя граница, а не
- * точное значение: на экране выше такой картинки фон всё равно дотягивается до
- * его высоты, иначе плитка фона повторилась бы по вертикали (см. Explore.tsx).
+ * на масштаб мира); 'map' — высота карты; null — «по высоте экрана» (только у
+ * старой плитки C). ⚠️ Это нижняя граница, а не точное значение: на экране выше
+ * такой картинки фон всё равно дотягивается до его высоты, иначе плитка фона
+ * повторилась бы по вертикали (см. Explore.tsx).
  */
-export type BackdropLook = { midAlpha: number; dimColor: number; dimAlpha: number; worldHeight: number | null };
-
-const BACKDROP_LOOK: Record<BackdropPreset, BackdropLook> = {
-  graveyard: { midAlpha: 1, dimColor: 0x18161e, dimAlpha: 0.42, worldHeight: 1800 },
-  throne_room: { midAlpha: 1, dimColor: 0x0e0c13, dimAlpha: 0.42, worldHeight: null },
-  flooded_crypt: { midAlpha: 1, dimColor: 0x0e0c13, dimAlpha: 0.42, worldHeight: null },
+export type BackdropLook = {
+  /** Файлы фона — backgrounds/bg_<file>_far.<ext> и bg_<file>_mid.<ext>. */
+  file: string;
+  ext: 'webp' | 'png';
+  midAlpha: number;
+  dimColor: number;
+  dimAlpha: number;
+  worldHeight: number | 'map' | null;
 };
 
+const BACKDROP_LOOK: Record<BackdropPreset, BackdropLook> = {
+  graveyard: { file: 'graveyard', ext: 'webp', midAlpha: 1, dimColor: 0x18161e, dimAlpha: 0.42, worldHeight: 1800 },
+  flooded_crypt: { file: 'flooded_crypt', ext: 'webp', midAlpha: 1, dimColor: 0x18161e, dimAlpha: 107 / 255, worldHeight: 'map' },
+  foundry: { file: 'foundry', ext: 'webp', midAlpha: 1, dimColor: 0x18161e, dimAlpha: 150 / 255, worldHeight: 'map' },
+};
+
+/** Вид фона карты с готовым слоем — по теме. */
 export function backdropLook(preset: BackdropPreset): BackdropLook {
   return BACKDROP_LOOK[preset];
+}
+
+/**
+ * Карта БЕЗ готового слоя: старая плитка вместе со СВОИМ старым фоном и вуалью —
+ * чтобы C до новой версии арта выглядела ровно как раньше (решение Андрея
+ * 19.10.2026), а не старой плиткой на новом фоне литейной. Есть только у
+ * литейной; у кладбища и склепа карта без слоя — ошибка старта забега.
+ */
+const LEGACY_TILES: Partial<Record<BackdropPreset, { tileTheme: TileTheme; look: BackdropLook }>> = {
+  foundry: {
+    tileTheme: 'throne_room',
+    look: { file: 'throne_room', ext: 'png', midAlpha: 1, dimColor: 0x0e0c13, dimAlpha: 0.42, worldHeight: null },
+  },
+};
+
+export function legacyTilesFor(preset: BackdropPreset): { tileTheme: TileTheme; look: BackdropLook } | null {
+  return LEGACY_TILES[preset] ?? null;
+}
+
+export function backdropPaths(look: BackdropLook): { far: string; mid: string } {
+  const base = `${import.meta.env.BASE_URL}assets/maps/backgrounds/bg_${look.file}`;
+  return { far: `${base}_far.${look.ext}`, mid: `${base}_mid.${look.ext}` };
 }
 
 // Категория СТАРОГО типа декора (см. комментарий у DECOR выше) — определяет,
@@ -134,8 +155,7 @@ const OLD_DECOR_CATEGORY: Record<string, 'floor' | 'hanging'> = {
   banner: 'hanging',
 };
 
-// 6 актуальных типов декора на тему, разбитые на floor/hanging. Подвесной
-// вариант (crypt_hanging_chains) есть только у flooded_crypt — у throne_room
+// 6 актуальных типов декора набора, разбитые на floor/hanging. У throne_room
 // потолочного декора нет, поэтому для его старых hanging-точек
 // pickThemedDecorType ниже откатывается на floor (единственный доступный
 // список).
@@ -143,10 +163,6 @@ const THEME_DECOR: Record<TileTheme, { floor: string[]; hanging: string[] }> = {
   throne_room: {
     floor: ['throne_royal_chair', 'throne_candelabra', 'throne_weapon_rack', 'throne_shield_stand', 'throne_treasure_pile', 'throne_broken_crown'],
     hanging: [],
-  },
-  flooded_crypt: {
-    floor: ['crypt_sarcophagus_open', 'crypt_bone_pile', 'crypt_broken_column', 'crypt_ritual_bowl', 'crypt_drowned_statue'],
-    hanging: ['crypt_hanging_chains'],
   },
 };
 
@@ -173,9 +189,8 @@ function textureAssetPath(name: string): string {
   return `${import.meta.env.BASE_URL}assets/maps/textures/${name}.png`
 }
 
-// Собирает пути ТОЛЬКО для спрайтов текущей темы карты (кладка + её 6 типов
-// декора + spikes) — у карты всегда ровно одна тема, грузить все 18
-// декор-картинок на каждой карте незачем. Ключ 'masonry' сохранён прежним
+// Собирает пути спрайтов набора плитки (кладка + её 6 типов декора + spikes).
+// Ключ 'masonry' сохранён прежним
 // (drawSolid/drawPlatform его не меняют), путь теперь theme-зависимый.
 function objectSpritesForTheme(theme: TileTheme): Record<string, string> {
   const sprites: Record<string, string> = {
@@ -230,11 +245,11 @@ function drawSpikeCell(ctx: CanvasRenderingContext2D, img: HTMLImageElement | un
 }
 
 /**
- * Одна клетка с шипом '^' — для карт с готовым слоем платформ и декора (A и F,
- * см. explore/mapArt.ts). Шипов в .txt этих карт нет: игра вставляет их в сетку
- * на старте забега из слот-файла, поэтому в готовую картинку их запечь нельзя,
- * и рисуются они поверх неё — тем же спрайтом и в том же месте клетки, что и на
- * остальных картах (один drawSpikeCell на оба пути).
+ * Одна клетка с шипом '^' — для карт с готовым слоем платформ и декора (все,
+ * кроме C, см. explore/mapArt.ts). Шипов в .txt карт нет: игра вставляет их в
+ * сетку на старте забега из слот-файла, поэтому в готовую картинку их запечь
+ * нельзя, и рисуются они поверх неё — тем же спрайтом и в том же месте клетки,
+ * что и на плиточной карте (один drawSpikeCell на оба пути).
  *
  * ⚠️ Клетка, а не холст на всю карту: холст 3072×1536 ради трёх шипов — это
  * ещё ~19 МБ видеопамяти рядом с самим слоем. Explore.tsx делает из клетки
