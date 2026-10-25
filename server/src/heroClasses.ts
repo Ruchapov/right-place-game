@@ -22,12 +22,14 @@
 //     renounceShortfalls) и их тексты (shortfallLine) — сервер отказывает ровно
 //     теми же строками, которыми клиент заранее гасит кнопку. Две копии правила
 //     разошлись бы так, что кнопка горит, а сервер отказывает, или наоборот;
-//   • тексты карточек — дословно из docs/classes.md, «Тексты карточек».
+//   • тексты карточек — дословно из docs/classes.md, «Тексты карточек»;
+//   • боевые числа ветки «Кровь» (26.10.2026, bloodClassEffects внизу) — по ним
+//     лечит бой на клиенте, и из них же сервер выводит потолок полученного
+//     урона (clampRunProgress): лечение Упыря даёт честно пропустить больше.
 //
 // Чего здесь НЕТ намеренно:
-//   • эффектов классов в бою — их ещё нет вовсе (задача 20.10.2026: класс
-//     хранится и показывается, бой не меняет). Строки effects ниже — только
-//     текст карточки, ни один модуль боя их не читает;
+//   • боевых чисел Магии и Клинка — их механик в бою пока нет. Строки effects
+//     ниже — текст карточки, ни один модуль боя их не читает;
 //   • имён колонок БД (Character.classId / classTier) — раскладка на сервере,
 //     в runState.ts (heroClassOf), рядом с книгами и страницами.
 //
@@ -326,5 +328,46 @@ export function shortfallLine(s: ClassShortfall, bookName: (skillId: string) => 
     }
     case 'gold': return `Не хватает ${s.need - s.have} золота`
     case 'seal': return 'Нет Печати отречения'
+  }
+}
+
+// --- Боевые числа ветки «Кровь» (26.10.2026) ---
+//
+// Здесь, а не в constants.ts клиента: из этих же чисел сервер выводит потолок
+// полученного урона за забег (clampRunProgress в server/src/runState.ts) —
+// лечение Упыря позволяет честно пропустить больше урона. Две копии числа
+// разошлись бы так, что клиент лечит больше, чем допускает сервер, и потолок
+// молча срезал бы честному Упырю рост выносливости.
+
+/** Упырь: тик кровотечения возвращает здоровьем эту долю нанесённого им урона. */
+export const GHOUL_BLEED_HEAL_FRAC = 0.5
+/** Упырь, Кровавый клинок: удар мечом по кровоточащему врагу лечит на эту долю нанесённого урона. */
+export const GHOUL_BLADE_HEAL_FRAC = 0.1
+/** Владыка крови, Плата кровью: единица НЕДОСТАЮЩЕЙ маны стоит эту долю МАКСИМАЛЬНОГО HP. */
+export const BLOOD_LORD_MANA_HP_FRAC = 0.05
+/** Владыка крови, Пир: убийство кровоточащего врага (и босса) лечит на эту долю МАКСИМАЛЬНОГО HP. */
+export const BLOOD_LORD_FEAST_HEAL_FRAC = 0.05
+
+/**
+ * Что из ветки «Кровь» действует у героя с этим классом. Доли, 0 — механики
+ * нет: без класса и у Чародея с Дуэлянтом все четыре нули, и бой идёт ровно
+ * как без классов. Владыка крови — вторая ступень Упыря: у него всё от первой
+ * плюс своё (docs/classes.md, «Вторая ступень сохраняет всё с первой»).
+ */
+export type BloodClassEffects = {
+  bleedHealFrac: number
+  bladeHealFrac: number
+  manaHpFrac: number
+  feastHealFrac: number
+}
+
+export function bloodClassEffects(state: HeroClassState): BloodClassEffects {
+  const ghoul = state !== 'none' && state.id === 'ghoul'
+  const lord = state !== 'none' && state.id === 'ghoul' && state.tier === 2
+  return {
+    bleedHealFrac: ghoul ? GHOUL_BLEED_HEAL_FRAC : 0,
+    bladeHealFrac: ghoul ? GHOUL_BLADE_HEAL_FRAC : 0,
+    manaHpFrac: lord ? BLOOD_LORD_MANA_HP_FRAC : 0,
+    feastHealFrac: lord ? BLOOD_LORD_FEAST_HEAL_FRAC : 0,
   }
 }

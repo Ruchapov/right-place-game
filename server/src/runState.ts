@@ -23,7 +23,7 @@ import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type Sk
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
 import type { ClassItemId } from './classItems.js'
-import { parseHeroClassId, parseHeroClassTier, heroClassToWire, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
+import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -69,7 +69,13 @@ import { parseHeroClassId, parseHeroClassTier, heroClassToWire, type HeroClassId
 // повторяет его со всеми попытками /run/sip). Повтор после таймаута, первая
 // попытка которого всё же дошла, не запишет глоток второй раз. Длина не больше
 // числа глотков за забег. Поля нет — глотков с id не было (readRunSipIds).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[] }
+// `heroClass` (26.10.2026) — класс героя НА СТАРТЕ забега, из колонок
+// персонажа (не от клиента): null — класса нет, {id, tier} — класс. Бой
+// классом не меняется посреди забега, и потолок полученного урона
+// (clampRunProgress) обязан считаться по тому же классу, по которому клиент
+// лечил. Поля нет у забегов, начатых до 26.10.2026, — класса у них нет
+// (читать через readRunHeroClass).
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -551,6 +557,13 @@ export type ClampedRunProgress = {
   maxDamageTaken: number
   /** Потолок лечения — maxHp забега. */
   maxHealed: number
+  /**
+   * Сколько из maxDamageTaken — запас под лечение класса «Кровь» (26.10.2026);
+   * 0 — у забега этого класса нет.
+   */
+  classHealMax: number
+  /** Класс забега, по которому считался запас ('malformed' — считался как без класса). */
+  runHeroClass: HeroClassState | 'malformed'
   enemyCount: number
   bossCount: number
 }
@@ -576,6 +589,23 @@ export type ClampedRunProgress = {
 // было до тиров: потолок обязан быть не ниже того, что честный игрок реально
 // мог восстановить, иначе он молча срежет ему рост выносливости.
 //
+// Плюс запас под лечение класса «Кровь» (26.10.2026) — его тоже честный игрок
+// реально восстанавливает. Класс — ЗАБЕГА (run.heroClass, записан стартом из
+// колонок персонажа), а не слово клиента. Запас — ТЕОРЕТИЧЕСКИЙ МАКСИМУМ, без
+// угадывания статов:
+//   • кровотечение и Кровавый клинок лечат долей НАНЕСЁННОГО урона (0.5 и 0.1),
+//     а нанести за забег можно не больше суммарного HP его врагов и боссов
+//     (клиент копит урон, обрезанный остатком HP цели, — каждая единица HP
+//     врага «наносится» один раз). Значит, их лечение вместе не больше
+//     0.5 × (HP врагов + HP боссов): худший случай — всё добито кровотечением;
+//   • Пир (Владыка) — 5% maxHp за убийство кровоточащего, убийств не больше,
+//     чем врагов и боссов в забеге.
+// Множитель ×1.5 к этому запасу НЕ применяется: он и так точная верхняя
+// граница (округление лечения у клиента — вниз), а ×1.5 у базовой части
+// остаётся запасом на всё, что потолок не считает (исцеление навыком, оберег).
+// Плата кровью (Владыка) — расход HP, а не полученный урон: в damageTaken она
+// не идёт и потолок не трогает.
+//
 // ⚠️ run.maxHp приводится к числу ЯВНО. Испорченный currentRun дал бы NaN,
 // NaN дошёл бы до applyStatProgress — а там сравнение с порогом на NaN не
 // выполняется ни в одну сторону, и цикл `while` крутился бы вечно, вешая весь
@@ -598,14 +628,22 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     return sum + (ev.clusterPoints?.length ?? 0) * perEnemy
   }, 0)
   const bossCount = events.filter((ev) => ev.kind === 'boss').length
-  const maxDamageDealt = (enemyHpTotal + bossCount * scaledBossMaxHp(characterLevel)) * 1.5
+  const hpPool = enemyHpTotal + bossCount * scaledBossMaxHp(characterLevel)
+  const maxDamageDealt = hpPool * 1.5
 
   const combinedDealt = raw.attackDamageDealt + raw.skillDamageDealt
   const dealtScale = combinedDealt > maxDamageDealt && combinedDealt > 0 ? maxDamageDealt / combinedDealt : 1
 
   const runMaxHp = isRunProgressValue(run.maxHp) ? run.maxHp : 0
   const maxHealFrac = Math.max(...POTION_TIERS.map((t) => t.healFrac))
-  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5
+  // Испорченный класс забега — как без класса: запас меньше, то есть трактовка
+  // против игрока, как у всех потолков. Вызывающий видит это по runHeroClass.
+  const runHeroClass = readRunHeroClass(run)
+  const blood = bloodClassEffects(runHeroClass === 'malformed' ? 'none' : runHeroClass)
+  const classHealMax =
+    Math.max(blood.bleedHealFrac, blood.bladeHealFrac) * hpPool
+    + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
+  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax
 
   return {
     progress: {
@@ -629,6 +667,8 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     maxDamageDealt,
     maxDamageTaken,
     maxHealed: runMaxHp,
+    classHealMax,
+    runHeroClass,
     enemyCount,
     bossCount,
   }
@@ -825,6 +865,17 @@ export function heroClassOf(character: HeroClassColumns): HeroClassState | 'malf
   const id = parseHeroClassId(character.classId)
   const tier = parseHeroClassTier(character.classTier)
   return id === null || tier === null ? 'malformed' : { id, tier }
+}
+
+/**
+ * Класс героя, записанный в забег на старте (поле heroClass в currentRun).
+ * Поля нет — забег начат до 26.10.2026, класса у него нет: 'none'. Поле есть, но
+ * негодное — 'malformed': его пишет только сам сервер, и испорченное значение —
+ * повод сказать громко, а не тихо считать «без класса».
+ */
+export function readRunHeroClass(run: ActiveExploreRun): HeroClassState | 'malformed' {
+  if (run.heroClass === undefined) return 'none'
+  return parseHeroClassWire(run.heroClass) ?? 'malformed'
 }
 
 /**

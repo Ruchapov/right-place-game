@@ -1232,9 +1232,23 @@ export async function runRoutes(server: FastifyInstance) {
     // а не ляжет в новый (см. checkRunId). startedAt — от него отсчитывается
     // окно подтверждения (READY_WINDOW_MS, runState.ts).
     const runId = randomUUID()
+    // Класс героя на этот забег (26.10.2026) — из КОЛОНОК персонажа, тело
+    // запроса его не называет. Пишется в currentRun: по нему потолок полученного
+    // урона считает запас под лечение класса (clampRunProgress), и сменить класс
+    // посреди забега со второго устройства этот запас не меняет. Отдаётся и
+    // клиенту: бой включает эффекты класса по ЭТОМУ полю, а не по профилю,
+    // который мог устареть, — так клиент лечит ровно тем классом, под который
+    // сервер оставил запас.
+    // Испорченная пара колонок — забег без класса и громкий лог, а не отказ:
+    // вход и забег обязаны открываться при любом состоянии персонажа.
+    const classState = heroClassOf(character)
+    if (classState === 'malformed') {
+      request.log.error({ userId, classId: character.classId, classTier: character.classTier }, 'start-explore: corrupt classId/classTier pair — run started without class')
+    }
+    const runHeroClass = heroClassToWire(classState === 'malformed' ? 'none' : classState)
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
-      confirmed: false, spentEnergy, runId, startedAt: Date.now(),
+      confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1328,6 +1342,9 @@ export async function runRoutes(server: FastifyInstance) {
       // Id забега (15.10.2026). Клиент возвращает его в ready / sip / progress /
       // сделке / финише / отмене; старый клиент поле просто не читает.
       runId,
+      // Класс на этот забег (26.10.2026): null — класса нет, {id, tier} — класс.
+      // Тот же, что записан в currentRun выше; старый клиент поле не читает.
+      heroClass: runHeroClass,
     })
   })
 
@@ -1839,9 +1856,12 @@ export async function runRoutes(server: FastifyInstance) {
     }
     if (reportedProgress.damageTaken > capped.maxDamageTaken) {
       request.log.warn(
-        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
+        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
         'finish-explore: damageTaken exceeded cap, clamped',
       )
+    }
+    if (capped.runHeroClass === 'malformed') {
+      request.log.error({ userId, heroClass: run.heroClass }, 'finish-explore: corrupt heroClass in currentRun — damage cap counted without class')
     }
     if (reportedProgress.healedAmount > capped.maxHealed) {
       request.log.warn(
