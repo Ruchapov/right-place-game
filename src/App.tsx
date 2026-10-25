@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, RequestError, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
@@ -11,6 +11,7 @@ import { BAG_CAPACITY, CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, classItemById, type ClassItemId } from './classItems'
+import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
 // Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
 // (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
 import { itemIconSrc } from './itemIcons'
@@ -32,6 +33,7 @@ import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import SkillLevelNote from './ui/SkillLevelNote'
+import { HeroClassLine, HeroClassTiles, HeroClassCard, HeroClassCelebration, type ClassActionKind } from './ui/HeroClassViews'
 import { useMediaQuery } from './ui/useMediaQuery'
 // Только число: «низкий горизонтальный экран» — одно условие на меню, боевые
 // кнопки и камеру забега (см. комментарий у константы).
@@ -96,7 +98,14 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * Отдельным полем: свой каталог, а Печать в отличие от Осколка тратит ячейку
    * (takesCell в каталоге).
    */
-  classItems: Record<ClassItemId, number> | null }
+  classItems: Record<ClassItemId, number> | null
+  /**
+   * Класс героя (20.10.2026, каталог src/heroClasses.ts): 'none' — класса нет,
+   * {id, tier} — класс и ступень. null — сервер его НЕ НАЗВАЛ (см.
+   * readHeroClass в api.ts): это не «класса нет», и строка на «Персонаже»
+   * говорит «Класс неизвестен», а кнопки у Отшельника гаснут.
+   */
+  heroClass: HeroClassState | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -441,6 +450,16 @@ function devScrollStock(): Record<ScrollId, number> {
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
 const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = { soul_shard: 12, renounce_seal: 1 }
+/**
+ * TEMP_DEV_HERO_CLASS — ТЕСТОВЫЙ класс героя для офлайн-заглушки DevTester
+ * (20.10.2026). Настоящий лежит в колонках Character.classId / classTier и
+ * приходит полем character.heroClass. 'none' — у заглушки 5 уровень, и класса
+ * у неё быть не может: блок «Классы» у Отшельника показывает плитки с замком,
+ * строка на «Персонаже» — «Класс не выбран». Выбирать класс заглушка не умеет —
+ * сервера у неё нет (ручки пишут «Профиль не загружен»).
+ * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
+ */
+const TEMP_DEV_HERO_CLASS: HeroClassState = 'none'
 /**
  * TEMP_DEV_SKILL_LEVEL — ТЕСТОВЫЙ уровень каждого навыка для офлайн-заглушки
  * DevTester. Настоящий лежит в колонках Character.skillLevel* и приходит полем
@@ -851,6 +870,25 @@ export default function App() {
   // разъехались бы.
   const [skillActionPending, setSkillActionPending] = useState(false)
   const [skillActionError, setSkillActionError] = useState<string | null>(null)
+  // --- Классы героя у Отшельника (20.10.2026) ---
+  // Какой класс открыт карточкой (тап по плитке «Классы»). null — карточки нет.
+  const [classSelected, setClassSelected] = useState<HeroClassId | null>(null)
+  // Какое действие с классом в полёте — гасит кнопки карточки от второго тапа.
+  const [classActionPending, setClassActionPending] = useState<ClassActionKind | null>(null)
+  // То же «в полёте», но видимое СРАЗУ, а не после перерисовки: два нажатия в
+  // одном такте (до того как React перерисует кнопку серой) иначе ушли бы оба.
+  // Сервер второе всё равно отклонит, но запрос и отказ на экране лишние.
+  const classActionInFlightRef = useRef(false)
+  // Отказ последнего действия — строками игрока (у «чего не хватает» — строками
+  // сервера, общими с клиентом). null — отказа нет.
+  const [classActionError, setClassActionError] = useState<string[] | null>(null)
+  // Показанное состояние устарело, но действие ТОЧНО не применилось: сервер
+  // отказал по существу или 409. Как exchangeBalanceStale у обмена — нужна
+  // только сверка, блокировать нечего.
+  const [classStateStale, setClassStateStale] = useState(false)
+  // Окно торжества «Ты стал …» — класс и ступень ИЗ ОТВЕТА сервера, то есть то,
+  // что записано, а не то, что просили. null — окна нет.
+  const [classCelebration, setClassCelebration] = useState<{ id: HeroClassId; tier: HeroClassTier } | null>(null)
   // --- Гнёзда подготовки на вкладке «Исследовать» ---
   // Длина фиксирована каталогом (RUN_CONSUMABLE_SLOTS), null — гнездо пусто.
   // Один и тот же id в двух гнёздах запрещён: сервер отвергает повторы
@@ -938,7 +976,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -968,7 +1006,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass) })
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -1608,6 +1646,81 @@ export default function App() {
     }
   }
 
+  // --- Классы героя: выбрать / возвыситься / отречься (20.10.2026) ---
+  //
+  // Один обработчик на три действия — у них один ответ (ClassStateResult), одна
+  // блокировка на время полёта и один разбор отказа. Повторов нет: потерянный
+  // ответ — сверка баланса (см. heroClassRequest в api.ts).
+  async function handleClassAction(kind: ClassActionKind, classId: HeroClassId) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setClassActionError(['Профиль не загружен — действие недоступно.'])
+      return
+    }
+    if (classActionPending !== null || classActionInFlightRef.current) return
+    classActionInFlightRef.current = true
+    setClassActionPending(kind)
+    setClassActionError(null)
+    try {
+      const result: ClassStateResult =
+        kind === 'choose' ? await chooseClass(token, classId)
+          : kind === 'ascend' ? await ascendClass(token, classId)
+            : await renounceClass(token, classId)
+      // Все три поля АБСОЛЮТНЫЕ и перечитаны сервером — мержим как есть,
+      // включая null («сервер не назвал»): осколки и золото уже списаны, и
+      // прежние числа на экране были бы враньём.
+      setPlayer(prev => prev ? {
+        ...prev,
+        gold: result.gold,
+        classItems: result.classItems,
+        heroClass: result.heroClass,
+      } : prev)
+      if (result.classItems === null || result.heroClass === null) {
+        console.error('Class action: сервер ответил не полностью', kind, result)
+        setShopBalanceUnknown(true)
+        setClassActionError(['Действие прошло, но сервер назвал не всё. Обнови баланс.'])
+        return
+      }
+      setClassStateStale(false)
+      // Отречение — карточка закрывается, и всё: плитка и строка на «Персонаже»
+      // снимают отметку сами. Выбор и возвышение — окно «Ты стал …» по
+      // записанному классу.
+      setClassSelected(null)
+      if (kind !== 'renounce' && result.heroClass !== 'none') {
+        setClassCelebration({ id: result.heroClass.id, tier: result.heroClass.tier })
+      }
+    } catch (e) {
+      console.error('Class action failed', kind, e)
+      if (e instanceof RequestError && !e.retryable && e.serverError !== null) {
+        // Отказ по существу: сервер не записал ничего, а показанное состояние
+        // устарело (иначе кнопка не горела бы) — предлагаем сверку.
+        setClassStateStale(true)
+        if (e.serverError === 'Requirements not met') {
+          setClassActionError(readClassRefusalLines(e.body) ?? ['Сервер отказал: условия не выполнены.'])
+        } else if (e.serverError === 'State changed, retry') {
+          setClassActionError(['Данные успели измениться — обнови баланс и попробуй снова.'])
+        } else if (e.serverError === 'Unknown class') {
+          setClassActionError(['Сервер не знает такого класса.'])
+        } else {
+          setClassActionError([`Сервер отказал: ${e.status} — ${e.serverError}`])
+        }
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        // Таймаут, обрыв сети или 5xx: запрос МОГ дойти и примениться — осколки
+        // и золото списаны. Повтор не спишет второй раз (упрётся в класс), но и
+        // не скажет, прошёл ли первый, — поэтому сверка.
+        setShopBalanceUnknown(true)
+        setClassActionError(['Ответ не пришёл — действие могло пройти. Обнови баланс.'])
+        return
+      }
+      setClassActionError(['Не удалось — сервер не ответил или отказал. Попробуй ещё раз.'])
+    } finally {
+      classActionInFlightRef.current = false
+      setClassActionPending(null)
+    }
+  }
+
   // Отказ сервера по существу (4xx) — словами игрока. Коды приходят из
   // server/src/routes/run.ts, строки там английские и служебные.
   function describeBuyRefusal(e: RequestError): string {
@@ -1818,6 +1931,10 @@ export default function App() {
         skillLevels: profile.skillLevels,
         skillUses: profile.skillUses,
         upgrades: profile.upgrades,
+        // Класс (20.10.2026) — по той же причине: потерянный ответ у выбора,
+        // возвышения или отречения снимается этой же сверкой. null
+        // перезаписывает намеренно — «сервер не назвал».
+        heroClass: profile.heroClass,
       } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
@@ -1826,14 +1943,17 @@ export default function App() {
       // Состояние снова известно — покупки и обмен разблокированы.
       setShopBalanceUnknown(false)
       setExchangeBalanceStale(false)
+      setClassStateStale(false)
       setShopBuyError(null)
       setExchangeError(null)
+      setClassActionError(null)
     } catch (e) {
       // Сбой сверки тоже виден: молча оставить игрока с погашенной кнопкой и
       // без объяснения нельзя. Блокировка сохраняется, кнопка остаётся.
       console.error('Fetch profile failed', e)
       setShopBuyError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
       setExchangeError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
+      setClassActionError(['Баланс не сверен — сервер не ответил. Попробуй ещё раз.'])
     } finally {
       setShopBalancePending(false)
     }
@@ -2137,13 +2257,14 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                <div style={{ flex:1 }}>
+                <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>
                     {p.firstName}
                   </div>
-                  <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>
-                    — класс не выбран —
-                  </div>
+                  {/* Строка класса (20.10.2026): просто текст, без тапа —
+                      docs/classes.md, «Строка класса на «Персонаже»». Уровень —
+                      тот же, что на плашке справа (с сервера). */}
+                  <HeroClassLine heroClass={p.heroClass} level={p.level} />
                 </div>
                 <div style={{ background:C.nicheDeep, borderRadius:6, padding:'5px 10px' }}>
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.glowCore }}>ур. {p.level}</div>
@@ -2725,6 +2846,23 @@ export default function App() {
                   )
                 })}
               </div>
+
+              {/* Отшельник: сверху блок «Классы», под ним книги, как были
+                  (docs/classes.md). Тап по плитке — карточка класса; она
+                  рисуется прямым потомком корня (как карточка обмена): выше
+                  экрана 568 px, и под маской растворения её низ лёг бы под
+                  нижнюю панель. */}
+              {shopTab === 'Отшельник' && (
+                <div style={{ marginBottom:16 }}>
+                  <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY, padding:'0 8px' }}>КЛАССЫ</div>
+                  <HeroClassTiles
+                    heroClass={player?.heroClass ?? null}
+                    level={playerLevel}
+                    onSelect={(id) => { setClassSelected(id); setClassActionError(null) }}
+                  />
+                  <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, margin:'16px 0 7px', fontFamily:FONT_DISPLAY, padding:'0 8px' }}>КНИГИ</div>
+                </div>
+              )}
 
               {/* Витрина. Одна сетка на всех троих — различаются только товары
                   (gridCells выше), а ячейка, плашка и замок по уровню общие.
@@ -4674,6 +4812,48 @@ export default function App() {
         </div>
         )
       })()}
+
+      {/* Карточка класса (20.10.2026) — прямым потомком корня, как карточка
+          обмена: она выше экрана 568 px, и внутри вкладки, под маской
+          растворения, её низ с кнопкой лёг бы под нижнюю панель. */}
+      {activeTab === 'shop' && classSelected !== null && (() => {
+        const cls = heroClassById(classSelected)
+        if (cls === null) return null
+        // Кошелёк — только из известного: что-то из нужного не названо
+        // сервером — null, и карточка гасит кнопку словами, а не считает от
+        // нуля (правило про тихие фолбэки).
+        const wallet: HeroClassWallet | null =
+          player === null || player.classItems === null || player.equippedSkills === null || player.heroClass === null
+            ? null
+            : {
+                level: player.level,
+                gold: player.gold,
+                soulShards: player.classItems.soul_shard,
+                renounceSeals: player.classItems.renounce_seal,
+                equippedSkills: player.equippedSkills,
+                heroClass: player.heroClass,
+              }
+        return (
+          <HeroClassCard
+            key={cls.id}
+            cls={cls}
+            wallet={wallet}
+            pending={classActionPending}
+            errorLines={classActionError}
+            showRefresh={shopBalanceUnknown || classStateStale}
+            refreshPending={shopBalancePending}
+            onRefresh={() => { void handleRefreshBalance() }}
+            onAction={(kind) => { void handleClassAction(kind, cls.id) }}
+            onClose={() => { if (classActionPending === null) { setClassSelected(null); setClassActionError(null) } }}
+          />
+        )
+      })()}
+
+      {/* Окно «Ты стал …» после выбора и возвышения — поверх всего, кроме окна
+          о прошлом забеге (см. HeroClassCelebration). */}
+      {classCelebration !== null && (
+        <HeroClassCelebration state={classCelebration} onClose={() => setClassCelebration(null)} />
+      )}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в
           дереве и с zIndex 2000 (см. PastRunNotice) — чтобы лечь поверх

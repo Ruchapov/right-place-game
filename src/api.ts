@@ -1,6 +1,7 @@
 import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, type ClassItemId } from './classItems'
+import { parseHeroClassWire, type HeroClassId, type HeroClassState } from './heroClasses'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
 
@@ -66,6 +67,13 @@ export class RequestError extends Error {
   status: number | null
   /** Поле error из тела ответа; null — тела нет или в нём не строка. */
   serverError: string | null
+  /**
+   * Всё тело отказа, как пришло (20.10.2026); null — ответа или тела не было.
+   * Нужно отказам, у которых кроме кода есть подробности для игрока, — сейчас
+   * ручкам класса: «чего не хватает» они присылают строками (lines). Читать
+   * через разборщик, а не приведением типа.
+   */
+  body: unknown
   kind: RequestFailureKind
   /** Исходная ошибка fetch при сетевом сбое или таймауте, иначе null. */
   networkError: unknown
@@ -80,10 +88,12 @@ export class RequestError extends Error {
     serverError: string | null
     kind: RequestFailureKind
     networkError: unknown
+    body?: unknown
   }) {
     super(message)
     this.status = fields.status
     this.serverError = fields.serverError
+    this.body = fields.body ?? null
     this.kind = fields.kind
     this.networkError = fields.networkError
     this.retryable =
@@ -134,7 +144,7 @@ export async function requestJson<T>(url: string, init: RequestInit, timeoutMs: 
       ? (err as { error: string }).error
       : null
   throw new RequestError(`${url} failed: ${response.status} ${JSON.stringify(err)}`, {
-    status: response.status, serverError, kind: 'http', networkError: null,
+    status: response.status, serverError, kind: 'http', networkError: null, body: err,
   })
 }
 
@@ -194,6 +204,11 @@ export type LoginResponse = {
     // объектом по id каталога classItems.ts. Опциональное по той же причине, что
     // scrolls выше. Разбирать ТОЛЬКО через readClassItems.
     classItems?: Record<string, number>
+    // Класс героя (20.10.2026): null — класса нет, {id, tier} — есть, поля нет
+    // — сервер старше 20.10.2026 (или испорченная пара колонок). Разбирать
+    // ТОЛЬКО через readHeroClass: отсутствие поля — «класс неизвестен», а не
+    // «класса нет».
+    heroClass?: unknown
     // Счётчики купленных улучшений. Опциональное по той же причине, что
     // consumables и skillLevels выше. Разбирать ТОЛЬКО через readUpgrades.
     upgrades?: { attack?: unknown; armor?: unknown }
@@ -1333,6 +1348,8 @@ export type ProfileResult = {
   skillUses: Record<SkillBookSkillId, number> | null
   /** null — сервер не назвал счётчики улучшений (см. readUpgrades). */
   upgrades: UpgradeCounts | null
+  /** null — сервер не назвал класс героя (см. readHeroClass). */
+  heroClass: HeroClassState | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1361,6 +1378,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillLevels?: unknown
     skillUses?: unknown
     upgrades?: unknown
+    heroClass?: unknown
     appliedRequestIds?: unknown
   }>(
     `${SERVER_URL}/character/profile${query}`,
@@ -1386,6 +1404,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillLevels: readSkillLevels(raw.skillLevels),
     skillUses: readSkillUses(raw.skillUses),
     upgrades: readUpgrades(raw.upgrades),
+    heroClass: readHeroClass(raw.heroClass),
   }
 }
 
@@ -1675,6 +1694,21 @@ export function readClassItems(raw: unknown): Record<ClassItemId, number> | null
     out[spec.id] = v
   }
   return out
+}
+
+/**
+ * Разбор класса героя из ответа сервера — логин, профиль, три ручки класса
+ * (20.10.2026). 'none' — класса нет (JSON-null), {id, tier} — класс; null —
+ * сервер НЕ НАЗВАЛ: поля нет (сервер старше 20.10.2026 или испорченная пара
+ * колонок, см. heroClassField на сервере) или в нём мусор.
+ *
+ * ⚠️ undefined и null на проводе — РАЗНЫЕ ответы: null — «класса нет», а
+ * отсутствие поля — «неизвестно». Свернуть их значило бы показать «Можно выбрать
+ * класс» герою, у которого класс есть (или наоборот).
+ */
+export function readHeroClass(raw: unknown): HeroClassState | null {
+  if (raw === undefined) return null
+  return parseHeroClassWire(raw)
 }
 
 /**
@@ -2022,6 +2056,73 @@ export function sellScroll(token: string, id: ScrollId): Promise<SkillStateResul
 /** Продать ОДИН Осколок души или ОДНУ Печать отречения; цена — sellPrice каталога. */
 export function sellClassItem(token: string, id: ClassItemId): Promise<SkillStateResult> {
   return skillBookRequest('/character/sell-class-item', token, { id })
+}
+
+// --- КЛАСС ГЕРОЯ: выбрать / возвыситься / отречься (20.10.2026) ---
+//
+// Три ручки, один ответ (sendClassState на сервере): золото, склад предметов
+// классов и класс — всё перечитано из БД. Таймаут как у книг, ПОВТОРОВ НЕТ:
+// ключа идемпотентности у ручек нет, и он им не нужен (повтор упирается в
+// условную запись сам — «Класс уже выбран»), но различить «первый прошёл» и «не
+// дошёл» повтор не может. При потерянном ответе клиент требует сверку баланса
+// (handleClassAction в App.tsx).
+//
+// Отказ «чего не хватает» — 400 'Requirements not met' с полем lines: причины
+// словами игрока, общими строками каталога heroClasses.ts (readClassRefusalLines).
+
+export type ClassStateResult = {
+  gold: number
+  /** null — сервер не назвал склад предметов классов (см. readClassItems). */
+  classItems: Record<ClassItemId, number> | null
+  /** null — сервер не назвал класс (см. readHeroClass). */
+  heroClass: HeroClassState | null
+}
+
+async function heroClassRequest(path: string, token: string, id: HeroClassId): Promise<ClassStateResult> {
+  const raw = await requestJson<{ gold: number; classItems?: unknown; heroClass?: unknown }>(
+    `${SERVER_URL}${path}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id }),
+    },
+    SKILL_BOOK_TIMEOUT_MS,
+  )
+  return {
+    gold: raw.gold,
+    classItems: readClassItems(raw.classItems),
+    heroClass: readHeroClass(raw.heroClass),
+  }
+}
+
+/** Выбрать класс: уровень 10+, 5 Осколков души, 2000 золота, нужные книги надеты. */
+export function chooseClass(token: string, id: HeroClassId): Promise<ClassStateResult> {
+  return heroClassRequest('/character/choose-class', token, id)
+}
+
+/** Возвыситься до второй ступени своей ветки: уровень 30+, 50 Осколков, 15000 золота. */
+export function ascendClass(token: string, id: HeroClassId): Promise<ClassStateResult> {
+  return heroClassRequest('/character/ascend-class', token, id)
+}
+
+/** Отречься от класса: тратится Печать отречения, класс и ступень пропадают. */
+export function renounceClass(token: string, id: HeroClassId): Promise<ClassStateResult> {
+  return heroClassRequest('/character/renounce-class', token, id)
+}
+
+/**
+ * Строки «чего не хватает» из отказа ручки класса (поле lines), либо null — их
+ * нет или они не строки. null значит «показать общий текст отказа», а не
+ * «ничего не мешает».
+ */
+export function readClassRefusalLines(body: unknown): string[] | null {
+  if (typeof body !== 'object' || body === null) return null
+  const lines = (body as { lines?: unknown }).lines
+  if (!Array.isArray(lines) || lines.length === 0) return null
+  return lines.every((l): l is string => typeof l === 'string') ? lines : null
 }
 
 // --- УЛУЧШЕНИЯ И ПРОДАЖА ПРЕДМЕТОВ ---
