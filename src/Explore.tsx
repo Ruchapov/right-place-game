@@ -2899,14 +2899,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Числа ветки «Клинок» (Дуэлянт, Мастер клинка; 26.10.2026). Выпад, крит и
       // Казнь читает applyAttackHit, окно Выпада ведёт тикер (lungeMsLeft ниже).
       const blade: BladeClassEffects = bladeClassEffects(runHeroClass)
-      // +15% к ОБЫЧНОЙ атаке мечом — к урону меча на забег, поверх точильного
-      // камня выше; вниз, как +15% к шарам. Взмах навыка slash — тот же удар
-      // мечом (applyAttackHit), бонус получает и он. Рывок и кровотечение
-      // бонуса не получают: их числа — skillDamage, от урона меча без бонусов.
-      if (blade.swordDamageMult !== 1) {
-        attackDamageRef.current = Math.floor(attackDamageRef.current * blade.swordDamageMult)
-        console.log('Explore: урон меча с классом', attackDamageRef.current, blade)
-      }
+      // +15% — ТОЛЬКО обычной атаке мечом (docs/classes.md): урон её удара на
+      // забег, поверх точильного камня выше; вниз, как +15% к шарам. В
+      // attackDamageRef бонус НЕ пишется: тот же урон наносит и взмах навыка
+      // slash (applyAttackHit), а ему бонус не положен, — какой из двух брать,
+      // applyAttackHit решает на кадре удара (skills.isSlashStrike). Крит и
+      // Казнь от этого не зависят и действуют на обоих взмахах. Рывок и
+      // кровотечение бонуса не получают: их числа — skillDamage.
+      const plainSwordDamage = blade.swordDamageMult !== 1
+        ? Math.floor(attackDamageRef.current * blade.swordDamageMult)
+        : attackDamageRef.current
+      if (blade.swordDamageMult !== 1) console.log('Explore: урон обычной атаки с классом', plainSwordDamage, blade)
       // Красная искра крита — только герою этой ветки (см. loadBladeClassAssets).
       const bladeAssetsLoad = blade.critMult > 1 ? loadBladeClassAssets() : Promise.resolve(null)
       bladeAssetsLoad.catch(() => {})
@@ -5191,6 +5194,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // тикере). У других веток lungeSwingId не ставится, а шанс — 0.
         const swingCrit = lungeSwingId === attackSwingIdRef.current
           || (blade.critChance > 0 && Math.random() < blade.critChance)
+        // Урон этого взмаха до крита: обычная атака — с бонусом Дуэлянта (у
+        // остальных он равен attackDamageRef), взмах навыка slash — без него.
+        const swingDamage = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
           // Мёртвый враг (death уже играет/держит кадр) — хиты по нему больше
@@ -5233,7 +5239,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // Казнь (Мастер клинка): у врага ДО удара HP ниже доли максимума
               // — удар на весь остаток, враг убит. Не крит: искры у неё нет.
               const execute = !doorBlocks && blade.executeHpFrac > 0 && enemy.hp < enemy.maxHp * blade.executeHpFrac
-              const swordHit = crit ? attackDamageRef.current * blade.critMult : attackDamageRef.current
+              const swordHit = crit ? swingDamage * blade.critMult : swingDamage
               const swordDealtBefore = attackDamageDealtRef.current
               const swordKilled = damageEnemy(enemy, execute ? Math.max(swordHit, enemy.hp) : swordHit, attackDamageDealtRef, swordSourceX, 'sword')
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
@@ -5276,7 +5282,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               const bossBladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(null)
               const bossDealtBefore = attackDamageDealtRef.current
               // Крит — как у врага выше; Казни на боссе нет (docs/classes.md).
-              const bossHit = swingCrit ? attackDamageRef.current * blade.critMult : attackDamageRef.current
+              const bossHit = swingCrit ? swingDamage * blade.critMult : swingDamage
               const bossKilled = damageBoss(bossHit, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)
               if (bossBladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - bossDealtBefore) * blood.bladeHealFrac)
               if (!bossKilled) {

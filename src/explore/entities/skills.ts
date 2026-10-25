@@ -1509,5 +1509,14 @@ export function createSkillsSystem(deps: SkillsDeps) {
     dashHitTargets.clear()
   }
 
-  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding }
+  // Удар мечом, который сейчас наносится, начат навыком slash (а не кнопкой
+  // атаки)? Для бонуса Дуэлянта (26.10.2026): +15% получает ТОЛЬКО обычная
+  // атака мечом (docs/classes.md). Только чтение. Верно ровно на кадре удара:
+  // Explore.tsx зовёт её из applyAttackHit, а onAttackStrike, снимающая
+  // пометку, идёт следом в том же кадре.
+  function isSlashStrike(): boolean {
+    return slashSwingPending
+  }
+
+  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding, isSlashStrike }
 }
