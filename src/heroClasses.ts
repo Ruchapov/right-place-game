@@ -26,13 +26,13 @@
 //   • боевые числа ветки «Кровь» (26.10.2026, bloodClassEffects внизу) — по ним
 //     лечит бой на клиенте, и из них же сервер выводит потолок полученного
 //     урона (clampRunProgress): лечение Упыря даёт честно пропустить больше;
-//   • боевые числа ветки «Магия» (26.10.2026, magicClassEffects внизу) — их
-//     читает только бой на клиенте; здесь они затем, чтобы всё, что класс
-//     делает в бою, лежало одним местом рядом с текстом его карточки.
+//   • боевые числа веток «Магия» и «Клинок» (26.10.2026, magicClassEffects и
+//     bladeClassEffects внизу) — их читает только бой на клиенте; здесь они
+//     затем, чтобы всё, что класс делает в бою, лежало одним местом рядом с
+//     текстом его карточки. Строки effects ниже — по-прежнему только текст
+//     карточки, ни один модуль боя их не читает.
 //
 // Чего здесь НЕТ намеренно:
-//   • боевых чисел Клинка — его механик в бою пока нет. Строки effects ниже —
-//     текст карточки, ни один модуль боя их не читает;
 //   • имён колонок БД (Character.classId / classTier) — раскладка на сервере,
 //     в runState.ts (heroClassOf), рядом с книгами и страницами.
 //
@@ -413,5 +413,50 @@ export function magicClassEffects(state: HeroClassState): MagicClassEffects {
     meltMult: sorcerer ? SORCERER_MELT_MULT : 0,
     manaDropChance: elementalist ? ELEMENTALIST_MANA_DROP_CHANCE : null,
     freeSkillChance: elementalist ? ELEMENTALIST_FREE_SKILL_CHANCE : 0,
+  }
+}
+
+// --- Боевые числа ветки «Клинок» (26.10.2026) ---
+//
+// Сервер их тоже НЕ читает, и по той же причине, что у Магии: +15%, крит и
+// Казнь меняют, как быстро снимается HP врага, но не сколько его можно снять —
+// клиент копит урон, обрезанный остатком HP цели. Лечения у Клинка нет.
+
+/** Дуэлянт: урон ОБЫЧНОЙ атаки мечом умножается на это число. Рывок и навыки — нет. */
+export const DUELIST_SWORD_DAMAGE_MULT = 1.15
+/** Дуэлянт, Выпад: окно после рывка, мс; первый взмах мечом в нём — критический. */
+export const DUELIST_LUNGE_WINDOW_MS = 1000
+/** Критический удар мечом (Выпад, Острый глаз) бьёт во столько раз сильнее. Не складывается: оба сразу — тот же ×2. */
+export const BLADE_CRIT_MULT = 2
+/** Мастер клинка, Казнь: удар мечом по врагу, у которого HP НИЖЕ этой доли максимума, убивает сразу. На боссе не работает. */
+export const BLADEMASTER_EXECUTE_HP_FRAC = 0.15
+/** Мастер клинка, Острый глаз: шанс, что удар мечом критический. */
+export const BLADEMASTER_CRIT_CHANCE = 0.1
+
+/**
+ * Что из ветки «Клинок» действует у героя с этим классом. Без класса и у других
+ * веток — нейтральные значения, и бой идёт ровно как без классов: множитель 1,
+ * окна Выпада нет (0), крит ничего не множит (1), Казни нет (0), шанса крита
+ * нет (0). Мастер клинка — вторая ступень Дуэлянта: у него всё от первой плюс
+ * своё. Удар в поднятую дверь Привратника не получает ни крита, ни Казни —
+ * это правило боя (docs/classes.md, «Общие правила»), чисел у него нет.
+ */
+export type BladeClassEffects = {
+  swordDamageMult: number
+  lungeWindowMs: number
+  critMult: number
+  executeHpFrac: number
+  critChance: number
+}
+
+export function bladeClassEffects(state: HeroClassState): BladeClassEffects {
+  const duelist = state !== 'none' && state.id === 'duelist'
+  const master = state !== 'none' && state.id === 'duelist' && state.tier === 2
+  return {
+    swordDamageMult: duelist ? DUELIST_SWORD_DAMAGE_MULT : 1,
+    lungeWindowMs: duelist ? DUELIST_LUNGE_WINDOW_MS : 0,
+    critMult: duelist ? BLADE_CRIT_MULT : 1,
+    executeHpFrac: master ? BLADEMASTER_EXECUTE_HP_FRAC : 0,
+    critChance: master ? BLADEMASTER_CRIT_CHANCE : 0,
   }
 }

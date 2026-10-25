@@ -332,6 +332,15 @@ export async function loadBloodClassAssets(): Promise<Texture[]> {
   return loadCheckedSheet('Heal_Aura_Red.png', C.HEAL_AURA_RED_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS)
 }
 
+/**
+ * Красная искра критического удара ветки «Клинок» (26.10.2026) — только в забег
+ * Дуэлянта и Мастера клинка (0.2 МБ), по той же причине и тем же способом, что
+ * красная аура выше: стартует после ответа старта, со сверкой размера.
+ */
+export async function loadBladeClassAssets(): Promise<Texture[]> {
+  return loadCheckedSheet('parry_spark_Red.png', C.PARRY_SPARK_RED_SRC, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS)
+}
+
 // Зверь — пять листов в единой клетке 600×288 с одинаковой посадкой, 12 колонок
 // в ряд. Грузятся ОДИН раз на забег, не на каждого врага кластера.
 async function loadBeastAssets(): Promise<BeastAssets> {

@@ -43,7 +43,7 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadCommonAssets, loadEventAssets, loadBloodClassAssets } from './explore/assets'
+import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -56,7 +56,8 @@ import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
-import { bloodClassEffects, magicClassEffects, type BloodClassEffects, type MagicClassEffects, type HeroClassState } from './heroClasses'
+import { createCritFlashSystem } from './explore/entities/critFlash'
+import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
@@ -2562,6 +2563,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
+    let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -2845,9 +2847,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // — из ответа /run/start-explore, а НЕ из профиля: тем же полем сервер
       // записал класс в забег и по нему считает потолок полученного урона, так
       // что клиент лечит ровно тем классом, под который сервер оставил запас.
-      // У каждой ветки свои числа (bloodClassEffects, magicClassEffects); у
-      // чужих веток и без класса они нейтральные, и бой идёт ровно как без
-      // классов. Механик Клинка в бою пока нет.
+      // У каждой ветки свои числа (bloodClassEffects, magicClassEffects,
+      // bladeClassEffects); у чужих веток и без класса они нейтральные, и бой
+      // идёт ровно как без классов.
       let runHeroClass: HeroClassState
       if (startExploreResult) {
         const rawClass = startExploreResult.heroClass
@@ -2894,6 +2896,27 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         skillDamage.iceball = Math.floor(skillDamage.iceball * magic.projectileDamageMult)
         console.log('Explore: урон шаров с классом', { fireball: skillDamage.fireball, iceball: skillDamage.iceball }, magic)
       }
+      // Числа ветки «Клинок» (Дуэлянт, Мастер клинка; 26.10.2026). Выпад, крит и
+      // Казнь читает applyAttackHit, окно Выпада ведёт тикер (lungeMsLeft ниже).
+      const blade: BladeClassEffects = bladeClassEffects(runHeroClass)
+      // +15% к ОБЫЧНОЙ атаке мечом — к урону меча на забег, поверх точильного
+      // камня выше; вниз, как +15% к шарам. Взмах навыка slash — тот же удар
+      // мечом (applyAttackHit), бонус получает и он. Рывок и кровотечение
+      // бонуса не получают: их числа — skillDamage, от урона меча без бонусов.
+      if (blade.swordDamageMult !== 1) {
+        attackDamageRef.current = Math.floor(attackDamageRef.current * blade.swordDamageMult)
+        console.log('Explore: урон меча с классом', attackDamageRef.current, blade)
+      }
+      // Красная искра крита — только герою этой ветки (см. loadBladeClassAssets).
+      const bladeAssetsLoad = blade.critMult > 1 ? loadBladeClassAssets() : Promise.resolve(null)
+      bladeAssetsLoad.catch(() => {})
+      // Выпад: сколько ещё длится окно после рывка (мс). Пока идёт рывок — оно
+      // полное, после — убывает по тикеру; первый взмах мечом его забирает и
+      // становится критическим (lungeSwingId — номер этого взмаха). Удар,
+      // нажатый прямо во время рывка, — тоже Выпад: замах рывок обрывает (см.
+      // startPlayerAttack), и окно к этому моменту полное.
+      let lungeMsLeft = 0
+      let lungeSwingId = -1
 
       // Запас зелий на забег — ТОЛЬКО из ответа сервера (раньше здесь была
       // захардкоженная тройка в useRef, и сколько бы игрок ни купил, в забег
@@ -3523,7 +3546,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // фону и запуску PixiJS выше; какие листы условные и почему — см.
       // explore/assets.ts. Любой нужный лист не загрузился — этот await бросает,
       // и setup() уходит в экран ошибки (setup().catch), как и раньше.
-      const [assets, eventAssets, , bloodFrames] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad])
+      const [assets, eventAssets, , bloodFrames, bladeSparkFrames] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad, bladeAssetsLoad])
       if (cancelled) {
         // Компонент размонтировался (или сработал предохранитель загрузки), пока
         // грузились листы — не создаём спрайты и не трогаем worldContainer.
@@ -3580,6 +3603,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       classHealFlashSystem = createClassHealFlashSystem({ worldContainer, phys, frames: bloodFrames })
       const flashSystem = classHealFlashSystem
       classHealFlashRef.current = () => flashSystem.flash()
+      // Крит ветки «Клинок» (26.10.2026): красная искра и вспышка врага
+      // (explore/entities/critFlash.ts). Создаётся всегда, по той же причине, что
+      // вспышка лечения выше: у других веток крита не бывает, и strike() не
+      // позовётся. Масштаб искры — от масштаба героя, как у искры отбива
+      // (spawnParrySparkRef ниже: HERO_DRAW_H / высота кадра idle — она же
+      // HERO_CELL_H), но крупнее.
+      critFlashSystem = createCritFlashSystem({
+        worldContainer,
+        frames: bladeSparkFrames,
+        sparkScale: (C.HERO_DRAW_H / C.HERO_CELL_H) * C.CRIT_SPARK_SCALE,
+      })
 
       // Мана с убитых врагов (см. explore/entities/mana.ts): бросок выпадения
       // и полёт шаров в героя. Создаётся ЗДЕСЬ, после загрузки, а не рядом с
@@ -4770,6 +4804,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         attackActiveRef.current = true
         attackActiveTimerRef.current = C.ATTACK_ACTIVE_MS
         attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
+        // Выпад (Дуэлянт): первый взмах в окне после рывка — критический. Окно он
+        // забирает, даже если промахнётся: Выпад — это первый удар, а не первое
+        // попадание.
+        if (lungeMsLeft > 0) {
+          lungeSwingId = attackSwingIdRef.current
+          lungeMsLeft = 0
+        }
         attackingRef.current = true
         attackHitDoneRef.current = false
         attackFacingRef.current = facingRef.current // facing зафиксирован на старте замаха
@@ -5134,7 +5175,22 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         }
       }
 
+      // Середина пересечения двух отрезков [a, a+aw] и [b, b+bw] — по одной оси.
+      // Точка удара для искры крита: середина пересечения хитбокса меча с телом
+      // цели (зовётся только при попадании, то есть пересечение есть).
+      function overlapCenter(a: number, aw: number, b: number, bw: number): number {
+        return (Math.max(a, b) + Math.min(a + aw, b + bw)) / 2
+      }
+
       function applyAttackHit() {
+        // Крит ветки «Клинок» (26.10.2026) решается ОДИН раз на взмах: Выпад
+        // (этот взмах забрал окно после рывка) или Острый глаз (бросок). Оба
+        // сразу — тот же ×critMult, не ×4: правило «крит не складывается». Казнь
+        // — по каждой цели отдельно, ниже. Бросок один, потому что и вызов один:
+        // applyAttackHit за взмах зовётся ровно раз (дедуп attackHitDoneRef в
+        // тикере). У других веток lungeSwingId не ставится, а шанс — 0.
+        const swingCrit = lungeSwingId === attackSwingIdRef.current
+          || (blade.critChance > 0 && Math.random() < blade.critChance)
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
           // Мёртвый враг (death уже играет/держит кадр) — хиты по нему больше
@@ -5167,9 +5223,21 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // аккумулятора, где урон обрезан остатком HP, а меч в поднятую
               // дверь Привратника не снимает ничего — и не лечит.
               const bladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(enemy)
+              const swordSourceX = phys.x + C.PLAYER_WIDTH / 2
+              // Удар в поднятую дверь Привратника: ни крита, ни Казни
+              // (docs/classes.md, «Общие правила»). Урона там нет вовсе — его
+              // гасит damageEnemy тем же gatekeeperDoorBlocks, — и рисовать
+              // крит по двери нечего.
+              const doorBlocks = gatekeeperDoorBlocks(enemy, swordSourceX)
+              const crit = swingCrit && !doorBlocks
+              // Казнь (Мастер клинка): у врага ДО удара HP ниже доли максимума
+              // — удар на весь остаток, враг убит. Не крит: искры у неё нет.
+              const execute = !doorBlocks && blade.executeHpFrac > 0 && enemy.hp < enemy.maxHp * blade.executeHpFrac
+              const swordHit = crit ? attackDamageRef.current * blade.critMult : attackDamageRef.current
               const swordDealtBefore = attackDamageDealtRef.current
-              const swordKilled = damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')
+              const swordKilled = damageEnemy(enemy, execute ? Math.max(swordHit, enemy.hp) : swordHit, attackDamageDealtRef, swordSourceX, 'sword')
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
+              if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, enemy.x, enemy.width), overlapCenter(hb.y, hb.height, enemy.y, enemy.height), enemy.sprite)
               if (swordKilled) continue
               applyEnemyHitReaction(enemy)
             }
@@ -5207,11 +5275,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // с enemy === null.
               const bossBladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(null)
               const bossDealtBefore = attackDamageDealtRef.current
-              const bossKilled = damageBoss(attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)
+              // Крит — как у врага выше; Казни на боссе нет (docs/classes.md).
+              const bossHit = swingCrit ? attackDamageRef.current * blade.critMult : attackDamageRef.current
+              const bossKilled = damageBoss(bossHit, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)
               if (bossBladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - bossDealtBefore) * blood.bladeHealFrac)
               if (!bossKilled) {
                 applyBossHitReaction(boss)
               }
+              if (swingCrit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, boss.x, C.BOSS_WIDTH), overlapCenter(hb.y, hb.height, boss.y, C.BOSS_HEIGHT), boss.sprite)
             }
           }
         }
@@ -5649,6 +5720,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Атака игрока. Кулдаун тикает в секундах, как cooldownLeft в Battle.tsx.
         if (attackCooldownRef.current > 0) {
           attackCooldownRef.current = Math.max(0, attackCooldownRef.current - ticker.deltaMS / 1000)
+        }
+
+        // Окно Выпада (Дуэлянт): пока идёт рывок — полное, после — убывает.
+        // ДО нажатия ⚔ ниже: замах, нажатый в этом же тике, рывок оборвёт, и
+        // окно к этому моменту обязано быть полным (см. lungeMsLeft в setup).
+        if (blade.lungeWindowMs > 0) {
+          lungeMsLeft = dashingRef.current ? blade.lungeWindowMs : Math.max(0, lungeMsLeft - ticker.deltaMS)
         }
 
         if (attackPressedRef.current) {
@@ -6273,6 +6351,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Поэтому звёзды появляются в кадр отбива и гаснут в кадр, когда
         // оглушение кончилось или враг умер, — без кадра опоздания.
         stunStarsSystem!.update(ticker.deltaMS)
+        // Красная вспышка врага после крита — гаснет по своему таймеру. ПОСЛЕ
+        // систем врагов и босса: tint босса каждый кадр пишет boss.ts, и цвет
+        // крита попадает в кадр, только если записан позже (см. critFlash.ts).
+        critFlashSystem!.update(ticker.deltaMS)
 
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
         // независимая от игровой логики анимация, реальное время
@@ -6379,6 +6461,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       clearLoadWatchdog()
       skills?.dispose()
       classHealFlashSystem?.dispose()
+      critFlashSystem?.dispose()
       // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
       // систему уже уничтоженной сцены (тот же приём, что clearManaOrbsRef ниже).
       classHealFlashRef.current = () => {}

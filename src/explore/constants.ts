@@ -1426,6 +1426,19 @@ export const PARRY_SPARK_CELL = 192
 export const PARRY_SPARK_COUNT = 11
 export const PARRY_SPARK_COLS = 11
 
+// Критический удар мечом (Выпад и Острый глаз ветки «Клинок», 26.10.2026;
+// docs/classes.md, «Визуал»): красная копия искры (tools/recolor_red.py —
+// клетка, кадры и раскладка те же, байт в байт альфа оригинала) в точке удара,
+// КРУПНЕЕ искры отбива — 0.9 против 0.6, в полтора раза, — и враг на 0.1 с
+// вспыхивает красным. Длительность искры — та же PARRY_SPARK_MS. Цвет вспышки
+// — тот же, что у вспышки попадания по боссу (BOSS_HIT_FLASH_MS в boss.ts).
+// Лист грузится ТОЛЬКО в забег Дуэлянта и Мастера клинка (loadBladeClassAssets
+// в assets.ts).
+export const PARRY_SPARK_RED_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/parry_spark_Red.png`
+export const CRIT_SPARK_SCALE = 0.9
+export const CRIT_FLASH_MS = 100
+export const CRIT_FLASH_TINT = 0xe0353b
+
 // Точка на клинке для КАЖДОГО из 9 кадров блока, в координатах клетки 394×342
 // от её левого верхнего угла. Берётся точка того кадра, который показан в момент
 // отбива, — поэтому искра появляется там, где меч реально стоит, а не в
