@@ -23,6 +23,7 @@ import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type Sk
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
 import type { ClassItemId } from './classItems.js'
+import { parseHeroClassId, parseHeroClassTier, heroClassToWire, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -804,6 +805,45 @@ export function classItemStockOf(character: ClassItemColumns): Record<ClassItemI
     soul_shard: character.soulShards,
     renounce_seal: character.renounceSeals,
   }
+}
+
+// --- Класс героя: две колонки Character <-> HeroClassState ---
+//
+// 20.10.2026, каталог heroClasses.ts. classId — ветка или null, classTier —
+// ступень 1..2 или 0. Схема пару не проверяет (classId — просто строка), поэтому
+// читать её ТОЛЬКО здесь: испорченная пара — класс без ступени, ступень без
+// класса, id не из каталога — возвращается 'malformed', а НЕ «класса нет».
+// Свалить её в 'none' значило бы тихо отнять у игрока оплаченный класс и дать
+// выбрать его второй раз за полную цену.
+export type HeroClassColumns = {
+  classId: string | null
+  classTier: number
+}
+
+export function heroClassOf(character: HeroClassColumns): HeroClassState | 'malformed' {
+  if (character.classId === null) return character.classTier === 0 ? 'none' : 'malformed'
+  const id = parseHeroClassId(character.classId)
+  const tier = parseHeroClassTier(character.classTier)
+  return id === null || tier === null ? 'malformed' : { id, tier }
+}
+
+/**
+ * Поле heroClass для ответов логина и профиля: null — класса нет, {id, tier} —
+ * есть. Испорченная пара колонок — поля НЕТ вовсе (клиент покажет «класс
+ * неизвестен») и громкий лог, а не null: null значил бы «класса нет», то есть
+ * неправду о том, что оплачено. Вход при этом обязан открываться — отказывать
+ * из-за класса нельзя (то же правило, что у всего ответа логина).
+ */
+export function heroClassField(
+  state: HeroClassState | 'malformed',
+  log: { error: (obj: object, msg: string) => void },
+  userId: number,
+): { heroClass?: { id: HeroClassId; tier: HeroClassTier } | null } {
+  if (state === 'malformed') {
+    log.error({ userId }, 'hero class: corrupt classId/classTier pair — field left out of the response')
+    return {}
+  }
+  return { heroClass: heroClassToWire(state) }
 }
 
 // --- Уровни навыков: колонки Character <-> объект по id навыка ---

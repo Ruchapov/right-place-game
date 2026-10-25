@@ -5,11 +5,12 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
-import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
 import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
+import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
 // JSON читает и /auth/login, закрывая брошенный забег (см. runState.ts, шапка).
 import {
@@ -27,6 +28,8 @@ import {
   consumableStockOf,
   scrollStockOf,
   classItemStockOf,
+  heroClassOf,
+  heroClassField,
   type ConsumableColumns,
   type ClassItemColumns,
   skillLevelsOf,
@@ -469,6 +472,114 @@ async function sendSkillState(request: FastifyRequest, reply: FastifyReply, user
     classItems: classItemStockOf(updated),
     equippedSkills: updated.equippedSkills,
     skillLevels: skillLevelsOf(updated),
+  })
+}
+
+// --- Класс героя: общие куски трёх ручек (выбрать / возвыситься / отречься) ---
+
+/**
+ * Навыки, которые класс требует надетыми, — строки каталога heroClasses.ts,
+ * проверенные по каталогу расходников. Каталоги друг друга не импортируют
+ * (байт-в-байт копии без импортов), поэтому сверка РАНТАЙМОВАЯ: id навыка без
+ * книги в каталоге — null, и ручка отвечает громким 500, а не выбирает класс по
+ * требованию, которое никто не может выполнить (или которое выполнено всегда).
+ */
+function classRequiredSkills(cls: HeroClass): SkillBookSkillId[] | null {
+  const out: SkillBookSkillId[] = []
+  for (const raw of cls.requiredSkills) {
+    const skillId = parseSkillBookSkillId(raw)
+    if (skillId === null || bookBySkillId(skillId) === null) return null
+    out.push(skillId)
+  }
+  return out
+}
+
+/** Имя книги для строки «Нужна надетая …» — из каталога расходников, как на клиенте. */
+function classBookName(skillId: string): string {
+  const parsed = parseSkillBookSkillId(skillId)
+  return (parsed === null ? null : bookBySkillId(parsed))?.nameRu ?? skillId
+}
+
+/**
+ * Всё, от чего зависят три ручки класса, из ОДНОГО прочитанного персонажа.
+ * Уровень — по серверной формуле (calculateLevel), колонка level — только снимок.
+ */
+function classWalletOf(
+  character: { strength: number; agility: number; endurance: number; bonusLevels: number; gold: number; soulShards: number; renounceSeals: number; equippedSkills: string[] },
+  heroClass: HeroClassState,
+): HeroClassWallet {
+  return {
+    level: calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels),
+    gold: character.gold,
+    soulShards: character.soulShards,
+    renounceSeals: character.renounceSeals,
+    equippedSkills: character.equippedSkills,
+    heroClass,
+  }
+}
+
+/**
+ * Отказ «чего не хватает»: коды (missing) и те же причины словами игрока
+ * (lines) — строками общего каталога, теми же, что клиент пишет под серой
+ * кнопкой. 400, а не 409: это отказ по существу, повтор его не исправит.
+ */
+function sendClassRefusal(reply: FastifyReply, missing: ClassShortfall[]) {
+  return reply.status(400).send({
+    error: 'Requirements not met',
+    missing,
+    lines: missing.map((m) => shortfallLine(m, classBookName)),
+  })
+}
+
+/**
+ * Условная запись класса не нашла строку (0 строк): между чтением и записью
+ * состояние изменилось. Перечитываем и отвечаем по существу ТЕМ ЖЕ правилом:
+ * второй запрос двойного нажатия получает здесь «Класс уже выбран» (или «нет
+ * Печати»), а не «повтори». Правило по свежему чтению говорит «можно» — значит
+ * гонка была с чем-то, что успело откатиться обратно; тогда честное 409.
+ */
+async function sendClassRaceRefusal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  userId: number,
+  rule: (w: HeroClassWallet) => ClassShortfall[],
+) {
+  const fresh = await prisma.character.findUnique({ where: { userId } })
+  if (!fresh) return reply.status(404).send({ error: 'Character not found' })
+  const state = heroClassOf(fresh)
+  if (state === 'malformed') {
+    request.log.error({ userId, classId: fresh.classId, classTier: fresh.classTier }, 'hero class: corrupt classId/classTier pair')
+    return reply.status(500).send({ error: 'Corrupt class state' })
+  }
+  const missing = rule(classWalletOf(fresh, state))
+  if (missing.length > 0) return sendClassRefusal(reply, missing)
+  return reply.status(409).send({ error: 'State changed, retry' })
+}
+
+/**
+ * Ответ трёх ручек класса: всё, что они меняют, перечитанным из БД — золото,
+ * склад предметов классов (Осколки и Печати) и сам класс. Свой ответ, а не
+ * sendSkillState: книги и страницы класс не трогает, а клиенту после выбора
+ * нужно показать окно «Ты стал …» по тому, что ЗАПИСАНО, а не по тому, что он
+ * просил.
+ */
+async function sendClassState(request: FastifyRequest, reply: FastifyReply, userId: number) {
+  const updated = await prisma.character.findUnique({ where: { userId } })
+  if (!updated) {
+    request.log.error({ userId }, 'hero class action applied but character could not be read back')
+    return reply.status(500).send({ error: 'Action applied but state could not be read' })
+  }
+  const state = heroClassOf(updated)
+  if (state === 'malformed') {
+    // Только что записали годную пару — испорченной она быть не может. Если всё
+    // же так, соврать «класса нет» хуже, чем громко отказать.
+    request.log.error({ userId, classId: updated.classId, classTier: updated.classTier }, 'hero class: corrupt pair right after write')
+    return reply.status(500).send({ error: 'Corrupt class state' })
+  }
+  return reply.send({
+    gold: updated.gold,
+    classItems: classItemStockOf(updated),
+    heroClass: heroClassToWire(state),
   })
 }
 
@@ -2454,6 +2565,165 @@ export async function runRoutes(server: FastifyInstance) {
     return await sendSkillState(request, reply, userId)
   })
 
+  // --- КЛАСС ГЕРОЯ: выбрать / возвыситься / отречься (20.10.2026) ---
+  //
+  // docs/classes.md, «Выбор, возвышение, отречение — у Отшельника». Эффектов
+  // класса в бою пока нет: ручки только хранят выбор и списывают цену.
+  //
+  // Всё решает СЕРВЕР: цены и пороги — из общего каталога heroClasses.ts, из
+  // тела читается только id класса. Правило «чего не хватает» — тоже из каталога
+  // (chooseShortfalls и соседи), одно на клиент и сервер: отказ приходит теми же
+  // строками, которыми клиент гасит кнопку.
+  //
+  // Запись УСЛОВНАЯ и сама себе проверка, как у покупок (buy-upgrade): в фильтре
+  // стоят прочитанное состояние класса, «хватает осколков», «хватает золота» (и
+  // у выбора — «нужные навыки надеты»), списание — decrement в том же update.
+  // Поэтому двойное нажатие не спишет дважды: второй запрос упирается в класс,
+  // уже записанный первым (0 строк), и получает «Класс уже выбран».
+  //
+  // Ключа идемпотентности (applyOnce) у них НЕТ, и он не нужен: в отличие от
+  // покупки, действие с классом не повторяемо по смыслу — после выбора класс
+  // уже есть, после возвышения ступень уже 2, после отречения класса нет, и
+  // повтор упирается в фильтр сам. Клиент повторов не делает; потерянный ответ —
+  // сверка баланса, как у книг.
+  //
+  // Уровня в фильтре нет: он выводится из статов и bonusLevels, а те только
+  // растут — между чтением и записью уровень может стать лишь выше.
+  //
+  // Посреди забега (со второго устройства) ручки не запрещены: класс ни на что
+  // в забеге не влияет, а когда эффекты появятся, он будет фиксироваться один
+  // раз на старте (docs/classes.md, «Что потребуется в коде»).
+
+  // Выбрать класс: уровень 10+, класса нет, 5 Осколков души, 2000 золота, нужные
+  // книги надеты. Списываются осколки и золото; книги остаются надетыми.
+  server.post<{ Body: { id?: unknown } }>('/character/choose-class', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const classId = parseHeroClassId(request.body?.id)
+    if (classId === null) return reply.status(400).send({ error: 'Unknown class' })
+    const cls = heroClassById(classId)
+    const requiredSkills = cls === null ? null : classRequiredSkills(cls)
+    if (cls === null || requiredSkills === null) {
+      request.log.error({ classId, requiredSkills: cls?.requiredSkills }, 'choose-class: класс или его навыки не сходятся с каталогом')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+    const state = heroClassOf(character)
+    if (state === 'malformed') {
+      request.log.error({ userId, classId: character.classId, classTier: character.classTier }, 'hero class: corrupt classId/classTier pair')
+      return reply.status(500).send({ error: 'Corrupt class state' })
+    }
+    const missing = chooseShortfalls(classWalletOf(character, state), cls)
+    if (missing.length > 0) return sendClassRefusal(reply, missing)
+
+    // hasEvery — навыки надеты В МОМЕНТ ЗАПИСИ, а не только при чтении: «забыть»
+    // навык во второй вкладке между чтением и записью иначе прошло бы мимо.
+    const written = await prisma.character.updateMany({
+      where: {
+        userId,
+        classId: null,
+        classTier: 0,
+        soulShards: { gte: CLASS_CHOOSE_SHARDS },
+        gold: { gte: CLASS_CHOOSE_GOLD },
+        equippedSkills: { hasEvery: requiredSkills },
+      },
+      data: {
+        classId,
+        classTier: 1,
+        soulShards: { decrement: CLASS_CHOOSE_SHARDS },
+        gold: { decrement: CLASS_CHOOSE_GOLD },
+      },
+    })
+    if (written.count === 0) return await sendClassRaceRefusal(request, reply, userId, (w) => chooseShortfalls(w, cls))
+
+    return await sendClassState(request, reply, userId)
+  })
+
+  // Возвыситься до второй ступени СВОЕЙ ветки: уровень 30+, ступень 1, 50
+  // Осколков души, 15000 золота. Книги не важны. id в теле — какой класс игрок
+  // видел своим: со второго устройства он мог отречься и выбрать другой, и
+  // возвышать молча не тот класс за 15000 нельзя.
+  server.post<{ Body: { id?: unknown } }>('/character/ascend-class', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const classId = parseHeroClassId(request.body?.id)
+    if (classId === null) return reply.status(400).send({ error: 'Unknown class' })
+    const cls = heroClassById(classId)
+    if (cls === null) {
+      request.log.error({ classId }, 'ascend-class: id есть в списке, но нет в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+    const state = heroClassOf(character)
+    if (state === 'malformed') {
+      request.log.error({ userId, classId: character.classId, classTier: character.classTier }, 'hero class: corrupt classId/classTier pair')
+      return reply.status(500).send({ error: 'Corrupt class state' })
+    }
+    const missing = ascendShortfalls(classWalletOf(character, state), cls)
+    if (missing.length > 0) return sendClassRefusal(reply, missing)
+
+    const written = await prisma.character.updateMany({
+      where: {
+        userId,
+        classId,
+        classTier: 1,
+        soulShards: { gte: CLASS_ASCEND_SHARDS },
+        gold: { gte: CLASS_ASCEND_GOLD },
+      },
+      data: {
+        classTier: 2,
+        soulShards: { decrement: CLASS_ASCEND_SHARDS },
+        gold: { decrement: CLASS_ASCEND_GOLD },
+      },
+    })
+    if (written.count === 0) return await sendClassRaceRefusal(request, reply, userId, (w) => ascendShortfalls(w, cls))
+
+    return await sendClassState(request, reply, userId)
+  })
+
+  // Отречься: свой класс (любая ступень) и Печать отречения в сумке. Печать
+  // тратится, класс и ступень сбрасываются ЦЕЛИКОМ; ни осколки, ни золото не
+  // возвращаются (docs/classes.md). Дальше — выбор с нуля по обычной цене.
+  server.post<{ Body: { id?: unknown } }>('/character/renounce-class', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const classId = parseHeroClassId(request.body?.id)
+    if (classId === null) return reply.status(400).send({ error: 'Unknown class' })
+    const cls = heroClassById(classId)
+    if (cls === null) {
+      request.log.error({ classId }, 'renounce-class: id есть в списке, но нет в каталоге')
+      return reply.status(500).send({ error: 'Catalog mismatch' })
+    }
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+    const state = heroClassOf(character)
+    if (state === 'malformed') {
+      request.log.error({ userId, classId: character.classId, classTier: character.classTier }, 'hero class: corrupt classId/classTier pair')
+      return reply.status(500).send({ error: 'Corrupt class state' })
+    }
+    const missing = renounceShortfalls(classWalletOf(character, state), cls)
+    if (missing.length > 0) return sendClassRefusal(reply, missing)
+
+    // Ступени в фильтре нет намеренно: отрекаются от класса целиком, с любой
+    // ступени, и возвышение во второй вкладке между чтением и записью отречению
+    // не мешает — пропадёт вместе с классом, как и обещает подтверждение.
+    const written = await prisma.character.updateMany({
+      where: { userId, classId, ...classItemStockFilter('renounce_seal') },
+      data: { classId: null, classTier: 0, ...classItemStockDecrement('renounce_seal') },
+    })
+    if (written.count === 0) return await sendClassRaceRefusal(request, reply, userId, (w) => renounceShortfalls(w, cls))
+
+    return await sendClassState(request, reply, userId)
+  })
+
   // Покупка ОДНОГО зелья указанного тира. Цена и уровень открытия берутся из
   // каталога (src/potions.ts, копия server/src/potions.ts), НЕ из тела запроса:
   // клиент называет только тир. Раньше эндпоинт параметров не принимал вовсе и
@@ -2808,6 +3078,10 @@ export async function runRoutes(server: FastifyInstance) {
       // «Персонаж», значит «Обновить баланс» обязан их обновлять: иначе после
       // покупки улучшения во второй вкладке экран остался бы со старыми числами.
       upgrades: upgradesOf(character),
+      // Класс героя (20.10.2026): null — класса нет, {id, tier} — есть. Здесь,
+      // а не только в логине: выбор, возвышение и отречение со второго
+      // устройства «Обновить баланс» обязан показать (heroClassField выше).
+      ...heroClassField(heroClassOf(character), request.log, userId),
       trophyGoldRate: TROPHY_GOLD_RATE,
       appliedRequestIds,
     })

@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, scrollStockOf, classItemStockOf, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
+import { consumableStockOf, scrollStockOf, classItemStockOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 
 const prisma = new PrismaClient()
@@ -469,6 +469,14 @@ export async function authRoutes(server: FastifyInstance) {
         // Счётчики улучшений: от них зависят урон и броня, которые клиент
         // показывает на «Персонаже» и с которыми уходит в забег.
         upgrades: upgradesOf(char),
+        // Класс героя (20.10.2026): null — класса нет, {id, tier} — есть.
+        // Строка класса на «Персонаже» и блок «Классы» у Отшельника читают
+        // его отсюда. Сырые колонки classId/classTier тоже уезжают в
+        // ...charFields выше — клиент их не читает. Испорченная пара — поля
+        // нет и громкий лог (heroClassField), вход открывается как обычно.
+        // Ветка закрытия забега выше класс не пишет, поэтому отражать его в
+        // char не нужно (правило «две строки на поле» его не касается).
+        ...heroClassField(heroClassOf(char), request.log, user.id),
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,
