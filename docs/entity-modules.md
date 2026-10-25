@@ -7,10 +7,11 @@
 
 **Правило на будущее**: новые боевые механики Explore НЕ пишутся в
 `Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`.
-Готовы восемь: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
-(04.10.2026), `gatekeeper.ts` (06.10.2026), `stunStars.ts` (13.10.2026) и
+Готовы девять: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
+(04.10.2026), `gatekeeper.ts` (06.10.2026), `stunStars.ts` (13.10.2026),
 `atmosphere.ts` (20.10.2026; не боевая механика, а вид — ветер и частицы темы,
-но устроена по тому же контракту).
+но устроена по тому же контракту) и `classHealFlash.ts` (26.10.2026; красная
+вспышка лечения класса «Кровь», `docs/classes.md`).
 
 ### Контракт
 
@@ -19,11 +20,19 @@ createEnemySystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createZvonarSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createGatekeeperSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createBossSystem(deps)  → { spawn, update(dt, deltaMS), dispose }
-createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame }
+createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding }
 createManaSystem(deps)   → { dropFrom, update(deltaMS), clear, dispose }
 createStunStarsSystem(deps) → { update(deltaMS), dispose }
 createAtmosphereSystem(deps) → { update(deltaMS, view), dispose }
+createClassHealFlashSystem(deps) → { flash, update(dead), dispose }
 ```
+
+⚠️ `createClassHealFlashSystem` (26.10.2026) создаётся в КАЖДОМ забеге, после
+загрузки листов; у героя не ветки «Кровь» кадров нет (`null`), и `flash()` не
+зовётся вовсе — его зовёт только `healPlayerByClass` в `Explore.tsx`, когда
+лечение класса реально долило HP. Спрайт один на забег и переиспользуется.
+`isBleeding(enemy | null)` модуля навыков — только чтение для Кровавого клинка и
+Пира (`null` — босс).
 
 ⚠️ `createAtmosphereSystem` кладёт свой узел в контейнер мира СРАЗУ при
 создании, поэтому создаётся ДО готового слоя карты — так частицы оказываются под
