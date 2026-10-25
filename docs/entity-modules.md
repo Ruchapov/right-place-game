@@ -21,7 +21,7 @@ createEnemySystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createZvonarSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createGatekeeperSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createBossSystem(deps)  → { spawn, update(dt, deltaMS), dispose }
-createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding }
+createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding, isSlashStrike }
 createManaSystem(deps)   → { dropFrom, update(deltaMS), clear, dispose }
 createStunStarsSystem(deps) → { update(deltaMS), dispose }
 createAtmosphereSystem(deps) → { update(deltaMS, view), dispose }
@@ -34,7 +34,10 @@ createCritFlashSystem(deps) → { strike(x, y, target), update(deltaMS), dispose
 зовётся вовсе — его зовёт только `healPlayerByClass` в `Explore.tsx`, когда
 лечение класса реально долило HP. Спрайт один на забег и переиспользуется.
 `isBleeding(enemy | null)` модуля навыков — только чтение для Кровавого клинка и
-Пира (`null` — босс).
+Пира (`null` — босс). `isSlashStrike()` — тоже только чтение: удар мечом этого
+кадра начат навыком «Кровотечение», а не кнопкой атаки; по нему `applyAttackHit`
+не даёт такому взмаху +15% Дуэлянта. Верна ровно на кадре удара — пометку снимает
+`onAttackStrike`, идущая в том же кадре следом.
 
 ⚠️ Числа классов приходят в модули ГОТОВЫМИ, один раз на забег (класс
 фиксирует `setup()` по ответу старта): у `skills.ts` — `bleedHealFrac`,
