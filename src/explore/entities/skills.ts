@@ -246,7 +246,28 @@ export type SkillsDeps = {
    * когда после платы HP останется больше нуля.
    */
   payHp: (amount: number) => void
+
+  // --- Класс «Магия» (26.10.2026, docs/classes.md) ---
+  // Числа сняты один раз на забег, как у «Крови» выше. +15% к шарам сюда НЕ
+  // приходит отдельным полем: оно уже внутри skillDamage (Explore.tsx применяет
+  // его к готовым числам забега). Без класса — нули, и модуль ведёт себя ровно
+  // как до классов.
+
+  /**
+   * Чародей, Таяние: во сколько раз огненный шар бьёт ЗАМОРОЖЕННУЮ льдом цель
+   * (и снимает с неё заморозку). 0 — механики нет.
+   */
+  meltMult: number
+  /**
+   * Повелитель стихий: шанс, что применение ЛЮБОГО навыка не потратит ману
+   * (бросок — в paySkill, один на применение). 0 — механики нет.
+   */
+  freeSkillChance: number
 }
+
+// Сколько заморозки оставляет Таяние — доля миллисекунды, а не ноль: снимает
+// заморозку следующий тик самой цели, её же заслоном льда (см. thaw).
+const THAW_LEFT_MS = 0.001
 
 // Цена каждого навыка в мане. Сами числа — в constants.ts (SKILL_MANA_COST);
 // присваивание в Record<SkillId, number> заставляет компилятор сверить, что
@@ -482,6 +503,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const mana = deps.mana.current
     const hpPart = bloodHpFor(cost, mana)
     if (hpPart < 0 || (hpPart > 0 && deps.hp.current - hpPart <= 0)) return false
+    // Повелитель стихий (26.10.2026): с шансом freeSkillChance применение
+    // бесплатно. Бросок ЗДЕСЬ, после проверки цены, а не в canAffordSkill:
+    // кнопка и нажатие по-прежнему требуют полной цены (тусклая кнопка не
+    // загорается ради шанса) — везение решает только, спишется ли она. Бросок
+    // один на применение: paySkill зовётся за применение ровно раз (на нажатии
+    // или на кадре вылета снаряда).
+    if (deps.freeSkillChance > 0 && Math.random() < deps.freeSkillChance) return true
     const manaPart = Math.min(cost, Math.max(0, mana))
     if (manaPart > 0) deps.spendMana(manaPart)
     if (hpPart > 0) deps.payHp(hpPart)
@@ -914,6 +942,32 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // X ИСТОЧНИКА урона для расследования цели (позиция стрелка, fb.originX).
   // Это РАЗНЫЕ точки, и путать их нельзя: зона бьёт там, где рвануло, а идти
   // цель должна туда, откуда прилетело.
+  // Таяние (Чародей, 26.10.2026): огненный шар по ЗАМОРОЖЕННОЙ цели. Заморожена
+  // — это лёд, stunTimer (пауза ледяного шара); оглушение парированием
+  // (parryStunTimer) — не заморозка и Таяния не даёт.
+  function meltsTarget(spec: ProjectileSpec, target: Enemy | Boss): boolean {
+    return spec.id === 'fireball' && deps.meltMult > 0 && target.stunTimer > 0
+  }
+
+  // Урон взрыва по одной цели. Таяние множит ГОТОВОЕ число забега (в нём уже
+  // +15% Чародея), и урон наносится, ПОКА цель ещё заморожена: замороженный
+  // Привратник открыт (gatekeeperIsOpen), и Таяние бьёт его целиком — сними мы
+  // лёд до урона, удар попал бы под дверь.
+  function blastDamage(spec: ProjectileSpec, melt: boolean): number {
+    return melt ? deps.skillDamage[spec.id] * deps.meltMult : deps.skillDamage[spec.id]
+  }
+
+  // Снять заморозку (Таяние). НЕ обнулением таймера: тогда выход из заморозки в
+  // обновлении самой цели (enemy.ts, zvonar.ts, gatekeeper.ts, boss.ts — «стан
+  // кончился, вернуть проигрывание», у Привратника со своими исключениями) не
+  // выполнился бы, и спрайт остался бы стоять на замёрзшем кадре. Таймеру
+  // остаётся доля миллисекунды — следующий же тик снимет её заслоном льда, тем
+  // же путём, что и истечение. Замах, застигнутый льдом, после этого доигрывает,
+  // как после обычной разморозки.
+  function thaw(target: Enemy | Boss) {
+    target.stunTimer = Math.min(target.stunTimer, THAW_LEFT_MS)
+  }
+
   function applyBlast(spec: ProjectileSpec, worldX: number, worldY: number, sourceX: number) {
     const drawH = C.FIREBALL_IMPACT_DRAW_H
     const scale = C.FIREBALL_BLAST_SCALE
@@ -950,11 +1004,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // от неё, так что зверь доходил до места взрыва за ~0.75с, вставал и
       // возвращался в патруль, ни на шаг не приблизившись к игроку.
       blastHitAny = true
-      const died = deps.damageEnemy(enemy, deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX, 'skill')
+      const melt = meltsTarget(spec, enemy)
+      const died = deps.damageEnemy(enemy, blastDamage(spec, melt), deps.skillDamageDealt, sourceX, 'skill')
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Взрыв разовый, поэтому стан-лока он не даёт: каждая
       // цель проходит этот цикл один раз за взрыв.
       if (!died) deps.applyEnemyHitReaction(enemy)
+      if (melt && !died) thaw(enemy)
       // Стан iceball (см. ICEBALL_STUN_MS) — ТОЛЬКО выставляем поле; сама
       // заморозка (пропуск AI/движения/кадров) живёт в обновлении сущности,
       // см. stunTimer в entities/enemy.ts. Не на трупе: у мёртвого врага
@@ -969,8 +1025,10 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (!boss || boss.dead) return
     const d = overlapDepth(blast, bossBox(boss))
     if (d.x <= 0 || d.y <= 0) return
-    const bossDied = deps.damageBoss(deps.skillDamage[spec.id], deps.skillDamageDealt, sourceX)
+    const bossMelt = meltsTarget(spec, boss)
+    const bossDied = deps.damageBoss(blastDamage(spec, bossMelt), deps.skillDamageDealt, sourceX)
     if (!bossDied) deps.applyBossHitReaction(boss)
+    if (bossMelt && !bossDied) thaw(boss)
     // Босс задет — применение результативно, даже если обычных врагов рядом не
     // было. Повторно не засчитается: blastHitAny выставляется только в цикле по
     // врагам, а эта ветка выполняется один раз за взрыв.

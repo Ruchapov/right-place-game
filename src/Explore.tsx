@@ -56,7 +56,7 @@ import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
-import { bloodClassEffects, type BloodClassEffects, type HeroClassState } from './heroClasses'
+import { bloodClassEffects, magicClassEffects, type BloodClassEffects, type MagicClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
@@ -2845,8 +2845,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // — из ответа /run/start-explore, а НЕ из профиля: тем же полем сервер
       // записал класс в забег и по нему считает потолок полученного урона, так
       // что клиент лечит ровно тем классом, под который сервер оставил запас.
-      // Без класса и у Чародея с Дуэлянтом числа ветки «Кровь» — нули, и бой
-      // идёт ровно как без классов (механик Магии и Клинка в бою пока нет).
+      // У каждой ветки свои числа (bloodClassEffects, magicClassEffects); у
+      // чужих веток и без класса они нейтральные, и бой идёт ровно как без
+      // классов. Механик Клинка в бою пока нет.
       let runHeroClass: HeroClassState
       if (startExploreResult) {
         const rawClass = startExploreResult.heroClass
@@ -2881,6 +2882,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Пустой .catch — по той же причине, что у commonAssetsLoad выше: ошибку
       // поднимет общий await листов ниже.
       bloodAssetsLoad.catch(() => {})
+      // Числа ветки «Магия» (Чародей, Повелитель стихий; 26.10.2026). Таяние и
+      // бесплатный навык читает модуль навыков, шанс маны — система маны.
+      const magic: MagicClassEffects = magicClassEffects(runHeroClass)
+      // +15% к огненному и ледяному шару — к ГОТОВЫМ числам забега, а не в
+      // skillValue: та же формула пишет строку «что делает» в карточках, а
+      // бонусы класса в карточках не показываются (docs/classes.md). Вниз —
+      // как и сама skillValue: округление урона не идёт в пользу игрока.
+      if (magic.projectileDamageMult !== 1) {
+        skillDamage.fireball = Math.floor(skillDamage.fireball * magic.projectileDamageMult)
+        skillDamage.iceball = Math.floor(skillDamage.iceball * magic.projectileDamageMult)
+        console.log('Explore: урон шаров с классом', { fireball: skillDamage.fireball, iceball: skillDamage.iceball }, magic)
+      }
 
       // Запас зелий на забег — ТОЛЬКО из ответа сервера (раньше здесь была
       // захардкоженная тройка в useRef, и сколько бы игрок ни купил, в забег
@@ -3380,6 +3393,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         bloodManaHp,
         hp: hpRef,
         payHp: (amount: number) => payHpForManaRef.current(amount),
+        // Класс «Магия» (26.10.2026): Таяние и бесплатный навык. +15% к шарам
+        // уже внутри skillDamage выше.
+        meltMult: magic.meltMult,
+        freeSkillChance: magic.freeSkillChance,
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на
         // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
@@ -3574,6 +3591,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         orbTexture: assets.manaOrb,
         dead: deathRef,
         gainMana: (amount) => setMana(manaRef.current + amount),
+        // Прилив Повелителя стихий — свой шанс; у остальных общий.
+        dropChance: magic.manaDropChance ?? C.MANA_DROP_CHANCE,
       })
       clearManaOrbsRef.current = manaSystem.clear
 

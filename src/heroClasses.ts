@@ -25,11 +25,14 @@
 //   • тексты карточек — дословно из docs/classes.md, «Тексты карточек»;
 //   • боевые числа ветки «Кровь» (26.10.2026, bloodClassEffects внизу) — по ним
 //     лечит бой на клиенте, и из них же сервер выводит потолок полученного
-//     урона (clampRunProgress): лечение Упыря даёт честно пропустить больше.
+//     урона (clampRunProgress): лечение Упыря даёт честно пропустить больше;
+//   • боевые числа ветки «Магия» (26.10.2026, magicClassEffects внизу) — их
+//     читает только бой на клиенте; здесь они затем, чтобы всё, что класс
+//     делает в бою, лежало одним местом рядом с текстом его карточки.
 //
 // Чего здесь НЕТ намеренно:
-//   • боевых чисел Магии и Клинка — их механик в бою пока нет. Строки effects
-//     ниже — текст карточки, ни один модуль боя их не читает;
+//   • боевых чисел Клинка — его механик в бою пока нет. Строки effects ниже —
+//     текст карточки, ни один модуль боя их не читает;
 //   • имён колонок БД (Character.classId / classTier) — раскладка на сервере,
 //     в runState.ts (heroClassOf), рядом с книгами и страницами.
 //
@@ -369,5 +372,46 @@ export function bloodClassEffects(state: HeroClassState): BloodClassEffects {
     bladeHealFrac: ghoul ? GHOUL_BLADE_HEAL_FRAC : 0,
     manaHpFrac: lord ? BLOOD_LORD_MANA_HP_FRAC : 0,
     feastHealFrac: lord ? BLOOD_LORD_FEAST_HEAL_FRAC : 0,
+  }
+}
+
+// --- Боевые числа ветки «Магия» (26.10.2026) ---
+//
+// Сервер их НЕ читает, и запаса в потолках под них нет — не нужен. Потолок
+// нанесённого урона (clampRunProgress) — суммарное HP врагов забега, а клиент
+// копит урон, обрезанный остатком HP цели: множитель урона даёт добить врага
+// быстрее, но не нанести больше его HP. Мана на сервер не ходит вовсе.
+
+/** Чародей: урон огненного и ледяного шара умножается на это число. */
+export const SORCERER_PROJECTILE_DAMAGE_MULT = 1.15
+/** Чародей, Таяние: огненный шар по ЗАМОРОЖЕННОЙ цели бьёт во столько раз сильнее и снимает заморозку. */
+export const SORCERER_MELT_MULT = 2
+/** Повелитель стихий, Прилив: шанс, что с убитого врага выпадет мана (вместо общего). */
+export const ELEMENTALIST_MANA_DROP_CHANCE = 0.75
+/** Повелитель стихий: шанс, что применение ЛЮБОГО навыка не потратит ману. */
+export const ELEMENTALIST_FREE_SKILL_CHANCE = 0.1
+
+/**
+ * Что из ветки «Магия» действует у героя с этим классом. Без класса и у других
+ * веток — нейтральные значения, и бой идёт ровно как без классов:
+ * множитель 1, Таяния нет (0), шанс маны общий (null — его знает только
+ * клиент, MANA_DROP_CHANCE в constants.ts), бесплатных навыков нет (0).
+ * Повелитель стихий — вторая ступень Чародея: у него всё от первой плюс своё.
+ */
+export type MagicClassEffects = {
+  projectileDamageMult: number
+  meltMult: number
+  manaDropChance: number | null
+  freeSkillChance: number
+}
+
+export function magicClassEffects(state: HeroClassState): MagicClassEffects {
+  const sorcerer = state !== 'none' && state.id === 'sorcerer'
+  const elementalist = state !== 'none' && state.id === 'sorcerer' && state.tier === 2
+  return {
+    projectileDamageMult: sorcerer ? SORCERER_PROJECTILE_DAMAGE_MULT : 1,
+    meltMult: sorcerer ? SORCERER_MELT_MULT : 0,
+    manaDropChance: elementalist ? ELEMENTALIST_MANA_DROP_CHANCE : null,
+    freeSkillChance: elementalist ? ELEMENTALIST_FREE_SKILL_CHANCE : 0,
   }
 }

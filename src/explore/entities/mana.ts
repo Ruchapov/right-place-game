@@ -28,6 +28,10 @@ export type ManaDeps = {
   // +N маны герою. Потолок (MANA_MAX) и перерисовка гнёзд — внутри, здесь не
   // дублируются.
   gainMana: (amount: number) => void
+  // Шанс, что с убитого выпадет мана, — на весь забег. Обычно общий
+  // (C.MANA_DROP_CHANCE), у Повелителя стихий свой (Прилив, 26.10.2026):
+  // класс на забег фиксирует Explore.tsx, сюда приходит готовое число.
+  dropChance: number
 }
 
 type ManaOrb = {
@@ -98,7 +102,7 @@ export function createManaSystem(deps: ManaDeps) {
     // Мёртвому герою мана ни к чему, а шары над трупом висели бы до экрана
     // итогов (враг может умереть и после героя — от кровотечения).
     if (deps.dead.current) return
-    if (Math.random() >= C.MANA_DROP_CHANCE) return
+    if (Math.random() >= deps.dropChance) return
     const count = C.MANA_DROP_MIN + Math.floor(Math.random() * (C.MANA_DROP_MAX - C.MANA_DROP_MIN + 1))
     for (let i = 0; i < count; i++) spawnOrb(worldX, worldY, i)
   }

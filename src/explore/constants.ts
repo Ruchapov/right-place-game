@@ -779,7 +779,9 @@ export const SKILL_MANA_COST = {
 }
 // Выпадение маны с убитого врага — любого: зверь, Звонарь, босс. Бросков два:
 // «выпало ли» и «сколько» (MIN..MAX включительно, равновероятно). Бросает
-// клиент — мана на сервер не ходит вовсе (см. entities/mana.ts).
+// клиент — мана на сервер не ходит вовсе (см. entities/mana.ts). Шанс — общий;
+// у Повелителя стихий свой, 75% (Прилив, ELEMENTALIST_MANA_DROP_CHANCE в
+// src/heroClasses.ts), и выбирает его на забег Explore.tsx.
 export const MANA_DROP_CHANCE = 0.5
 export const MANA_DROP_MIN = 1
 export const MANA_DROP_MAX = 2
