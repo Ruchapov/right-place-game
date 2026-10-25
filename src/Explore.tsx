@@ -43,7 +43,7 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadCommonAssets, loadEventAssets } from './explore/assets'
+import { loadCommonAssets, loadEventAssets, loadBloodClassAssets } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -55,9 +55,11 @@ import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekee
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
 import { createStunStarsSystem } from './explore/entities/stunStars'
+import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
+import { bloodClassEffects, type BloodClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
@@ -203,6 +205,14 @@ type ExploreProps = {
    * игрока. Вне Telegram (офлайн-заглушка) уровни приходят из DevTester.
    */
   skillLevels?: Record<SkillBookSkillId, number>
+  /**
+   * Класс героя из профиля (App.tsx: player.heroClass) — ТОЛЬКО для
+   * офлайн-заглушки (26.10.2026). В настоящей сессии класс на забег называет
+   * сервер в ответе /run/start-explore (поле heroClass): по нему же сервер
+   * считает потолок полученного урона, а профиль мог устареть (класс сменили
+   * со второго устройства). Не задан в офлайне — забег без класса.
+   */
+  heroClass?: HeroClassState
   /**
    * Ловкость героя (App.tsx: player.agility). Нужна с 02.10.2026: от неё
    * считается урон ледяного шара и половина урона тика кровотечения
@@ -1067,7 +1077,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, consumables, onConsumablesSpent }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1585,6 +1595,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // takeDamageRef выше: система скиллов собирает deps ОДИН раз в setup(), а
   // звать обязана актуальную версию функции (см. createSkillsSystem ниже).
   const healPlayerRef = useRef<(amount: number) => number>(() => 0)
+  // То же для лечения класса и Платы кровью (26.10.2026): их зовут модуль
+  // навыков и код боя в setup(), а функции живут в теле компонента.
+  const healPlayerByClassRef = useRef<(amount: number) => number>(() => 0)
+  const payHpForManaRef = useRef<(amount: number) => void>(() => {})
+  // Красная вспышка лечения класса. Ставит её setup(), когда система вспышки
+  // создана; до этого (и у героя без класса «Кровь») — пустышка: лечения класса
+  // там не бывает.
+  const classHealFlashRef = useRef<() => void>(() => {})
   // Кадры ауры лечения. Ref, а не плоское значение: createSkillsSystem
   // вызывается в setup() РАНЬШЕ, чем загрузятся листы (loadCommonAssets) — на
   // момент сборки deps кадров ещё нет. Тот же приём, что beastFramesRef.
@@ -2357,6 +2375,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Округление ВНИЗ (см. задачу "HP должно быть всегда целым") — не round/ceil:
   // округление никогда не должно добавлять игроку HP сверх честной доли.
   function healPlayer(amount: number): number {
+    const healed = restoreHp(amount)
+    healedAmountRef.current += healed
+    return healed
+  }
+
+  // Само восстановление HP — общее у healPlayer и лечения класса: клэмп по
+  // maxHp, округление вниз, «мёртвый не лечится». Учёта в healedAmountRef здесь
+  // НЕТ — его делает только healPlayer: лечение класса ловкость не растит.
+  function restoreHp(amount: number): number {
     // Мёртвый герой не лечится ни зельем, ни скиллом. У зелья это и так
     // недостижимо (ветка питья ниже death в приоритете анимаций), у скилла —
     // достижимо: кнопки живут до экрана итогов.
@@ -2364,9 +2391,36 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     const hpBeforeHeal = hpRef.current
     hpRef.current = Math.min(maxHp, hpRef.current + Math.floor(amount))
     const healed = hpRef.current - hpBeforeHeal
-    healedAmountRef.current += healed
     updateHpBar()
     return healed
+  }
+
+  // Лечение КЛАССА «Кровь» (26.10.2026): тик кровотечения Упыря, Кровавый
+  // клинок, Пир Владыки крови. Отдельно от healPlayer по двум причинам
+  // (docs/classes.md): долитое НЕ идёт в healedAmountRef — класс не растит
+  // ловкость, — и на долитом > 0 вспыхивает красная аура; на полном HP долить
+  // нечего, и вспышки нет. Сервер под это лечение держит отдельный запас в
+  // потолке полученного урона (clampRunProgress), сюда его учёт не нужен.
+  function healPlayerByClass(amount: number): number {
+    const healed = restoreHp(amount)
+    if (healed > 0) classHealFlashRef.current()
+    return healed
+  }
+
+  // Плата кровью Владыки крови (26.10.2026): недостающая мана берётся HP. Это
+  // ЦЕНА, а не урон — мимо applyDamage, то есть мимо брони (она срезала бы цену),
+  // рывка и оберега (они отменили бы её), хитстана и damageTakenRef: выносливость
+  // от платы не растёт, и в потолок полученного урона на сервере она не входит.
+  // Убить не может: модуль навыков зовёт её, только если после платы HP > 0;
+  // проверка здесь — вторая линия, громкая.
+  function payHpForMana(amount: number) {
+    if (deathRef.current) return
+    if (!(hpRef.current - amount > 0)) {
+      console.error('Explore: Плата кровью опустила бы HP до нуля — не списано', { hp: hpRef.current, amount })
+      return
+    }
+    hpRef.current -= amount
+    updateHpBar()
   }
 
   // Гарантированная смерть, В ОБХОД takeDamage/брони (см. задачу "обелиск
@@ -2392,6 +2446,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     takeDamageUnblockableRef.current = takeDamageUnblockable
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
+    healPlayerByClassRef.current = healPlayerByClass
+    payHpForManaRef.current = payHpForMana
     // Шипы карты НЕ ПАРИРУЮТСЯ (решение дизайнера) — отсюда и unblockable:
     // от них уклоняются прыжком, а не блоком.
     applySpikeDamageRef.current = () => takeDamageUnblockable(maxHp * C.SPIKE_DAMAGE_RATIO)
@@ -2505,6 +2561,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
+    let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -2780,6 +2837,50 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           onConsumablesSpent?.(stock)
         }
       }
+
+      // --- Класс героя на этот забег (26.10.2026) ---
+      //
+      // Фиксируется ОДИН раз здесь, как урон меча выше: посреди забега класс не
+      // меняется, даже если его сменили со второго устройства. В настоящей сессии
+      // — из ответа /run/start-explore, а НЕ из профиля: тем же полем сервер
+      // записал класс в забег и по нему считает потолок полученного урона, так
+      // что клиент лечит ровно тем классом, под который сервер оставил запас.
+      // Без класса и у Чародея с Дуэлянтом числа ветки «Кровь» — нули, и бой
+      // идёт ровно как без классов (механик Магии и Клинка в бою пока нет).
+      let runHeroClass: HeroClassState
+      if (startExploreResult) {
+        const rawClass = startExploreResult.heroClass
+        if (rawClass === undefined) {
+          // Сервер старше 26.10.2026 (выложен позже фронта — порядок выкладки
+          // нарушен): он класс в забег не пишет и запаса под лечение не держит.
+          // Забег без эффектов класса — то же, что посчитает такой сервер.
+          console.error('Explore: сервер не назвал класс на забег (heroClass) — сервер старше 26.10.2026, забег без эффектов класса')
+          runHeroClass = 'none'
+        } else {
+          const parsed = readHeroClass(rawClass)
+          if (parsed === null) {
+            throw new Error(`Сервер прислал негодный класс героя (heroClass=${JSON.stringify(rawClass)}). Забег не показан; он закроется без штрафа, энергия вернётся.`)
+          }
+          runHeroClass = parsed
+        }
+      } else {
+        // Офлайн-заглушка: сервера нет, класс — из профиля DevTester
+        // (TEMP_DEV_HERO_CLASS в App.tsx).
+        runHeroClass = heroClass ?? 'none'
+      }
+      // Числа ветки «Кровь» на весь забег — читают модуль навыков (тик
+      // кровотечения, Плата кровью), applyAttackHit (Кровавый клинок) и
+      // damageEnemy / damageBoss (Пир).
+      const blood: BloodClassEffects = bloodClassEffects(runHeroClass)
+      // Цена единицы маны в HP — 5% МАКСИМАЛЬНОГО HP, вверх: цена не округляется
+      // в пользу игрока (то же правило, что у урона). 0 — Платы кровью нет.
+      const bloodManaHp = blood.manaHpFrac > 0 ? Math.ceil(maxHp * blood.manaHpFrac) : 0
+      console.log('Explore: класс на забег', runHeroClass, blood, { bloodManaHp })
+      // Красная аура — только герою этой ветки (см. loadBloodClassAssets).
+      const bloodAssetsLoad = blood.bleedHealFrac > 0 ? loadBloodClassAssets() : Promise.resolve(null)
+      // Пустой .catch — по той же причине, что у commonAssetsLoad выше: ошибку
+      // поднимет общий await листов ниже.
+      bloodAssetsLoad.catch(() => {})
 
       // Запас зелий на забег — ТОЛЬКО из ответа сервера (раньше здесь была
       // захардкоженная тройка в useRef, и сколько бы игрок ни купил, в забег
@@ -3272,6 +3373,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // через setMana — единственную запись в запас, она же гасит гнёзда.
         mana: manaRef,
         spendMana: (amount) => setMana(manaRef.current - amount),
+        // Класс «Кровь» (26.10.2026): числа сняты выше, вместе с классом забега.
+        // Без класса — нули, и модуль ведёт себя ровно как до классов.
+        bleedHealFrac: blood.bleedHealFrac,
+        healPlayerByClass: (amount: number) => healPlayerByClassRef.current(amount),
+        bloodManaHp,
+        hp: hpRef,
+        payHp: (amount: number) => payHpForManaRef.current(amount),
         // Реальные экипированные скиллы (проп из App.tsx). null в слоте —
         // честно пустой слот; случай "данных нет вообще" отдельно виден на
         // кнопке (см. updateSkillButtons). Механики скиллов по-прежнему нет,
@@ -3398,7 +3506,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // фону и запуску PixiJS выше; какие листы условные и почему — см.
       // explore/assets.ts. Любой нужный лист не загрузился — этот await бросает,
       // и setup() уходит в экран ошибки (setup().catch), как и раньше.
-      const [assets, eventAssets] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad])
+      const [assets, eventAssets, , bloodFrames] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad])
       if (cancelled) {
         // Компонент размонтировался (или сработал предохранитель загрузки), пока
         // грузились листы — не создаём спрайты и не трогаем worldContainer.
@@ -3447,6 +3555,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       fireballImpactFramesRef.current = assets.fireballImpact
       iceballProjectileFramesRef.current = assets.iceballProjectile
       iceballImpactFramesRef.current = assets.iceballImpact
+
+      // Красная вспышка лечения класса «Кровь» (26.10.2026) — система своя
+      // (explore/entities/classHealFlash.ts). У героя без этой ветки кадров нет
+      // (null), но система всё равно создаётся: лечения класса у него не бывает,
+      // и flash() не позовётся, а одна ветка кода проще двух.
+      classHealFlashSystem = createClassHealFlashSystem({ worldContainer, phys, frames: bloodFrames })
+      const flashSystem = classHealFlashSystem
+      classHealFlashRef.current = () => flashSystem.flash()
 
       // Мана с убитых врагов (см. explore/entities/mana.ts): бросок выпадения
       // и полёт шаров в героя. Создаётся ЗДЕСЬ, после загрузки, а не рядом с
@@ -4777,6 +4893,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
           enemy.dead = true
           redrawEnemyHpBar(enemy) // пустая полоса
+          // Пир (Владыка крови, 26.10.2026): убийство КРОВОТОЧАЩЕГО врага лечит
+          // на долю максимального HP — чем бы ни добили, мечом, навыком или
+          // самим тиком (запись кровотечения ещё в списке: снимается после этой
+          // функции). Здесь, в общей точке смерти, а не у каждого источника
+          // урона — так Пир не забудет новый источник.
+          if (blood.feastHealFrac > 0 && skills!.isBleeding(enemy)) {
+            healPlayerByClassRef.current(maxHp * blood.feastHealFrac)
+          }
           // Death запускается ЗДЕСЬ, в общей точке урона, — и лист берётся по
           // виду врага. У Звонаря вместе с листом меняется и ЯКОРЬ: у его
           // анимаций разные клетки, и смерть с чужим якорем уехала бы вбок.
@@ -4861,6 +4985,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // никакого despawn/DEATH_HOLD_MS). Награда/закрытие события —
           // НЕ здесь, это фаза 5 (см. задачу, п.6).
           boss.dead = true
+          // Пир — и за босса (см. damageEnemy выше; кровотечение босса — запись
+          // с enemy === null).
+          if (blood.feastHealFrac > 0 && skills!.isBleeding(null)) {
+            healPlayerByClassRef.current(maxHp * blood.feastHealFrac)
+          }
           boss.hpBarBg.visible = false
           boss.hpBarFill.visible = false
           playBossAnim('death')
@@ -5013,7 +5142,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // Смерть — тот же continue, что был инлайн: на смертельном
               // ударе встряски нет, hurt не идёт поверх death.
               // Источник — сам игрок: центр его хитбокса на момент удара.
-              if (damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')) continue
+              // Кровавый клинок (Упырь, 26.10.2026): кровоточит ли цель —
+              // ДО удара (смертельный удар снимет кровотечение следующим
+              // кадром, но лечит и он). Лечение — доля СНЯТОГО: по приросту
+              // аккумулятора, где урон обрезан остатком HP, а меч в поднятую
+              // дверь Привратника не снимает ничего — и не лечит.
+              const bladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(enemy)
+              const swordDealtBefore = attackDamageDealtRef.current
+              const swordKilled = damageEnemy(enemy, attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')
+              if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
+              if (swordKilled) continue
               applyEnemyHitReaction(enemy)
             }
           }
@@ -5046,7 +5184,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // здесь относится только дедуп взмаха строкой выше.
               // Гейт по возврату — прежний: на смертельном попадании встряски
               // нет, hurt не идёт поверх death.
-              if (!damageBoss(attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)) {
+              // Кровавый клинок — как у врага выше; босс в кровотечении — запись
+              // с enemy === null.
+              const bossBladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(null)
+              const bossDealtBefore = attackDamageDealtRef.current
+              const bossKilled = damageBoss(attackDamageRef.current, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)
+              if (bossBladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - bossDealtBefore) * blood.bladeHealFrac)
+              if (!bossKilled) {
                 applyBossHitReaction(boss)
               }
             }
@@ -5668,6 +5812,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // разбираются нажатия обоих гнёзд, живут снаряды, рывок, дуга взмаха,
         // кровотечения и аура лечения.
         skills!.update(ticker.deltaMS)
+        // Красная вспышка лечения класса едет за героем — после навыков: тик
+        // кровотечения в их update мог только что её запустить.
+        classHealFlashSystem!.update(deathRef.current)
 
         // Индикатор перезарядки на кнопках — СТРОГО ПОСЛЕ update(): там
         // перезарядки убавляются на этот кадр, и кнопка показывает число
@@ -6212,6 +6359,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       cancelled = true
       clearLoadWatchdog()
       skills?.dispose()
+      classHealFlashSystem?.dispose()
+      // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
+      // систему уже уничтоженной сцены (тот же приём, что clearManaOrbsRef ниже).
+      classHealFlashRef.current = () => {}
       enemySystem?.dispose()
       zvonarSystem?.dispose()
       gatekeeperSystem?.dispose()

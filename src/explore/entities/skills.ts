@@ -214,6 +214,38 @@ export type SkillsDeps = {
    * на плите — внутри, здесь о ней не знают.
    */
   spendMana: (amount: number) => void
+
+  // --- Класс «Кровь» (26.10.2026, docs/classes.md) ---
+  // Числа сняты ОДИН раз на забег (класс посреди забега не меняется — тот же
+  // договор, что у skillDamage выше). Без класса и у других классов все нули, и
+  // модуль ведёт себя ровно как до классов.
+
+  /**
+   * Упырь: доля урона, нанесённого тиком кровотечения, которая возвращается
+   * здоровьем (0 — механики нет). Лечит через healPlayerByClass.
+   */
+  bleedHealFrac: number
+  /**
+   * Лечение КЛАССА — обёртка над healPlayerByClassRef в Explore.tsx (та же
+   * причина, что у healPlayer). В отличие от healPlayer, долитое НЕ идёт в
+   * healedAmount — класс не растит ловкость (docs/classes.md, «Общие правила»), —
+   * и на долитом > 0 вспыхивает красная аура. Возвращает реально долитое.
+   */
+  healPlayerByClass: (amount: number) => number
+  /**
+   * Владыка крови, Плата кровью: сколько HP стоит ОДНА единица недостающей маны
+   * (5% МАКСИМАЛЬНОГО HP, округлено вверх — цена не в пользу игрока). 0 —
+   * механики нет: маны не хватает — навык не нажимается, как раньше.
+   */
+  bloodManaHp: number
+  /** Текущее HP героя — тот же hpRef, что рисует плиту; модуль только читает. */
+  hp: MutableRefObject<number>
+  /**
+   * Отдать HP Платой кровью. Это ЦЕНА, а не урон: мимо брони, рывка, оберега и
+   * счётчика полученного урона (не растит выносливость). Модуль зовёт её только
+   * когда после платы HP останется больше нуля.
+   */
+  payHp: (amount: number) => void
 }
 
 // Цена каждого навыка в мане. Сами числа — в constants.ts (SKILL_MANA_COST);
@@ -413,9 +445,56 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // время замаха второй навык успел бы потратить ту же ману: исцеление жмётся
   // и посреди каста. Тогда снаряд вылетал бы, когда платить уже нечем.
   // Оборвали каст — пометка снимается (см. update), и мана снова свободна.
+  //
+  // Владыка крови (Плата кровью, 26.10.2026): недостающую ману добирает HP —
+  // по deps.bloodManaHp за единицу, только НЕДОСТАЮЩЕЕ; если плата опустит HP до
+  // нуля и ниже — навык не нажимается. Придержанный каст держит и свою долю HP.
+  // Без Платы кровью условие сводится ровно к прежнему «цена ≤ свободная мана».
+  // Без аллокаций: зовётся каждый кадр по каждому гнезду (вид кнопки).
   function canAffordSkill(id: SkillId): boolean {
-    const held = pendingCastSpec ? MANA_COST[pendingCastSpec.id] : 0
-    return MANA_COST[id] <= deps.mana.current - held
+    const mana = deps.mana.current
+    const heldCost = pendingCastSpec ? MANA_COST[pendingCastSpec.id] : 0
+    const heldMana = Math.min(heldCost, Math.max(0, mana))
+    // Придержанный каст на нажатии был по карману, а мана с тех пор только
+    // прибывала (тратить придержанное другим навыкам не даёт это же условие),
+    // поэтому -1 здесь не бывает; max — на случай, если правило поменяют.
+    const heldHp = Math.max(0, bloodHpFor(heldCost, mana))
+    const hpPart = bloodHpFor(MANA_COST[id], mana - heldMana)
+    if (hpPart < 0) return false
+    const hpNeed = heldHp + hpPart
+    return hpNeed === 0 || deps.hp.current - hpNeed > 0
+  }
+
+  // Сколько HP придётся отдать Платой кровью за навык ценой `cost` при
+  // `freeMana` свободной мане: 0 — маны хватает; -1 — не хватает, а Платы
+  // кровью нет (навык не по карману вовсе).
+  function bloodHpFor(cost: number, freeMana: number): number {
+    const missing = cost - Math.min(cost, Math.max(0, freeMana))
+    if (missing === 0) return 0
+    return deps.bloodManaHp > 0 ? missing * deps.bloodManaHp : -1
+  }
+
+  // Заплатить за навык ПРЯМО СЕЙЧАС: мана, а недостающее (у Владыки крови) —
+  // HP. false — платить нечем (маны не хватает и Платы кровью нет, либо плата
+  // опустила бы HP до нуля): ничего не списано. Зовётся там же, где раньше
+  // стоял spendMana, — вместе со взводом перезарядки.
+  function paySkill(cost: number): boolean {
+    const mana = deps.mana.current
+    const hpPart = bloodHpFor(cost, mana)
+    if (hpPart < 0 || (hpPart > 0 && deps.hp.current - hpPart <= 0)) return false
+    const manaPart = Math.min(cost, Math.max(0, mana))
+    if (manaPart > 0) deps.spendMana(manaPart)
+    if (hpPart > 0) deps.payHp(hpPart)
+    return true
+  }
+
+  // Навыки, которые платят на нажатии (heal / slash / dash): нажатие уже прошло
+  // canAffordSkill в этом же кадре, и между проверкой и оплатой ничего не
+  // менялось, — отказ здесь значит, что проверка и оплата разошлись по правилу.
+  function payOnPress(id: SkillId) {
+    if (!paySkill(MANA_COST[id])) {
+      console.error('skills: навык ' + id + ' прошёл проверку цены, но оплатить его нечем — проверка и оплата разошлись')
+    }
   }
 
   // Только визуал: счётчик импульсов НЕ трогает (его ставит castHeal и
@@ -653,9 +732,19 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // наложения): кровотечение тикает 5 секунд, за это время игрок
         // успевает уйти, и вести врага к месту, где его давно нет, незачем.
         const bleedSourceX = deps.phys.x + C.PLAYER_WIDTH / 2
+        // Сколько тик РЕАЛЬНО снял — по приросту аккумулятора: damageEnemy и
+        // damageBoss кладут туда урон, обрезанный остатком HP цели. Добивающий
+        // тик по врагу с 3 HP снял 3, а не полный урон тика.
+        const dealtBefore = deps.skillDamageDealt.current
         const died = bleed.enemy
           ? deps.damageEnemy(bleed.enemy, dmg, deps.skillDamageDealt, bleedSourceX, 'tick')
           : deps.damageBoss(dmg, deps.skillDamageDealt, bleedSourceX)
+        // Упырь (26.10.2026): тик возвращает здоровьем долю СНЯТОГО — в том числе
+        // добивающий. На полном HP долить нечего, и вспышки нет (решает
+        // healPlayerByClass). Без класса доля 0 — вызова нет вовсе.
+        if (deps.bleedHealFrac > 0) {
+          deps.healPlayerByClass((deps.skillDamageDealt.current - dealtBefore) * deps.bleedHealFrac)
+        }
         if (died) {
           bleeds.splice(i, 1)
           continue
@@ -1041,7 +1130,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Кулдаун обычной атаки уже взведён ВНУТРИ startPlayerAttack — иначе
     // slash дал бы бесплатный удар в обход ATTACK_COOLDOWN.
     slashCdMs = C.SLASH_COOLDOWN_MS
-    deps.spendMana(MANA_COST.slash)
+    payOnPress('slash')
     // ВСЁ. Дуга, выбор цели и кровотечение — не здесь, а на кадре удара
     // (см. onAttackStrike): по нажатию герой только начинает замах, и
     // показывать эффект в этот момент значило бы рисовать удар до удара.
@@ -1080,6 +1169,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (!pendingCastSpec) return
     const spec = pendingCastSpec
     pendingCastSpec = null
+    // Платим ПЕРВЫМ делом, до перезарядки. Без Платы кровью оплата проходит
+    // всегда: цена придержана с нажатия (см. canAffordSkill). У Владыки крови
+    // часть цены может быть в HP, а за время каста герой мог получить удар — и
+    // если плата теперь опустила бы HP до нуля, снаряд не вылетает: ни маны, ни
+    // HP, ни перезарядки, как у каста, оборванного раньше кадра вылета. Плата
+    // кровью не убивает никогда.
+    if (!paySkill(MANA_COST[spec.id])) return
     // Кулдаун — ИМЕННО ЗДЕСЬ, а не на нажатии (в отличие от heal/slash/dash):
     // выстрел состоялся ровно в этот момент. Каст, оборванный раньше кадра
     // вылета (прыжок, хитстан, смерть), снимает пометку в update() и сюда не
@@ -1089,10 +1185,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // кадра вылета, и повторным нажатием эту дыру не заспамить. Случай
     // мёртвый — лист сверяется assertSheetSize на загрузке (см. assets.ts).
     projectileCdMs[spec.id] = spec.cooldownMs
-    // Мана — там же и по той же причине: оборванный каст не стоит ни секунд,
-    // ни маны. Хватит её наверняка: цена этого каста была придержана с самого
-    // нажатия (см. canAffordSkill).
-    deps.spendMana(MANA_COST[spec.id])
+    // Мана списана строкой выше (paySkill) — там же и по той же причине:
+    // оборванный каст не стоит ни секунд, ни маны.
     spawnProjectile(spec, pendingCastFacing)
   }
 
@@ -1105,7 +1199,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Независимо от того, сколько реально долилось: жать heal на полном HP —
     // решение игрока, а не осечка скилла.
     healCdMs = C.HEAL_COOLDOWN_MS
-    deps.spendMana(MANA_COST.heal)
+    payOnPress('heal')
     // Спавн ПЕРЕД выставлением счётчика: внутри он зовёт destroyHealAura()
     // для предыдущей ауры, и порядок наоборот стёр бы свежее число.
     spawnHealAura()
@@ -1165,7 +1259,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // должен съедать 5 секунд.
       if (deps.startPlayerDash()) {
         dashCdMs = C.DASH_COOLDOWN_MS
-        deps.spendMana(MANA_COST.dash)
+        payOnPress('dash')
         // Новый рывок — новый список задетых: каждая цель снова может
         // получить урон ровно один раз. Чистим ИМЕННО на старте, а не по
         // окончании рывка: так набор не зависит от того, чем рывок кончился
@@ -1235,6 +1329,21 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const id = deps.equipped[slot]
     if (id === null || !KNOWN_SKILL_IDS.includes(id)) return true
     return canAffordSkill(id as SkillId)
+  }
+
+  // Кровоточит ли цель ПРЯМО СЕЙЧАС (enemy === null — босс, как в BleedState).
+  // Для механик класса «Кровь» в Explore.tsx: Кровавый клинок (удар мечом по
+  // кровоточащему) и Пир (убийство кровоточащего). Только чтение.
+  //
+  // «Кровоточит» — запись кровотечения ЕСТЬ в списке. Не по остатку времени:
+  // добивающий пятый тик приходит на кадре, где остаток уже обнулился, и Пир
+  // за смерть от собственного кровотечения иначе не сработал бы. Запись
+  // снимается следующим же кадром после последнего тика или смерти цели.
+  function isBleeding(enemy: Enemy | null): boolean {
+    for (let i = 0; i < bleeds.length; i++) {
+      if (bleeds[i].enemy === enemy) return true
+    }
+    return false
   }
 
   // dt — МИЛЛИСЕКУНДЫ (ticker.deltaMS), тот же выбор единиц, что уже
@@ -1342,5 +1451,5 @@ export function createSkillsSystem(deps: SkillsDeps) {
     dashHitTargets.clear()
   }
 
-  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford }
+  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding }
 }

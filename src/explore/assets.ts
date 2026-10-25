@@ -319,6 +319,19 @@ export async function loadCommonAssets(): Promise<CommonAssets> {
   }
 }
 
+/**
+ * Красная аура лечения класса «Кровь» (26.10.2026) — только в забег героя этой
+ * ветки: у остальных её никто не покажет, и 0.19 МБ им грузить незачем. Класс
+ * известен из ответа /run/start-explore (в офлайн-заглушке — из профиля),
+ * поэтому загрузка стартует после него, параллельно листам «под событие».
+ * Со сверкой размера (в отличие от Heal_Aura выше, у которого её нет — открытая
+ * задача): лист — копия, и несовпадение клетки значит, что копию пересобрали
+ * не из того оригинала.
+ */
+export async function loadBloodClassAssets(): Promise<Texture[]> {
+  return loadCheckedSheet('Heal_Aura_Red.png', C.HEAL_AURA_RED_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS)
+}
+
 // Зверь — пять листов в единой клетке 600×288 с одинаковой посадкой, 12 колонок
 // в ряд. Грузятся ОДИН раз на забег, не на каждого врага кластера.
 async function loadBeastAssets(): Promise<BeastAssets> {
