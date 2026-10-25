@@ -7,11 +7,12 @@
 
 **Правило на будущее**: новые боевые механики Explore НЕ пишутся в
 `Explore.tsx` напрямую — отдельным модулем в `src/explore/entities/`.
-Готовы девять: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
+Готовы десять: `skills.ts`, `enemy.ts`, `boss.ts`, `mana.ts`, `zvonar.ts`
 (04.10.2026), `gatekeeper.ts` (06.10.2026), `stunStars.ts` (13.10.2026),
 `atmosphere.ts` (20.10.2026; не боевая механика, а вид — ветер и частицы темы,
-но устроена по тому же контракту) и `classHealFlash.ts` (26.10.2026; красная
-вспышка лечения класса «Кровь», `docs/classes.md`).
+но устроена по тому же контракту), `classHealFlash.ts` (26.10.2026; красная
+вспышка лечения класса «Кровь», `docs/classes.md`) и `critFlash.ts` (26.10.2026;
+красная искра и вспышка врага на крите ветки «Клинок»).
 
 ### Контракт
 
@@ -25,6 +26,7 @@ createManaSystem(deps)   → { dropFrom, update(deltaMS), clear, dispose }
 createStunStarsSystem(deps) → { update(deltaMS), dispose }
 createAtmosphereSystem(deps) → { update(deltaMS, view), dispose }
 createClassHealFlashSystem(deps) → { flash, update(dead), dispose }
+createCritFlashSystem(deps) → { strike(x, y, target), update(deltaMS), dispose }
 ```
 
 ⚠️ `createClassHealFlashSystem` (26.10.2026) создаётся в КАЖДОМ забеге, после
@@ -33,6 +35,25 @@ createClassHealFlashSystem(deps) → { flash, update(dead), dispose }
 лечение класса реально долило HP. Спрайт один на забег и переиспользуется.
 `isBleeding(enemy | null)` модуля навыков — только чтение для Кровавого клинка и
 Пира (`null` — босс).
+
+⚠️ Числа классов приходят в модули ГОТОВЫМИ, один раз на забег (класс
+фиксирует `setup()` по ответу старта): у `skills.ts` — `bleedHealFrac`,
+`bloodManaHp` («Кровь»), `meltMult`, `freeSkillChance` («Магия»; +15% к шарам
+уже внутри `skillDamage`), у `mana.ts` — `dropChance`. У чужих веток и без
+класса они нейтральные (нули, общий шанс маны), и модуль ведёт себя как до
+классов. Своих чисел классов у модулей нет — они в общем каталоге
+`heroClasses.ts`.
+
+⚠️ `createCritFlashSystem` (26.10.2026) создаётся в КАЖДОМ забеге, после
+загрузки листов, как вспышка лечения: у героя не ветки «Клинок» кадров красной
+искры нет (`null`), и `strike()` не зовётся — его зовёт только `applyAttackHit`
+на критическом ударе. Решает о крите и множит урон `applyAttackHit`, модуль
+только рисует. Искры — из пула, записи вспышек — тоже. ⚠️ Цвет вспышки модуль
+пишет в спрайт цели КАЖДЫЙ тик, пока она горит, и `update` обязан стоять в тикере
+ПОСЛЕ систем врагов и босса: tint босса каждый кадр пишет `boss.ts` (по своему
+`hitFlashTimer`), и запись раньше него стёрлась бы. Через `hitFlashTimer` босса
+крит не идёт намеренно: под оглушением `boss.ts` его не трогает, и крит по
+оглушённому парированием боссу прошёл бы без вспышки.
 
 ⚠️ `createAtmosphereSystem` кладёт свой узел в контейнер мира СРАЗУ при
 создании, поэтому создаётся ДО готового слоя карты — так частицы оказываются под
@@ -415,6 +436,9 @@ null (reading 'dispose')`) — обратно на `?.`, не трогать с�
   рефом. Системы врагов созданы раньше, поэтому `dropMana` у них — обёртка
   `(x, y) => manaSystem!.dropFrom(x, y)`; зовётся она только из тикера, когда
   система уже есть.
+- `dropChance` (26.10.2026) — шанс «выпало ли» на весь забег: обычно
+  `C.MANA_DROP_CHANCE`, у Повелителя стихий 75% (Прилив). Выбирает его
+  `Explore.tsx` по классу забега; сам модуль о классах не знает.
 - `clear()` — снять шары без начисления. Наружу он виден ещё и рефом
   `clearManaOrbsRef`: `sendFinishExplore` живёт в теле компонента, а система — в
   замыкании `setup()`.
