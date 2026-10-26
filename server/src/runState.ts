@@ -17,13 +17,13 @@
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
-import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS } from './game.js'
+import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, HEAL_COOLDOWN_MS, healSkillPerUse } from './game.js'
 import type { RunEvent } from './runEvents.js'
-import { runSlotConsumableById, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
+import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
 import type { ClassItemId } from './classItems.js'
-import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
+import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, magicClassEffects, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -75,7 +75,16 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // (clampRunProgress) обязан считаться по тому же классу, по которому клиент
 // лечил. Поля нет у забегов, начатых до 26.10.2026, — класса у них нет
 // (читать через readRunHeroClass).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null }
+// `healSkill` (26.10.2026, вечер) — навык «Исцеление» НА СТАРТЕ забега, из
+// колонок персонажа: null — не надет; {level, endurance} — надет, его уровень
+// и выносливость героя (от неё лечит импульс). Клиент снимает силу навыка один
+// раз в начале забега, а за забег книгу могут улучшить или навык забыть со
+// второго устройства — потолок обязан считаться по тому, с чем забег начат.
+// Поля нет у забегов, начатых раньше, — запаса под исцеление у них нет, как
+// было (читать через readRunHealSkill).
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null }
+
+export type RunHealSkill = { level: number; endurance: number }
 
 // Сырьё для роста статов за забег — ровно те четыре числа, что клиент копит в
 // Explore.tsx (attackDamageDealtRef/skillDamageDealtRef/healedAmountRef/
@@ -555,7 +564,7 @@ export type ClampedRunProgress = {
   dealtScale: number
   maxDamageDealt: number
   maxDamageTaken: number
-  /** Потолок лечения — maxHp забега. */
+  /** Потолок лечения — maxHp забега плюс запас под навык «Исцеление» (healSkillMax). */
   maxHealed: number
   /**
    * Сколько из maxDamageTaken — запас под лечение класса «Кровь» (26.10.2026);
@@ -564,8 +573,65 @@ export type ClampedRunProgress = {
   classHealMax: number
   /** Класс забега, по которому считался запас ('malformed' — считался как без класса). */
   runHeroClass: HeroClassState | 'malformed'
+  /**
+   * Сколько HP самое большее вернул навык «Исцеление» за забег — входит и в
+   * maxDamageTaken, и в maxHealed. 0 — навык не надет на старте (или забег
+   * начат до записи healSkill).
+   */
+  healSkillMax: number
+  /** Сколько применений «Исцеления» допущено в healSkillMax — для логов. */
+  healUsesMax: number
+  /** Сколько из maxDamageTaken — подъём оберегом от смерти; 0 — оберег не взят. */
+  charmHealMax: number
+  /** Исцеление забега, по которому считался запас ('malformed' — считался как не надетое). */
+  runHealSkill: RunHealSkill | null | 'malformed'
   enemyCount: number
   bossCount: number
+}
+
+// Вероятность, с которой ЧЕСТНЫЙ Повелитель стихий превысит запас под
+// бесплатные применения исцеления (freeUsesBound ниже). Строгого максимума у
+// бесплатных применений нет: бросок «бесплатно» (10%) может выпасть сколько
+// угодно раз подряд. Поэтому граница вероятностная — одна на миллиард забегов,
+// то есть «никогда» за жизнь игры, — а не «среднее», которое резало бы каждого
+// второго везучего. Превысит — срежется ровно лишнее, не весь рост.
+export const FREE_SKILL_TAIL_PROBABILITY = 1e-9
+
+// P(Bin(n, p) ≥ k) — в логарифмах: на длинном ряду (1 − p)^n ушло бы в ноль
+// раньше, чем кончатся заметные члены.
+function binomialTailAtLeast(n: number, k: number, p: number): number {
+  if (k <= 0) return 1
+  if (k > n) return 0
+  let logPmf = n * Math.log1p(-p)
+  const logOdds = Math.log(p) - Math.log1p(-p)
+  let tail = 0
+  for (let j = 0; j <= n; j++) {
+    if (j >= k) tail += Math.exp(logPmf)
+    logPmf += Math.log((n - j) / (j + 1)) + logOdds
+  }
+  return tail
+}
+
+/**
+ * Сколько БЕСПЛАТНЫХ применений навыка допустить сверх `paid` оплаченных, когда
+ * каждое применение бесплатно с шансом `chance` (Повелитель стихий, бросок в
+ * paySkill клиента — после проверки цены: без маны на полную цену бесплатного
+ * применения не бывает).
+ *
+ * Бесплатных F перед `paid`-м оплаченным — отрицательное биномиальное:
+ * P(F ≥ k) = P(среди первых paid + k − 1 применений не меньше k бесплатных).
+ * Ответ — наименьшее f, при котором P(F > f) ≤ FREE_SKILL_TAIL_PROBABILITY.
+ * Не по карману ни одно (paid = 0) — бесплатных тоже нет. Шанса нет — 0.
+ * Цикл ограничен сверху: при сломанном шансе (≥ 1) он не крутится вечно, а
+ * отдаёт большое КОНЕЧНОЕ число — бесконечность в потолке дала бы NaN.
+ */
+export function freeUsesBound(paid: number, chance: number): number {
+  if (!(chance > 0) || paid <= 0) return 0
+  const LIMIT = 10_000
+  for (let k = 1; k <= LIMIT; k++) {
+    if (binomialTailAtLeast(paid + k - 1, k, chance) <= FREE_SKILL_TAIL_PROBABILITY) return k - 1
+  }
+  return LIMIT
 }
 
 // Анти-чит-потолки на сырьё роста статов. ОДНА копия на оба пути: тело
@@ -601,26 +667,45 @@ export type ClampedRunProgress = {
 //   • Пир (Владыка) — 5% maxHp за убийство кровоточащего, убийств не больше,
 //     чем врагов и боссов в забеге.
 // Множитель ×1.5 к этому запасу НЕ применяется: он и так точная верхняя
-// граница (округление лечения у клиента — вниз), а ×1.5 у базовой части
-// остаётся запасом на всё, что потолок не считает (исцеление навыком, оберег).
+// граница (округление лечения у клиента — вниз).
 // Плата кровью (Владыка) — расход HP, а не полученный урон: в damageTaken она
 // не идёт и потолок не трогает.
 //
-// Ветки «Магия» и «Клинок» (26.10.2026) запаса НЕ получают ни в одном потолке,
-// и это проверено, а не забыто. +15% к шарам, Таяние (×2), +15% к мечу и крит
-// (×2) — множители урона, а нанесённый урон клиент копит ОБРЕЗАННЫМ остатком HP
-// цели (damageEnemy / damageBoss в Explore.tsx): множитель даёт добить врага
-// быстрее, но не нанести больше его HP, и сверх hpPool не набрать никаким
-// множителем. Казнь — удар ровно на остаток HP цели, тоже не больше. Лечения у
-// этих веток нет, полученный урон и лечение они не двигают; мана на сервер не
-// ходит.
+// Плюс запас под навык «Исцеление» и под оберег от смерти (26.10.2026, вечер) —
+// до этого их покрывал только ×1.5 базовой части, и честному игроку с
+// исцелением в долгом забеге его не хватало. Оба — точные верхние границы, тоже
+// без ×1.5 (healSkillReserve и charmReserve ниже, там разобрано каждое число).
+// Полученный урон клиент копит обрезанным остатком HP героя (actualDamage в
+// applyDamage, Explore.tsx), поэтому за забег его не больше, чем здоровья было
+// на старте плюс всё, что вернули: зелья, класс, исцеление, оберег. ×1.5 у
+// базовой части оставлен как был: эта правка потолок только поднимает.
+//
+// Потолок лечения (healedAmount) — maxHp забега плюс тот же запас исцеления.
+// healedAmount клиент копит ТОЛЬКО через healPlayer: зелья и «Исцеление»;
+// лечение класса и оберег туда не идут (и ловкость не растят). Зелья
+// укладываются в maxHp: 3 глотка × 30% старшего тира = 90%. А с исцелением
+// прежний потолок maxHp резал рост ловкости уже после пяти применений у героя
+// 10/10/10 (80 HP, исцеление 16 за применение).
+//
+// Ветки «Магия» и «Клинок» (26.10.2026) запаса под УРОН не получают ни в одном
+// потолке, и это проверено, а не забыто. +15% к шарам, Таяние (×2), +15% к мечу
+// и крит (×2) — множители урона, а нанесённый урон клиент копит ОБРЕЗАННЫМ
+// остатком HP цели (damageEnemy / damageBoss в Explore.tsx): множитель даёт
+// добить врага быстрее, но не нанести больше его HP, и сверх hpPool не набрать
+// никаким множителем. Казнь — удар ровно на остаток HP цели, тоже не больше.
+// Лечения у этих веток нет. Одно исключение — бесплатный навык Повелителя
+// стихий: он даёт больше применений исцеления, чем оплачено маной, и входит в
+// запас исцеления (healSkillReserve).
+//
+// `nowMs` — часы сервера в момент закрытия забега (финиш или вход). Нужны
+// одному случаю — Владыке крови с исцелением (см. healSkillReserve).
 //
 // ⚠️ run.maxHp приводится к числу ЯВНО. Испорченный currentRun дал бы NaN,
 // NaN дошёл бы до applyStatProgress — а там сравнение с порогом на NaN не
 // выполняется ни в одну сторону, и цикл `while` крутился бы вечно, вешая весь
 // сервер на запросе, который обязан выжить при любом содержимом currentRun
 // (это ЛОГИН). Сами четыре числа уже конечны: их пропустил parse/coerce выше.
-export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, characterLevel: number): ClampedRunProgress {
+export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, characterLevel: number, nowMs: number): ClampedRunProgress {
   const events = Array.isArray(run.events) ? run.events : []
   // HP группы — по её ВИДУ (06.10.2026): у Привратника 150% HP зверя, и посчитай
   // мы его группу как звериную, она одна выбрала бы весь запас ×1.5 — честному
@@ -652,13 +737,17 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   const classHealMax =
     Math.max(blood.bleedHealFrac, blood.bladeHealFrac) * hpPool
     + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
-  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax
+  const runHealSkill = readRunHealSkill(run)
+  const heal = healSkillReserve(run, runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, nowMs)
+  const charmHealMax = charmReserve(run, runMaxHp)
+  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax + heal.hp + charmHealMax
+  const maxHealed = runMaxHp + heal.hp
 
   return {
     progress: {
       attackDamageDealt: Math.round(raw.attackDamageDealt * dealtScale),
       skillDamageDealt: Math.round(raw.skillDamageDealt * dealtScale),
-      healedAmount: Math.min(raw.healedAmount, runMaxHp),
+      healedAmount: Math.min(raw.healedAmount, maxHealed),
       damageTaken: Math.min(raw.damageTaken, maxDamageTaken),
       // Применения навыков проходят ЗДЕСЬ БЕЗ ПОТОЛКА, и это осознанно, а не
       // забытая проверка. Вывести его не из чего: урон ограничен числом врагов
@@ -675,12 +764,81 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     dealtScale,
     maxDamageDealt,
     maxDamageTaken,
-    maxHealed: runMaxHp,
+    maxHealed,
     classHealMax,
     runHeroClass,
+    healSkillMax: heal.hp,
+    healUsesMax: heal.uses,
+    charmHealMax,
+    runHealSkill,
     enemyCount,
     bossCount,
   }
+}
+
+// Запас под навык «Исцеление»: сколько применений МОГЛО быть за забег × сколько
+// HP самое большее возвращает одно (healSkillPerUse, game.ts). Сила — по уровню
+// и выносливости, записанным на СТАРТЕ (run.healSkill): клиент снимает её там
+// же, один раз, а не по колонкам на финише. Не надет на старте — 0.
+//
+// Сколько применений — его ограничивает мана, и считается она по правилам боя:
+//   • забег начинается с полного запаса — RUN_MANA_MAX (10);
+//   • мана приходит только с убитых: с каждого врага и с каждого босса не
+//     больше RUN_MANA_DROP_MAX (2) шаров по 1. Шанс выпадения (50%, у
+//     Повелителя 75%) на границу не влияет — берём случай «выпало всё»;
+//   • итого за забег пришло не больше 10 + 2 × (врагов + боссов); выше потолка
+//     10 мана сгорает, а это только уменьшает её, так что граница верна;
+//   • одно применение стоит HEAL_MANA_COST (3), и нажать его можно только при
+//     мане ≥ 3, поэтому оплаченных — не больше floor(маны / 3). Худший случай —
+//     вся мана ушла на исцеление, другие навыки её только отнимают.
+// Повелитель стихий: каждое применение бесплатно с шансом 10% — сверх
+// оплаченных допускается freeUsesBound (вероятностная граница, см. там).
+// Владыка крови: недостающую ману платит HP — 3 × ceil(5% maxHp) за применение,
+// а возвращает оно 2 × floor(0.8 × выносливость) ≈ 20% maxHp (maxHp = 8 ×
+// выносливость). Применение за кровь окупается само (у героя 25/25/25: цена
+// 30 HP, лечение 40), и мана его больше не ограничивает. Остаётся одно —
+// перезарядка: не чаще раза в HEAL_COOLDOWN_MS (5 с) игрового времени, а
+// игровое время тикает не быстрее часов (ticker.deltaMS). Значит, применений не
+// больше 1 + floor((часы сервера сейчас − startedAt) / 5 с) — и не меньше, чем
+// у героя без Платы кровью. Цена кровью из запаса НЕ вычитается: граница выше
+// настоящей, но не ниже. Нет startedAt (порча — у забега с классом он есть
+// всегда) — считаем как без Платы кровью, против игрока.
+function healSkillReserve(
+  run: ActiveExploreRun,
+  heal: RunHealSkill | null | 'malformed',
+  heroClass: HeroClassState,
+  kills: number,
+  nowMs: number,
+): { hp: number; uses: number } {
+  if (heal === null || heal === 'malformed') return { hp: 0, uses: 0 }
+  const manaTotal = RUN_MANA_MAX + RUN_MANA_DROP_MAX * kills
+  const paidUses = Math.floor(manaTotal / HEAL_MANA_COST)
+  let uses = paidUses + freeUsesBound(paidUses, magicClassEffects(heroClass).freeSkillChance)
+  if (bloodClassEffects(heroClass).manaHpFrac > 0) {
+    const startedAt = readRunStartedAt(run)
+    if (startedAt !== null && Number.isFinite(nowMs)) {
+      uses = Math.max(uses, 1 + Math.floor(Math.max(0, nowMs - startedAt) / HEAL_COOLDOWN_MS))
+    }
+  }
+  return { hp: uses * healSkillPerUse(heal.level, heal.endurance), uses }
+}
+
+// Запас под оберег от смерти: смертельный удар вместо смерти поднимает героя с
+// max(1, floor(maxHp × reviveFrac)) HP (applyDamage в Explore.tsx), и ОДИН раз
+// за забег — после спасения оберег гаснет. Взят ли он — по СВОЕМУ списку
+// взятых расходников (consumablesUsed пишет старт вместе со списанием), а не по
+// слову клиента; повторов в списке не бывает. Доля — из общего каталога
+// (consumableReviveFrac, сейчас 0.5). Испорченный список — 0, против игрока.
+function charmReserve(run: ActiveExploreRun, runMaxHp: number): number {
+  const used = readConsumablesUsed(run)
+  if (used.kind !== 'used') return 0
+  let hp = 0
+  for (const id of used.ids) {
+    const spec = runSlotConsumableById(id)
+    const frac = spec === null ? null : consumableReviveFrac(spec)
+    if (frac !== null) hp += Math.max(1, Math.floor(runMaxHp * frac))
+  }
+  return hp
 }
 
 // Выпитое по тирам из currentRun. Поля нет — глотков не было: это честные нули,
@@ -885,6 +1043,23 @@ export function heroClassOf(character: HeroClassColumns): HeroClassState | 'malf
 export function readRunHeroClass(run: ActiveExploreRun): HeroClassState | 'malformed' {
   if (run.heroClass === undefined) return 'none'
   return parseHeroClassWire(run.heroClass) ?? 'malformed'
+}
+
+/**
+ * «Исцеление», записанное в забег на старте (поле healSkill в currentRun).
+ * null — не надето, ИЛИ поля нет вовсе (забег начат до 26.10.2026, вечер): у
+ * такого забега запаса под исцеление нет, ровно как было до правки. Поле есть,
+ * но негодное — 'malformed': его пишет только сам сервер, и порча — повод
+ * сказать громко; запас тогда 0, против игрока, как у всех потолков.
+ */
+export function readRunHealSkill(run: ActiveExploreRun): RunHealSkill | null | 'malformed' {
+  const raw: unknown = run.healSkill
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) return 'malformed'
+  const { level, endurance } = raw as Record<string, unknown>
+  if (typeof level !== 'number' || !Number.isInteger(level) || level < 1) return 'malformed'
+  if (typeof endurance !== 'number' || !Number.isInteger(endurance) || endurance < 0) return 'malformed'
+  return { level, endurance }
 }
 
 /**

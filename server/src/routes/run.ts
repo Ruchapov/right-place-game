@@ -1247,9 +1247,18 @@ export async function runRoutes(server: FastifyInstance) {
       request.log.error({ userId, classId: character.classId, classTier: character.classTier }, 'start-explore: corrupt classId/classTier pair — run started without class')
     }
     const runHeroClass = heroClassToWire(classState === 'malformed' ? 'none' : classState)
+    // «Исцеление» на этот забег (26.10.2026, вечер) — надето ли, его уровень и
+    // выносливость героя, из колонок персонажа. По ним потолки роста статов
+    // считают запас под исцеление (clampRunProgress). Пишется сейчас, а не
+    // читается на финише: клиент снимает силу навыка один раз в начале забега,
+    // а забыть навык или улучшить книгу можно и посреди забега со второго
+    // устройства.
+    const healSkill = character.equippedSkills.includes('heal')
+      ? { level: skillLevelsOf(character).heal, endurance: character.endurance }
+      : null
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
-      confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass,
+      confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1841,7 +1850,7 @@ export async function runRoutes(server: FastifyInstance) {
     // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
     // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
     // логи: что именно срезано и в каком забеге.
-    const capped = clampRunProgress(reportedProgress, run, characterLevel)
+    const capped = clampRunProgress(reportedProgress, run, characterLevel, Date.now())
     if (capped.dealtScale < 1) {
       request.log.warn(
         {
@@ -1857,16 +1866,19 @@ export async function runRoutes(server: FastifyInstance) {
     }
     if (reportedProgress.damageTaken > capped.maxDamageTaken) {
       request.log.warn(
-        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
+        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, charmHealMax: capped.charmHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
         'finish-explore: damageTaken exceeded cap, clamped',
       )
     }
     if (capped.runHeroClass === 'malformed') {
       request.log.error({ userId, heroClass: run.heroClass }, 'finish-explore: corrupt heroClass in currentRun — damage cap counted without class')
     }
+    if (capped.runHealSkill === 'malformed') {
+      request.log.error({ userId, healSkill: run.healSkill }, 'finish-explore: corrupt healSkill in currentRun — caps counted without the heal skill')
+    }
     if (reportedProgress.healedAmount > capped.maxHealed) {
       request.log.warn(
-        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed },
+        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, runMaxHp: run.maxHp },
         'finish-explore: healedAmount exceeded cap, clamped',
       )
     }

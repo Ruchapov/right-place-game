@@ -5,7 +5,7 @@
 // (skillLevels.ts, такая же пара). Цикла нет и быть не может: runState.ts
 // импортирует ЭТОТ файл, а не наоборот.
 import { CONSUMABLES, consumableSkillBook, type SkillBookSkillId } from './consumables.js'
-import { skillUsesThreshold } from './skillLevels.js'
+import { skillUsesThreshold, skillPowerMult } from './skillLevels.js'
 import { MAX_ENERGY, ENERGY_REGEN_MS, energyAfter, energyUnitsGained } from './energy.js'
 
 /**
@@ -329,6 +329,39 @@ export const GATEKEEPER_HP_MULT = 1.5
 
 export function scaledGatekeeperMaxHp(level: number): number {
   return Math.round(GATEKEEPER_HP_MULT * scaledEnemyMaxHp(level))
+}
+
+// --- Исцеление и мана забега (26.10.2026; mirrors клиента — ручной синк) ---
+// Нужны потолкам роста статов (clampRunProgress, runState.ts): навык
+// «Исцеление» честно возвращает здоровье, и без этих чисел потолок срезал бы
+// игроку с исцелением рост выносливости и ловкости. Мана на сервер не ходит,
+// поэтому сервер считает не «сколько потрачено», а сколько её МОГЛО быть за
+// забег. Тот же ручной синк, что у ENEMY_HP_BASE выше: поменяли число на
+// клиенте — меняйте здесь, иначе потолок молча разойдётся с боем.
+
+/** mirrors MANA_MAX (src/explore/constants.ts): забег начинается с полного запаса, выше потолка мана сгорает. */
+export const RUN_MANA_MAX = 10
+/** mirrors MANA_DROP_MAX (src/explore/constants.ts): больше шаров с одного убитого (врага или босса) не выпадает. */
+export const RUN_MANA_DROP_MAX = 2
+/** mirrors SKILL_MANA_COST.heal (src/explore/constants.ts). */
+export const HEAL_MANA_COST = 3
+/** mirrors HEAL_PULSE_COUNT (src/explore/constants.ts): импульсов лечения за одно применение. */
+export const HEAL_PULSE_COUNT = 2
+/** mirrors HEAL_COOLDOWN_MS (src/explore/constants.ts). */
+export const HEAL_COOLDOWN_MS = 5000
+/** mirrors ветку 'heal' в skillBaseValue (src/skillDamage.ts): импульс лечит 0.8 × выносливость. */
+export const HEAL_PULSE_ENDURANCE_MULT = 0.8
+
+/**
+ * Сколько HP самое большее возвращает ОДНО применение «Исцеления» —
+ * HEAL_PULSE_COUNT импульсов по skillValue('heal', …) клиента. Выражение
+ * повторяет клиентское буквально — (0.8 × выносливость) × множитель уровня,
+ * округление вниз, — чтобы дробная арифметика дала то же целое. Импульс на
+ * клиенте ещё и обрезан недостающим HP, поэтому это верхняя граница, а не
+ * точное лечение.
+ */
+export function healSkillPerUse(level: number, endurance: number): number {
+  return HEAL_PULSE_COUNT * Math.floor(HEAL_PULSE_ENDURANCE_MULT * endurance * skillPowerMult(level))
 }
 
 
