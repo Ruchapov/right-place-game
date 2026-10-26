@@ -82,7 +82,12 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // второго устройства — потолок обязан считаться по тому, с чем забег начат.
 // Поля нет у забегов, начатых раньше, — запаса под исцеление у них нет, как
 // было (читать через readRunHealSkill).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null }
+// `confirmedAt` (26.10.2026, ежедневные задания) — момент подтверждения забега
+// (POST /run/ready), мс от эпохи, по часам СЕРВЕРА. От него «Быстрые ноги»
+// меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
+// он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
+// (читать через readRunConfirmedAt).
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null }
 
 export type RunHealSkill = { level: number; endurance: number }
 
@@ -259,6 +264,16 @@ export function readRunId(run: ActiveExploreRun): string | null {
 // число: окна подтверждения у такого забега нет, поведение прежнее.
 export function readRunStartedAt(run: ActiveExploreRun): number | null {
   const raw: unknown = run.startedAt
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) return null
+  return raw
+}
+
+// Момент подтверждения (мс от эпохи). null — поля нет (подтвердили глотком или
+// срезом, или забег старше 26.10.2026) или оно не целое положительное число.
+// Испорченное поле — тоже null: вызывающий («Быстрые ноги») тогда меряет от
+// старта, то есть дольше, против игрока.
+export function readRunConfirmedAt(run: ActiveExploreRun): number | null {
+  const raw: unknown = run.confirmedAt
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) return null
   return raw
 }

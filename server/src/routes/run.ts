@@ -49,6 +49,17 @@ import {
   readyWindowOpen,
   judgeUnshownCancel,
 } from '../runState.js'
+import {
+  readQuestState,
+  settleQuestState,
+  applyRunToQuests,
+  parseQuestRunCounters,
+  collectQuestRunFacts,
+  questView,
+  type QuestState,
+  type QuestCompletion,
+  type QuestView,
+} from '../questState.js'
 
 const prisma = new PrismaClient()
 const RUN_COST = 3 // DEV: снижено с 10 для тестов (вернуть 10 перед релизом)
@@ -925,8 +936,19 @@ function stakeFromClosedEvents(bank: number, run: ActiveExploreRun, closed: numb
   return bank + trophySumOf(run, closed)
 }
 
+/**
+ * Фильтр условной записи «questState всё ещё тот, что прочитан» (26.10.2026).
+ * Пустая колонка сравнивается через DbNull — тот же приём, что у currentRun.
+ * Общий для финиша и ручек заданий (routes/quests.ts): все записи состояния
+ * заданий условные, гонка — 409.
+ */
+export function questStateFilter(prev: Prisma.JsonValue | null): Prisma.JsonNullableFilter<'Character'> {
+  return prev === null ? { equals: Prisma.DbNull } : { equals: prev as Prisma.InputJsonValue }
+}
+
 // Read & verify the JWT from the Authorization header. Returns userId or null.
-function getUserId(request: FastifyRequest): number | null {
+// Экспортирована для routes/quests.ts — тот же токен, та же проверка.
+export function getUserId(request: FastifyRequest): number | null {
   const auth = request.headers.authorization
   if (!auth || !auth.startsWith('Bearer ')) return null
   const token = auth.slice('Bearer '.length)
@@ -997,6 +1019,18 @@ type FinishExploreBody = {
   // проверить можно только то, что оберег вообще был взят в забег
   // (currentRun.consumablesUsed) и что он ещё на складе.
   charmUsed?: boolean
+  // Счётчики ежедневных заданий (26.10.2026, docs/daily-quests.md): успешные
+  // парирования, мана, долетевшая до героя (и при полном запасе), мана, снятая
+  // с запаса навыками, попадания на шипы карты, ВСЕ применения навыков (и
+  // исцеление, и бесплатные). Разбор мягкий, как у skillUses
+  // (parseQuestRunCounters), но поля НЕТ — «неизвестно», а не ноль: задание на
+  // нём не продвигается. Иначе «Тихий шаг» и «Только сталь» у старого клиента
+  // выполнялись бы сами.
+  parries?: unknown
+  manaCollected?: unknown
+  manaSpent?: unknown
+  spikeHits?: unknown
+  skillCasts?: unknown
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
 // sipId (15.10.2026) — id ЭТОГО глотка, один на все попытки повтора: глоток,
@@ -1100,6 +1134,25 @@ export type RunResultSummary = {
    */
   skillLevels: Record<string, number>
   skillUses: Record<string, number>
+  /**
+   * Золото, значки охотника и RP ПОСЛЕ забега — абсолютные, перечитанные из БД
+   * (26.10.2026): с ежедневными заданиями финиш начисляет все три.
+   */
+  gold: number
+  hunterBadges: number
+  rp: number
+  /**
+   * Задание, выполненное этой вылазкой, и что за него дали; null — не выполнено
+   * ни одно (самый частый исход). У забега, закрытого входом, всегда null:
+   * задания растут только от финиша живой вылазки.
+   */
+  questCompleted: { questId: string; gold: number; hunterBadges: number; rp: number } | null
+  /**
+   * Состояние заданий после забега — тот же вид, что у GET /character/quests.
+   * null — не названо: questState испорчен (громкий лог) или это забег,
+   * закрытый входом (там задания не трогаются, и вход их не отдаёт).
+   */
+  quests: QuestView | null
 }
 
 export async function runRoutes(server: FastifyInstance) {
@@ -1405,7 +1458,9 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Ready window expired' })
     }
 
-    const nextRun: ActiveExploreRun = { ...run, confirmed: true }
+    // confirmedAt (26.10.2026) — от этого момента «Быстрые ноги» меряют вылазку
+    // до финиша (docs/daily-quests.md). Часы сервера, не клиента.
+    const nextRun: ActiveExploreRun = { ...run, confirmed: true, confirmedAt: Date.now() }
 
     // Условная запись — тот же приём и те же касты, что у /run/sip ниже.
     const written = await prisma.character.updateMany({
@@ -1981,6 +2036,26 @@ export async function runRoutes(server: FastifyInstance) {
       newBonusLevels,
     )
 
+    // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
+    //
+    // Засчитывается ТОЛЬКО живая вылазка: смерть, выход шестерёнкой (клиент
+    // шлёт его смертью) и штрафной путь неподтверждённого забега (died выше)
+    // не дают заданиям ничего. Факты — из СВОЕГО currentRun (виды групп,
+    // мимики, выпитое по записи /run/sip, момент подтверждения) и из счётчиков
+    // тела; применения навыков — те же, что растят уровни (после потолков).
+    // Само задание двигается внутри транзакции ниже, под блокировкой строки:
+    // questState читается там свежим.
+    const finishedAt = Date.now()
+    const questCounters = parseQuestRunCounters(request.body)
+    if (questCounters.invalid.length > 0) {
+      request.log.warn({ userId, invalid: questCounters.invalid }, 'finish-explore: quest counters malformed, treated as unknown')
+    }
+    const questFactsRead = died ? null : collectQuestRunFacts(run, closedEvents, capped.progress.skillUses, questCounters.counters, finishedAt)
+    if (questFactsRead !== null && questFactsRead.clamped.length > 0) {
+      request.log.warn({ userId, clamped: questFactsRead.clamped, counters: questCounters.counters }, 'finish-explore: quest mana counters exceeded what the run could give, clamped')
+    }
+    const questFacts = questFactsRead?.facts ?? null
+
     // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
     // применяется, только если currentRun в базе всё ещё РОВНО тот, что
     // прочитан в начале обработчика (jsonb-сравнение, порядок ключей не
@@ -2026,10 +2101,40 @@ export async function runRoutes(server: FastifyInstance) {
       const newPotionStock = subtractPotionStock(freshPotions, potionsSpent)
         .map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
       const potionChange = potionStockDelta(newPotionStock.map((n, i) => n - freshPotions[i]))
+
+      // Задания — от свежего questState под блокировкой. Сначала время (истёк
+      // таймер — новый набор, активное становится переходящим; уровень только
+      // что дорос до порога — первый набор), потом вылазка. Награда — на уровне
+      // ДО этого забега (characterLevel): ровно та, что доска показывала на
+      // задании, а не больше из-за уровня, набранного этой же вылазкой.
+      // Испорченный questState финиш НЕ роняет: забег уже сыгран. Громкий лог,
+      // задания не трогаются, в ответе quests: null.
+      const questRead = readQuestState(fresh.questState)
+      let questState: QuestState | null = null
+      let questChanged = false
+      let questCompleted: QuestCompletion | null = null
+      if (questRead.kind === 'malformed') {
+        request.log.error({ userId, questState: fresh.questState }, 'finish-explore: corrupt questState — quests skipped')
+      } else {
+        const settled = settleQuestState(questRead.kind === 'state' ? questRead.state : null, growth.level, fresh.equippedSkills, finishedAt)
+        questState = settled.state
+        questChanged = settled.changed
+        if (questState !== null && questFacts !== null) {
+          const applied = applyRunToQuests(questState, questFacts, characterLevel)
+          questState = applied.state
+          questChanged = questChanged || applied.changed
+          questCompleted = applied.completed
+        }
+      }
+
       const result = await tx.character.updateMany({
         where: {
           userId,
           currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
+          // questState тот же, что прочитан под блокировкой, — правило всех
+          // записей заданий (условные, гонка — 409). Под блокировкой его никто
+          // не сдвинет, но гарантирует это фильтр, а не надежда.
+          ...(questChanged ? { questState: questStateFilter(fresh.questState) } : {}),
           // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
           // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
           // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
@@ -2070,6 +2175,17 @@ export async function runRoutes(server: FastifyInstance) {
           // не выдаст дважды добычу.
           ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
           ...skillUsesToColumns(skillGrowth.uses),
+          // Задания: новое состояние и награда — increment'ами В ЭТОЙ ЖЕ записи,
+          // поэтому повтор финиша не начислит награду дважды (та же причина,
+          // что у добычи выше).
+          ...(questChanged && questState !== null ? { questState: questState as unknown as Prisma.InputJsonValue } : {}),
+          ...(questCompleted !== null
+            ? {
+                gold: { increment: questCompleted.reward.gold },
+                hunterBadges: { increment: questCompleted.reward.hunterBadges },
+                rp: { increment: questCompleted.reward.rp },
+              }
+            : {}),
           currentRun: Prisma.DbNull,
         },
       })
@@ -2080,7 +2196,7 @@ export async function runRoutes(server: FastifyInstance) {
       for (const itemId of resolvedDrops.itemIds) {
         await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
       }
-      return { count: result.count, resolvedDrops, newPotionStock }
+      return { count: result.count, resolvedDrops, newPotionStock, questRead, questState, questCompleted }
     }, { maxWait: 10000, timeout: 15000 })
     if (txResult === null) {
       // Тот же код и текст, что у /run/sip и /run/progress: клиент уже умеет
@@ -2088,7 +2204,10 @@ export async function runRoutes(server: FastifyInstance) {
       // Повтор безопасен именно потому, что здесь НИЧЕГО не записано.
       return reply.status(409).send({ error: 'Run state changed, retry' })
     }
-    const { count: written, resolvedDrops, newPotionStock } = txResult
+    const { count: written, resolvedDrops, newPotionStock, questRead, questState, questCompleted } = txResult
+    if (questCompleted !== null) {
+      request.log.info({ userId, questId: questCompleted.questId, reward: questCompleted.reward }, 'finish-explore: daily quest completed')
+    }
     if (written !== 1) {
       // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
       // фильтр по нему может дать только 0 или 1 строку. Если это всё же
@@ -2110,6 +2229,13 @@ export async function runRoutes(server: FastifyInstance) {
     let scrollsAfterFinish = scrollStockOf(character)
     let classItemsAfterFinish = classItemStockOf(character)
     let potionsAfterFinish = newPotionStock
+    // Золото, значки и RP — тоже перечитанные: награда задания легла
+    // increment'ом поверх того, что успело случиться между чтением и записью.
+    let walletAfterFinish = {
+      gold: character.gold + (questCompleted?.reward.gold ?? 0),
+      hunterBadges: character.hunterBadges + (questCompleted?.reward.hunterBadges ?? 0),
+      rp: character.rp + (questCompleted?.reward.rp ?? 0),
+    }
     {
       const reread = await prisma.character.findUnique({ where: { userId } })
       if (reread) {
@@ -2117,6 +2243,7 @@ export async function runRoutes(server: FastifyInstance) {
         scrollsAfterFinish = scrollStockOf(reread)
         classItemsAfterFinish = classItemStockOf(reread)
         potionsAfterFinish = potionStockOf(reread)
+        walletAfterFinish = { gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
@@ -2162,6 +2289,11 @@ export async function runRoutes(server: FastifyInstance) {
       skillLevelUps: skillGrowth.levelUps,
       skillLevels: skillGrowth.levels,
       skillUses: skillGrowth.uses,
+      ...walletAfterFinish,
+      questCompleted: questCompleted === null ? null : { questId: questCompleted.questId, ...questCompleted.reward },
+      // Вид — на уровне ПОСЛЕ забега: награды на доске теперь такие. Повтор
+      // финиша отдаст этот же вид, снятый в момент первого финиша.
+      quests: questRead.kind === 'malformed' ? null : questView(questState, growth.level, finishedAt),
     }
 
     // Итог — под ключом `finish:<runId>`, чтобы повтор этого финиша (ответ
@@ -3120,6 +3252,12 @@ export async function runRoutes(server: FastifyInstance) {
       // а не только в логине: выбор, возвышение и отречение со второго
       // устройства «Обновить баланс» обязан показать (heroClassField выше).
       ...heroClassField(heroClassOf(character), request.log, userId),
+      // Значки охотника и RP (26.10.2026) — валюты ежедневных заданий. Здесь,
+      // чтобы «Обновить баланс» показывал их вместе с золотом. Само состояние
+      // заданий профиль НЕ отдаёт: у него своя ручка (GET /character/quests),
+      // и та может писать (новый набор), а профиль — только чтение.
+      hunterBadges: character.hunterBadges,
+      rp: character.rp,
       trophyGoldRate: TROPHY_GOLD_RATE,
       appliedRequestIds,
     })

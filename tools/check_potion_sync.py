@@ -10,6 +10,7 @@
     src/energy.ts       → server/src/energy.ts
     src/classItems.ts   → server/src/classItems.ts
     src/heroClasses.ts  → server/src/heroClasses.ts
+    src/quests.ts       → server/src/quests.ts
 
 Общего пакета в проекте нет (tsconfig.app.json включает только "src", у
 сервера rootDir "./src"), поэтому каталоги живут байт-в-байт копиями.
@@ -50,6 +51,7 @@ PAIRS = [
     ("потолок и темп энергии", Path("src/energy.ts"), Path("server/src/energy.ts")),
     ("каталог предметов классов", Path("src/classItems.ts"), Path("server/src/classItems.ts")),
     ("каталог классов героя", Path("src/heroClasses.ts"), Path("server/src/heroClasses.ts")),
+    ("каталог ежедневных заданий", Path("src/quests.ts"), Path("server/src/quests.ts")),
 ]
 
 

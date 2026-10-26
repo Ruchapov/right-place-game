@@ -188,6 +188,13 @@
   четыре RAW-счётчика за весь забег (`Explore.tsx`'s
   `attackDamageDealtRef`/`skillDamageDealtRef`/`healedAmountRef`/
   `damageTakenRef`) кормят рост статов, см. ниже.
+- **С 26.10.2026 — ежедневные задания** (`docs/daily-quests.md`): в теле ещё
+  пять счётчиков (`parries`, `manaCollected`, `manaSpent`, `spikeHits`,
+  `skillCasts`; поля нет — «неизвестно», а не ноль), живая вылазка двигает
+  активное задание, награда (`gold`, `hunterBadges`, `rp`) — `increment`'ами в
+  той же условной записи; в ответе `gold`, `hunterBadges`, `rp`,
+  `questCompleted`, `quests`. Задания считаются от `questState`, перечитанного
+  под блокировкой строки.
 - ⚠️ **`smugglerOutcome` из тела УБРАН 27.09.2026.** Исход сделки бросает
   СЕРВЕР (`POST /run/smuggler-deal`) и хранит в `currentRun.smugglerDeal`;
   финиш читает его оттуда. Поле осталось в серверном типе тела, но не
@@ -368,6 +375,9 @@
 вообще без записи, поэтому повтор после таймаута безопасен.
 Подтверждают забег и `/run/sip` с `/run/progress` — любая реальная игра
 снимает пометку попутно, в той же записи, без лишнего запроса.
+С 26.10.2026 `/run/ready` пишет ещё `currentRun.confirmedAt` (мс, часы сервера):
+от него «Быстрые ноги» меряют вылазку (`docs/daily-quests.md`). Глоток и срез
+его не пишут — тогда меряют от `startedAt`, то есть дольше, против игрока.
 
 ### /auth/login — закрывает зависший explore-забег
 Если у персонажа есть `currentRun` с `mode:'explore'` (забег не был закрыт —

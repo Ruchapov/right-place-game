@@ -20,6 +20,7 @@ import {
 import { emptyPotionStock } from '../potions.js'
 import { consumableStockOf, scrollStockOf, classItemStockOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
+import { readQuestState } from '../questState.js'
 
 const prisma = new PrismaClient()
 
@@ -400,6 +401,16 @@ export async function authRoutes(server: FastifyInstance) {
         skillLevelUps: skillGrowth.levelUps,
         skillLevels: skillGrowth.levels,
         skillUses: skillGrowth.uses,
+        // Ежедневные задания вылазка, закрытая входом, не продвигает вовсе
+        // (docs/daily-quests.md): засчитывается только финиш живой вылазки.
+        // Золото, значки и RP эта ветка не пишет — в char они прежние.
+        gold: char.gold,
+        hunterBadges: char.hunterBadges,
+        rp: char.rp,
+        questCompleted: null,
+        // Состояние заданий вход не отдаёт — у него своя ручка
+        // (GET /character/quests). null — «не названо здесь».
+        quests: null,
         }
       }
       }
@@ -422,7 +433,15 @@ export async function authRoutes(server: FastifyInstance) {
     // отправил бы игроку забег, которого на сервере уже нет. Снимаем здесь, а
     // не обнулением char.currentRun, — тогда поле не уедет и у забега старой
     // 3-комнатной формы, который ветка выше намеренно не трогает.
-    const { currentRun: _closedRun, ...charFields } = char
+    // questState (26.10.2026) — тем же приёмом: состояние заданий отдаёт только
+    // своя ручка (GET /character/quests), она же лениво бросает новый набор.
+    // Сырой JSON здесь был бы и лишним, и без этого броска — устаревшим.
+    const { currentRun: _closedRun, questState: _questState, ...charFields } = char
+    // Испорченный questState вход НЕ роняет — только громкий лог; доска заданий
+    // на своей ручке ответит 500 'Corrupt quest state'.
+    if (readQuestState(char.questState).kind === 'malformed') {
+      request.log.error({ userId: user.id, characterId: char.id, questState: char.questState }, 'login: corrupt questState')
+    }
 
     return reply.send({
       token,
@@ -477,6 +496,12 @@ export async function authRoutes(server: FastifyInstance) {
         // Ветка закрытия забега выше класс не пишет, поэтому отражать его в
         // char не нужно (правило «две строки на поле» его не касается).
         ...heroClassField(heroClassOf(char), request.log, user.id),
+        // Значки охотника и RP (26.10.2026) — валюты ежедневных заданий. Сырые
+        // колонки и так уезжают в ...charFields выше; явно — чтобы поле ответа
+        // не держалось на спреде. Ветка закрытия забега их не пишет, отражать
+        // в char не нужно.
+        hunterBadges: char.hunterBadges,
+        rp: char.rp,
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,
