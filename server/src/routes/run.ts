@@ -5,7 +5,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
-import { BAG_CAPACITY, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
 import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
@@ -189,10 +189,17 @@ async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): P
 
 /**
  * Сколько ячеек сумки занято — ровно та же сумма, что считает клиент (bagUsed в
- * App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника, которого
- * не ноль, плюс по ячейке на каждый предмет класса с takesCell (сейчас только
- * Печать отречения), которого не ноль. Зелья, страницы и Осколки души ячеек не
- * тратят (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»).
+ * App.tsx), и той же общей функцией bagCellsOf (consumables.ts): с 26.10.2026
+ * КАЖДАЯ штука, которая место занимает, — своя ячейка (решение Андрея; прежнее
+ * «одна ячейка на вид» отменено). Это ненадетые предметы снаряжения, каждая
+ * штука расходника и каждая штука предмета класса, у которых takesCell в
+ * каталоге (Печать отречения — да, Осколок души — нет). Зелья и страницы ячеек
+ * не тратят и в склад этих аргументов не входят (docs/items.md, «ПРАВИЛО
+ * ВМЕСТИМОСТИ»).
+ *
+ * Сумма МОЖЕТ быть больше BAG_CAPACITY: у героев, накопивших стопки до нового
+ * правила, ничего не отнимается. Такая сумка не принимает ничего нового —
+ * проверки ниже идут через bagFits.
  *
  * Одна функция на всех, кто кладёт вещь в сумку (15.10.2026): добыча на финише,
  * сборка книги, покупка расходника, снятие предмета. Звать ВНУТРИ транзакции
@@ -208,9 +215,11 @@ async function bagCellsUsed(
   stock: Record<ConsumableId, number>,
   classStock: Record<ClassItemId, number>,
 ): Promise<number> {
-  const equipmentCells = await db.inventoryItem.count({ where: { characterId, equipped: false } })
-  const classCells = CLASS_ITEMS.filter((spec) => spec.takesCell && classStock[spec.id] > 0).length
-  return equipmentCells + Object.values(stock).filter((n) => n > 0).length + classCells
+  const unequipped = await db.inventoryItem.count({ where: { characterId, equipped: false } })
+  return bagCellsOf(unequipped, [
+    ...CONSUMABLES.map((spec) => ({ takesCell: spec.takesCell, count: stock[spec.id] })),
+    ...CLASS_ITEMS.map((spec) => ({ takesCell: spec.takesCell, count: classStock[spec.id] })),
+  ])
 }
 
 // Прибавка к складу ОДНОГО предмета класса и фильтр/списание для продажи —
@@ -754,10 +763,9 @@ type AppliedDrops = {
 /**
  * Применяет уже выбранную добычу: считает вместимость и собирает куски записи.
  *
- * ПРАВИЛО ВМЕСТИМОСТИ (docs/items.md). Ячейку тратят: снаряжение — ВСЕГДА (в БД
- * каждый предмет отдельная строка, стакинга нет), книга — ТОЛЬКО если её вида
- * ещё нет в сумке (одна ячейка на вид с бейджем «×N»). Страницы и зелья —
- * никогда. Не влезло — пропало, это решение дизайнера, и игрок узнаёт об этом
+ * ПРАВИЛО ВМЕСТИМОСТИ (docs/items.md, с 26.10.2026): каждая штука, которая место
+ * занимает, — своя ячейка. Снаряжение, каждая книга и каждая Печать отречения
+ * тратят по ячейке; страницы, зелья и Осколки души — никогда. Не влезло — пропало, это решение дизайнера, и игрок узнаёт об этом
  * строкой «Сумка полна, пропало: …», а не тишиной.
  *
  * ⚠️ Вместимость считается ЗДЕСЬ, на финише, а не на старте вместе с броском —
@@ -794,21 +802,16 @@ async function applyDrops(
   }
 
   // Занятые ячейки ДО добычи — ровно та же сумма, что считает клиент (bagUsed в
-  // App.tsx): ненадетые предметы плюс по ячейке на КАЖДЫЙ вид расходника,
-  // которого не ноль. Расхождение здесь означало бы, что игрок видит «28 / 30»,
-  // а сервер считает сумку полной.
-  const bookStock = { ...consumableStockOf(character) }
-  // Изменяемая копия по той же причине, что bookStock: две Печати за один забег
-  // (два босса не бывает, но правило не должно на это опираться) займут одну
-  // ячейку.
-  const classStock = { ...classItemStockOf(character) }
-  let cellsUsed = await bagCellsUsed(db, character.id, bookStock, classStock)
+  // App.tsx, общая bagCellsOf). Дальше каждая выпавшая штука, которая место
+  // занимает, берёт СВОЮ ячейку (26.10.2026): снаряжение, книга, Печать. Сумка,
+  // уже переполненная до нового правила, не принимает ничего (bagFits).
+  let cellsUsed = await bagCellsUsed(db, character.id, consumableStockOf(character), classItemStockOf(character))
 
   for (const drop of drops) {
     switch (drop.category) {
       case 'equipment': {
         const view: RunDrop = { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
-        if (cellsUsed >= BAG_CAPACITY) {
+        if (!bagFits(cellsUsed, 1)) {
           lost.push(view)
           continue
         }
@@ -819,16 +822,15 @@ async function applyDrops(
       }
       case 'book': {
         const view: RunDrop = { category: 'book', id: drop.id }
-        // Ячейка нужна только под ПЕРВУЮ книгу этого вида: вторая ложится
-        // бейджем «×2» в ту же ячейку. bookStock — изменяемая копия, поэтому
-        // две книги одного вида за один забег тоже занимают одну ячейку.
-        const needsCell = bookStock[drop.id] === 0
-        if (needsCell && cellsUsed >= BAG_CAPACITY) {
+        // Каждая книга — своя ячейка (26.10.2026; прежде вторая книга вида
+        // ложилась бейджем «×2» в ту же). Занимает ли — решает каталог; книги
+        // нет в каталоге — считаем, что занимает (осторожная сторона).
+        const needsCell = consumableById(drop.id)?.takesCell ?? true
+        if (needsCell && !bagFits(cellsUsed, 1)) {
           lost.push(view)
           continue
         }
         if (needsCell) cellsUsed++
-        bookStock[drop.id]++
         bookGain[drop.id] = (bookGain[drop.id] ?? 0) + 1
         gained.push(view)
         break
@@ -847,8 +849,8 @@ async function applyDrops(
       case 'soul_shard':
       case 'renounce_seal': {
         // Предметы классов (18.10.2026). Занимает ли ячейку — решает каталог
-        // (takesCell): Осколок — нет, как страницы; Печать — да, но, как книга,
-        // только ПЕРВАЯ штука: вторая ложится бейджем «×2» в ту же ячейку.
+        // (takesCell): Осколок — нет, как страницы; Печать — да, и с 26.10.2026
+        // КАЖДАЯ Печать своя ячейка, как книга.
         const id: ClassItemId = drop.category
         const spec = classItemById(id)
         if (spec === null) {
@@ -859,13 +861,12 @@ async function applyDrops(
           continue
         }
         const view: RunDrop = { category: drop.category }
-        const needsCell = spec.takesCell && classStock[id] === 0
-        if (needsCell && cellsUsed >= BAG_CAPACITY) {
+        const needsCell = spec.takesCell
+        if (needsCell && !bagFits(cellsUsed, 1)) {
           lost.push(view)
           continue
         }
         if (needsCell) cellsUsed++
-        classStock[id]++
         classGain[id] = (classGain[id] ?? 0) + 1
         gained.push(view)
         break
@@ -2476,8 +2477,9 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Catalog mismatch' })
     }
 
-    // Вместимость — ТО ЖЕ правило, что у добычи на финише: ячейка нужна только
-    // под ПЕРВУЮ книгу этого вида. Занятость сумки — COUNT по другой таблице, в
+    // Вместимость — ТО ЖЕ правило, что у добычи на финише: собранная книга —
+    // своя ячейка, даже если такие уже есть (26.10.2026; три страницы места не
+    // занимали). Занятость сумки — COUNT по другой таблице, в
     // Prisma-фильтр она не выражается, поэтому с 15.10.2026 проверка и запись
     // идут в ТРАНЗАКЦИИ под блокировкой строки персонажа (lockCharacterRow).
     // Раньше две сборки разных книг (или сборка и финиш забега с добычей) с
@@ -2489,8 +2491,8 @@ export async function runRoutes(server: FastifyInstance) {
       const character = await tx.character.findUnique({ where: { userId } })
       if (!character) return 'no-character'
 
-      const stock = consumableStockOf(character)
-      if (stock[bookId] === 0 && await bagCellsUsed(tx, character.id, stock, classItemStockOf(character)) >= BAG_CAPACITY) return 'bag-full'
+      const bookTakesCell = consumableById(bookId)?.takesCell ?? true
+      if (bookTakesCell && !bagFits(await bagCellsUsed(tx, character.id, consumableStockOf(character), classItemStockOf(character)), 1)) return 'bag-full'
 
       // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
       // «страниц хватает».
@@ -2885,16 +2887,20 @@ export async function runRoutes(server: FastifyInstance) {
     let applied: AppliedOnce<void>
     try {
       applied = await applyOnce(character.id, requestId, 'buy-consumable', request.log, async (db) => {
-        // Вместимость (15.10.2026). Каждый расходник занимает ячейку, но одну на
-        // вид: новая ячейка нужна, только если этого вида на складе ещё нет.
-        // Раньше не проверялось вовсе — сумку можно было переполнить покупкой.
-        // Под блокировкой строки — см. bagCellsUsed.
+        // Вместимость (15.10.2026; с 26.10.2026 — по штукам). Каждая купленная
+        // штука, которая место занимает, — своя ячейка, поэтому влезть должна
+        // ВСЯ покупка: N штук при свободных меньше N — отказ целиком, ничего не
+        // списано (решение Андрея). Переполненная до нового правила сумка не
+        // принимает ничего. used/free/need в отказе — чтобы клиент назвал, сколько
+        // влезет. Под блокировкой строки — см. bagCellsUsed.
         await lockCharacterRow(db, userId)
         const fresh = await db.character.findUnique({ where: { userId } })
         if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
-        const stock = consumableStockOf(fresh)
-        if (stock[spec.id] === 0 && await bagCellsUsed(db, fresh.id, stock, classItemStockOf(fresh)) >= BAG_CAPACITY) {
-          throw new RouteRejection(400, { error: 'Bag is full', capacity: BAG_CAPACITY })
+        if (spec.takesCell) {
+          const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh))
+          if (!bagFits(used, count)) {
+            throw new RouteRejection(400, { error: 'Bag is full', capacity: BAG_CAPACITY, used, free: bagFreeCells(used), need: count })
+          }
         }
         const written = await db.character.updateMany({
           where: { userId, gold: { gte: totalPrice } },
@@ -3330,7 +3336,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (inventoryItem.equipped) {
         const fresh = await tx.character.findUnique({ where: { userId } })
         if (!fresh) return { kind: 'reject', status: 404, error: 'Character not found' }
-        if (await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)) >= BAG_CAPACITY) {
+        if (!bagFits(await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)), 1)) {
           return { kind: 'reject', status: 400, error: 'Сумка полна — освободи ячейку.' }
         }
       }

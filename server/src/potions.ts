@@ -30,6 +30,13 @@ export type PotionTier = {
   icon: string
   nameRu: string
   desc: string
+  /**
+   * Занимает ли место в сумке — правило каталога (26.10.2026, общее с
+   * расходниками: bagCellsOf в consumables.ts и значок мешочка в карточке).
+   * Зелья НЕ занимают: их копятся десятки, лежат стопкой «×N», и терять их при
+   * переполнении было бы несоразмерно (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»).
+   */
+  takesCell: boolean
 }
 
 export const POTION_TIERS: PotionTier[] = [
@@ -41,6 +48,7 @@ export const POTION_TIERS: PotionTier[] = [
     icon: 'potion_1_vial.png',
     nameRu: 'Мутный отвар',
     desc: 'Горькая муть на дне склянки. Затянет царапины, не более.',
+    takesCell: false,
   },
   {
     tier: 2,
@@ -50,6 +58,7 @@ export const POTION_TIERS: PotionTier[] = [
     icon: 'potion_2_flask.png',
     nameRu: 'Травяной настой',
     desc: 'Пахнет сухими травами и сырым погребом. Хватит, чтобы отдышаться.',
+    takesCell: false,
   },
   {
     tier: 3,
@@ -59,6 +68,7 @@ export const POTION_TIERS: PotionTier[] = [
     icon: 'potion_3_bulb.png',
     nameRu: 'Багровое зелье',
     desc: 'Тягучее и тёплое. Раны затягиваются, пока пьёшь.',
+    takesCell: false,
   },
   {
     tier: 4,
@@ -68,6 +78,7 @@ export const POTION_TIERS: PotionTier[] = [
     icon: 'potion_4_jug.png',
     nameRu: 'Густой эликсир',
     desc: 'Тяжёлый, как ртуть. Поднимает и переломанного.',
+    takesCell: false,
   },
   {
     tier: 5,
@@ -77,6 +88,7 @@ export const POTION_TIERS: PotionTier[] = [
     icon: 'potion_5_ampoule.png',
     nameRu: 'Кровь пилигрима',
     desc: 'Говорят, её собирали у тех, кто дошёл. Крепче в этих краях не сыскать.',
+    takesCell: false,
   },
 ]
 

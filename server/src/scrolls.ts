@@ -55,6 +55,12 @@ export type Scroll = {
   /** Какая книга собирается из SCROLLS_PER_BOOK этих страниц. */
   bookId: ScrollBookId
   desc: string
+  /**
+   * Занимает ли место в сумке — правило каталога (26.10.2026, общее с
+   * расходниками: bagCellsOf в consumables.ts и значок мешочка в карточке).
+   * Страницы НЕ занимают: копятся по три на книгу и лежат стопкой «×N».
+   */
+  takesCell: boolean
 }
 
 /**
@@ -99,6 +105,7 @@ export const SCROLLS: Scroll[] = [
     icon: 'scroll_fire.png',
     bookId: 'book_fire',
     desc: 'Край обуглен ровно настолько, чтобы буквы остались целы.',
+    takesCell: false,
   },
   {
     id: 'scroll_ice',
@@ -106,6 +113,7 @@ export const SCROLLS: Scroll[] = [
     icon: 'scroll_ice.png',
     bookId: 'book_ice',
     desc: 'Холодная на ощупь даже у костра. Иней проступает сам.',
+    takesCell: false,
   },
   {
     id: 'scroll_bleed',
@@ -113,6 +121,7 @@ export const SCROLLS: Scroll[] = [
     icon: 'scroll_bleed.png',
     bookId: 'book_bleed',
     desc: 'Бурые разводы по краю. Писавший торопился и не жалел себя.',
+    takesCell: false,
   },
   {
     id: 'scroll_heal',
@@ -120,6 +129,7 @@ export const SCROLLS: Scroll[] = [
     icon: 'scroll_heal.png',
     bookId: 'book_heal',
     desc: 'Единственная, от которой пальцы не мёрзнут.',
+    takesCell: false,
   },
   {
     id: 'scroll_dash',
@@ -127,6 +137,7 @@ export const SCROLLS: Scroll[] = [
     icon: 'scroll_dash.png',
     bookId: 'book_dash',
     desc: 'Лежит неспокойно — так и норовит выскользнуть из рук.',
+    takesCell: false,
   },
 ]
 
