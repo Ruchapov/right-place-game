@@ -347,8 +347,6 @@ export const RUN_MANA_DROP_MAX = 2
 export const HEAL_MANA_COST = 3
 /** mirrors HEAL_PULSE_COUNT (src/explore/constants.ts): импульсов лечения за одно применение. */
 export const HEAL_PULSE_COUNT = 2
-/** mirrors HEAL_COOLDOWN_MS (src/explore/constants.ts). */
-export const HEAL_COOLDOWN_MS = 5000
 /** mirrors ветку 'heal' в skillBaseValue (src/skillDamage.ts): импульс лечит 0.8 × выносливость. */
 export const HEAL_PULSE_ENDURANCE_MULT = 0.8
 

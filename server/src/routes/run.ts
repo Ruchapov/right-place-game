@@ -1850,7 +1850,7 @@ export async function runRoutes(server: FastifyInstance) {
     // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
     // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
     // логи: что именно срезано и в каком забеге.
-    const capped = clampRunProgress(reportedProgress, run, characterLevel, Date.now())
+    const capped = clampRunProgress(reportedProgress, run, characterLevel)
     if (capped.dealtScale < 1) {
       request.log.warn(
         {

@@ -252,7 +252,7 @@ export async function authRoutes(server: FastifyInstance) {
           'login: interrupted run has no accumulated progress, stat growth is zero',
         )
       }
-      const cappedProgress = clampRunProgress(progressToApply, run, levelBefore, Date.now())
+      const cappedProgress = clampRunProgress(progressToApply, run, levelBefore)
       const growth = applyStatGrowth(
         char.strength, char.strengthProgress, cappedProgress.progress.attackDamageDealt,
         char.endurance, char.enduranceProgress, cappedProgress.progress.damageTaken,

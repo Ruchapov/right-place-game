@@ -17,13 +17,13 @@
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
-import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, HEAL_COOLDOWN_MS, healSkillPerUse } from './game.js'
+import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
 import type { RunEvent } from './runEvents.js'
 import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
 import type { ClassItemId } from './classItems.js'
-import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, magicClassEffects, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
+import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, magicClassEffects, BLOOD_PRICE_EXCLUDED_SKILLS, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
 
 // Shape of the active run stored in Character.currentRun for the
 // map-based Explore flow (POST /run/start-explore). `mode: 'explore'` is
@@ -697,15 +697,12 @@ export function freeUsesBound(paid: number, chance: number): number {
 // стихий: он даёт больше применений исцеления, чем оплачено маной, и входит в
 // запас исцеления (healSkillReserve).
 //
-// `nowMs` — часы сервера в момент закрытия забега (финиш или вход). Нужны
-// одному случаю — Владыке крови с исцелением (см. healSkillReserve).
-//
 // ⚠️ run.maxHp приводится к числу ЯВНО. Испорченный currentRun дал бы NaN,
 // NaN дошёл бы до applyStatProgress — а там сравнение с порогом на NaN не
 // выполняется ни в одну сторону, и цикл `while` крутился бы вечно, вешая весь
 // сервер на запросе, который обязан выжить при любом содержимом currentRun
 // (это ЛОГИН). Сами четыре числа уже конечны: их пропустил parse/coerce выше.
-export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, characterLevel: number, nowMs: number): ClampedRunProgress {
+export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, characterLevel: number): ClampedRunProgress {
   const events = Array.isArray(run.events) ? run.events : []
   // HP группы — по её ВИДУ (06.10.2026): у Привратника 150% HP зверя, и посчитай
   // мы его группу как звериную, она одна выбрала бы весь запас ×1.5 — честному
@@ -738,7 +735,7 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     Math.max(blood.bleedHealFrac, blood.bladeHealFrac) * hpPool
     + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
   const runHealSkill = readRunHealSkill(run)
-  const heal = healSkillReserve(run, runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, nowMs)
+  const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount)
   const charmHealMax = charmReserve(run, runMaxHp)
   const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax + heal.hp + charmHealMax
   const maxHealed = runMaxHp + heal.hp
@@ -793,34 +790,29 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
 //     вся мана ушла на исцеление, другие навыки её только отнимают.
 // Повелитель стихий: каждое применение бесплатно с шансом 10% — сверх
 // оплаченных допускается freeUsesBound (вероятностная граница, см. там).
-// Владыка крови: недостающую ману платит HP — 3 × ceil(5% maxHp) за применение,
-// а возвращает оно 2 × floor(0.8 × выносливость) ≈ 20% maxHp (maxHp = 8 ×
-// выносливость). Применение за кровь окупается само (у героя 25/25/25: цена
-// 30 HP, лечение 40), и мана его больше не ограничивает. Остаётся одно —
-// перезарядка: не чаще раза в HEAL_COOLDOWN_MS (5 с) игрового времени, а
-// игровое время тикает не быстрее часов (ticker.deltaMS). Значит, применений не
-// больше 1 + floor((часы сервера сейчас − startedAt) / 5 с) — и не меньше, чем
-// у героя без Платы кровью. Цена кровью из запаса НЕ вычитается: граница выше
-// настоящей, но не ниже. Нет startedAt (порча — у забега с классом он есть
-// всегда) — считаем как без Платы кровью, против игрока.
+// Владыка крови — как все: Плата кровью на «Исцеление» не распространяется
+// (BLOOD_PRICE_EXCLUDED_SKILLS в общем каталоге, решение Андрея 26.10.2026),
+// его оплачивают только маной. За кровь оно окупалось само (цена 3 × 5% maxHp,
+// лечение ≈ 20%) и лечило без конца — тогда маной исцеление не ограничено, и
+// граница выше перестала бы быть границей. Поэтому правило каталога сверяется
+// при загрузке модуля (ниже): уберут исцеление из исключений — сервер не
+// запустится, пока потолок не пересчитают.
 function healSkillReserve(
-  run: ActiveExploreRun,
   heal: RunHealSkill | null | 'malformed',
   heroClass: HeroClassState,
   kills: number,
-  nowMs: number,
 ): { hp: number; uses: number } {
   if (heal === null || heal === 'malformed') return { hp: 0, uses: 0 }
   const manaTotal = RUN_MANA_MAX + RUN_MANA_DROP_MAX * kills
   const paidUses = Math.floor(manaTotal / HEAL_MANA_COST)
-  let uses = paidUses + freeUsesBound(paidUses, magicClassEffects(heroClass).freeSkillChance)
-  if (bloodClassEffects(heroClass).manaHpFrac > 0) {
-    const startedAt = readRunStartedAt(run)
-    if (startedAt !== null && Number.isFinite(nowMs)) {
-      uses = Math.max(uses, 1 + Math.floor(Math.max(0, nowMs - startedAt) / HEAL_COOLDOWN_MS))
-    }
-  }
+  const uses = paidUses + freeUsesBound(paidUses, magicClassEffects(heroClass).freeSkillChance)
   return { hp: uses * healSkillPerUse(heal.level, heal.endurance), uses }
+}
+
+// Громко и при старте, а не молча в потолке: граница исцеления «по мане» верна,
+// только пока Плата кровью исцеление не оплачивает (см. healSkillReserve).
+if (!BLOOD_PRICE_EXCLUDED_SKILLS.includes('heal')) {
+  throw new Error('runState: Плата кровью снова оплачивает «Исцеление» (BLOOD_PRICE_EXCLUDED_SKILLS) — потолок исцеления по мане больше не граница, пересчитайте healSkillReserve')
 }
 
 // Запас под оберег от смерти: смертельный удар вместо смерти поднимает героя с
