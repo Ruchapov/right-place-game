@@ -6,7 +6,7 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { BAG_CAPACITY, CONSUMABLES, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
 // Каталог СТРАНИЦ книг — тоже общая пара (src/scrolls.ts ↔ server/src/scrolls.ts).
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
@@ -33,6 +33,7 @@ import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import SkillLevelNote from './ui/SkillLevelNote'
+import { BagCellBadge } from './ui/BagCellBadge'
 import { HeroClassLine, HeroClassTiles, HeroClassCard, HeroClassCelebration, type ClassActionKind } from './ui/HeroClassViews'
 import { useMediaQuery } from './ui/useMediaQuery'
 // Только число: «низкий горизонтальный экран» — одно условие на меню, боевые
@@ -1096,26 +1097,30 @@ export default function App() {
   // кнопке «Снять» в карточке предмета (снимать некуда, если сумка полна).
   // Поэтому считается ЗДЕСЬ, один раз: две копии этого числа разошлись бы.
   //
-  // Что тратит ячейку (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ»): НЕнадетые предметы
-  // и расходники с книгами. Зелья — нет, поэтому их здесь и не видно: они
-  // копятся десятками, и терять их при переполнении было бы несоразмерно.
+  // Что тратит ячейку (docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ», с 26.10.2026): КАЖДАЯ
+  // штука, у которой takesCell в её каталоге, — своя ячейка: ненадетый предмет
+  // снаряжения, каждый расходник и каждая книга, каждая Печать отречения. Зелья,
+  // страницы и Осколки души места не занимают и сюда не входят. Считает общая
+  // функция bagCellsOf (consumables.ts) — та же, что у сервера (bagCellsUsed).
   // Надетое ячейку не тратит и в сумке больше не показывается вовсе — оно живёт
   // в гнёздах на экране «Персонаж».
-  const bagConsumableCells: number | null = player === null || player.consumables === null
-    ? null
-    : CONSUMABLES.filter((c) => (player.consumables?.[c.id] ?? 0) > 0).length
-  // Предметы классов (18.10.2026): ячейку тратит только тот, у кого в каталоге
-  // takesCell (Печать отречения), — по ячейке на вид, как книга. Осколок души
-  // ячейки не тратит, как страницы. То же правило применяет сервер
-  // (bagCellsUsed), начисляя добычу.
-  const bagClassItemCells: number | null = player === null || player.classItems === null
-    ? null
-    : CLASS_ITEMS.filter((c) => c.takesCell && (player.classItems?.[c.id] ?? 0) > 0).length
-  const bagUsed = inventory.filter((i) => !i.equipped).length + (bagConsumableCells ?? 0) + (bagClassItemCells ?? 0)
+  const bagConsumableStock = player?.consumables ?? null
+  const bagClassItemStock = player?.classItems ?? null
+  const bagStacks: { takesCell: boolean; count: number }[] | null =
+    bagConsumableStock === null || bagClassItemStock === null
+      ? null
+      : [
+        ...CONSUMABLES.map((c) => ({ takesCell: c.takesCell, count: bagConsumableStock[c.id] ?? 0 })),
+        ...CLASS_ITEMS.map((c) => ({ takesCell: c.takesCell, count: bagClassItemStock[c.id] ?? 0 })),
+      ]
+  const bagUsed = bagCellsOf(inventory.filter((i) => !i.equipped).length, bagStacks ?? [])
   // Неизвестно хоть одно слагаемое — счётчик не врёт числом, а ставит прочерк, и
   // «Сумка полна» в карточке не утверждается.
-  const bagKnown = inventoryStatus === 'ready' && bagConsumableCells !== null && bagClassItemCells !== null
-  const bagFull = bagKnown && bagUsed >= BAG_CAPACITY
+  const bagKnown = inventoryStatus === 'ready' && bagStacks !== null
+  // Нет места даже под одну штуку. У героев, накопивших стопки до нового правила,
+  // занято может быть больше 30 (счётчик тогда красный): у них ничего не
+  // отнимается, но новое не кладётся — та же bagFits, что у сервера.
+  const bagFull = bagKnown && !bagFits(bagUsed, 1)
 
   // Карточка предмета/зелья/расходника/книги. Живёт ЗДЕСЬ, а не внутри вкладки
   // «Инвентарь»: ту же карточку открывает тап по гнезду снаряжения на экране
@@ -1220,6 +1225,9 @@ export default function App() {
         // — старый сервер её не прислал: кнопка тогда гаснет, а не
         // показывает выдуманное число (формулы на клиенте нет).
         sellPrice: inv.sellPrice,
+        // Значок мешочка в карточке (BagCellBadge): занимает ли место — правило
+        // каталога своего вида; у снаряжения — константа.
+        takesCell: EQUIPMENT_TAKES_CELL,
       }
     }
     // Предмет класса — СВОЯ ветка (18.10.2026): действие у него одно,
@@ -1246,6 +1254,7 @@ export default function App() {
         classItemId: spec.id,
         sellPrice: spec.sellPrice,
         confirmSale: spec.confirmSale,
+        takesCell: spec.takesCell,
       }
     }
     // Страница — СВОЯ ветка: у неё два действия («Собрать книгу» и
@@ -1276,18 +1285,16 @@ export default function App() {
         scrollId: spec.id,
         have,
         // Нужна ли СВОБОДНАЯ ячейка под собранную книгу. То же правило, что
-        // применяет сервер (resolveRunDrops и assemble-book): книга тратит
-        // ячейку, только если её вида ещё нет в сумке — вторая ложится
-        // бейджем «×2» в ту же. Без этой проверки кнопка говорила бы «Сумка
-        // полна» там, где сервер собрал бы книгу без возражений.
-        // Книги нет в каталоге или склад неизвестен — считаем, что ячейка
-        // НУЖНА: это осторожная сторона, и она совпадает с поведением сервера
-        // на пустом складе.
-        needsBagCell: book === null || (player?.consumables?.[book.id] ?? 0) === 0,
+        // применяет сервер (assemble-book): с 26.10.2026 каждая книга — своя
+        // ячейка, так что нужна всегда, если книга вообще занимает место
+        // (takesCell каталога). Книги нет в каталоге — считаем, что нужна: это
+        // осторожная сторона, и она совпадает с сервером.
+        needsBagCell: book === null || book.takesCell,
         // Склад страниц неизвестен (сервер не назвал) — собирать НЕЛЬЗЯ:
         // have тогда 0, и кнопка гаснет сама. Отдельного состояния здесь
         // не нужно, заметку про неизвестный склад показывает сама вкладка.
         sellPrice: SCROLL_SELL_PRICE,
+        takesCell: spec.takesCell,
       }
     }
     // Книга — СВОЯ ветка: у неё три действия («Надеть», «Улучшить
@@ -1322,6 +1329,7 @@ export default function App() {
           // Цена продажи — из каталога (цена/10), одной функцией с
           // сервером: на кнопке то же число, которое начислят.
           sellPrice: consumableSellPrice(spec),
+          takesCell: spec.takesCell,
         }
       }
       const spec = consumableById(gearSelectedItem.consumableId)
@@ -1341,6 +1349,7 @@ export default function App() {
         equipped: false,
         levelRequired: null as number | null,
         inventoryItemId: null as string | null,
+        takesCell: spec.takesCell,
       }
     }
     const potionTier = Number(gearSelectedItem.potionId)
@@ -1358,6 +1367,7 @@ export default function App() {
       equipped: false,
       levelRequired: null as number | null,
       inventoryItemId: null as string | null,
+      takesCell: potion.takesCell,
     }
   })() : null
 
@@ -1731,8 +1741,15 @@ export default function App() {
       case 'Unknown potion tier': return 'Неизвестный тир зелья.'
       case 'Unknown consumable': return 'Неизвестный расходник.'
       case 'Not unlocked': return 'Этот предмет ещё не открыт по уровню.'
-      // С 15.10.2026 место в сумке при покупке проверяет и сервер.
-      case 'Bag is full': return 'Сумка полна — освободи ячейку.'
+      // С 15.10.2026 место в сумке при покупке проверяет и сервер; с 26.10.2026
+      // — по штукам, и в отказе он называет, сколько свободно (free).
+      case 'Bag is full': {
+        const body = e.body as { free?: unknown } | null
+        const free = body !== null && typeof body === 'object' && typeof body.free === 'number' ? body.free : null
+        return free !== null && free > 0
+          ? `В сумке свободно ${free} — столько не влезет.`
+          : 'Сумка полна — освободи ячейку.'
+      }
       default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
     }
   }
@@ -2699,6 +2716,13 @@ export default function App() {
                */
               owned: number | null | undefined
               /**
+               * Занимает ли товар место в сумке — takesCell его каталога (значок
+               * мешочка в углу карточки, BagCellBadge). null — товар не предмет и
+               * в сумку не ложится вовсе (улучшение): значка нет. Поле
+               * обязательное у всех ветвей, как skillId выше.
+               */
+              takesCell: boolean | null
+              /**
                * Покупка. У зелий и расходников — степпер количества, у улучшения
                * одна кнопка: купить два улучшения разом нельзя, у второго уже
                * другая цена.
@@ -2739,6 +2763,7 @@ export default function App() {
                   // Улучшение — не книга, навыка у него нет.
                   skillId: null,
                   owned: undefined,
+                  takesCell: null,
                   purchase: { kind: 'single' as const, label: 'Улучшить', buy: () => handleBuyUpgrade(spec.kind) },
                 }
               }
@@ -2755,6 +2780,7 @@ export default function App() {
                   // Зелье — не книга, уровня навыка у него нет.
                   skillId: null,
                   owned: player === null ? null : (player.potions[p.tier - 1] ?? 0),
+                  takesCell: p.takesCell,
                   purchase: {
                     kind: 'stepper',
                     maxPerPurchase: MAX_POTIONS_PER_PURCHASE,
@@ -2783,6 +2809,7 @@ export default function App() {
                 // player.consumables === null означает «сервер не назвал склад»,
                 // и это НЕ ноль (см. readConsumables в api.ts).
                 owned: player === null || player.consumables === null ? null : (player.consumables[c.id] ?? 0),
+                takesCell: c.takesCell,
                 purchase: {
                   kind: 'stepper',
                   maxPerPurchase: MAX_CONSUMABLES_PER_PURCHASE,
@@ -2938,11 +2965,15 @@ export default function App() {
                   <div
                     onClick={e => e.stopPropagation()}
                     style={{
+                      position:'relative',
                       maxWidth:290, width:'100%',
                       background:C.appBg, border:`1px solid ${C.stoneDark}`,
                       borderRadius:14, padding:16,
                     }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+                    {/* Мешочек в углу — как в карточке предмета в сумке (правило
+                        каталога takesCell). У улучшения значка нет: оно не предмет. */}
+                    {shopCard.takesCell !== null && <BagCellBadge takesCell={shopCard.takesCell} />}
+                    <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12, paddingRight: shopCard.takesCell !== null ? 30 : 0 }}>
                       <div style={{
                         width:64, height:64, flexShrink:0, background:C.nicheDeep, borderRadius:8,
                         boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
@@ -3016,8 +3047,20 @@ export default function App() {
                         player !== null && player.gold < shopCard.price
                           ? `Недостаточно золота (нужно ${shopCard.price}).`
                           : null
-                      const msg = shopBuyError ?? affordMsg
-                      const buyBlocked = shopBuyPending || !canAfford || shopBalanceUnknown
+                      // Место в сумке (26.10.2026): каждая купленная штука, которая
+                      // место занимает, — своя ячейка, и влезть должна ВСЯ
+                      // покупка — степпер не даёт выбрать больше свободного, а
+                      // при нуле кнопка гаснет со своей строкой. Размер сумки
+                      // неизвестен — не запрещаем: ответит сервер тем же правилом.
+                      const bagLimited = shopCard.takesCell === true && bagKnown
+                      const bagRoom = bagLimited ? bagFreeCells(bagUsed) : Number.POSITIVE_INFINITY
+                      const bagMsg = bagLimited && bagRoom < 1
+                        ? (bagUsed > BAG_CAPACITY
+                          ? `Сумка переполнена (${bagUsed} / ${BAG_CAPACITY}) — освободи место.`
+                          : 'Сумка полна — освободи ячейку.')
+                        : null
+                      const msg = shopBuyError ?? affordMsg ?? bagMsg
+                      const buyBlocked = shopBuyPending || !canAfford || shopBalanceUnknown || bagMsg !== null
                       // Строка ошибки и кнопка сверки — общие для обоих видов
                       // покупки, поэтому вынесены сюда, а не продублированы.
                       const tail = (
@@ -3076,7 +3119,10 @@ export default function App() {
                       // хватает даже на одно — maxQty 0, степпер погашен, строка
                       // прежняя.
                       const affordableMax = player === null ? 0 : Math.floor(player.gold / shopCard.price)
-                      const maxQty = Math.min(stepper.maxPerPurchase, affordableMax)
+                      const maxQty = Math.min(stepper.maxPerPurchase, affordableMax, bagRoom)
+                      // Подпись под числом у товара, который занимает место: сколько
+                      // ещё влезет. У зелий своя подпись (глотки), у них места нет.
+                      const bagNote = bagLimited && bagRoom >= 1 ? `В сумке свободно: ${bagRoom}` : null
                       // Зажим на случай, если золото убыло после выбора N
                       // (покупка соседнего тира, сверка баланса).
                       const qty = Math.min(Math.max(1, shopQty), Math.max(1, maxQty))
@@ -3104,9 +3150,9 @@ export default function App() {
                               зелий это лимит глотков за забег (игрок иначе не
                               узнает, что запас сверх него в забег не поедет), у
                               расходника её нет вовсе. */}
-                          {stepper.stepperNote !== null && (
+                          {(stepper.stepperNote ?? bagNote) !== null && (
                             <div style={{ fontSize:10, color:C.textDim, marginTop:2 }}>
-                              {stepper.stepperNote}
+                              {stepper.stepperNote ?? bagNote}
                             </div>
                           )}
                         </div>
@@ -3169,15 +3215,25 @@ export default function App() {
               /** null — неизвестный слот, картинки нет (см. itemIconSrc). */
               iconSrc: string | null
               alt: string
-              /** Число — у зелий, они реально складываются в один счётчик.
-               *  null — у предметов: стакинга в БД нет, каждый предмет это
-               *  отдельная строка InventoryItem. */
+              /** Число — стопка «×N» у того, что места НЕ занимает (зелья,
+               *  страницы, Осколки души). null — у того, что занимает: с
+               *  26.10.2026 каждая такая штука — своя ячейка (см. stackCells). */
               qty: number | null
               equipped: boolean
               group: number
               rank: number
               open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | { kind: 'consumable'; consumableId: ConsumableId } | { kind: 'scroll'; scrollId: ScrollId } | { kind: 'classItem'; classItemId: ClassItemId }
             }
+            // Ячейки одного вида предметов по правилу каталога (26.10.2026,
+            // решение Андрея): то, что место занимает (takesCell), — по ячейке на
+            // КАЖДУЮ штуку, без «×N»: 10 Книг огня — 10 ячеек, ровно столько же
+            // насчитывает «N / 30». То, что не занимает, — одной ячейкой со
+            // стопкой. Тап по любой из ячеек открывает одну и ту же карточку.
+            const stackCells = (cell: InvCell, count: number, takesCell: boolean): InvCell[] =>
+              count <= 0 ? []
+                : takesCell
+                  ? Array.from({ length: count }, (_, k) => ({ ...cell, key: `${cell.key}-${k}`, qty: null }))
+                  : [{ ...cell, qty: count }]
             // ОДНА ячейка на ОДНУ строку InventoryItem, без бейджа "xN":
             // стакинга в БД нет (каждый предмет — своя строка), а
             // POST /character/equip адресует именно inventoryItemId. Прежний
@@ -3253,17 +3309,16 @@ export default function App() {
                 // Показываем только тиры, которых реально не ноль. Порядок —
                 // от старшего тира к младшему (rank), как и было.
                 cells: (potionStock === null ? [] : POTION_TIERS)
-                  .filter((t) => (potionStock?.[t.tier - 1] ?? 0) > 0)
-                  .map((t) => ({
+                  .flatMap((t) => stackCells({
                     key: `potion-${t.tier}`,
                     iconSrc: `${import.meta.env.BASE_URL}assets/icons/${t.icon}`,
                     alt: t.nameRu,
-                    qty: potionStock?.[t.tier - 1] ?? 0,
+                    qty: null,
                     equipped: false,
                     group: 0,
                     rank: -t.tier,
                     open: { kind: 'potion' as const, potionId: String(t.tier) },
-                  })),
+                  }, potionStock?.[t.tier - 1] ?? 0, t.takesCell)),
                 note: potionStock === null ? 'Профиль не загружен — склад зелий неизвестен.' : null,
               },
               {
@@ -3281,12 +3336,11 @@ export default function App() {
                 // эффекта каталога, а не из вкладки магазина.
                 cells: (player?.consumables == null ? [] : CONSUMABLES)
                   .filter((c) => consumableSkillBook(c) === null)
-                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
-                  .map((c) => ({
+                  .flatMap((c) => stackCells({
                     key: `consumable-${c.id}`,
                     iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
                     alt: c.nameRu,
-                    qty: player?.consumables?.[c.id] ?? 0,
+                    qty: null,
                     equipped: false,
                     // Группа 1 — ниже зелий (у тех 0): расходников мало, и они
                     // должны стоять после расходуемых в забеге зелий, а не
@@ -3294,7 +3348,7 @@ export default function App() {
                     group: 1,
                     rank: 0,
                     open: { kind: 'consumable' as const, consumableId: c.id },
-                  })),
+                  }, player?.consumables?.[c.id] ?? 0, c.takesCell)),
                 note: player === null
                   ? 'Профиль не загружен — запас расходников неизвестен.'
                   : player.consumables === null
@@ -3307,26 +3361,25 @@ export default function App() {
               // пятая подвкладка ради двух плиток не нужна.
               // Источником на КАЖДЫЙ предмет, а не одним: takesCell у них РАЗНЫЙ
               // (каталог classItems.ts) — Осколок ячейку не тратит, как страницы,
-              // Печать тратит, как книга. Одна плитка на вид с «×N».
+              // и лежит одной плиткой «×N»; Печать тратит, как книга, — с
+              // 26.10.2026 каждая Печать своя ячейка.
               // Заметка у обоих одна и та же (они читают одно поле
               // player.classItems) — повтор на экране снимает сбор заметок ниже.
               ...CLASS_ITEMS.map((spec) => ({
                 key: `classItem-${spec.id}`,
                 section: 'consumables' as const,
                 takesCell: spec.takesCell,
-                cells: (player?.classItems?.[spec.id] ?? 0) > 0
-                  ? [{
-                    key: `classItem-${spec.id}`,
-                    iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-                    alt: spec.nameRu,
-                    qty: player?.classItems?.[spec.id] ?? 0,
-                    equipped: false,
-                    // Та же группа, что у камня и оберега: стоят сразу за ними.
-                    group: 1,
-                    rank: 1,
-                    open: { kind: 'classItem' as const, classItemId: spec.id },
-                  }]
-                  : [],
+                cells: stackCells({
+                  key: `classItem-${spec.id}`,
+                  iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+                  alt: spec.nameRu,
+                  qty: null,
+                  equipped: false,
+                  // Та же группа, что у камня и оберега: стоят сразу за ними.
+                  group: 1,
+                  rank: 1,
+                  open: { kind: 'classItem' as const, classItemId: spec.id },
+                }, player?.classItems?.[spec.id] ?? 0, spec.takesCell),
                 note: player === null
                   ? 'Профиль не загружен — запас Осколков души и Печатей неизвестен.'
                   : player.classItems === null
@@ -3343,17 +3396,16 @@ export default function App() {
                 takesCell: true,
                 cells: (player?.consumables == null ? [] : CONSUMABLES)
                   .filter((c) => consumableSkillBook(c) !== null)
-                  .filter((c) => (player?.consumables?.[c.id] ?? 0) > 0)
-                  .map((c) => ({
+                  .flatMap((c) => stackCells({
                     key: `consumable-${c.id}`,
                     iconSrc: `${import.meta.env.BASE_URL}assets/icons/${c.icon}`,
                     alt: c.nameRu,
-                    qty: player?.consumables?.[c.id] ?? 0,
+                    qty: null,
                     equipped: false,
                     group: 2,
                     rank: 0,
                     open: { kind: 'consumable' as const, consumableId: c.id },
-                  })),
+                  }, player?.consumables?.[c.id] ?? 0, c.takesCell)),
                 // Тот же текст и та же причина, что у расходников выше: оба
                 // источника читают одно поле player.consumables. Повтора на
                 // экране нет — заметки показываются только своего раздела.
@@ -3376,17 +3428,16 @@ export default function App() {
                 // страниц приходит отдельным полем именно потому, что вместимость
                 // у них другая.
                 cells: (player?.scrolls == null ? [] : SCROLLS)
-                  .filter((s) => (player?.scrolls?.[s.id] ?? 0) > 0)
-                  .map((s) => ({
+                  .flatMap((s) => stackCells({
                     key: `scroll-${s.id}`,
                     iconSrc: `${import.meta.env.BASE_URL}assets/icons/${s.icon}`,
                     alt: s.nameRu,
-                    qty: player?.scrolls?.[s.id] ?? 0,
+                    qty: null,
                     equipped: false,
                     group: 3,
                     rank: 0,
                     open: { kind: 'scroll' as const, scrollId: s.id },
-                  })),
+                  }, player?.scrolls?.[s.id] ?? 0, s.takesCell)),
                 note: player === null
                   ? 'Профиль не загружен — запас страниц неизвестен.'
                   : player.scrolls === null
@@ -4260,11 +4311,15 @@ export default function App() {
           <div
             onClick={e => e.stopPropagation()}
             style={{
+              position:'relative',
               maxWidth:290, width:'100%',
               background:C.appBg, border:`1px solid ${C.stoneDark}`,
               borderRadius:14, padding:16,
             }}>
-            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+            {/* Мешочек в углу: занимает ли предмет место в сумке (решение
+                Андрея 26.10.2026). Правило — takesCell каталога предмета. */}
+            <BagCellBadge takesCell={selectedEntry.takesCell} />
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12, paddingRight:30 }}>
               <div style={{
                 width:64, height:64, flexShrink:0, background:C.nicheDeep, borderRadius:8,
                 boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
@@ -4347,8 +4402,9 @@ export default function App() {
               // счётчиком «(N/3)», поэтому отдельного текста ей не нужно —
               // кнопка просто приглушена. Полная сумка на кнопке не видна ничем,
               // поэтому у неё свой текст ВМЕСТО кнопки, как у книги ниже.
-              // Полная сумка мешает, только если книге нужна НОВАЯ ячейка (см.
-              // needsBagCell) — то же правило применяет сервер.
+              // Полная сумка мешает, если книга занимает место (см. needsBagCell;
+              // с 26.10.2026 — всегда, каждая книга своя ячейка) — то же правило
+              // применяет сервер.
               // bagFull утверждается только при известном размере сумки (см.
               // bagKnown): неизвестность не повод запрещать — ответит сервер.
               const assembleBlocked: string | null =

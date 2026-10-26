@@ -131,6 +131,14 @@ export type Consumable = {
    * эндпоинта.
    */
   runSlot: boolean
+  /**
+   * Занимает ли место в сумке (26.10.2026, решение Андрея) — правило КАТАЛОГА,
+   * а не места использования: его читают подсчёт ячеек на сервере и в клиенте
+   * (bagCellsOf ниже) и значок мешочка в карточке предмета. Каждая штука, которая
+   * место занимает, — ОТДЕЛЬНАЯ ячейка, без стопки «×N». Поле обязательное, чтобы
+   * новый расходник не мог его забыть. Сейчас у всех расходников true.
+   */
+  takesCell: boolean
   /** В какой вкладке магазина показывать (см. ConsumableShopTab). */
   shopTab: ConsumableShopTab
   spendAt: ConsumableSpendAt
@@ -146,6 +154,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 500,
     levelRequired: 1,
     runSlot: true,
+    takesCell: true,
     shopTab: 'Расходники',
     // Списывается на старте: эффект действует весь забег с первой секунды, и
     // «не пригодился» у него не бывает.
@@ -160,6 +169,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: true,
+    takesCell: true,
     shopTab: 'Расходники',
     // Списывается ТОЛЬКО если спас (решение дизайнера). Взять оберег и дойти
     // до конца живым — ничего не стоит, он остаётся на складе.
@@ -188,6 +198,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: false,
+    takesCell: true,
     shopTab: 'Книги',
     spendAt: 'apply',
     effect: { kind: 'skillBook', skillId: 'fireball' },
@@ -200,6 +211,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: false,
+    takesCell: true,
     shopTab: 'Книги',
     spendAt: 'apply',
     effect: { kind: 'skillBook', skillId: 'iceball' },
@@ -212,6 +224,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: false,
+    takesCell: true,
     shopTab: 'Книги',
     spendAt: 'apply',
     // Скилл называется slash («Разрез»), а книга — крови: имя книги идёт от
@@ -226,6 +239,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: false,
+    takesCell: true,
     shopTab: 'Книги',
     spendAt: 'apply',
     effect: { kind: 'skillBook', skillId: 'heal' },
@@ -238,6 +252,7 @@ export const CONSUMABLES: Consumable[] = [
     price: 1000,
     levelRequired: 1,
     runSlot: false,
+    takesCell: true,
     shopTab: 'Книги',
     spendAt: 'apply',
     effect: { kind: 'skillBook', skillId: 'dash' },
@@ -336,13 +351,61 @@ export const RUN_CONSUMABLE_SLOTS = 5
  * которые тоже не про конкретный предмет. Заводить четвёртую байт-в-байт пару
  * ради одного числа дороже, чем положить его в уже сверяемую.
  *
- * ⚠️ Что вместимость ТРАТИТ, здесь не записано и записано быть не может: это
- * зависит от вида предмета (снаряжение — всегда, книга — только если её вида
- * ещё нет в сумке, зелья и страницы — никогда). Правило целиком — в
- * docs/items.md, а его применения два: bagUsed в App.tsx и подсчёт добычи в
- * finish-explore.
+ * Что вместимость тратит, решает КАТАЛОГ каждого вида предметов полем
+ * takesCell (у расходников — выше, у зелий — potions.ts, у страниц —
+ * scrolls.ts, у предметов классов — classItems.ts), у снаряжения — константа
+ * EQUIPMENT_TAKES_CELL ниже. Считают ячейки сервер и клиент ОДНОЙ функцией,
+ * bagCellsOf ниже. Правило целиком — docs/items.md, «ПРАВИЛО ВМЕСТИМОСТИ».
  */
 export const BAG_CAPACITY = 30
+
+/**
+ * Снаряжение (строки InventoryItem из БД, а не каталог этого файла) место в
+ * сумке занимает — каждый НЕнадетый предмет своя ячейка. Константой рядом с
+ * правилом, а не голым true по месту: значок в карточке и подсчёт читают одно.
+ */
+export const EQUIPMENT_TAKES_CELL = true
+
+/**
+ * Сколько ячеек сумки занято (26.10.2026, решение Андрея): КАЖДАЯ штука, которая
+ * место занимает, — отдельная ячейка. 10 Книг огня — 10 ячеек; три точильных
+ * камня — три. Стопкой «×N» в одной ячейке лежит только то, что места не
+ * занимает (зелья, страницы, Осколки души), и в счёт оно не входит вовсе.
+ * Прежнее правило «одна ячейка на вид» ОТМЕНЕНО.
+ *
+ * `unequippedItems` — число НЕнадетых предметов снаряжения (каждый — строка БД,
+ * значит, штука). `stacks` — запасы из каталогов: сколько штук и занимает ли вид
+ * место (takesCell своего каталога). Одна функция на сервер (bagCellsUsed в
+ * routes/run.ts) и клиент (bagUsed в App.tsx): разойдись они — игрок видел бы
+ * «28 / 30», а сервер считал бы сумку полной.
+ *
+ * Мусор в числах (отрицательное, нечисло) в сумму не идёт — нулём, а не NaN:
+ * сравнение с вместимостью на NaN ложно в обе стороны.
+ */
+export function bagCellsOf(unequippedItems: number, stacks: readonly { takesCell: boolean; count: number }[]): number {
+  let cells = EQUIPMENT_TAKES_CELL && Number.isFinite(unequippedItems) && unequippedItems > 0 ? unequippedItems : 0
+  for (const s of stacks) {
+    if (s.takesCell && Number.isFinite(s.count) && s.count > 0) cells += s.count
+  }
+  return cells
+}
+
+/**
+ * Влезут ли ещё `adding` штук, занимающих место, в сумку, где занято `used`.
+ * Покупка N штук при свободных меньше N — отказ ЦЕЛИКОМ, а не «сколько влезло»
+ * (решение Андрея 26.10.2026). Сумка, уже переполненная (used > BAG_CAPACITY —
+ * так бывает у героев, накопивших стопки до этого правила), не принимает ничего:
+ * у неё не отнимается лишнее, но и нового в неё не кладётся.
+ */
+export function bagFits(used: number, adding: number): boolean {
+  // Класть нечего — влезает всегда, даже в переполненную сумку.
+  return adding <= 0 || used + adding <= BAG_CAPACITY
+}
+
+/** Свободно ячеек; у переполненной сумки — 0, а не отрицательное число. */
+export function bagFreeCells(used: number): number {
+  return Math.max(0, BAG_CAPACITY - used)
+}
 
 /**
  * Запись каталога по id, если этот предмет РАЗРЕШЕНО брать в забег. Иначе null —
