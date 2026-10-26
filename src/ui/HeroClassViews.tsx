@@ -76,7 +76,9 @@ export function HeroClassLine({ heroClass, level }: { heroClass: HeroClassState 
 // --- Плитки «Классы» у Отшельника ---
 
 /**
- * Три плитки с иконками ПЕРВОЙ ступени — ячейка того же вида, что в витрине
+ * Три плитки с иконками ПЕРВОЙ ступени (свой класс после возвышения — второй:
+ * иконка и имя той ступени, на которой герой, правка Андрея 26.10.2026) —
+ * ячейка того же вида, что в витрине
  * «Убежища» (ниша, плашка в углу, замок по уровню приглушением). Свой класс
  * отмечен рамкой со свечением изнутри (правило стиля: свечение подсвечивает, а
  * не рисует рамку — рамка здесь цвета края свечения, как у активной вкладки) и
@@ -92,14 +94,16 @@ export function HeroClassTiles({ heroClass, level, onSelect }: {
   onSelect: (id: HeroClassId) => void
 }) {
   const ownId = heroClass !== null && heroClass !== 'none' ? heroClass.id : null
+  const ownTier = heroClass !== null && heroClass !== 'none' ? heroClass.tier : 1
   // Замок — только у героя без класса ниже 10 уровня: с классом уровень и так
   // не ниже десятого.
   const locked = level < CLASS_CHOOSE_LEVEL && ownId === null
   return (
     <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
       {HERO_CLASSES.map((cls) => {
-        const stage = heroClassStage(cls, 1)
         const own = cls.id === ownId
+        // Свой — ступенью героя, чужие и до выбора — первой.
+        const stage = heroClassStage(cls, own ? ownTier : 1)
         return (
           <div key={cls.id} onClick={() => onSelect(cls.id)} style={{ cursor:'pointer', minWidth:0 }}>
             <div style={{
@@ -123,10 +127,13 @@ export function HeroClassTiles({ heroClass, level, onSelect }: {
                 </div>
               )}
             </div>
+            {/* Имя ПЕРЕНОСИТСЯ, а не режется многоточием: имя второй ступени
+                длиннее («Повелитель стихий» на 320–375 px в строку не входит).
+                Короткие имена остаются в одну строку. */}
             <div style={{
-              marginTop:5, fontSize:11, textAlign:'center',
+              marginTop:5, fontSize:11, lineHeight:1.25, textAlign:'center',
               color: own ? C.glowCore : C.textDim,
-              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+              overflowWrap:'anywhere',
             }}>
               {stage.nameRu}
             </div>
@@ -250,6 +257,10 @@ export function HeroClassCard({
   const own = heroClass !== null && heroClass !== 'none' && heroClass.id === cls.id ? heroClass : null
   const other = heroClass !== null && heroClass !== 'none' && heroClass.id !== cls.id ? heroClass : null
   const ascended = own !== null && own.tier === 2
+  // Шапка карточки — ступенью героя (правка Андрея 26.10.2026): после возвышения
+  // иконка и имя второй ступени. Описание и «что даёт» ниже — первой: вторая
+  // ступень сохраняет всё с первой, а своё показывает блоком возвышения.
+  const head = ascended ? second : first
 
   // Какая цена показывается и судится ли она по кошельку. Судится — когда
   // действие открыто по уровню: ниже порога карточка «для чтения», и красное по
@@ -322,10 +333,10 @@ export function HeroClassCard({
             boxShadow:'inset 0 2px 5px rgba(0,0,0,0.55)',
             display:'flex', alignItems:'center', justifyContent:'center',
           }}>
-            <img src={ICON(first.icon)} alt={first.nameRu} style={{ width:56, height:56, objectFit:'contain', display:'block' }} />
+            <img src={ICON(head.icon)} alt={head.nameRu} style={{ width:56, height:56, objectFit:'contain', display:'block' }} />
           </div>
           <div style={{ minWidth:0, textAlign:'left' }}>
-            <div style={{ fontFamily:FONT_DISPLAY, fontSize:17, color:C.textMain }}>{first.nameRu}</div>
+            <div style={{ fontFamily:FONT_DISPLAY, fontSize:17, color:C.textMain }}>{head.nameRu}</div>
             {own !== null && <div style={{ fontSize:11, color:C.glowCore, marginTop:3 }}>Твой класс</div>}
           </div>
         </div>
