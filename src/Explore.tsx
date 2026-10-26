@@ -60,7 +60,10 @@ import { createCritFlashSystem } from './explore/entities/critFlash'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { questById } from './quests'
+// Награда задания на экране итогов — теми же тремя иконками, что на доске.
+import { QuestRewardRow } from './ui/QuestBoard'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
@@ -499,6 +502,9 @@ type FinishPayload = {
   // Результативные применения навыков за забег. Снимком, по той же причине, что
   // остальное: «Повторить сохранение» обязано отправить ТЕ ЖЕ числа.
   skillUses: Record<SkillBookSkillId, number>
+  // Пять счётчиков ежедневных заданий (26.10.2026) — тем же снимком и по той же
+  // причине: повтор финиша шлёт те же числа.
+  questCounters: QuestRunCounters
 }
 
 /**
@@ -1025,7 +1031,33 @@ function ResultsScreen({
             </div>
           )}
 
-          {/* 6. Кнопки. "В меню" — единственный способ закрыть этот экран,
+          {/* 6. Ежедневное задание (26.10.2026) — ТОЛЬКО когда вылазка его
+              выполнила: строка с названием из общего каталога и награда теми же
+              тремя иконками, что на доске. Числа — серверные (questCompleted
+              приходит только с ответом финиша; клиентская оценка его не знает).
+              Тем же приёмом заголовка, что «ДОБЫЧА» выше. */}
+          {result.questCompleted && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
+                  ЗАДАНИЕ
+                </div>
+                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
+              </div>
+              <div data-quest-completed="" style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', lineHeight: 1.4 }}>
+                Задание выполнено: {questById(result.questCompleted.questId)?.nameRu ?? result.questCompleted.questId}
+              </div>
+              <QuestRewardRow
+                reward={result.questCompleted}
+                numberStyle={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore }}
+                iconSize={20}
+                gap={12}
+              />
+            </div>
+          )}
+
+          {/* 7. Кнопки. "В меню" — единственный способ закрыть этот экран,
               onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
               При 'pending' она ЗАБЛОКИРОВАНА: уход до ответа размонтирует
               Explore, и провал сохранения после этого никто бы не увидел.
@@ -1252,6 +1284,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // срезе /run/progress и в финише. Сервер растит из них уровень навыка своей
   // формулой и своими порогами — клиент присылает сырьё, как и с ростом статов.
   const skillUsesRef = useRef<Record<SkillBookSkillId, number>>(emptySkillUses())
+  // Пять счётчиков ежедневных заданий за забег (26.10.2026, договор с сервером —
+  // docs/daily-quests.md и QuestRunCounters в api.ts). Один объект, поля которого
+  // растут на месте: отбив (takeDamage/takeRamDamage), прилёт шара маны
+  // (gainMana), списание маны с запаса (spendMana модуля навыков), удар шипов
+  // карты (тикер), применение навыка (onSkillCast модуля навыков). Уезжают
+  // только с финишем; сервер засчитывает их только живой вылазке.
+  const questCountersRef = useRef<QuestRunCounters>(emptyQuestRunCounters())
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
@@ -1460,6 +1499,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       potionsDrunkByTier: [...potionsDrunkByTierRef.current],
       charmUsed: charmUsedRef.current,
       skillUses: { ...skillUsesRef.current },
+      questCounters: { ...questCountersRef.current },
     }
     submitFinish()
   }
@@ -1487,6 +1527,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       payload.potionsDrunkByTier,
       payload.charmUsed,
       payload.skillUses,
+      payload.questCounters,
     )
       .then((result) => {
         setRunResult(result)
@@ -2241,6 +2282,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   function takeDamage(amount: number): boolean {
     if (parryWindowRef.current > 0) {
       spawnParrySparkRef.current()
+      // «Звон стали»: каждый отбитый удар — и два удара в одно окно тоже два.
+      questCountersRef.current.parries += 1
       return true
     }
     applyDamage(amount)
@@ -2266,6 +2309,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     const g = enemy.gatekeeper
     if (g && g.parryPress !== 0 && g.parryPress === parryPressRef.current && parryingRef.current) {
       spawnParrySparkRef.current()
+      // Тот же отбив, что в takeDamage, — для «Звона стали».
+      questCountersRef.current.parries += 1
       return true
     }
     return takeDamage(amount)
@@ -3411,7 +3456,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Мана: модуль читает запас сам (хватает ли на навык), а списывает
         // через setMana — единственную запись в запас, она же гасит гнёзда.
         mana: manaRef,
-        spendMana: (amount) => setMana(manaRef.current - amount),
+        // Сюда приходит только мана, снятая С ЗАПАСА (paySkill): бесплатное
+        // применение Повелителя её не зовёт, кровь Владыки идёт через payHp.
+        // Ровно это и считает «Иссушение» (docs/daily-quests.md).
+        spendMana: (amount) => {
+          questCountersRef.current.manaSpent += amount
+          setMana(manaRef.current - amount)
+        },
+        // Каждое состоявшееся применение навыка — для «Только стали».
+        onSkillCast: () => { questCountersRef.current.skillCasts += 1 },
         // Класс «Кровь» (26.10.2026): числа сняты выше, вместе с классом забега.
         // Без класса — нули, и модуль ведёт себя ровно как до классов.
         bleedHealFrac: blood.bleedHealFrac,
@@ -3627,7 +3680,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         worldContainer,
         orbTexture: assets.manaOrb,
         dead: deathRef,
-        gainMana: (amount) => setMana(manaRef.current + amount),
+        // «Полная чаша» считает ману, ДОЛЕТЕВШУЮ до героя, — и ту, что сгорает
+        // выше потолка (setMana обрежет её молча).
+        gainMana: (amount) => {
+          questCountersRef.current.manaCollected += amount
+          setMana(manaRef.current + amount)
+        },
         // Прилив Повелителя стихий — свой шанс; у остальных общий.
         dropChance: magic.manaDropChance ?? C.MANA_DROP_CHANCE,
       })
@@ -3880,6 +3938,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       healedAmountRef.current = 0 // сброс на случай повторного запуска setup()
       skillUsesRef.current = emptySkillUses() // сброс на случай повторного запуска setup()
+      questCountersRef.current = emptyQuestRunCounters() // сброс на случай повторного запуска setup()
       potionsDrunkByTierRef.current = emptyPotionStock() // сброс на случай повторного запуска setup()
       // Окна прыжка — тоже на забег: setup() перезапускается БЕЗ размонтирования
       // (debug-переключатель карт), и недотаявший буфер выстрелил бы прыжком на
@@ -5681,6 +5740,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           isTouchingSpikes(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, spikeBodyTop, phys.y + C.PLAYER_HEIGHT)
         ) {
           spikeIframeRef.current = C.SPIKE_IFRAME_MS
+          // «Тихий шаг»: удар шипов карты — тот же, что запускает их окно
+          // неуязвимости, поэтому одно касание не считается каждый кадр.
+          questCountersRef.current.spikeHits += 1
           applySpikeDamageRef.current()
         }
 

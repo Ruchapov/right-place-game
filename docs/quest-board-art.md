@@ -10,7 +10,7 @@
 
 | Файл | Размер | Что это |
 |---|---|---|
-| `public/assets/icons/icon_hunter_badge.png` | 128×128 | Иконка валюты «Значок охотника» — как `icon_gold`/`icon_trophy`. ⚠️ Пока НЕТ (25.10.2026 арт пересобран без неё) — до неё серый кружок-заглушка |
+| `public/assets/icons/icon_hunter_badge.png` | 128×128 | Иконка валюты «Значок охотника» — как `icon_gold`/`icon_trophy`. В проекте с 27.10.2026 (прозрачный фон), заглушки нет |
 | `public/assets/quests/quest_board.webp` | 1100×597 | Доска: тёмные доски, рама, ржавые уголки |
 | `public/assets/quests/quest_note.webp` | 1000×517 | Листок пергамента БЕЗ гвоздя |
 | `public/assets/quests/quest_nail.webp` | 67×106 | Гвоздь, которым приколот листок |

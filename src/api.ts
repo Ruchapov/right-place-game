@@ -4,6 +4,7 @@ import { CLASS_ITEMS, type ClassItemId } from './classItems'
 import { parseHeroClassWire, type HeroClassId, type HeroClassState } from './heroClasses'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
+import { parseQuestId, type QuestId } from './quests'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
@@ -212,6 +213,11 @@ export type LoginResponse = {
     // Счётчики купленных улучшений. Опциональное по той же причине, что
     // consumables и skillLevels выше. Разбирать ТОЛЬКО через readUpgrades.
     upgrades?: { attack?: unknown; armor?: unknown }
+    // Значки охотника и RP — валюты ежедневных заданий (26.10.2026). Нет поля —
+    // сервер старше заданий: «неизвестно», а не ноль. Разбирать ТОЛЬКО через
+    // readCurrencyCount.
+    hunterBadges?: unknown
+    rp?: unknown
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -685,6 +691,59 @@ export type RunResultSummary = {
    */
   skillLevels?: Record<string, number>
   skillUses?: Record<string, number>
+  /**
+   * Золото, значки охотника и RP ПОСЛЕ забега — абсолютные (26.10.2026): финиш
+   * начисляет награду ежедневного задания. null или нет поля — сервер не назвал
+   * (старый сервер): мержить нечего. finishRunExplore разбирает их через
+   * readCurrencyCount.
+   */
+  gold?: number | null
+  hunterBadges?: number | null
+  rp?: number | null
+  /**
+   * Задание, выполненное этой вылазкой, и награда за него; null — не выполнено
+   * ни одно. Опциональное: вход (interruptedRun) и старый сервер его не
+   * присылают, а finishRunExplore приводит отсутствие к null.
+   */
+  questCompleted?: QuestCompleted | null
+  /**
+   * Состояние заданий после забега, тот же вид, что у GET /character/quests;
+   * null — сервер не назвал (испорченный questState, вход, старый сервер). После
+   * повтора финиша вид — на момент ПЕРВОГО финиша: App.tsx всё равно перечитывает
+   * доску GET'ом (docs/daily-quests.md).
+   */
+  quests?: QuestView | null
+}
+
+/** Выполненное за вылазку задание и что за него дали (ответ финиша). */
+export type QuestCompleted = { questId: QuestId; gold: number; hunterBadges: number; rp: number }
+
+/**
+ * Пять счётчиков вылазки для ежедневных заданий — тело финиша
+ * (docs/daily-quests.md, «Пять новых счётчиков тела финиша — договор для
+ * клиента»). Считает Explore.tsx (questCountersRef):
+ *   parries       — удары, отбитые парированием (takeDamage/takeRamDamage
+ *                   вернули «отбил»: и удар врага, и шип босса, и волна Звонаря);
+ *   manaCollected — единицы маны, долетевшие до героя, даже при полном запасе;
+ *   manaSpent     — единицы маны, СНЯТЫЕ С ЗАПАСА навыками: бесплатное
+ *                   применение Повелителя — 0, недостача, оплаченная кровью
+ *                   Владыки, — не мана;
+ *   spikeHits     — касания шипов КАРТЫ, на которых шипы ударили (окно
+ *                   неуязвимости шипов между ними не считается);
+ *   skillCasts    — ВСЕ применения навыков: промахи, исцеление, бесплатные.
+ * Сервер поле, которого нет, считает «неизвестным», а не нулём, — поэтому
+ * клиент шлёт все пять всегда.
+ */
+export type QuestRunCounters = {
+  parries: number
+  manaCollected: number
+  manaSpent: number
+  spikeHits: number
+  skillCasts: number
+}
+
+export function emptyQuestRunCounters(): QuestRunCounters {
+  return { parries: 0, manaCollected: 0, manaSpent: 0, spikeHits: 0, skillCasts: 0 }
 }
 
 /**
@@ -798,11 +857,14 @@ export async function finishRunExplore(
   // сервер растит уровни навыков, своей формулой и своими порогами. Доверие то
   // же, что у четырёх счётчиков выше: попал ли удар, знает только клиент.
   skillUses?: Record<string, number>,
+  // Пять счётчиков ежедневных заданий (26.10.2026) — см. QuestRunCounters. В
+  // тело уходят ПЛОСКО (parries, manaCollected, …), как их читает сервер.
+  questCounters?: QuestRunCounters,
 ): Promise<FinishExploreResult> {
   // runId (15.10.2026): повтор финиша с тем же id сервер узнаёт и отдаёт
   // сохранённый итог вместо 400 'No active explore run'. Снимается ОДИН раз,
   // вместе с телом: все попытки этого вызова несут один и тот же id.
-  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses })
+  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -879,6 +941,13 @@ export async function finishRunExplore(
           // ответ разбирается кастом, поэтому новое поле проверяется здесь,
           // чтобы ниже по коду это всегда был массив, а не «что пришло».
           skillLevelUps: readSkillLevelUps(data.skillLevelUps),
+          // Ежедневные задания (26.10.2026) — тем же приёмом: ниже по коду это
+          // всегда число или null, выполненное задание или null, вид или null.
+          gold: readCurrencyCount(data.gold),
+          hunterBadges: readCurrencyCount(data.hunterBadges),
+          rp: readCurrencyCount(data.rp),
+          questCompleted: readQuestCompleted(data.questCompleted),
+          quests: readQuestView(data.quests),
         }
       } catch (e) {
         clearTimeout(timer)
@@ -1357,6 +1426,10 @@ export type ProfileResult = {
   upgrades: UpgradeCounts | null
   /** null — сервер не назвал класс героя (см. readHeroClass). */
   heroClass: HeroClassState | null
+  /** null — сервер не назвал значки охотника (сервер старше заданий, см. readCurrencyCount). */
+  hunterBadges: number | null
+  /** null — сервер не назвал RP (см. readCurrencyCount). */
+  rp: number | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1386,6 +1459,8 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillUses?: unknown
     upgrades?: unknown
     heroClass?: unknown
+    hunterBadges?: unknown
+    rp?: unknown
     appliedRequestIds?: unknown
   }>(
     `${SERVER_URL}/character/profile${query}`,
@@ -1412,7 +1487,164 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillUses: readSkillUses(raw.skillUses),
     upgrades: readUpgrades(raw.upgrades),
     heroClass: readHeroClass(raw.heroClass),
+    hunterBadges: readCurrencyCount(raw.hunterBadges),
+    rp: readCurrencyCount(raw.rp),
   }
+}
+
+// --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
+//
+// Вид заданий приходит готовым от сервера (QuestView в server/src/questState.ts
+// — КОПИЯ ниже, менять парами: сверяющего скрипта у неё нет, см. CLAUDE.md,
+// таблица копий). Названия и описания клиент берёт из общего каталога
+// src/quests.ts по id; сервер шлёт только id, статусы и числа.
+
+/** Статус места в наборе: open — невзятое, active — взятое, done/lost — вынуто. */
+export type QuestSlotStatus = 'open' | 'active' | 'done' | 'lost'
+export type QuestReward = { gold: number; hunterBadges: number; rp: number }
+export type QuestViewSlot = { id: QuestId; status: QuestSlotStatus; goal: number; progress: number | null; reward: QuestReward }
+
+/**
+ * Состояние заданий — копия серверного QuestView:
+ *   unlocked / unlockLevel — открыты ли задания и с какого уровня;
+ *   set                    — задания набора: статус, цель, прогресс (только у
+ *                            активного), награда на текущем уровне;
+ *   replaceAvailable       — есть ли замена на этом шаге;
+ *   nextSetInMs            — через сколько мс ОТ ОТВЕТА придёт новый набор;
+ *                            null — таймер не запущен. Отсчёт ведёт клиент от
+ *                            момента получения ответа (часы телефона с сервером
+ *                            не сверены, поэтому число относительное);
+ *   carried                — переходящее задание из прошлого набора или null.
+ */
+export type QuestView = {
+  unlocked: boolean
+  unlockLevel: number
+  set: QuestViewSlot[]
+  replaceAvailable: boolean
+  nextSetInMs: number | null
+  carried: { id: QuestId; goal: number; progress: number; reward: QuestReward } | null
+}
+
+/** Ответ трёх ручек заданий: вид и валюты, которые задания приносят. */
+export type QuestsResult = { quests: QuestView; hunterBadges: number | null; rp: number | null }
+
+/** Целое неотрицательное число валюты или null — «сервер не назвал». */
+export function readCurrencyCount(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : null
+}
+
+function readQuestReward(raw: unknown): QuestReward | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const gold = readCurrencyCount(r.gold)
+  const hunterBadges = readCurrencyCount(r.hunterBadges)
+  const rp = readCurrencyCount(r.rp)
+  return gold === null || hunterBadges === null || rp === null ? null : { gold, hunterBadges, rp }
+}
+
+const QUEST_SLOT_STATUSES: readonly QuestSlotStatus[] = ['open', 'active', 'done', 'lost']
+
+/**
+ * СТРОГИЙ разбор вида заданий: любое отклонение — null, и вызывающий
+ * показывает прежнюю доску, а не полуразобранную. id — только из общего
+ * каталога: задание, которого клиент не знает (сервер новее каталога), назвать
+ * нечем, и молча выкинуть его с доски значило бы спрятать задание игрока.
+ */
+export function readQuestView(raw: unknown): QuestView | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.unlocked !== 'boolean' || readCurrencyCount(r.unlockLevel) === null) return null
+  if (typeof r.replaceAvailable !== 'boolean' || !Array.isArray(r.set)) return null
+  if (r.nextSetInMs !== null && !(typeof r.nextSetInMs === 'number' && Number.isFinite(r.nextSetInMs) && r.nextSetInMs >= 0)) return null
+  const set: QuestViewSlot[] = []
+  for (const item of r.set) {
+    if (typeof item !== 'object' || item === null) return null
+    const s = item as Record<string, unknown>
+    const id = parseQuestId(s.id)
+    const goal = readCurrencyCount(s.goal)
+    const reward = readQuestReward(s.reward)
+    const progress = s.progress === null ? null : readCurrencyCount(s.progress)
+    if (id === null || goal === null || reward === null || !QUEST_SLOT_STATUSES.includes(s.status as QuestSlotStatus)) return null
+    if (s.progress !== null && progress === null) return null
+    set.push({ id, status: s.status as QuestSlotStatus, goal, progress, reward })
+  }
+  let carried: QuestView['carried'] = null
+  if (r.carried !== null) {
+    if (typeof r.carried !== 'object' || r.carried === undefined) return null
+    const c = r.carried as Record<string, unknown>
+    const id = parseQuestId(c.id)
+    const goal = readCurrencyCount(c.goal)
+    const progress = readCurrencyCount(c.progress)
+    const reward = readQuestReward(c.reward)
+    if (id === null || goal === null || progress === null || reward === null) return null
+    carried = { id, goal, progress, reward }
+  }
+  return {
+    unlocked: r.unlocked,
+    unlockLevel: r.unlockLevel as number,
+    set,
+    replaceAvailable: r.replaceAvailable,
+    nextSetInMs: r.nextSetInMs as number | null,
+    carried,
+  }
+}
+
+/** Выполненное задание из ответа финиша: null — не выполнено (или поле негодно). */
+export function readQuestCompleted(raw: unknown): QuestCompleted | null {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw !== 'object') {
+    console.error('api: questCompleted в ответе финиша — не объект', raw)
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const questId = parseQuestId(r.questId)
+  const reward = readQuestReward(r)
+  if (questId === null || reward === null) {
+    console.error('api: questCompleted в ответе финиша не разобран', raw)
+    return null
+  }
+  return { questId, ...reward }
+}
+
+// Таймауты ручек заданий. Повторов нет ни у одной: GET дёргается заново при
+// каждом открытии вкладки и после финиша, а take/replace при любом отказе
+// приводят к перечитыванию — повторять отправку незачем (у replace повтор,
+// дошедший дважды, потратил бы замену на другое задание).
+const QUESTS_TIMEOUT_MS = 8000
+
+async function questsRequest(path: string, init: RequestInit): Promise<QuestsResult> {
+  const raw = await requestJson<{ quests?: unknown; hunterBadges?: unknown; rp?: unknown }>(`${SERVER_URL}${path}`, init, QUESTS_TIMEOUT_MS)
+  const quests = readQuestView(raw.quests)
+  if (quests === null) {
+    // Ответ пришёл, но вид не разобран — это не «заданий нет»: доска остаётся
+    // прежней, и об этом громко в консоль.
+    console.error(`api: ${path} — вид заданий не разобран`, raw.quests)
+    throw new RequestError(`${path}: unreadable quests view`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+  }
+  return { quests, hunterBadges: readCurrencyCount(raw.hunterBadges), rp: readCurrencyCount(raw.rp) }
+}
+
+/** Состояние заданий. Может бросить сервером новый набор (тогда сервер пишет). */
+export function fetchQuests(token: string): Promise<QuestsResult> {
+  return questsRequest('/character/quests', { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } })
+}
+
+function questActionRequest(path: string, token: string, questId: QuestId): Promise<QuestsResult> {
+  return questsRequest(path, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questId }),
+  })
+}
+
+/** Взять задание набора: активное (и переходящее) пропадает с прогрессом. */
+export function takeQuest(token: string, questId: QuestId): Promise<QuestsResult> {
+  return questActionRequest('/character/quests/take', token, questId)
+}
+
+/** Заменить невзятое задание набора случайным новым (одна замена на шаг). */
+export function replaceQuest(token: string, questId: QuestId): Promise<QuestsResult> {
+  return questActionRequest('/character/quests/replace', token, questId)
 }
 
 // Итог обмена: gold и trophies — АБСОЛЮТНЫЕ значения из БД (сервер перечитывает

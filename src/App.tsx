@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
+// Ежедневные задания (26.10.2026): каталог — общая пара с сервером
+// (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
+import { QUESTS, questById, questReward, type QuestId } from './quests'
+import { QuestBoard, QuestWallBoard, QuestBoardThumb, type RefugeSceneGeometry } from './ui/QuestBoard'
+import { boardNotes, questCountdownLabel } from './ui/questBoardModel'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
@@ -106,7 +111,15 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * readHeroClass в api.ts): это не «класса нет», и строка на «Персонаже»
    * говорит «Класс неизвестен», а кнопки у Отшельника гаснут.
    */
-  heroClass: HeroClassState | null }
+  heroClass: HeroClassState | null
+  /**
+   * Значки охотника и RP — валюты ежедневных заданий (26.10.2026, колонки
+   * Character.hunterBadges / rp). Приходят со входом, профилем, финишем забега
+   * и ручками заданий. null — сервер их НЕ НАЗВАЛ (сервер старше заданий, см.
+   * readCurrencyCount в api.ts), а не ноль. Тратить их пока не на что.
+   */
+  hunterBadges: number | null
+  rp: number | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -462,6 +475,28 @@ const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = { soul_shard: 12,
  */
 const TEMP_DEV_HERO_CLASS: HeroClassState = 'none'
 /**
+ * TEMP_DEV_QUEST_VIEW — ТЕСТОВАЯ доска ежедневных заданий для офлайн-заглушки
+ * DevTester (26.10.2026): первые три задания каталога, первое взято (1 из цели),
+ * замена есть, до нового набора 7:42 — так в браузере видны кинжал, прогресс,
+ * «Заменить» и таймер. Награды — общей функцией каталога на 5 уровне заглушки.
+ * Настоящий вид приходит с GET /character/quests. Взять и заменить заглушка не
+ * умеет — сервера у неё нет. УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_*.
+ */
+const TEMP_DEV_QUEST_VIEW: QuestView = {
+  unlocked: true,
+  unlockLevel: 5,
+  set: QUESTS.slice(0, 3).map((q, i) => ({
+    id: q.id,
+    status: i === 0 ? 'active' as const : 'open' as const,
+    goal: q.goal,
+    progress: i === 0 ? 1 : null,
+    reward: questReward(q, 5),
+  })),
+  replaceAvailable: true,
+  nextSetInMs: 7 * 3600_000 + 42 * 60_000,
+  carried: null,
+}
+/**
  * TEMP_DEV_SKILL_LEVEL — ТЕСТОВЫЙ уровень каждого навыка для офлайн-заглушки
  * DevTester. Настоящий лежит в колонках Character.skillLevel* и приходит полем
  * character.skillLevels в ответе логина.
@@ -549,6 +584,24 @@ const REFUGE_HERO_DURATION = 2.0 // s — подобрано вживую вре
 // энергии, гнёзд, кнопки старта и нижней панели (при 0.31 середина вкладки
 // прокручивалась на 2 px).
 const REFUGE_SCENE_SCALE_LOW = 0.30
+// Геометрия сцены у костра для доски заданий на стене (QuestWallBoard): копия
+// доски вешается так, чтобы не заходить на героя и костёр, и считает их место
+// от ЭТИХ ЖЕ чисел. Поменяли положение, масштаб или листы сцены — доска
+// переедет вместе с ней.
+const REFUGE_SCENE_GEOMETRY: RefugeSceneGeometry = {
+  anchorXFrac: 0.5 + REFUGE_SCENE_H_OFFSET_PCT / 100,
+  anchorYFrac: REFUGE_SCENE_V_ANCHOR_PCT / 100,
+  scale: REFUGE_SCENE_SCALE,
+  sceneW: REFUGE_FIRE_OFFSET_X + REFUGE_FIRE_FRAME_W,
+  sceneH: REFUGE_HERO_FRAME_H,
+  heroW: REFUGE_HERO_FRAME_W,
+  fireH: REFUGE_FIRE_FRAME_H - REFUGE_FIRE_TUNE_Y,
+}
+// Копия доски в низком горизонтальном экране: вёрстка этой ширины до масштаба
+// (ширина доски на телефоне 375 px), ужатая в полосу сцены справа от костра —
+// не шире QUEST_THUMB_MAX_W. Справа от костра в колонке 390 px свободно ≈127 px.
+const QUEST_THUMB_NAT_W = 343
+const QUEST_THUMB_MAX_W = 112
 const LOW_LANDSCAPE_QUERY = `(orientation: landscape) and (max-height: ${LOW_LANDSCAPE_MAX_H}px)`
 
 /**
@@ -936,6 +989,24 @@ export default function App() {
   // обходятся колонкой по центру, без рендера по повороту.
   const exploreLow = useMediaQuery(LOW_LANDSCAPE_QUERY)
 
+  // Доска ежедневных заданий (26.10.2026). view — последний вид от сервера, at —
+  // когда он получен (от него идёт отсчёт «новые через Ч:ММ»). status — почему
+  // вида нет: грузится или не загрузился (с видом всегда 'ready': сбой
+  // перечитывания оставляет прежнюю доску).
+  const [questBoard, setQuestBoard] = useState<{ view: QuestView; at: number } | null>(null)
+  const [questsStatus, setQuestsStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
+  // Номер последнего запроса заданий: ответ, обогнанный более поздним, не
+  // применяется (см. loadQuests).
+  const questsSeqRef = useRef(0)
+  const [questActionPending, setQuestActionPending] = useState(false)
+  // Доска открыта в полный размер (тап по копии на стене).
+  const [questBoardOpen, setQuestBoardOpen] = useState(false)
+  // Какое задание игрок собрался взять — вопрос «Взять …?» под доской.
+  const [questConfirm, setQuestConfirm] = useState<QuestId | null>(null)
+  // Низ блока энергии — верх стены, от которого вешается копия доски.
+  const questWallTopRef = useRef<HTMLDivElement | null>(null)
+
+
   useEffect(() => {
     // Предзагрузка каменной рамки экрана ошибки (Explore, позже — экран
     // итогов забега) в кеш браузера. Грузим её сейчас, пока сеть ещё есть —
@@ -977,7 +1048,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3 })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1007,7 +1078,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp) })
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -1401,6 +1472,28 @@ export default function App() {
     return () => clearInterval(id)
   }, [energyTickMs])
 
+  // «Новые через Ч:ММ» — от вида заданий и момента его получения, на том же
+  // тике `now`, что энергия (минуты на доске; на полной энергии тик 15 с, и
+  // минута меняется с опозданием до 15 с). null — таймер набора не запущен.
+  const questCountdownMs = questBoard !== null && questBoard.view.nextSetInMs !== null
+    ? questBoard.view.nextSetInMs - (now - questBoard.at)
+    : null
+  const questCountdown = questCountdownMs === null ? null : questCountdownLabel(questCountdownMs)
+  // Что нужно доске для вида — одно на копию на стене и открытую доску.
+  const questBoardViewProps = {
+    view: questBoard?.view ?? null,
+    status: questsStatus,
+    level: player?.level ?? null,
+    countdown: questCountdown,
+  }
+  // Активное задание (взятое или переходящее) — о нём предупреждает вопрос
+  // «Взять …?»: оно пропадёт вместе с прогрессом.
+  const questActiveNote = questBoard !== null ? boardNotes(questBoard.view).find((n) => n.active) ?? null : null
+  // Отсчёт дошёл до нуля — новый набор уже ждёт на сервере: перечитать ОДИН раз
+  // на полученный вид (новый вид приходит с новым `at`).
+  const questCountdownOver = questCountdownMs !== null && questCountdownMs <= 0
+  const questRefetchedAtRef = useRef(0)
+
   // Вызывается Explore РОВНО ОДИН раз, когда пришёл настоящий ответ
   // /run/finish-explore (не клиентский fallback, см. ExploreProps.onRunComplete) —
   // result.trophies/strength/endurance/agility/level — АБСОЛЮТНЫЕ значения из
@@ -1444,6 +1537,12 @@ export default function App() {
         // уровень рядом с сообщением «Уровень N» на экране итогов.
         ...(skillLevelsAfter !== null ? { skillLevels: skillLevelsAfter } : {}),
         ...(skillUsesAfter !== null ? { skillUses: skillUsesAfter } : {}),
+        // Золото, значки охотника и RP (26.10.2026) — финиш теперь начисляет
+        // награду ежедневного задания. null — сервер не назвал (старый сервер):
+        // прежние остаются, выдуманные не подставляем.
+        ...(typeof result.gold === 'number' ? { gold: result.gold } : {}),
+        ...(typeof result.hunterBadges === 'number' ? { hunterBadges: result.hunterBadges } : {}),
+        ...(typeof result.rp === 'number' ? { rp: result.rp } : {}),
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -1453,7 +1552,112 @@ export default function App() {
       // поверх отдельно не нужно.
       requestPlayerRefresh()
     }
+    // Доска заданий: вид из ответа финиша — сразу (прогресс и выполненное видны,
+    // как только игрок вернётся из забега), и следом GET. GET нужен всегда:
+    // повтор финиша отдаёт вид на момент ПЕРВОГО финиша (docs/daily-quests.md),
+    // а отличить повтор от первого ответа клиент не может.
+    if (result.quests) applyQuests(result.quests, null, null)
+    void loadQuests()
   }
+
+  // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
+  //
+  // Вид приходит от сервера готовым; клиент держит его вместе с моментом
+  // получения (`at`), от которого считает «новые через Ч:ММ»: nextSetInMs
+  // относительное, часы телефона с сервером не сверены.
+  function applyQuests(view: QuestView, hunterBadges: number | null, rp: number | null) {
+    setQuestBoard(() => ({ view, at: Date.now() }))
+    setQuestsStatus('ready')
+    if (hunterBadges !== null || rp !== null) {
+      setPlayer(prev => prev ? {
+        ...prev,
+        ...(hunterBadges !== null ? { hunterBadges } : {}),
+        ...(rp !== null ? { rp } : {}),
+      } : prev)
+    }
+  }
+
+  function applyQuestsResult(r: QuestsResult) {
+    applyQuests(r.quests, r.hunterBadges, r.rp)
+  }
+
+  // GET состояния заданий: при открытии вкладки «Исследовать», после финиша,
+  // когда истёк отсчёт нового набора, и после любого отказа взять/заменить.
+  // Сбой — доска остаётся как была, без всплывающих сообщений: перечитается при
+  // следующем открытии вкладки. Вне Telegram (заглушка) — тестовая доска.
+  async function loadQuests() {
+    if (!isTelegramSession) {
+      // Заглушка — только когда она УЖЕ поставлена (player есть, а сессии
+      // Telegram нет). До конца входа в Telegram сессия тоже ещё false, и
+      // тестовая доска встала бы на место настоящей — а при сбое GET так и
+      // осталась бы висеть выдуманными заданиями.
+      if (player === null) return
+      setQuestBoard(prev => prev ?? { view: TEMP_DEV_QUEST_VIEW, at: Date.now() })
+      setQuestsStatus('ready')
+      return
+    }
+    const token = localStorage.getItem('jwt')
+    if (!token) return
+    const seq = ++questsSeqRef.current
+    try {
+      const r = await fetchQuests(token)
+      // Ответ, обогнанный более поздним запросом (взять/заменить или новый
+      // GET), устарел — его вид затёр бы свежий.
+      if (seq !== questsSeqRef.current) return
+      applyQuestsResult(r)
+    } catch (e) {
+      console.error('Quests: GET /character/quests не удался — доска остаётся прежней', e)
+      if (seq === questsSeqRef.current) setQuestsStatus(prev => prev === 'ready' ? 'ready' : 'failed')
+    }
+  }
+
+  // Взять или заменить. Любой отказ сервера — перечитать доску: 409 (гонка),
+  // 400 'Run in progress' (забег открыт со второго устройства), «уже взято», «не
+  // из набора», «замены нет» — всё значит, что доска на экране устарела.
+  // Сеть — доска остаётся как была.
+  async function questAction(kind: 'take' | 'replace', questId: QuestId) {
+    const token = localStorage.getItem('jwt')
+    if (!isTelegramSession || !token) {
+      console.info('Quests: вне Telegram задания не берутся и не меняются — сервера нет')
+      return
+    }
+    if (questActionPending) return
+    setQuestActionPending(true)
+    const seq = ++questsSeqRef.current
+    try {
+      const r = kind === 'take' ? await takeQuest(token, questId) : await replaceQuest(token, questId)
+      if (seq === questsSeqRef.current) applyQuestsResult(r)
+    } catch (e) {
+      if (e instanceof RequestError && e.kind === 'http' && e.status !== null && e.status >= 400 && e.status < 500) {
+        console.info(`Quests: ${kind} отказ ${e.status} ${e.serverError ?? ''} — перечитываем доску`)
+        void loadQuests()
+      } else {
+        console.error(`Quests: ${kind} не удался — доска остаётся прежней`, e)
+      }
+    } finally {
+      setQuestActionPending(false)
+    }
+  }
+
+  // GET при открытии вкладки «Исследовать» (и сразу после входа: вкладка
+  // открыта по умолчанию, а сессия Telegram становится известна позже).
+  const playerLoaded = player !== null
+  useEffect(() => {
+    if (activeTab === 'explore') void loadQuests()
+    // loadQuests читает сессию, токен и то, загружен ли герой (заглушка или
+    // вход) — все три в зависимостях по смыслу.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, isTelegramSession, playerLoaded])
+
+  // Отсчёт нового набора дошёл до нуля (questCountdownOver выше) — набор уже
+  // ждёт на сервере: перечитать ОДИН раз на полученный вид (новый вид приходит
+  // с новым `at`).
+  useEffect(() => {
+    if (!questCountdownOver || questBoard === null || questRefetchedAtRef.current === questBoard.at) return
+    questRefetchedAtRef.current = questBoard.at
+    void loadQuests()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questCountdownOver, questBoard?.at])
 
   // Покупка улучшения. Цену НЕ передаём: её считает сервер по своему счётчику,
   // клиент называет только вид. Карточка после покупки остаётся открытой —
@@ -1952,6 +2156,10 @@ export default function App() {
         // возвышения или отречения снимается этой же сверкой. null
         // перезаписывает намеренно — «сервер не назвал».
         heroClass: profile.heroClass,
+        // Значки охотника и RP (26.10.2026) — наравне с золотом: их приносит
+        // финиш забега с выполненным заданием. null — «сервер не назвал».
+        hunterBadges: profile.hunterBadges,
+        rp: profile.rp,
       } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
@@ -3927,6 +4135,21 @@ export default function App() {
           </div>
           )}
 
+          {/* Доска заданий на стене убежища (26.10.2026, решение Андрея: «повесь
+              на стену, чтобы красиво висело — это его убежище»). Уменьшенная
+              копия доски над героем у левой стены, на коротком экране — справа
+              над костром (место считает QuestWallBoard, не заходя на героя и
+              костёр). Тап открывает доску в полный размер. Слой 4 — над
+              пустой «зоной арта» (слой 3), иначе она перехватывала бы тап. */}
+          {!exploreLow && (
+            <QuestWallBoard
+              board={questBoardViewProps}
+              geometry={REFUGE_SCENE_GEOMETRY}
+              wallTopRef={questWallTopRef}
+              onOpen={() => { setQuestConfirm(null); setQuestBoardOpen(true) }}
+            />
+          )}
+
           {/* Слой 3 — контент. 1. Логотип. В низком горизонтальном экране его
               нет: это украшение, а 48 px высоты там нужнее сцене и гнёздам. */}
           {!exploreLow && (
@@ -3939,8 +4162,8 @@ export default function App() {
           </div>
           )}
 
-          {/* 2. Энергия */}
-          <div style={{ position:'relative', zIndex:3 }}>
+          {/* 2. Энергия. Её низ — верх стены для доски заданий (questWallTopRef). */}
+          <div ref={questWallTopRef} style={{ position:'relative', zIndex:3 }}>
             <div style={{ display:'flex', gap:2, height:12 }}>
               {Array.from({ length:10 }).map((_, i) => (
                 <div key={i} style={{
@@ -3994,6 +4217,17 @@ export default function App() {
               }}>
                 <RefugeScene scale={REFUGE_SCENE_SCALE_LOW} />
               </div>
+              {/* Доска заданий набок: стены над героем нет — копия висит в
+                  полосе сцены справа от костра, высотой с сцену, и раскладку
+                  не сдвигает. Тап открывает доску. */}
+              <QuestBoardThumb
+                board={questBoardViewProps}
+                natW={QUEST_THUMB_NAT_W}
+                maxW={QUEST_THUMB_MAX_W}
+                maxH={REFUGE_HERO_FRAME_H * REFUGE_SCENE_SCALE_LOW}
+                style={{ position:'absolute', right:6, bottom:0 }}
+                onOpen={() => { setQuestConfirm(null); setQuestBoardOpen(true) }}
+              />
             </div>
           )}
 
@@ -4288,6 +4522,62 @@ export default function App() {
           )
         })}
       </div>
+
+      {/* Доска заданий в полный размер (26.10.2026) — по тапу на копию на стене.
+          Вид — ровно эталон docs/quest-board-mock.png: ширина экрана (колонки)
+          минус 32 px. Тап по невзятому листку — вопрос «Взять …?» под доской,
+          «Заменить» — сразу. Тап мимо доски закрывает. Стоит в корне, а не во
+          вкладке: у вкладки свой слой (zIndex 1), внутри него оверлей лёг бы
+          под нижнюю панель. */}
+      {questBoardOpen && activeTab === 'explore' && !showExploreTest && (
+        <div
+          data-quest-overlay=""
+          onClick={() => { setQuestBoardOpen(false); setQuestConfirm(null) }}
+          style={{
+            position:'fixed', inset:0, zIndex:1000,
+            background:'rgba(10, 8, 12, 0.82)',
+            overflowY:'auto', WebkitOverflowScrolling:'touch',
+            display:'flex', boxSizing:'border-box',
+            padding:'calc(12px + var(--rp-safe-top, 0px)) 0 calc(12px + var(--rp-safe-bottom, 0px))',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ margin:'auto', width:'calc(100vmin - 32px)', display:'flex', flexDirection:'column', gap:10 }}
+          >
+            <QuestBoard
+              {...questBoardViewProps}
+              interactive={!questActionPending}
+              onTake={(id) => setQuestConfirm(id)}
+              onReplace={(id) => { setQuestConfirm(null); void questAction('replace', id) }}
+            />
+            {/* Вопрос — закреплён внизу экрана, поверх низа доски: под доской он
+                на узком телефоне уходил за нижний край (замер: 320×568 — на 4 px
+                ниже экрана), и тап по листку выглядел бы ничем. */}
+            {questConfirm !== null && (
+              <div data-quest-confirm="" style={{
+                position:'fixed', left:'50%', transform:'translateX(-50%)',
+                bottom:'calc(12px + var(--rp-safe-bottom, 0px))',
+                width:'calc(100vmin - 32px)',
+                boxSizing:'border-box', padding:12,
+                background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
+                boxShadow:'0 -6px 18px rgba(0,0,0,0.6)',
+              }}>
+                <SaleConfirm
+                  question={
+                    `Взять «${questById(questConfirm)?.nameRu ?? questConfirm}»?` +
+                    (questActiveNote !== null && questActiveNote.id !== questConfirm
+                      ? ` «${questById(questActiveNote.id)?.nameRu ?? questActiveNote.id}» пропадёт вместе с прогрессом (${questActiveNote.progress ?? 0} / ${questActiveNote.goal}).`
+                      : '')
+                  }
+                  onYes={() => { const id = questConfirm; setQuestConfirm(null); void questAction('take', id) }}
+                  onNo={() => setQuestConfirm(null)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} heroClass={player?.heroClass ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
