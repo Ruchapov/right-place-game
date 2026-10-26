@@ -4,6 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { Grid } from '../types'
 import type { PlayerPhysics, Enemy, Boss, DamageVia } from '../types'
 import * as C from '../constants'
+import { BLOOD_PRICE_EXCLUDED_SKILLS } from '../../heroClasses'
 
 // Скиллы игрока (heal/fireball/iceball/slash/dash) — модуль подключён к
 // игровому циклу ПУСТЫМ, до реализации самих скиллов (см. задачу).
@@ -235,7 +236,9 @@ export type SkillsDeps = {
   /**
    * Владыка крови, Плата кровью: сколько HP стоит ОДНА единица недостающей маны
    * (5% МАКСИМАЛЬНОГО HP, округлено вверх — цена не в пользу игрока). 0 —
-   * механики нет: маны не хватает — навык не нажимается, как раньше.
+   * механики нет: маны не хватает — навык не нажимается, как раньше. Навыки из
+   * BLOOD_PRICE_EXCLUDED_SKILLS (Исцеление) Платой кровью не оплачиваются и при
+   * этом числе — см. bloodHpFor.
    */
   bloodManaHp: number
   /** Текущее HP героя — тот же hpRef, что рисует плиту; модуль только читает. */
@@ -470,7 +473,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // Владыка крови (Плата кровью, 26.10.2026): недостающую ману добирает HP —
   // по deps.bloodManaHp за единицу, только НЕДОСТАЮЩЕЕ; если плата опустит HP до
   // нуля и ниже — навык не нажимается. Придержанный каст держит и свою долю HP.
-  // Без Платы кровью условие сводится ровно к прежнему «цена ≤ свободная мана».
+  // Исцеление Платой кровью не оплачивается (bloodHpFor) — без маны оно тусклое
+  // и у Владыки. Без Платы кровью условие сводится ровно к прежнему «цена ≤
+  // свободная мана».
   // Без аллокаций: зовётся каждый кадр по каждому гнезду (вид кнопки).
   function canAffordSkill(id: SkillId): boolean {
     const mana = deps.mana.current
@@ -479,29 +484,36 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Придержанный каст на нажатии был по карману, а мана с тех пор только
     // прибывала (тратить придержанное другим навыкам не даёт это же условие),
     // поэтому -1 здесь не бывает; max — на случай, если правило поменяют.
-    const heldHp = Math.max(0, bloodHpFor(heldCost, mana))
-    const hpPart = bloodHpFor(MANA_COST[id], mana - heldMana)
+    const heldHp = pendingCastSpec ? Math.max(0, bloodHpFor(pendingCastSpec.id, mana)) : 0
+    const hpPart = bloodHpFor(id, mana - heldMana)
     if (hpPart < 0) return false
     const hpNeed = heldHp + hpPart
     return hpNeed === 0 || deps.hp.current - hpNeed > 0
   }
 
-  // Сколько HP придётся отдать Платой кровью за навык ценой `cost` при
-  // `freeMana` свободной мане: 0 — маны хватает; -1 — не хватает, а Платы
-  // кровью нет (навык не по карману вовсе).
-  function bloodHpFor(cost: number, freeMana: number): number {
+  // Сколько HP придётся отдать Платой кровью за навык `id` при `freeMana`
+  // свободной мане: 0 — маны хватает; -1 — не хватает, а Платы кровью нет
+  // (навык не по карману вовсе). Навыки из BLOOD_PRICE_EXCLUDED_SKILLS (общий
+  // каталог классов: Исцеление, решение Андрея 26.10.2026) Плата кровью не
+  // оплачивает и у Владыки — исцеление за кровь окупалось само и лечило без
+  // конца. По этому же правилу сервер ограничивает исцеление маной в потолках
+  // роста статов.
+  function bloodHpFor(id: SkillId, freeMana: number): number {
+    const cost = MANA_COST[id]
     const missing = cost - Math.min(cost, Math.max(0, freeMana))
     if (missing === 0) return 0
-    return deps.bloodManaHp > 0 ? missing * deps.bloodManaHp : -1
+    const unitHp = BLOOD_PRICE_EXCLUDED_SKILLS.includes(id) ? 0 : deps.bloodManaHp
+    return unitHp > 0 ? missing * unitHp : -1
   }
 
   // Заплатить за навык ПРЯМО СЕЙЧАС: мана, а недостающее (у Владыки крови) —
   // HP. false — платить нечем (маны не хватает и Платы кровью нет, либо плата
   // опустила бы HP до нуля): ничего не списано. Зовётся там же, где раньше
   // стоял spendMana, — вместе со взводом перезарядки.
-  function paySkill(cost: number): boolean {
+  function paySkill(id: SkillId): boolean {
+    const cost = MANA_COST[id]
     const mana = deps.mana.current
-    const hpPart = bloodHpFor(cost, mana)
+    const hpPart = bloodHpFor(id, mana)
     if (hpPart < 0 || (hpPart > 0 && deps.hp.current - hpPart <= 0)) return false
     // Повелитель стихий (26.10.2026): с шансом freeSkillChance применение
     // бесплатно. Бросок ЗДЕСЬ, после проверки цены, а не в canAffordSkill:
@@ -520,7 +532,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // canAffordSkill в этом же кадре, и между проверкой и оплатой ничего не
   // менялось, — отказ здесь значит, что проверка и оплата разошлись по правилу.
   function payOnPress(id: SkillId) {
-    if (!paySkill(MANA_COST[id])) {
+    if (!paySkill(id)) {
       console.error('skills: навык ' + id + ' прошёл проверку цены, но оплатить его нечем — проверка и оплата разошлись')
     }
   }
@@ -1233,7 +1245,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // если плата теперь опустила бы HP до нуля, снаряд не вылетает: ни маны, ни
     // HP, ни перезарядки, как у каста, оборванного раньше кадра вылета. Плата
     // кровью не убивает никогда.
-    if (!paySkill(MANA_COST[spec.id])) return
+    if (!paySkill(spec.id)) return
     // Кулдаун — ИМЕННО ЗДЕСЬ, а не на нажатии (в отличие от heal/slash/dash):
     // выстрел состоялся ровно в этот момент. Каст, оборванный раньше кадра
     // вылета (прыжок, хитстан, смерть), снимает пометку в update() и сюда не
