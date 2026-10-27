@@ -5,6 +5,7 @@ import { parseHeroClassWire, type HeroClassId, type HeroClassState } from './her
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
 import { parseQuestId, type QuestId } from './quests'
+import type { HunterStat } from './hunter'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
@@ -1430,6 +1431,14 @@ export type ProfileResult = {
   hunterBadges: number | null
   /** null — сервер не назвал RP (см. readCurrencyCount). */
   rp: number | null
+  /**
+   * Сохранённые статы и уровень (27.10.2026, Ловчий: покупка стата меняет их вне
+   * забега). null — сервер старше Ловчего и их не прислал.
+   */
+  strength: number | null
+  agility: number | null
+  endurance: number | null
+  level: number | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1461,6 +1470,10 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     heroClass?: unknown
     hunterBadges?: unknown
     rp?: unknown
+    strength?: unknown
+    agility?: unknown
+    endurance?: unknown
+    level?: unknown
     appliedRequestIds?: unknown
   }>(
     `${SERVER_URL}/character/profile${query}`,
@@ -1489,6 +1502,10 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     heroClass: readHeroClass(raw.heroClass),
     hunterBadges: readCurrencyCount(raw.hunterBadges),
     rp: readCurrencyCount(raw.rp),
+    strength: readCurrencyCount(raw.strength),
+    agility: readCurrencyCount(raw.agility),
+    endurance: readCurrencyCount(raw.endurance),
+    level: readCurrencyCount(raw.level),
   }
 }
 
@@ -2396,6 +2413,46 @@ export async function buyUpgrade(token: string, kind: UpgradeKind): Promise<BuyU
     UPGRADE_TIMEOUT_MS,
   ))
   return { gold: raw.gold, upgrades: readUpgrades(raw.upgrades), replayed: raw.replayed === true }
+}
+
+// --- ЛОВЧИЙ (27.10.2026, docs/shop.md, «ЛОВЧИЙ») ---
+
+export type BuyHunterStatResult = {
+  /**
+   * Статы и уровень ПОСЛЕ покупки — абсолютные, из БД. null — ответ не того
+   * вида: покупка прошла, но чисел нет, их надо сверить профилем.
+   */
+  stats: { strength: number; agility: number; endurance: number; level: number } | null
+  hunterBadges: number | null
+  /** См. BuyPotionResult.replayed. */
+  replayed: boolean
+}
+
+/**
+ * +1 к стату у Ловчего. В теле ТОЛЬКО стат: цену (10 × сохранённое значение,
+ * src/hunter.ts) считает сервер. Ключ идемпотентности — как у закалки
+ * (keyedPurchase): после неизвестного исхода следующее нажатие того же стата
+ * несёт тот же ключ, и второй раз сервер не спишет. Повторов нет.
+ */
+export async function buyHunterStat(token: string, stat: HunterStat): Promise<BuyHunterStatResult> {
+  const raw = await keyedPurchase(`hunter-stat:${stat}`, (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/character/hunter/buy-stat`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stat, requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  const strength = readCurrencyCount(raw.strength)
+  const agility = readCurrencyCount(raw.agility)
+  const endurance = readCurrencyCount(raw.endurance)
+  const level = readCurrencyCount(raw.level)
+  return {
+    stats: strength !== null && agility !== null && endurance !== null && level !== null ? { strength, agility, endurance, level } : null,
+    hunterBadges: readCurrencyCount(raw.hunterBadges),
+    replayed: raw.replayed === true,
+  }
 }
 
 export type SellItemResult = {

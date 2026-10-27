@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -16,6 +16,8 @@ import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCellsOf, bagFits, b
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, classItemById, type ClassItemId } from './classItems'
+// Ловчий (27.10.2026) — общий каталог src/hunter.ts ↔ server/src/hunter.ts.
+import { HUNTER_STATS, hunterStatPrice, type HunterStat } from './hunter'
 import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
 // Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
 // (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
@@ -837,11 +839,20 @@ export default function App() {
   // Вкладка называется «Убежище» (14.10.2026; id вкладки и имена переменных
   // остались историческими — 'shop', shopTab, shopSelected), и внутри неё три
   // жителя вместо прежних разделов: Торговец — расходники и обмен трофеев,
-  // Кузнец — улучшения, Отшельник — книги навыков.
+  // Кузнец — улучшения, Отшельник — книги навыков; с 27.10.2026 четвёртый —
+  // Ловчий: +1 к силе, ловкости или выносливости за значки охотника.
   // «Снаряжение» из неё убрано раньше (решение дизайнера, 29.09.2026): предметы
   // там не продавались и продаваться не будут — они падают в забегах, а обратно
   // уходят продажей из инвентаря.
-  const [shopTab, setShopTab] = useState<'Торговец' | 'Кузнец' | 'Отшельник'>('Торговец')
+  const [shopTab, setShopTab] = useState<'Торговец' | 'Кузнец' | 'Отшельник' | 'Ловчий'>('Торговец')
+  // Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): какой стат сейчас покупается и
+  // строка отказа. Запрос в полёте гасит ВСЕ три кнопки, а не одну: сервер
+  // сверяет все три стата (входы уровня), и вторая покупка другого стата,
+  // ушедшая вдогонку, получила бы 409 сама от себя. Ref — от двойного тапа в
+  // один кадр, до перерисовки: состояние в обработчике ещё старое.
+  const [hunterPending, setHunterPending] = useState<HunterStat | null>(null)
+  const hunterPendingRef = useRef(false)
+  const [hunterError, setHunterError] = useState<string | null>(null)
   // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
   // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
   const [shopSelected, setShopSelected] = useState<
@@ -1708,6 +1719,60 @@ export default function App() {
     }
   }
 
+  // Покупка +1 к стату у Ловчего. Цену НЕ передаём: её считает сервер (10 ×
+  // сохранённое значение). Одно нажатие — одна покупка, без вопроса и
+  // степпера (решение Андрея). Ответ — абсолютные статы, уровень и значки из
+  // БД: они и кладутся в player, отсюда их видят шапка и «Персонаж».
+  async function handleBuyHunterStat(stat: HunterStat) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      // Заглушка вне Telegram: сервера нет — это не сбой, «попробуй ещё» соврало бы.
+      setHunterError('Ловчий торгует только в Telegram — здесь сервера нет.')
+      return
+    }
+    if (hunterPendingRef.current) return
+    hunterPendingRef.current = true
+    setHunterPending(stat)
+    setHunterError(null)
+    try {
+      const r = await buyHunterStat(token, stat)
+      if (r.stats === null || r.hunterBadges === null) {
+        // Покупка прошла, но чисел нет — не показывать старые как новые: сверка.
+        console.error('Hunter buy-stat: сервер не назвал итог', r)
+        await handleRefreshBalance()
+        return
+      }
+      const { stats, hunterBadges } = r
+      setPlayer(prev => prev ? { ...prev, ...stats, hunterBadges } : prev)
+    } catch (e) {
+      console.error('Hunter buy-stat failed', e)
+      const refusal = e instanceof RequestError ? e.serverError : null
+      if (refusal === 'State changed, retry' || refusal === 'Not enough badges') {
+        // Числа на экране устарели (купили со второго устройства, значки
+        // потратились иначе) — перечитать и показать актуальные.
+        await handleRefreshBalance()
+        setHunterError(refusal === 'Not enough badges'
+          ? 'Не хватает значков охотника.'
+          : 'Значения изменились — показаны актуальные.')
+        return
+      }
+      if (refusal === 'Run in progress') {
+        setHunterError('Пока идёт вылазка, Ловчий не торгует.')
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        // Ответа нет, но запрос мог дойти. Повторное нажатие того же стата
+        // несёт тот же ключ (keyedPurchase) — второй раз не спишется.
+        setHunterError('Ответ не пришёл. Нажми ещё раз — второй раз не спишется.')
+        return
+      }
+      setHunterError('Ловчий отказал — попробуй позже.')
+    } finally {
+      hunterPendingRef.current = false
+      setHunterPending(null)
+    }
+  }
+
   // Продажа предмета из инвентаря. Цену считает сервер; клиент показывает ту,
   // что пришла с инвентарём (sellPrice каждой строки), и своей копии формулы не
   // держит. После успеха инвентарь перечитывается — проданной строки в нём уже
@@ -2160,6 +2225,13 @@ export default function App() {
         // финиш забега с выполненным заданием. null — «сервер не назвал».
         hunterBadges: profile.hunterBadges,
         rp: profile.rp,
+        // Статы и уровень (27.10.2026): их меняет покупка у Ловчего, и после
+        // 409 или потерянного ответа сверка обязана их показать. null — сервер
+        // старше Ловчего: статы вне забега тогда не менял никто, прежние верны.
+        ...(profile.strength !== null ? { strength: profile.strength } : {}),
+        ...(profile.agility !== null ? { agility: profile.agility } : {}),
+        ...(profile.endurance !== null ? { endurance: profile.endurance } : {}),
+        ...(profile.level !== null ? { level: profile.level } : {}),
       } : prev)
       // Курс — из этого же ответа, ПЕРЕЗАПИСЬЮ, в том числе в null. Сервер,
       // перестав его присылать, означает именно "курс неизвестен": сохранить
@@ -2824,10 +2896,11 @@ export default function App() {
             )
           })()}
           {activeTab === 'shop' && (() => {
-            // Три жителя Убежища — три вкладки (14.10.2026). Портретов нет, только
-            // имена. Что у кого: Торговец — расходники и обмен трофеев, Кузнец —
-            // улучшения, Отшельник — книги навыков.
-            const SHOP_TABS = ['Торговец', 'Кузнец', 'Отшельник'] as const
+            // Жители Убежища — вкладки (14.10.2026 три, с 27.10.2026 четыре).
+            // Портретов нет, только имена. Что у кого: Торговец — расходники и
+            // обмен трофеев, Кузнец — улучшения, Отшельник — книги навыков,
+            // Ловчий — статы за значки охотника (своя разметка, без сетки).
+            const SHOP_TABS = ['Торговец', 'Кузнец', 'Отшельник', 'Ловчий'] as const
             const playerLevel = player?.level ?? 1
             // У двух жителей товары лежат в каталоге расходников — их рисует ОДНА
             // И ТА ЖЕ сетка ниже. Раздел каталога (ConsumableShopTab) остался
@@ -3068,18 +3141,19 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Три жителя — три равные вкладки в один ряд (14.10.2026; до этого
-                  здесь стояли четыре раздела: Расходники, Улучшения, Книги, Обмен).
-                  Сетка из трёх колонок minmax(0, 1fr), а не flex с шириной по
-                  подписи: у трека с нулевым минимумом вкладка не может
-                  потребовать места больше своей трети, и ряд не вытолкнет
-                  страницу вбок ни на какой ширине — прежний ряд из пяти разделов
-                  на 320 px прокручивался сам. Подпись не переносится; если бы
-                  она не влезла, её обрезало бы многоточие внутри вкладки (на
-                  320 px влезает с запасом — замер в docs/shop.md).
-                  Высота 44 px — палец: эти три вкладки теперь главное на экране,
-                  прежние 27 px были меньше правила скилла дизайна. */}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:6, marginBottom:14, padding:'0 8px' }}>
+              {/* Четыре жителя — четыре вкладки в один ряд (14.10.2026 — три;
+                  Ловчий четвёртым с 27.10.2026). Колонки minmax(0, auto), а не
+                  равные 1fr: на 320 px четверть ряда (≈51 px под текст) меньше
+                  подписи «Отшельник», и её обрезало бы многоточие. С auto
+                  колонка берёт ширину своей подписи, остаток ряда делится между
+                  всеми, а нулевой минимум трека по-прежнему не даст ряду
+                  вытолкнуть страницу вбок ни на какой ширине (на крайний
+                  случай — многоточие внутри вкладки). Подпись не переносится.
+                  Шрифт 12 px и отступ 4 px — чтобы четыре подписи влезли в ряд
+                  320 px целиком (с 13 px и 6 px им нужно ≈268 px при 256
+                  доступных). Высота 44 px — палец. Замер — docs/shop.md,
+                  «ЛОВЧИЙ». */}
+              <div data-shop-tabs="" style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0, auto))', gap:4, marginBottom:14, padding:'0 8px' }}>
                 {SHOP_TABS.map(tab => {
                   const active = shopTab === tab
                   return (
@@ -3089,7 +3163,7 @@ export default function App() {
                         minHeight:44,
                         display:'flex', alignItems:'center', justifyContent:'center',
                         background:C.nicheDeep, borderRadius:8, padding:'0 4px',
-                        fontSize:13, cursor:'pointer',
+                        fontSize:12, cursor:'pointer',
                         border: `1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
                         boxShadow: active ? 'inset 0 0 12px rgba(209,151,68,0.22)' : 'none',
@@ -3133,12 +3207,80 @@ export default function App() {
                   ячейкой (на 375px — 84px). */}
               {/* Цены улучшений считаются от счётчиков покупок. Нет счётчиков —
                   нет и цен: говорим об этом, а не рисуем пустую витрину. */}
+              {/* Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): сверху баланс
+                  значков, ниже три стата строками — иконка (те же, что на
+                  «Персонаже»), название, СОХРАНЁННОЕ значение (без
+                  снаряжения: его растит покупка и от него цена), цена и «+1».
+                  Ни карточки, ни степпера, ни вопроса: нажатие — покупка. */}
+              {shopTab === 'Ловчий' && (() => {
+                const badges = player?.hunterBadges ?? null
+                const statIcon: Record<HunterStat, string> = { strength: 'icon_strength.png', agility: 'icon_agility.png', endurance: 'icon_hp.png' }
+                return (
+                  <div data-hunter="" style={{ padding:'0 8px', marginBottom:16, textAlign:'left' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', marginBottom:10, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:8 }}>
+                      <img src={`${import.meta.env.BASE_URL}assets/icons/icon_hunter_badge.png`} alt="Значки охотника" width={22} height={22} style={{ display:'block', objectFit:'contain' }} />
+                      <span style={{ fontSize:12, color:C.textDim, flex:1, minWidth:0 }}>Значки охотника</span>
+                      {/* null — сервер не назвал: прочерк, не ноль. */}
+                      <span data-hunter-badges="" style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.bone }}>{badges ?? '—'}</span>
+                    </div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                      {HUNTER_STATS.map(s => {
+                        const value = player === null ? null : player[s.id]
+                        const price = value === null ? null : hunterStatPrice(value)
+                        const canAfford = badges !== null && price !== null && badges >= price
+                        const disabled = hunterPending !== null || !canAfford
+                        const pendingHere = hunterPending === s.id
+                        return (
+                          <div key={s.id} data-hunter-row={s.id} style={{
+                            // Ужато под 320 px: «Выносливость» целиком (замер — docs/shop.md).
+                            display:'flex', alignItems:'center', gap:8, padding:'8px 10px',
+                            background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
+                            boxShadow:'inset 0 2px 6px rgba(0,0,0,0.45)',
+                          }}>
+                            <img src={`${import.meta.env.BASE_URL}assets/icons/${statIcon[s.id]}`} alt={s.nameRu} width={28} height={28} style={{ display:'block', objectFit:'contain', flexShrink:0 }} />
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:12, color:C.textMain, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{s.nameRu}</div>
+                              <div data-hunter-value="" style={{ fontFamily:FONT_DISPLAY, fontSize:18, color:C.glowCore, lineHeight:1.1 }}>{value ?? '—'}</div>
+                            </div>
+                            <div data-hunter-price="" style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0, opacity: canAfford ? 1 : 0.45 }}>
+                              <span style={{ fontSize:13, color: canAfford ? C.bone : C.textDim }}>{price ?? '—'}</span>
+                              <img src={`${import.meta.env.BASE_URL}assets/icons/icon_hunter_badge.png`} alt="" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
+                            </div>
+                            <button
+                              data-hunter-buy={s.id}
+                              disabled={disabled}
+                              onClick={() => { void handleBuyHunterStat(s.id) }}
+                              style={{
+                                flexShrink:0, width:48, height:44, borderRadius:8,
+                                fontFamily:FONT_DISPLAY, fontSize:15,
+                                border:`1px solid ${disabled ? C.stoneDark : C.glowEdge}`,
+                                background: disabled ? C.niche : C.glowCore,
+                                color: disabled ? C.textDim : C.appBg,
+                                cursor: disabled ? 'default' : 'pointer',
+                                opacity: pendingHere ? 0.7 : 1,
+                              }}>
+                              {pendingHere ? '…' : '+1'}
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {hunterError !== null && (
+                      <div data-hunter-error="" style={{ marginTop:8, fontSize:11, color:C.danger }}>{hunterError}</div>
+                    )}
+                    <div style={{ marginTop:10, fontSize:11, color:C.textDim, lineHeight:1.45 }}>
+                      +1 стоит 10 значков за каждую единицу стата. Считается стат без снаряжения.
+                    </div>
+                  </div>
+                )
+              })()}
+
               {shopTab === 'Кузнец' && upgradeCounts === null && (
                 <div style={{ margin:'0 8px 10px', padding:'8px 10px', borderRadius:8, background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, fontSize:11, color:C.textDim }}>
                   Профиль не загружен — цены улучшений неизвестны.
                 </div>
               )}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
+              {shopTab !== 'Ловчий' && <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
                 {gridCells.map(cell => {
                   const unlocked = playerLevel >= cell.levelRequired
                   return (
@@ -3172,7 +3314,7 @@ export default function App() {
                     </div>
                   )
                 })}
-              </div>
+              </div>}
 
               {/* Карточка обмена трофеев (её открывает плитка выше) рисуется НЕ
                   здесь, а прямым потомком корня, рядом с тостом, — причина в
@@ -3704,7 +3846,7 @@ export default function App() {
 
               {/* Подвкладки. Раскладка взята 30.09.2026 у ряда разделов магазина,
                   каким он был тогда (с 14.10.2026 вкладка зовётся «Убежище», а в
-                  её ряду три равные вкладки сеткой — см. SHOP_TABS выше; здесь
+                  её ряду вкладки жителей сеткой — см. SHOP_TABS выше; здесь
                   чипов четыре и подписи разной длины, поэтому прежний приём
                   остался): чипов стало ЧЕТЫРЕ («Страницы»), и прежний ряд с
                   padding:'0 14px' у каждого перестал влезать на узкий экран.

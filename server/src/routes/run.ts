@@ -7,6 +7,7 @@ import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGL
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
+import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
 import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
@@ -3258,6 +3259,13 @@ export async function runRoutes(server: FastifyInstance) {
       // и та может писать (новый набор), а профиль — только чтение.
       hunterBadges: character.hunterBadges,
       rp: character.rp,
+      // Статы и уровень (27.10.2026, Ловчий): покупка стата за значки меняет их
+      // вне забега, и сверка после 409 или потерянного ответа обязана их
+      // показать. Уровень — по серверной формуле, колонка level только снимок.
+      strength: character.strength,
+      agility: character.agility,
+      endurance: character.endurance,
+      level: calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels),
       trophyGoldRate: TROPHY_GOLD_RATE,
       appliedRequestIds,
     })
@@ -3330,6 +3338,90 @@ export async function runRoutes(server: FastifyInstance) {
     return reply.send({
       gold: updated.gold,
       upgrades: upgradesOf(updated),
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
+  })
+
+  // Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): +1 к силе, ловкости или
+  // выносливости за значки охотника. Цену считает СЕРВЕР по сохранённому стату
+  // (общий каталог hunter.ts: 10 × значение); из тела читается только стат.
+  //
+  // Стат и уровень растут так же, как после роста статов в бою: колонка стата
+  // +1, снимок level — calculateLevel от новых статов и bonusLevels (то же, что
+  // пишет финиш через applyStatGrowth). Прогресс к следующей единице не
+  // трогается — это остаток боя, как перенос остатка в applyStatProgress.
+  //
+  // ⚠️ Во время вылазки — 400 Run in progress, как у обмена трофеев, а НЕ как у
+  // зелий и закалок: финиш (и вход, закрывающий брошенный забег) пишет силу,
+  // ловкость и выносливость АБСОЛЮТНЫМИ числами со снимка начала обработчика.
+  // Стат, купленный посреди вылазки со второго устройства, финиш молча затёр бы,
+  // а значки остались бы списанными. Пустой currentRun стоит и в фильтре записи
+  // — против забега, начатого между чтением и записью.
+  //
+  // Запись УСЛОВНАЯ, одна: значков хватает, и все входы уровня (три стата и
+  // bonusLevels) те же, что прочитаны, — иначе снимок level посчитан не от тех
+  // чисел. 0 строк — 409 State changed, retry (кто-то купил параллельно).
+  // requestId — ключ идемпотентности (applyOnce), как у buy-upgrade: проверки
+  // стоят ВНУТРИ действия, и повтор уже применённой покупки получает «уже
+  // сделано» с текущими числами, а не отказ «мало значков».
+  server.post<{ Body: { stat?: unknown; requestId?: unknown } }>('/character/hunter/buy-stat', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const stat = parseHunterStat(request.body?.stat)
+    if (stat === null) return reply.status(400).send({ error: 'Unknown stat' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const read = { strength: character.strength, agility: character.agility, endurance: character.endurance }
+    const price = hunterStatPrice(read[stat])
+    const next: Record<HunterStat, number> = { ...read, [stat]: read[stat] + 1 }
+    const level = calculateLevel(next.strength, next.agility, next.endurance, character.bonusLevels)
+
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'hunter-buy-stat', request.log, async (db) => {
+        if (character.currentRun !== null) throw new RouteRejection(400, { error: 'Run in progress' })
+        if (character.hunterBadges < price) {
+          throw new RouteRejection(400, { error: 'Not enough badges', price, hunterBadges: character.hunterBadges })
+        }
+        const written = await db.character.updateMany({
+          where: {
+            userId,
+            currentRun: { equals: Prisma.DbNull },
+            hunterBadges: { gte: price },
+            strength: read.strength,
+            agility: read.agility,
+            endurance: read.endurance,
+            bonusLevels: character.bonusLevels,
+          },
+          data: {
+            hunterBadges: { decrement: price },
+            [stat]: { increment: 1 },
+            level, // денормализованный снимок — см. комментарий к полю в schema.prisma
+          },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry', price })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'hunter/buy-stat: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but state could not be read' })
+    }
+    return reply.send({
+      strength: updated.strength,
+      agility: updated.agility,
+      endurance: updated.endurance,
+      level: calculateLevel(updated.strength, updated.agility, updated.endurance, updated.bonusLevels),
+      hunterBadges: updated.hunterBadges,
       ...(applied.replayed ? { replayed: true } : {}),
     })
   })
