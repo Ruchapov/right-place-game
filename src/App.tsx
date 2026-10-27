@@ -2496,16 +2496,34 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Строка валют */}
-              <div style={{ margin:'0 8px 16px', background:C.nicheDeep, borderRadius:8, padding:'7px 10px', display:'flex', gap:14 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-                  <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                  <span style={{ fontSize:12, color:C.bone }}>{p.gold}</span>
-                </div>
-                <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-                  <img src={`${import.meta.env.BASE_URL}assets/icons/icon_trophy.png`} alt="Трофеи" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
-                  <span style={{ fontSize:12, color:C.bone }}>{p.trophies}</span>
-                </div>
+              {/* Строка валют: золото, трофеи, значки охотника, RP (последние две —
+                  с 27.10.2026, награда ежедневных заданий). Две пары, а не четыре
+                  соседа: не влезает строка (узкий экран, большие числа) —
+                  переносится вторая пара целиком, две строки по две валюты, а не
+                  три и одна. Пары растягиваются на строку, валюта в паре — на
+                  половину пары: в одну строку валюты стоят по четвертям плашки,
+                  в две — столбцами, одна под другой. null у значков и RP —
+                  сервер их не назвал: прочерк, а не ноль. */}
+              <div style={{ margin:'0 8px 16px', background:C.nicheDeep, borderRadius:8, padding:'7px 10px', display:'flex', flexWrap:'wrap', columnGap:14, rowGap:6 }}>
+                {[
+                  [
+                    { icon:'icon_gold.png', alt:'Золото', value:p.gold },
+                    { icon:'icon_trophy.png', alt:'Трофеи', value:p.trophies },
+                  ],
+                  [
+                    { icon:'icon_hunter_badge.png', alt:'Значки охотника', value:p.hunterBadges },
+                    { icon:'icon_rp.png', alt:'RP', value:p.rp },
+                  ],
+                ].map((pair, i) => (
+                  <div key={i} style={{ display:'flex', gap:14, flex:'1 1 auto' }}>
+                    {pair.map(c => (
+                      <div key={c.icon} data-currency={c.icon} style={{ display:'flex', alignItems:'center', gap:5, whiteSpace:'nowrap', flex:'1 1 0' }}>
+                        <img src={`${import.meta.env.BASE_URL}assets/icons/${c.icon}`} alt={c.alt} width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
+                        <span style={{ fontSize:12, color:C.bone }}>{c.value ?? '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
               </div>
 
               {/* Снаряжение */}
