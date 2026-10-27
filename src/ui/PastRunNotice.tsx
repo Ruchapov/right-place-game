@@ -46,7 +46,22 @@ const RESULTS_PLATE_FIELD_H = 0.619
 // Вид кнопки — правилом таблицы стилей, а не инлайном (тот же приём, что у
 // PRESS_CSS в TouchControls.tsx). Значения — копия кнопки "В МЕНЮ",
 // Explore.tsx:644-662, менять вместе.
+// Телефон набок (то же условие, что у меню — LOW_LANDSCAPE_MAX_H, 28.10.2026):
+// рамка не выше экрана за вычетом безопасных зон — ужимается по высоте с той
+// же пропорцией, а длинное содержимое прокручивается внутри поля рамки (оно и
+// так overflowY:auto). До этого рамка 300×425 px минимум выходила за экран
+// 390 px, и прокручивался весь экран. В вертикали правило не срабатывает.
+const NOTICE_SIDE_AVAIL_H = 'calc(100vh - var(--rp-safe-top, 0px) - var(--rp-safe-bottom, 0px) - 16px)'
 const NOTICE_CSS = `
+  @media (orientation: landscape) and (max-height: ${C.LOW_LANDSCAPE_MAX_H}px) {
+    [data-past-run-notice] {
+      padding: calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px)) !important;
+    }
+    [data-past-run-notice-frame] {
+      width: min(${RESULTS_FRAME_W}, calc(${NOTICE_SIDE_AVAIL_H} / ${RESULTS_FRAME_ASPECT})) !important;
+      height: min(${RESULTS_FRAME_H}, ${NOTICE_SIDE_AVAIL_H}) !important;
+    }
+  }
   [data-past-run-notice] button {
     padding: 12px 30px;
     border-radius: 10px;
@@ -123,7 +138,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
       }}
     >
       <style>{NOTICE_CSS}</style>
-      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
+      <div data-past-run-notice-frame="" style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
         <img
           src={RESULTS_FRAME_SRC}
           alt=""

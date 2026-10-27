@@ -88,10 +88,16 @@ export function HeroClassLine({ heroClass, level }: { heroClass: HeroClassState 
  * Подпись с именем под плиткой — решение сессии: у товаров витрины названий
  * нет, но здесь выбор из трёх, и без имени он вслепую.
  */
-export function HeroClassTiles({ heroClass, level, onSelect }: {
+export function HeroClassTiles({ heroClass, level, onSelect, columns = 3 }: {
   heroClass: HeroClassState | null
   level: number
   onSelect: (id: HeroClassId) => void
+  /**
+   * Колонок сетки: 3 — плитки на всю ширину (вертикаль); телефон набок
+   * (28.10.2026) — 5, как у витрины книг под ними, чтобы плитки были того же
+   * размера, а не втрое шире.
+   */
+  columns?: number
 }) {
   const ownId = heroClass !== null && heroClass !== 'none' ? heroClass.id : null
   const ownTier = heroClass !== null && heroClass !== 'none' ? heroClass.tier : 1
@@ -99,7 +105,7 @@ export function HeroClassTiles({ heroClass, level, onSelect }: {
   // не ниже десятого.
   const locked = level < CLASS_CHOOSE_LEVEL && ownId === null
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
+    <div style={{ display:'grid', gridTemplateColumns:`repeat(${columns}, minmax(0, 1fr))`, gap:8, padding:'0 8px' }}>
       {HERO_CLASSES.map((cls) => {
         const own = cls.id === ownId
         // Свой — ступенью героя, чужие и до выбора — первой.

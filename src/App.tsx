@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
 import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
@@ -580,12 +580,14 @@ const REFUGE_HERO_KEYFRAMES = Array.from({ length: REFUGE_HERO_FRAMES }, (_, i) 
 
 const REFUGE_HERO_DURATION = 2.0 // s — подобрано вживую временным ползунком, зашито
 
-// Низкий горизонтальный экран (телефон набок): вкладка «Исследовать» собрана
-// иначе — см. exploreLow в компоненте. Сцена там мельче: 0.30 вместо 0.42, то
-// есть 107 px высоты вместо 149 — столько остаётся на экране 390 px после
-// энергии, гнёзд, кнопки старта и нижней панели (при 0.31 середина вкладки
-// прокручивалась на 2 px).
-const REFUGE_SCENE_SCALE_LOW = 0.30
+// Телефон набок (sideMenu, 28.10.2026): вкладка «Исследовать» — сцена на всю
+// область содержимого. Герой — около 60% высоты области (решение Андрея),
+// справа внизу — подготовка и «Начать забег» блоком шириной с пять гнёзд, доска
+// заданий — справа от костра над этим блоком. Масштаб сцены ещё ужимается, если
+// сцена не влезает левее блока (узкая область).
+const SIDE_HERO_H_FRAC = 0.6
+const SIDE_PREP_W = 5 * 52 + 4 * 6
+const SIDE_GAP = 12
 // Геометрия сцены у костра для доски заданий на стене (QuestWallBoard): копия
 // доски вешается так, чтобы не заходить на героя и костёр, и считает их место
 // от ЭТИХ ЖЕ чисел. Поменяли положение, масштаб или листы сцены — доска
@@ -599,11 +601,9 @@ const REFUGE_SCENE_GEOMETRY: RefugeSceneGeometry = {
   heroW: REFUGE_HERO_FRAME_W,
   fireH: REFUGE_FIRE_FRAME_H - REFUGE_FIRE_TUNE_Y,
 }
-// Копия доски в низком горизонтальном экране: вёрстка этой ширины до масштаба
-// (ширина доски на телефоне 375 px), ужатая в полосу сцены справа от костра —
-// не шире QUEST_THUMB_MAX_W. Справа от костра в колонке 390 px свободно ≈127 px.
+// Копия доски набок: вёрстка этой ширины до масштаба (ширина доски на телефоне
+// 375 px), ужатая в место справа от костра над подготовкой.
 const QUEST_THUMB_NAT_W = 343
-const QUEST_THUMB_MAX_W = 112
 const LOW_LANDSCAPE_QUERY = `(orientation: landscape) and (max-height: ${LOW_LANDSCAPE_MAX_H}px)`
 
 /**
@@ -995,10 +995,60 @@ export default function App() {
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
   const [energyBaseAt, setEnergyBaseAt] = useState(() => Date.now())
   const [now, setNow] = useState(() => Date.now())
-  // Низкий горизонтальный экран (телефон набок) — от него зависит только сборка
-  // вкладки «Исследовать»: остальные вкладки одинаковы в обоих положениях и
-  // обходятся колонкой по центру, без рендера по повороту.
-  const exploreLow = useMediaQuery(LOW_LANDSCAPE_QUERY)
+  // Низкий горизонтальный экран (телефон набок). С 28.10.2026 от него зависит
+  // раскладка ВСЕГО меню (решение Андрея): навигация колонкой у левого края,
+  // содержимое — на всё остальное место, свои раскладки у вкладок
+  // (docs/meta-screens.md, «Горизонталь: навигация слева»). Условие — то же, что
+  // у забега (LOW_LANDSCAPE_QUERY ↔ isLowLandscape, Critical Gotchas). Вертикаль
+  // и широкие экраны (планшет, ПК) — прежние: всё новое стоит только под
+  // sideMenu, а обёртки, которые нужны лишь горизонтали, в остальных случаях —
+  // display:contents (бокса не создают). Поворот только перерисовывает: дерево
+  // то же (навигация переезжает влево CSS-свойством order, а не местом в JSX),
+  // вкладки, подвкладки и открытые окна живут в состоянии App.
+  const sideMenu = useMediaQuery(LOW_LANDSCAPE_QUERY)
+  // Окно поверх меню в sideMenu: подложка отступает на безопасные зоны, окно по
+  // центру не выше оставшегося и прокручивается внутри — кнопки достижимы
+  // всегда. В остальных положениях — пустые стили (как было).
+  const sideOverlayPad: CSSProperties = sideMenu ? {
+    boxSizing:'border-box',
+    padding:'calc(8px + var(--rp-safe-top, 0px)) calc(8px + var(--rp-safe-right, 0px)) calc(8px + var(--rp-safe-bottom, 0px)) calc(8px + var(--rp-safe-left, 0px))',
+  } : {}
+  // «Исследовать» набок: размер области сцены и верх блока подготовки — от
+  // них считаются масштаб и место сцены и доски (замер, а не догадка: область
+  // зависит от безопасных зон и шапки Telegram). null — ещё не мерили.
+  const exploreAreaRef = useRef<HTMLDivElement | null>(null)
+  const explorePrepRef = useRef<HTMLDivElement | null>(null)
+  const [exploreArea, setExploreArea] = useState<{ w: number; h: number; blockTop: number } | null>(null)
+  useEffect(() => {
+    if (!sideMenu || activeTab !== 'explore') return
+    const area = exploreAreaRef.current
+    const block = explorePrepRef.current
+    if (!area || !block) return
+    const measure = () => setExploreArea({ w: area.clientWidth, h: area.clientHeight, blockTop: block.offsetTop })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(area)
+    ro.observe(block)
+    return () => ro.disconnect()
+  }, [sideMenu, activeTab, showExploreTest])
+  // Геометрия сцены набок — одна на сцену, энергию над ней и доску справа:
+  // герой ≈60% высоты области, но сцена не заходит на блок подготовки справа.
+  const sideScene = sideMenu && exploreArea !== null ? (() => {
+    const { w, h, blockTop } = exploreArea
+    const sceneW0 = REFUGE_FIRE_OFFSET_X + REFUGE_FIRE_FRAME_W
+    const scale = Math.max(0.2, Math.min(SIDE_HERO_H_FRAC * h / REFUGE_HERO_FRAME_H, (w - SIDE_PREP_W - 3 * SIDE_GAP) / sceneW0))
+    const sceneLeft = SIDE_GAP
+    const sceneW = sceneW0 * scale
+    const boardLeft = sceneLeft + sceneW + SIDE_GAP
+    return {
+      h, scale, sceneLeft, sceneW, boardLeft,
+      boardMaxW: w - boardLeft - SIDE_GAP,
+      boardMaxH: blockTop - 2 * SIDE_GAP,
+    }
+  })() : null
+  const sideOverlayCard: CSSProperties = sideMenu ? {
+    boxSizing:'border-box', maxHeight:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch',
+  } : {}
 
   // Доска ежедневных заданий (26.10.2026). view — последний вид от сервера, at —
   // когда он получен (от него идёт отсчёт «новые через Ч:ММ»). status — почему
@@ -2440,7 +2490,9 @@ export default function App() {
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
       overflow: 'hidden',
-      display: 'flex', flexDirection: 'column',
+      // sideMenu: навигация колонкой слева, содержимое справа (order у
+      // навигации), иначе — содержимое и нижняя панель друг под другом.
+      display: 'flex', flexDirection: sideMenu ? 'row' : 'column',
       fontFamily: 'sans-serif', color: 'white',
       backgroundColor: C.appBg,
       // Каменный фон меты — везде, КРОМЕ explore (у неё будет свой фон позже).
@@ -2466,16 +2518,33 @@ export default function App() {
         paddingBottom: 'calc(96px + var(--rp-safe-bottom, 0px))',
         WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 96px - var(--rp-safe-bottom, 0px)), transparent calc(100% - 56px - var(--rp-safe-bottom, 0px)))',
         maskImage: 'linear-gradient(to bottom, black calc(100% - 96px - var(--rp-safe-bottom, 0px)), transparent calc(100% - 56px - var(--rp-safe-bottom, 0px)))',
+        // sideMenu: область содержимого — от колонки навигации до правой
+        // безопасной зоны, от кнопок Telegram до полосы жеста. Нижней панели
+        // нет, поэтому нет и затухания под ней; прокрутка — только здесь.
+        ...(sideMenu ? {
+          minWidth: 0,
+          padding: '0 calc(12px + var(--rp-safe-right, 0px)) 0 12px',
+          paddingTop: 'calc(8px + var(--rp-safe-top, 0px))',
+          paddingBottom: 'calc(8px + var(--rp-safe-bottom, 0px))',
+          WebkitMaskImage: 'none',
+          maskImage: 'none',
+        } : {}),
       }}>
       {activeTab !== 'explore' && (
-        // КОЛОНКА МЕНЮ (решение Андрея 12.10.2026): в горизонтали содержимое
-        // вкладки — колонка шириной с вертикальный экран, по центру, по бокам
-        // каменный фон. 100vmin — короткая сторона экрана, то есть ширина этого
-        // же телефона в вертикали; 40 px — поля контейнера прокрутки (по 20).
+        // КОЛОНКА МЕНЮ (решение Андрея 12.10.2026): на экране шире телефона
+        // (планшет, ПК в горизонтали) содержимое вкладки — колонка шириной с
+        // вертикальный экран, по центру, по бокам каменный фон. 100vmin —
+        // короткая сторона экрана; 40 px — поля контейнера прокрутки (по 20).
         // В вертикали колонка и так уже этого предела — там не меняется ничего.
+        // Телефон набок — не колонка, а sideMenu (ниже).
         // Прокручивается по-прежнему весь экран, а не колонка: палец на боковом
         // поле тоже крутит вкладку.
-        <div style={{ maxWidth:'calc(100vmin - 40px)', margin:'0 auto' }}>
+        // sideMenu (28.10.2026): колонки нет — вкладка на всю область
+        // содержимого; у «Персонажа» ещё и высота области (две колонки, правая
+        // прокручивается сама, а не вся вкладка).
+        <div style={sideMenu
+          ? { height: activeTab === 'hero' ? '100%' : undefined }
+          : { maxWidth:'calc(100vmin - 40px)', margin:'0 auto' }}>
           {activeTab === 'hero' && (() => {
             // player === null здесь означает, что данные реально отсутствуют
             // (после initial-loading guard выше по файлу это уже не должно
@@ -2524,10 +2593,17 @@ export default function App() {
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
 
             return (
-            <div style={{ padding: '0 4px', paddingBottom: 20 }}>
+            // sideMenu (28.10.2026): две колонки во всю высоту области. Левая —
+            // шапка, валюты, снаряжение; правая — скиллы, характеристики,
+            // энергия, и прокручивается только она. В остальных положениях
+            // обёртки колонок — display:contents, всё как было.
+            <div style={sideMenu
+              ? { display:'flex', gap:14, height:'100%', boxSizing:'border-box' }
+              : { padding: '0 4px', paddingBottom: 20 }}>
+              <div data-hero-col="left" style={sideMenu ? { flex:'1 1 0', minWidth:0, overflowY:'auto' } : { display:'contents' }}>
 
               {/* Шапка */}
-              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'20px 16px 16px' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding: sideMenu ? '0 8px 12px' : '20px 16px 16px' }}>
                 <div style={{
                   width:46, height:46, borderRadius:'50%',
                   background:`radial-gradient(circle at 35% 30%, ${C.stoneLight}, ${C.stoneDark})`,
@@ -2668,6 +2744,9 @@ export default function App() {
                 )}
               </div>
 
+              </div>
+              <div data-hero-col="right" style={sideMenu ? { flex:'1 1 0', minWidth:0, overflowY:'auto', WebkitOverflowScrolling:'touch' } : { display:'contents' }}>
+
               {/* Скиллы */}
               <div style={{ margin:'0 8px 16px' }}>
                 <div style={sectionHeaderStyle}>СКИЛЛЫ</div>
@@ -2773,6 +2852,7 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              </div>
 
               {/* Карточка НАДЕТОГО навыка (тап по гнезду выше). Оверлей той же
                   вёрстки, что карточка предмета в «Инвентаре»: тёмная подложка,
@@ -2793,10 +2873,12 @@ export default function App() {
                     background:'rgba(0,0,0,0.55)',
                     display:'flex', alignItems:'center', justifyContent:'center',
                     zIndex:1000,
+                    ...sideOverlayPad,
                   }}>
                   <div
                     onClick={e => e.stopPropagation()}
                     style={{
+                      ...sideOverlayCard,
                       maxWidth:290, width:'100%',
                       background:C.appBg, border:`1px solid ${C.stoneDark}`,
                       borderRadius:14, padding:16,
@@ -3127,9 +3209,17 @@ export default function App() {
                   как "всё потратили" — самый дорогой симптом из возможных, см.
                   правило про тихие фолбэки в CLAUDE.md. Поэтому прочерк, а не
                   прежний `?? 0`. */}
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
-                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Убежище</div>
-                <div style={{ display:'flex', gap:14 }}>
+              {/* sideMenu (28.10.2026): заголовок, вкладки жителей и валюты — одной
+                  строкой (обёртка ниже — flex с переносом; шапка тогда
+                  display:contents, и её дети становятся элементами строки). Не
+                  влезает — вкладки уходят второй строкой целиком, подписи не
+                  переносятся. В остальных положениях обёртка — display:contents. */}
+              <div data-shop-head="" style={sideMenu
+                ? { display:'flex', flexWrap:'wrap', alignItems:'center', columnGap:12, rowGap:6, padding:'0 8px 10px' }
+                : { display:'contents' }}>
+              <div style={sideMenu ? { display:'contents' } : { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
+                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain, ...(sideMenu ? { order:1, flex:'none' } : {}) }}>Убежище</div>
+                <div style={{ display:'flex', gap:14, ...(sideMenu ? { order:3, marginLeft:'auto', flex:'none' } : {}) }}>
                   <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                     <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={16} height={16} style={{ display:'block', objectFit:'contain' }} />
                     <span style={{ fontSize:12, color:C.bone }}>{player === null ? '—' : player.gold}</span>
@@ -3153,7 +3243,9 @@ export default function App() {
                   320 px целиком (с 13 px и 6 px им нужно ≈268 px при 256
                   доступных). Высота 44 px — палец. Замер — docs/shop.md,
                   «ЛОВЧИЙ». */}
-              <div data-shop-tabs="" style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0, auto))', gap:4, marginBottom:14, padding:'0 8px' }}>
+              <div data-shop-tabs="" style={sideMenu
+                ? { order:2, display:'flex', gap:4, flex:'none' }
+                : { display:'grid', gridTemplateColumns:'repeat(4, minmax(0, auto))', gap:4, marginBottom:14, padding:'0 8px' }}>
                 {SHOP_TABS.map(tab => {
                   const active = shopTab === tab
                   return (
@@ -3162,7 +3254,7 @@ export default function App() {
                         boxSizing:'border-box',
                         minHeight:44,
                         display:'flex', alignItems:'center', justifyContent:'center',
-                        background:C.nicheDeep, borderRadius:8, padding:'0 4px',
+                        background:C.nicheDeep, borderRadius:8, padding: sideMenu ? '0 12px' : '0 4px',
                         fontSize:12, cursor:'pointer',
                         border: `1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
@@ -3172,6 +3264,7 @@ export default function App() {
                     </div>
                   )
                 })}
+              </div>
               </div>
 
               {/* Отшельник: сверху блок «Классы», под ним книги, как были
@@ -3185,6 +3278,7 @@ export default function App() {
                   <HeroClassTiles
                     heroClass={player?.heroClass ?? null}
                     level={playerLevel}
+                    columns={sideMenu ? 5 : 3}
                     onSelect={(id) => { setClassSelected(id); setClassActionError(null) }}
                   />
                   <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, margin:'16px 0 7px', fontFamily:FONT_DISPLAY, padding:'0 8px' }}>КНИГИ</div>
@@ -3280,7 +3374,7 @@ export default function App() {
                   Профиль не загружен — цены улучшений неизвестны.
                 </div>
               )}
-              {shopTab !== 'Ловчий' && <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:8, padding:'0 8px' }}>
+              {shopTab !== 'Ловчий' && <div style={{ display:'grid', gridTemplateColumns:`repeat(${sideMenu ? 5 : 3}, minmax(0, 1fr))`, gap:8, padding:'0 8px' }}>
                 {gridCells.map(cell => {
                   const unlocked = playerLevel >= cell.levelRequired
                   return (
@@ -3329,10 +3423,12 @@ export default function App() {
                     background:'rgba(0,0,0,0.55)',
                     display:'flex', alignItems:'center', justifyContent:'center',
                     zIndex:1000,
+                    ...sideOverlayPad,
                   }}>
                   <div
                     onClick={e => e.stopPropagation()}
                     style={{
+                      ...sideOverlayCard,
                       position:'relative',
                       maxWidth:290, width:'100%',
                       background:C.appBg, border:`1px solid ${C.stoneDark}`,
@@ -3831,15 +3927,22 @@ export default function App() {
             return (
             <div style={{ padding: '0 4px' }}>
 
+              {/* sideMenu (28.10.2026): заголовок, подвкладки и счётчик сумки —
+                  одной строкой, как у «Убежища» (обёртка — flex с переносом,
+                  шапка тогда display:contents). В остальных положениях обёртка —
+                  display:contents. */}
+              <div data-gear-head="" style={sideMenu
+                ? { display:'flex', flexWrap:'wrap', alignItems:'center', columnGap:12, rowGap:6, padding:'0 8px 10px' }
+                : { display:'contents' }}>
               {/* Шапка */}
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
-                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>Инвентарь</div>
+              <div style={sideMenu ? { display:'contents' } : { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 16px 14px' }}>
+                <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain, ...(sideMenu ? { order:1, flex:'none' } : {}) }}>Инвентарь</div>
                 {/* "N / 30" — заполненность сумки (bagUsed/bagKnown выше),
                     одинаковая на обеих подвкладках и при любом фильтре: сколько
                     показано, видно по самой сетке. Переполнение — красным и
                     как есть (см. BAG_CAPACITY). Неизвестные данные — прочерк,
                     не ноль. */}
-                <div style={{ fontSize:12, color: bagKnown && bagUsed > BAG_CAPACITY ? C.danger : C.textDim }}>
+                <div style={{ fontSize:12, color: bagKnown && bagUsed > BAG_CAPACITY ? C.danger : C.textDim, ...(sideMenu ? { order:3, marginLeft:'auto', flex:'none' } : {}) }}>
                   {bagKnown ? `${bagUsed} / ${BAG_CAPACITY}` : '—'}
                 </div>
               </div>
@@ -3864,7 +3967,9 @@ export default function App() {
                   подписи и не делает документ шире экрана.
                   Высота 44px — минимум тап-зоны из дизайн-системы — СОХРАНЕНА
                   явным minHeight: padding по вертикали её больше не задаёт. */}
-              <div className="no-scrollbar" style={{ display:'flex', gap:6, overflowX:'auto', marginBottom:10, padding:'0 8px' }}>
+              <div className="no-scrollbar" style={sideMenu
+                ? { order:2, display:'flex', gap:6, flex:'none' }
+                : { display:'flex', gap:6, overflowX:'auto', marginBottom:10, padding:'0 8px' }}>
                 {([
                   { id: 'equipment' as const, label: 'Экипировка' },
                   { id: 'consumables' as const, label: 'Расходники' },
@@ -3880,9 +3985,9 @@ export default function App() {
                   return (
                     <div key={t.id} onClick={() => setGearTab(t.id)}
                       style={{
-                        boxSizing:'border-box', minHeight:44, flex:'1 1 auto',
+                        boxSizing:'border-box', minHeight:44, flex: sideMenu ? 'none' : '1 1 auto',
                         display:'flex', alignItems:'center', justifyContent:'center',
-                        background:C.nicheDeep, borderRadius:6, padding:'0 6px',
+                        background:C.nicheDeep, borderRadius:6, padding: sideMenu ? '0 12px' : '0 6px',
                         fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
                         border:`1px solid ${active ? C.glowEdge : C.stoneDark}`,
                         color: active ? C.glowCore : C.textDim,
@@ -3891,6 +3996,7 @@ export default function App() {
                     </div>
                   )
                 })}
+              </div>
               </div>
 
               {/* Фильтр по слоту — только в "Экипировке": расходники ни в один
@@ -4033,7 +4139,7 @@ export default function App() {
                   </div>
                 ) : null
               ) : (
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(5, minmax(0, 1fr))', gap:5, padding:'0 8px' }}>
+                <div style={{ display:'grid', gridTemplateColumns:`repeat(${sideMenu ? 8 : 5}, minmax(0, 1fr))`, gap:5, padding:'0 8px' }}>
                   {shownCells.map((cell) => (
                     <div key={cell.key}
                       onClick={() => setGearSelectedItem(cell.open)}
@@ -4087,12 +4193,21 @@ export default function App() {
             <div style={{ padding: '0 4px' }}>
 
               {/* Шапка */}
-              <div style={{ textAlign:'center', marginBottom:16, padding:'20px 16px 0' }}>
+              {/* sideMenu (28.10.2026): заголовок одной строкой — название слева,
+                  подпись справа. */}
+              <div style={sideMenu
+                ? { display:'flex', flexWrap:'wrap', alignItems:'baseline', justifyContent:'space-between', columnGap:12, padding:'0 8px 10px' }
+                : { textAlign:'center', marginBottom:16, padding:'20px 16px 0' }}>
                 <div style={{ fontFamily:FONT_DISPLAY, fontSize:17, color:C.textMain }}>Друзья</div>
                 <div style={{ fontSize:11, color:C.textDim, marginTop:2 }}>Один пришёл — награду получают оба</div>
               </div>
 
-              <div style={{ padding:'0 8px' }}>
+              {/* sideMenu: награда с приглашением слева (3/5 ширины — иначе на
+                  780 px обрезается ссылка в плашке), список приглашённых
+                  справа — рядом, а не друг под другом. В остальных положениях
+                  обёртки колонок — display:contents. */}
+              <div style={sideMenu ? { padding:'0 8px', display:'flex', gap:14, alignItems:'flex-start' } : { padding:'0 8px' }}>
+              <div data-friends-col="left" style={sideMenu ? { flex:'3 1 0', minWidth:0 } : { display:'contents' }}>
 
                 {/* Блок награды */}
                 <div style={{
@@ -4150,6 +4265,8 @@ export default function App() {
                   </div>
                 </div>
 
+              </div>
+              <div data-friends-col="right" style={sideMenu ? { flex:'2 1 0', minWidth:0 } : { display:'contents' }}>
                 {/* Список приглашённых */}
                 <div>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
@@ -4192,6 +4309,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
+              </div>
 
               </div>
             </div>
@@ -4245,31 +4363,72 @@ export default function App() {
             }
           `}</style>
           {/* КОЛОНКА вкладки (12.10.2026): всё, кроме фона, живёт в ней. В
-              вертикали она во весь экран — раскладка та же, что была. В
-              горизонтали колонка шириной с короткую сторону экрана стоит по
+              вертикали она во весь экран — раскладка та же, что была. На
+              широком экране колонка шириной с короткую сторону стоит по
               центру, фон вкладки остаётся на весь экран по бокам (решение
-              Андрея). position:relative — от неё считаются проценты якоря сцены
+              Андрея). Телефон набок (sideMenu, 28.10.2026) — вместо колонки
+              вся область содержимого правее навигации. position:relative — от неё считаются проценты якоря сцены
               (раньше их считали от самого экрана, и в вертикали это одно и то
               же). Своего z-index у колонки НЕТ намеренно: с ним она стала бы
               отдельным слоем, и её дети (2 и 3) перестали бы упорядочиваться
               со слоями фона (0 и 1). */}
-          <div style={{
+          <div ref={exploreAreaRef} style={sideMenu ? {
+            // Набок (sideMenu): колонки нет — вся область содержимого, от
+            // навигации слева до безопасных зон. Сцена, энергия и доска стоят
+            // в ней абсолютно (места — от замера exploreArea), подготовка и
+            // «Начать забег» — в потоке, прижаты вправо вниз.
+            position:'absolute',
+            left:'calc(78px + var(--rp-safe-left, 0px))',
+            right:'var(--rp-safe-right, 0px)',
+            top:'var(--rp-safe-top, 0px)',
+            bottom:'var(--rp-safe-bottom, 0px)',
+            boxSizing:'border-box',
+            display:'flex', flexDirection:'column', alignItems:'flex-end', justifyContent:'flex-end',
+          } : {
             position:'relative',
             flex:1, minHeight:0,
             width:'100%', maxWidth:'100vmin', alignSelf:'center',
             boxSizing:'border-box',
             display:'flex', flexDirection:'column',
-            padding: exploreLow ? '8px 8px 0' : '20px 8px 0',
+            padding: '20px 8px 0',
             // Сверху — безопасная зона: в полном экране там кнопки Telegram.
-            paddingTop: `calc(${exploreLow ? 8 : 20}px + var(--rp-safe-top, 0px))`,
+            paddingTop: `calc(20px + var(--rp-safe-top, 0px))`,
           }}>
+          {/* Набок: место сцены и доски — от замера области. */}
+          {sideScene !== null && (() => {
+            const { h, scale, sceneLeft, sceneW, boardLeft, boardMaxW, boardMaxH } = sideScene
+            return (
+              <>
+                {/* Сцена: нулевой бокс-якорь на полу области (см. якорь
+                    обычного экрана ниже), у левого края. */}
+                <div data-refuge-scene="side" style={{
+                  position:'absolute', zIndex:2, pointerEvents:'none',
+                  left: sceneLeft + sceneW / 2, top: h - 4,
+                  width:0, height:0,
+                }}>
+                  <RefugeScene scale={scale} />
+                </div>
+                {/* Доска заданий справа от костра, над подготовкой. */}
+                {boardMaxW > 40 && boardMaxH > 40 && (
+                  <QuestBoardThumb
+                    board={questBoardViewProps}
+                    natW={QUEST_THUMB_NAT_W}
+                    maxW={boardMaxW}
+                    maxH={boardMaxH}
+                    style={{ position:'absolute', zIndex:4, left: boardLeft, top: SIDE_GAP }}
+                    onOpen={() => { setQuestConfirm(null); setQuestBoardOpen(true) }}
+                  />
+                )}
+              </>
+            )
+          })()}
 
           {/* Обычный экран: сцена — якорем на 64% высоты колонки, между
               энергией и подготовкой (место под неё держит «зона арта» ниже).
               В низком горизонтальном экране якорь не годится: высоты не хватает,
               и гнёзда подготовки ложились прямо на героя и костёр (замер s17) —
               там сцена стоит в потоке, см. ниже. */}
-          {!exploreLow && (
+          {!sideMenu && (
           <div style={{
             position:'absolute', zIndex:2, pointerEvents:'none',
             left:`calc(50% + ${REFUGE_SCENE_H_OFFSET_PCT}%)`,
@@ -4301,7 +4460,7 @@ export default function App() {
               над костром (место считает QuestWallBoard, не заходя на героя и
               костёр). Тап открывает доску в полный размер. Слой 4 — над
               пустой «зоной арта» (слой 3), иначе она перехватывала бы тап. */}
-          {!exploreLow && (
+          {!sideMenu && (
             <QuestWallBoard
               board={questBoardViewProps}
               geometry={REFUGE_SCENE_GEOMETRY}
@@ -4310,9 +4469,9 @@ export default function App() {
             />
           )}
 
-          {/* Слой 3 — контент. 1. Логотип. В низком горизонтальном экране его
-              нет: это украшение, а 48 px высоты там нужнее сцене и гнёздам. */}
-          {!exploreLow && (
+          {/* Слой 3 — контент. 1. Логотип. Набок его нет: это украшение, а
+              высота там нужнее сцене. */}
+          {!sideMenu && (
           <div style={{
             position:'relative', zIndex:3,
             padding:'8px 0 12px', textAlign:'center',
@@ -4323,7 +4482,11 @@ export default function App() {
           )}
 
           {/* 2. Энергия. Её низ — верх стены для доски заданий (questWallTopRef). */}
-          <div ref={questWallTopRef} style={{ position:'relative', zIndex:3 }}>
+          <div ref={questWallTopRef} style={sideMenu ? {
+            // Набок — сверху слева, шириной со сцену под ней: правее неё доска.
+            position:'absolute', zIndex:3, top:SIDE_GAP, left:SIDE_GAP,
+            width: sideScene === null ? 240 : Math.max(160, sideScene.sceneW),
+          } : { position:'relative', zIndex:3 }}>
             <div style={{ display:'flex', gap:2, height:12 }}>
               {Array.from({ length:10 }).map((_, i) => (
                 <div key={i} style={{
@@ -4343,56 +4506,26 @@ export default function App() {
           </div>
 
           {/* 3. Зона арта — держит высоту между энергией и подготовкой */}
-          {!exploreLow && (
+          {!sideMenu && (
           <div style={{
             flex:1, minHeight:0, margin:'16px 0',
             position:'relative', zIndex:3,
           }} />
           )}
 
-          {/* НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН: сцена и подготовка — одна прокручиваемая
-              середина, в потоке, друг под другом; кнопка «Начать забег» стоит
-              ПОД ней и видна всегда. Так гнёзда не ложатся на героя ни при какой
-              высоте: не влезло — середина прокручивается (на 390 px влезает
-              целиком, на 360 прокрутка около 30 px). display:contents в обычном
-              экране убирает эту обёртку из раскладки вовсе — там подготовка
-              остаётся прямым ребёнком колонки, как и была. */}
-          <div style={exploreLow ? {
-            flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch',
-            margin:'6px 0', position:'relative', zIndex:3,
+          {/* Набок (sideMenu): подготовка — блоком шириной с пять гнёзд над
+              кнопкой «Начать забег», оба прижаты вправо вниз (колонка — flex с
+              justify-content:flex-end). Верх блока мерит exploreArea: над ним
+              кончается место доски. display:contents в обычном экране убирает
+              эту обёртку из раскладки вовсе — там подготовка остаётся прямым
+              ребёнком колонки, как и была. */}
+          <div ref={explorePrepRef} style={sideMenu ? {
+            position:'relative', zIndex:3, flex:'none',
+            width:SIDE_PREP_W, marginRight:SIDE_GAP,
           } : { display:'contents' }}>
 
-          {exploreLow && (
-            // Сцена в потоке: блок высотой с ужатую сцену, якорь — на его
-            // нижней кромке (сцена сама поднимается над якорем на свою высоту).
-            <div style={{
-              position:'relative', flexShrink:0, pointerEvents:'none',
-              height: REFUGE_HERO_FRAME_H * REFUGE_SCENE_SCALE_LOW,
-            }}>
-              <div style={{
-                position:'absolute',
-                left:`calc(50% + ${REFUGE_SCENE_H_OFFSET_PCT}%)`, top:'100%',
-                // Тот же нулевой бокс-якорь, что у сцены обычного экрана выше.
-                width:0, height:0,
-              }}>
-                <RefugeScene scale={REFUGE_SCENE_SCALE_LOW} />
-              </div>
-              {/* Доска заданий набок: стены над героем нет — копия висит в
-                  полосе сцены справа от костра, высотой с сцену, и раскладку
-                  не сдвигает. Тап открывает доску. */}
-              <QuestBoardThumb
-                board={questBoardViewProps}
-                natW={QUEST_THUMB_NAT_W}
-                maxW={QUEST_THUMB_MAX_W}
-                maxH={REFUGE_HERO_FRAME_H * REFUGE_SCENE_SCALE_LOW}
-                style={{ position:'absolute', right:6, bottom:0 }}
-                onOpen={() => { setQuestConfirm(null); setQuestBoardOpen(true) }}
-              />
-            </div>
-          )}
-
           {/* 4. Подготовка */}
-          <div style={{ position:'relative', zIndex:3, marginBottom: exploreLow ? 4 : 12 }}>
+          <div style={{ position:'relative', zIndex:3, marginBottom: sideMenu ? 6 : 12 }}>
             <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY }}>ПОДГОТОВКА</div>
             {/* Пять ОДИНАКОВЫХ гнёзд, без разделителя: прежние 3+2 обещали
                 деление на «зелья» и «прочее», которого нет — зелья в гнёзда не
@@ -4448,7 +4581,9 @@ export default function App() {
               )
               const slotIndex = prepPickerSlot
               return (
-                <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:6 }}>
+                <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:6,
+                  // Набок список растёт вверх над сценой — не выше 3 строк, дальше прокрутка.
+                  ...(sideMenu ? { maxHeight:150, overflowY:'auto' } : {}) }}>
                   {stock === null ? (
                     <div style={{ fontSize:11, color:C.textDim, textAlign:'center' }}>
                       Запас расходников неизвестен — профиль не загружен.
@@ -4493,10 +4628,12 @@ export default function App() {
 
           </div>
 
-          {/* 5. Главная кнопка. Отступ снизу — место под нижнюю панель: в
-              обычном экране прежние 96 px, в низком горизонтальном — 81 (панель
-              75 px и зазор), там каждый пиксель высоты на счету. */}
-          <div style={{ position:'relative', zIndex:3, marginBottom:`calc(${exploreLow ? 81 : 96}px + var(--rp-safe-bottom, 0px))` }}>
+          {/* 5. Главная кнопка. Отступ снизу — место под нижнюю панель (96 px).
+              Набок нижней панели нет: кнопка шириной с блок подготовки, справа
+              внизу области. */}
+          <div style={sideMenu
+            ? { position:'relative', zIndex:3, flex:'none', width:SIDE_PREP_W, margin:`0 ${SIDE_GAP}px ${SIDE_GAP}px 0` }
+            : { position:'relative', zIndex:3, marginBottom:`calc(96px + var(--rp-safe-bottom, 0px))` }}>
             <div
               onClick={() => { if (!runBlocked) { setExploreMapFile(undefined); setShowExploreTest(true) } }}
               style={{
@@ -4548,7 +4685,9 @@ export default function App() {
               Прижата к верху, ширина всегда в пределах экрана (left+right:8),
               maxHeight ограничивает панель верхней частью экрана — нижняя
               половина должна оставаться свободной для оценки затемнения. */}
-          <div style={{ position:'fixed', top:'calc(8px + var(--rp-safe-top, 0px))', left:8, right:8, zIndex:1001, display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4 }}>
+          <div style={{ position:'fixed', top:'calc(8px + var(--rp-safe-top, 0px))', left:8, right:8, zIndex:1001, display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4,
+            // Набок — правее не заходит в правую безопасную зону (вырез экрана).
+            ...(sideMenu ? { left:'calc(86px + var(--rp-safe-left, 0px))', right:'calc(8px + var(--rp-safe-right, 0px))' } : {}) }}>
             <div
               onClick={() => setShowExploreDebug(v => !v)}
               style={{
@@ -4611,7 +4750,23 @@ export default function App() {
       )}
       </div>
 
-      <div style={{
+      <div data-nav={sideMenu ? 'side' : 'bottom'} style={sideMenu ? {
+        // НАВИГАЦИЯ СЛЕВА (sideMenu, решение Андрея 28.10.2026): те же пять
+        // кнопок, что у нижней панели, колонкой у левого края — сразу после
+        // левой безопасной зоны, от кнопок Telegram до полосы жеста. В потоке
+        // корня (order:-1 ставит её перед содержимым), а не fixed: область
+        // содержимого сама начинается правее, и под колонкой ничего не прячется.
+        position:'relative', order:-1, flex:'none',
+        boxSizing:'border-box',
+        width:'calc(78px + var(--rp-safe-left, 0px))',
+        paddingLeft:'var(--rp-safe-left, 0px)',
+        paddingTop:'calc(4px + var(--rp-safe-top, 0px))',
+        paddingBottom:'calc(4px + var(--rp-safe-bottom, 0px))',
+        display:'flex', flexDirection:'column',
+        background:'rgba(10, 8, 12, 0.55)',
+        borderRight:`1px solid ${C.stoneDark}`,
+        zIndex:999,
+      } : {
         position:'fixed', bottom:0, left:0, right:0,
         // В горизонтали панель — той же ширины, что колонка вкладок, и тоже по
         // центру (при left:0 и right:0 авто-поля центрируют бокс с пределом
@@ -4656,7 +4811,10 @@ export default function App() {
               style={{
                 flex:1, padding:'8px 0', border:'none', background:'none',
                 fontSize:10, display:'flex', flexDirection:'column',
-                alignItems:'center', gap:2, cursor:'pointer'
+                alignItems:'center', gap:2, cursor:'pointer',
+                // Колонкой — та же кнопка, высотой в пятую часть колонки, по
+                // центру своей доли.
+                ...(sideMenu ? { padding:'2px 0', minHeight:0, justifyContent:'center' } : {}),
               }}>
               <img
                 src={`${import.meta.env.BASE_URL}assets/icons/${tab.icon}`}
@@ -4703,7 +4861,10 @@ export default function App() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            style={{ margin:'auto', width:'calc(100vmin - 32px)', display:'flex', flexDirection:'column', gap:10 }}
+            style={{ margin:'auto', width:'calc(100vmin - 32px)', display:'flex', flexDirection:'column', gap:10,
+              // Набок доска (402 px с тремя листками) выше экрана: колонка не
+              // выше подложки, доска прокручивается внутри, а не вся подложка.
+              ...(sideMenu ? { maxHeight:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch' } : {}) }}
           >
             <QuestBoard
               {...questBoardViewProps}
@@ -4757,10 +4918,12 @@ export default function App() {
             background:'rgba(0,0,0,0.55)',
             display:'flex', alignItems:'center', justifyContent:'center',
             zIndex:1000,
+            ...sideOverlayPad,
           }}>
           <div
             onClick={e => e.stopPropagation()}
             style={{
+              ...sideOverlayCard,
               position:'relative',
               maxWidth:290, width:'100%',
               background:C.appBg, border:`1px solid ${C.stoneDark}`,
@@ -5376,7 +5539,7 @@ export default function App() {
           гаснет сам (таймер в showGoldToast). */}
       {goldToast !== null && (
         <div style={{
-          position:'fixed', left:0, right:0, bottom:96,
+          position:'fixed', left:0, right:0, bottom: sideMenu ? 'calc(16px + var(--rp-safe-bottom, 0px))' : 96,
           display:'flex', justifyContent:'center',
           zIndex:1100, pointerEvents:'none',
         }}>
