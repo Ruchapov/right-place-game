@@ -93,6 +93,11 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
             display: 'flex',
             overflowY: 'auto',
             WebkitOverflowScrolling: 'touch',
+            // Безопасные зоны (28.10.2026): в полном экране сверху кнопки Telegram
+            // и вырез, снизу полоса жеста — рамка центрируется между ними и
+            // туда не заходит. Затемнение по-прежнему на весь экран.
+            boxSizing: 'border-box',
+            padding: 'calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px))',
           }}
         >
           <div

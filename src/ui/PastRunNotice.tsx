@@ -133,7 +133,9 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
         display: 'flex',
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
-        padding: '8px 0',
+        // Сверху и снизу — безопасные зоны (28.10.2026): в полном экране и в
+        // вертикали сверху кнопки Telegram и вырез, снизу полоса жеста.
+        padding: 'calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px))',
         boxSizing: 'border-box',
       }}
     >

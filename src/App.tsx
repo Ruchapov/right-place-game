@@ -1006,13 +1006,15 @@ export default function App() {
   // то же (навигация переезжает влево CSS-свойством order, а не местом в JSX),
   // вкладки, подвкладки и открытые окна живут в состоянии App.
   const sideMenu = useMediaQuery(LOW_LANDSCAPE_QUERY)
-  // Окно поверх меню в sideMenu: подложка отступает на безопасные зоны, окно по
-  // центру не выше оставшегося и прокручивается внутри — кнопки достижимы
-  // всегда. В остальных положениях — пустые стили (как было).
-  const sideOverlayPad: CSSProperties = sideMenu ? {
+  // Окно поверх меню: подложка отступает на безопасные зоны, окно по центру не
+  // выше оставшегося и прокручивается внутри — кнопки достижимы всегда. С
+  // 28.10.2026 — во всех положениях (полный экран и в вертикали: сверху кнопки
+  // Telegram и вырез). При нулевых зонах и окне, которое влезает, вид прежний:
+  // карточка по центру симметричных полей.
+  const sideOverlayPad: CSSProperties = {
     boxSizing:'border-box',
     padding:'calc(8px + var(--rp-safe-top, 0px)) calc(8px + var(--rp-safe-right, 0px)) calc(8px + var(--rp-safe-bottom, 0px)) calc(8px + var(--rp-safe-left, 0px))',
-  } : {}
+  }
   // «Исследовать» набок: размер области сцены и верх блока подготовки — от
   // них считаются масштаб и место сцены и доски (замер, а не догадка: область
   // зависит от безопасных зон и шапки Telegram). null — ещё не мерили.
@@ -1046,9 +1048,12 @@ export default function App() {
       boardMaxH: blockTop - 2 * SIDE_GAP,
     }
   })() : null
-  const sideOverlayCard: CSSProperties = sideMenu ? {
-    boxSizing:'border-box', maxHeight:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch',
-  } : {}
+  // Набок — border-box во всю высоту подложки. В вертикали модель коробки
+  // прежняя (content-box: ширина карточки — 290 px содержимого + поля 16 и
+  // рамка 1, то есть 324), поэтому предел высоты — за вычетом тех же 34 px.
+  const sideOverlayCard: CSSProperties = sideMenu
+    ? { boxSizing:'border-box', maxHeight:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch' }
+    : { maxHeight:'calc(100% - 34px)', overflowY:'auto', WebkitOverflowScrolling:'touch' }
 
   // Доска ежедневных заданий (26.10.2026). view — последний вид от сервера, at —
   // когда он получен (от него идёт отсчёт «новые через Ч:ММ»). status — почему
@@ -5539,7 +5544,7 @@ export default function App() {
           гаснет сам (таймер в showGoldToast). */}
       {goldToast !== null && (
         <div style={{
-          position:'fixed', left:0, right:0, bottom: sideMenu ? 'calc(16px + var(--rp-safe-bottom, 0px))' : 96,
+          position:'fixed', left:0, right:0, bottom: sideMenu ? 'calc(16px + var(--rp-safe-bottom, 0px))' : 'calc(96px + var(--rp-safe-bottom, 0px))',
           display:'flex', justifyContent:'center',
           zIndex:1100, pointerEvents:'none',
         }}>

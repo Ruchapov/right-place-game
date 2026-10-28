@@ -1,8 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { init, mountViewport, bindViewportCssVars, isViewportCssVarsBound } from '@telegram-apps/sdk'
+import { init, mountViewport, bindViewportCssVars, isViewportCssVarsBound, mountSwipeBehavior, disableVerticalSwipes } from '@telegram-apps/sdk'
 import App from './App.tsx'
-import { followOrientationWithFullscreen } from './telegramFullscreen'
+import { keepFullscreenOnPhone } from './telegramFullscreen'
 import './index.css'
 
 // Initialize Telegram SDK
@@ -30,17 +30,33 @@ async function bindTelegramViewportCssVars() {
   if (!mountViewport.isAvailable()) return
   await mountViewport()
   if (bindViewportCssVars.isAvailable() && !isViewportCssVarsBound()) bindViewportCssVars()
-  // Полный экран в горизонтали — СТРОГО после монтирования вьюпорта (без него
-  // методы полного экрана недоступны) и после переменных: отступы под кнопки
-  // Telegram должны уже работать, когда шапка исчезнет. Свой try — сбой здесь
-  // не должен выглядеть как «переменные не подключились» (см. catch ниже), а
-  // игра без полного экрана полностью рабочая.
+  // Полный экран на телефоне (всегда, с 27.10.2026) — СТРОГО после монтирования
+  // вьюпорта (без него методы полного экрана недоступны) и после переменных:
+  // отступы под кнопки Telegram должны уже работать, когда шапка исчезнет. Свой
+  // try — сбой здесь не должен выглядеть как «переменные не подключились» (см.
+  // catch ниже), а игра без полного экрана полностью рабочая.
   try {
-    followOrientationWithFullscreen()
+    keepFullscreenOnPhone()
   } catch (error) {
-    console.warn('Полный экран Telegram по повороту не подключён — игра работает в обычном окне', error)
+    console.warn('Полный экран Telegram не подключён — игра работает в обычном окне', error)
   }
 }
+
+// Свайп вниз не закрывает (не сворачивает) игру (28.10.2026): в забеге палец
+// постоянно ведёт по экрану, и вертикальный жест сворачивал Mini App посреди
+// боя. Запрет — на всю игру, а не только на забег: прокрутку страниц меню он
+// не трогает, закрыть игру можно кнопкой Telegram. Метод из Mini Apps 7.7;
+// старый Telegram — одно предупреждение, жест работает как раньше.
+function disableSwipeToClose() {
+  try {
+    if (mountSwipeBehavior.isAvailable()) mountSwipeBehavior()
+    if (disableVerticalSwipes.isAvailable()) disableVerticalSwipes()
+    else if (mountSwipeBehavior.isAvailable()) console.warn('Telegram не умеет запрещать свайп вниз (нужен Mini Apps 7.7) — жест сворачивает игру')
+  } catch (error) {
+    console.warn('Запрет свайпа вниз не подключён — жест сворачивает игру', error)
+  }
+}
+disableSwipeToClose()
 void bindTelegramViewportCssVars().catch((error) => {
   console.error('Не удалось подключить CSS-переменные вьюпорта Telegram (safe-area)', error)
 })
