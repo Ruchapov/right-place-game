@@ -2,6 +2,7 @@ import type { RunResultSummary, AbandonedRunSummary } from '../api'
 import * as C from '../explore/constants'
 import { C as Theme } from './theme'
 import { skillSealSrc } from '../skillBooks'
+import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ResultsFrame'
 
 // Окно о ПРОШЛОМ забеге, который сервер закрыл сам при входе (/auth/login
 // отдаёт либо interruptedRun, либо abandonedRun — поля взаимоисключающие, см.
@@ -9,8 +10,7 @@ import { skillSealSrc } from '../skillBooks'
 // поверх меню, и закрывается кнопкой.
 //
 // Живёт в src/ui (рядом с theme.ts), а не в src/explore/ui: это экран МЕНЮ, а
-// не часть забега — во время забега он не существует. Explore-константы
-// (шрифт, иконка трофея) импортируются тем же способом, что в ResultsScreen.
+// не часть забега — во время забега он не существует.
 //
 // Две ветки:
 //   interrupted — подтверждённый забег, закрытый как смерть (трофеи сгорели,
@@ -21,47 +21,13 @@ export type PastRunNoticeData =
   | { kind: 'interrupted'; result: RunResultSummary }
   | { kind: 'abandoned'; summary: AbandonedRunSummary }
 
-// --- Копия геометрии рамки и плиты из ResultsScreen, Explore.tsx:272-300 ---
-// Менять вместе: те же файлы ассетов, те же замеры по ним. Экспорта у тех
-// констант нет, а Explore.tsx в этой задаче трогать нельзя, поэтому копия.
-// Аспект — реальные пиксели файла через calc()/padding-bottom, НЕ CSS
-// aspect-ratio и НЕ auto-высота от <img>: иначе проценты top/height у
-// абсолютных детей считать не от чего (см. CLAUDE.md, Critical Gotchas).
-const RESULTS_FRAME_SRC = `${import.meta.env.BASE_URL}assets/results_frame.png`
-const RESULTS_PLATE_SRC = `${import.meta.env.BASE_URL}assets/results_plate.png`
-const RESULTS_FRAME_ASPECT = 596 / 420
-const RESULTS_FRAME_W = 'clamp(300px, 94vmin, 400px)'
-const RESULTS_FRAME_H = `calc(${RESULTS_FRAME_W} * ${RESULTS_FRAME_ASPECT})`
-const RESULTS_FIELD_X = 0.105
-const RESULTS_FIELD_Y = 0.075
-const RESULTS_FIELD_W = 0.789
-const RESULTS_FIELD_H = 0.847
-const RESULTS_PLATE_ASPECT = 139 / 420
-const RESULTS_PLATE_FIELD_X = 0.055
-const RESULTS_PLATE_FIELD_Y = 0.165
-const RESULTS_PLATE_FIELD_W = 0.89
-const RESULTS_PLATE_FIELD_H = 0.619
-// --- конец копии ---
-
+// Рамка, плита трофеев и обе раскладки (вертикаль и телефон набок) — общие с
+// экраном итогов забега, src/ui/ResultsFrame.tsx. Здесь — только содержимое и
+// вид кнопки.
 // Вид кнопки — правилом таблицы стилей, а не инлайном (тот же приём, что у
-// PRESS_CSS в TouchControls.tsx). Значения — копия кнопки "В МЕНЮ",
-// Explore.tsx:644-662, менять вместе.
-// Телефон набок (то же условие, что у меню — LOW_LANDSCAPE_MAX_H, 28.10.2026):
-// рамка не выше экрана за вычетом безопасных зон — ужимается по высоте с той
-// же пропорцией, а длинное содержимое прокручивается внутри поля рамки (оно и
-// так overflowY:auto). До этого рамка 300×425 px минимум выходила за экран
-// 390 px, и прокручивался весь экран. В вертикали правило не срабатывает.
-const NOTICE_SIDE_AVAIL_H = 'calc(100vh - var(--rp-safe-top, 0px) - var(--rp-safe-bottom, 0px) - 16px)'
+// PRESS_CSS в TouchControls.tsx). Значения — копия кнопки "В МЕНЮ"
+// ResultsScreen (Explore.tsx), менять вместе.
 const NOTICE_CSS = `
-  @media (orientation: landscape) and (max-height: ${C.LOW_LANDSCAPE_MAX_H}px) {
-    [data-past-run-notice] {
-      padding: calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px)) !important;
-    }
-    [data-past-run-notice-frame] {
-      width: min(${RESULTS_FRAME_W}, calc(${NOTICE_SIDE_AVAIL_H} / ${RESULTS_FRAME_ASPECT})) !important;
-      height: min(${RESULTS_FRAME_H}, ${NOTICE_SIDE_AVAIL_H}) !important;
-    }
-  }
   [data-past-run-notice] button {
     padding: 12px 30px;
     border-radius: 10px;
@@ -75,19 +41,6 @@ const NOTICE_CSS = `
     cursor: pointer;
   }
 `
-
-// Разделитель "линия-ромб-линия" под заголовком — копия из ResultsScreen,
-// Explore.tsx:452-456, менять вместе. Ширина задаётся снаружи: под заголовком
-// он уже (68%), чем секционные разделители (100%).
-function Divider({ width }: { width: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, width }}>
-      <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-      <div style={{ width: 6, height: 6, background: Theme.glowEdge, transform: 'rotate(45deg)', flexShrink: 0 }} />
-      <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-    </div>
-  )
-}
 
 export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoticeData; onClose: () => void }) {
   // Заголовок и его цвет — единственное, что разводит две ветки до самой
@@ -110,156 +63,71 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
   const subtitle =
     notice.kind === 'abandoned' ? 'Штрафа нет' : 'Забег не завершён — приложение было закрыто'
 
+  const interrupted = notice.kind === 'interrupted' ? notice.result : null
+  const hasProgress =
+    interrupted !== null &&
+    (interrupted.strengthGained > 0 ||
+      interrupted.enduranceGained > 0 ||
+      interrupted.agilityGained > 0 ||
+      interrupted.leveledUp ||
+      interrupted.skillLevelUps.length > 0)
+  const energyLine = notice.kind === 'abandoned' && notice.summary.energyRefunded > 0 ? notice.summary.energyRefunded : null
+
   return (
-    <div
-      data-past-run-notice=""
-      style={{
-        // Копия оболочки ResultsScreen, Explore.tsx:359-406, менять вместе.
-        // zIndex 2000 — выше нижней навигации (999) и экрана забега (1000).
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100vw',
-        height: '100vh',
-        zIndex: 2000,
-        background: Theme.appBg,
-        // (Как у ResultsScreen — менять вместе.) Рамка выше экрана (телефон набок: 520 px рамки на 390 px высоты) —
-        // экран прокручивается, и кнопка под рамкой достижима. До 13.10.2026
-        // рамка центрировалась без прокрутки, и в горизонтали «В МЕНЮ» уходила
-        // за нижний край: выйти с итогов можно было, только повернув телефон.
-        // Центрирует рамку её собственный margin:auto, а не alignItems:
-        // выровненное по центру содержимое, которое выше контейнера, обрезается
-        // сверху, и до его верха не докрутить.
-        display: 'flex',
-        overflowY: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        // Сверху и снизу — безопасные зоны (28.10.2026): в полном экране и в
-        // вертикали сверху кнопки Telegram и вырез, снизу полоса жеста.
-        padding: 'calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px))',
-        boxSizing: 'border-box',
-      }}
-    >
-      <style>{NOTICE_CSS}</style>
-      <div data-past-run-notice-frame="" style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
-        <img
-          src={RESULTS_FRAME_SRC}
-          alt=""
-          draggable={false}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            left: `${RESULTS_FIELD_X * 100}%`,
-            top: `${RESULTS_FIELD_Y * 100}%`,
-            width: `${RESULTS_FIELD_W * 100}%`,
-            height: `${RESULTS_FIELD_H * 100}%`,
-            padding: 16,
-            boxSizing: 'border-box',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'space-evenly',
-            gap: 10,
-            overflowY: 'auto',
-          }}
-        >
-          {/* 1. Заголовок + подпись + разделитель — одна секция, как в
-              ResultsScreen (разделитель держится вплотную к заголовку своим
-              gap, а не общим space-evenly). Подпись стоит на месте строки
-              состояния сохранения: здесь сохранять уже нечего — забег закрыл
-              сервер, — поэтому тот же размер и курсив, но другой смысл. */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            <div
-              style={{
-                fontFamily: C.FONT_DISPLAY,
-                fontWeight: 900,
-                fontSize: 'clamp(19px, 6.2vmin, 26px)',
-                letterSpacing: '0.08em',
-                color: died ? Theme.danger : Theme.textMain,
-                textAlign: 'center',
-              }}
-            >
-              {title}
-            </div>
-            <div
-              style={{
-                fontSize: 'clamp(10px, 3vmin, 12px)',
-                fontStyle: 'italic',
-                textAlign: 'center',
-                color: Theme.textDim,
-              }}
-            >
-              {subtitle}
-            </div>
-            <Divider width="68%" />
+    <ResultsFrame
+      dataName="past-run-notice"
+      extraCss={NOTICE_CSS}
+      head={
+        /* 1. Заголовок + подпись + разделитель — одна секция, как в
+            ResultsScreen. Подпись стоит на месте строки состояния сохранения:
+            здесь сохранять уже нечего — забег закрыл сервер, — поэтому тот же
+            размер и курсив, но другой смысл. */
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div
+            style={{
+              fontFamily: C.FONT_DISPLAY,
+              fontWeight: 900,
+              fontSize: 'clamp(19px, 6.2vmin, 26px)',
+              letterSpacing: '0.08em',
+              color: died ? Theme.danger : Theme.textMain,
+              textAlign: 'center',
+            }}
+          >
+            {title}
           </div>
-
-          {/* 2. Плита с трофеями — только у interrupted. Обёртка получает
-              РЕАЛЬНУЮ высоту через padding-bottom% (RESULTS_PLATE_ASPECT
-              выше), иначе %-поле внутри не позиционируется. Копия из
-              ResultsScreen, Explore.tsx:496-535, менять вместе. */}
-          {notice.kind === 'interrupted' && (
-            <div style={{ position: 'relative', width: '100%', paddingBottom: `${RESULTS_PLATE_ASPECT * 100}%`, flexShrink: 0 }}>
-              <img
-                src={RESULTS_PLATE_SRC}
-                alt=""
-                draggable={false}
-                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  left: `${RESULTS_PLATE_FIELD_X * 100}%`,
-                  top: `${RESULTS_PLATE_FIELD_Y * 100}%`,
-                  width: `${RESULTS_PLATE_FIELD_W * 100}%`,
-                  height: `${RESULTS_PLATE_FIELD_H * 100}%`,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 2,
-                }}
-              >
-                <div style={{ fontSize: 'clamp(8px, 2.4vmin, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
-                  {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span
-                    style={{
-                      fontFamily: C.FONT_DISPLAY,
-                      fontWeight: 900,
-                      fontSize: 'clamp(19px, 5.8vmin, 25px)',
-                      color: trophyLossView ? Theme.danger : Theme.glowCore,
-                      lineHeight: 1,
-                    }}
-                  >
-                    {died ? notice.result.trophiesLost : Math.abs(notice.result.trophiesEarned)}
-                  </span>
-                  <img src={C.REWARD_ICON_SRC.trophy} alt="" draggable={false} style={{ width: 20, height: 20, objectFit: 'contain' }} />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 3. Прокачка — ТОЛЬКО прибавка, только у interrupted. Копия из
-              ResultsScreen, Explore.tsx:561-595, менять вместе. Нули с сервера
-              (забег без единого удара) секцию не рендерят вовсе. */}
-          {notice.kind === 'interrupted' &&
-            (notice.result.strengthGained > 0 ||
-              notice.result.enduranceGained > 0 ||
-              notice.result.agilityGained > 0 ||
-              notice.result.leveledUp ||
-              notice.result.skillLevelUps.length > 0) && (
+          <div
+            style={{
+              fontSize: 'clamp(10px, 3vmin, 12px)',
+              fontStyle: 'italic',
+              textAlign: 'center',
+              color: Theme.textDim,
+            }}
+          >
+            {subtitle}
+          </div>
+          <ResultsDivider width="68%" />
+        </div>
+      }
+      left={
+        /* 2. Плита с трофеями — только у interrupted (общая с ResultsScreen). */
+        interrupted === null ? null : (
+          <TrophyPlate
+            lossView={trophyLossView}
+            count={died ? interrupted.trophiesLost : Math.abs(interrupted.trophiesEarned)}
+            color={trophyLossView ? Theme.danger : Theme.glowCore}
+          />
+        )
+      }
+      right={
+        !hasProgress && energyLine === null ? null : (
+          <>
+            {/* 3. Прокачка — ТОЛЬКО прибавка, только у interrupted. Те же строки,
+                что в ResultsScreen (Explore.tsx), менять вместе. Нули с сервера
+                (забег без единого удара) секцию не рендерят вовсе. */}
+            {interrupted !== null && hasProgress && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                  <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                  <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
-                    ПРОКАЧКА
-                  </div>
-                  <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                </div>
-                {notice.result.leveledUp && (
+                <ResultsSectionTitle>ПРОКАЧКА</ResultsSectionTitle>
+                {interrupted.leveledUp && (
                   <div
                     style={{
                       fontFamily: C.FONT_DISPLAY,
@@ -273,9 +141,9 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                   </div>
                 )}
                 {[
-                  { label: 'Сила', value: notice.result.strengthGained },
-                  { label: 'Выносливость', value: notice.result.enduranceGained },
-                  { label: 'Ловкость', value: notice.result.agilityGained },
+                  { label: 'Сила', value: interrupted.strengthGained },
+                  { label: 'Выносливость', value: interrupted.enduranceGained },
+                  { label: 'Ловкость', value: interrupted.agilityGained },
                 ]
                   .filter((stat) => stat.value > 0)
                   .map((stat) => (
@@ -283,12 +151,11 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                       +{stat.value} {stat.label}
                     </div>
                   ))}
-                {/* Выросшие навыки — КОПИЯ строки из ResultsScreen
-                    (Explore.tsx), менять вместе. Брошенный забег растит уровни
-                    навыков по-настоящему (из того же среза, что статы, см.
-                    /auth/login), поэтому прятать это здесь было бы молчанием о
-                    настоящем изменении персонажа. */}
-                {notice.result.skillLevelUps.map((up) => (
+                {/* Выросшие навыки. Брошенный забег растит уровни навыков
+                    по-настоящему (из того же среза, что статы, см. /auth/login),
+                    поэтому прятать это здесь было бы молчанием о настоящем
+                    изменении персонажа. */}
+                {interrupted.skillLevelUps.map((up) => (
                   <div
                     key={up.skillId}
                     style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}
@@ -305,22 +172,24 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
               </div>
             )}
 
-          {/* 4. Возврат энергии — только у abandoned и только если она реально
-              вернулась. Ноль не показываем: "+0" читается как поломка, а не
-              как "возвращать было нечего". */}
-          {notice.kind === 'abandoned' && notice.summary.energyRefunded > 0 && (
-            <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', flexShrink: 0 }}>
-              Энергия возвращена: +{notice.summary.energyRefunded}
-            </div>
-          )}
-
-          {/* 5. Кнопка — единственный способ закрыть окно. Вид задан правилом
-              NOTICE_CSS вверху файла. */}
-          <div style={{ display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
-            <button onClick={onClose}>ПОНЯТНО</button>
-          </div>
+            {/* 4. Возврат энергии — только у abandoned и только если она реально
+                вернулась. Ноль не показываем: "+0" читается как поломка, а не
+                как "возвращать было нечего". */}
+            {energyLine !== null && (
+              <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', flexShrink: 0 }}>
+                Энергия возвращена: +{energyLine}
+              </div>
+            )}
+          </>
+        )
+      }
+      foot={
+        /* 5. Кнопка — единственный способ закрыть окно. Вид задан правилом
+            NOTICE_CSS вверху файла. */
+        <div style={{ display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+          <button onClick={onClose}>ПОНЯТНО</button>
         </div>
-      </div>
-    </div>
+      }
+    />
   )
 }

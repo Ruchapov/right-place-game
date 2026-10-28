@@ -64,6 +64,7 @@ import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError,
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
+import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ui/ResultsFrame'
 import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
@@ -383,42 +384,12 @@ function StoneFrameScreen({ title, lines, pulse, children }: { title: string; li
   )
 }
 
-// Экран итогов забега — своя каменная рамка (results_frame.png, не
-// переиспользует ERROR_FRAME_SRC — другие пропорции/содержимое), но тот же
-// приём (доли внутреннего поля + calc() вместо CSS aspect-ratio), что у
-// StoneFrameScreen/HP-плиты выше. Показывается ВМЕСТО обычного экрана игры,
-// когда забег завершился (см. runResult в Explore ниже) — к этому моменту
-// тикер уже остановлен (см. sendFinishExplore), так что канвас/AI под ним
-// больше не работают.
-const RESULTS_FRAME_SRC = `${import.meta.env.BASE_URL}assets/results_frame.png`
-const RESULTS_PLATE_SRC = `${import.meta.env.BASE_URL}assets/results_plate.png`
-// Реальный аспект файла (420×596), НЕ через CSS aspect-ratio — та же причина,
-// что у ERROR_FRAME/HP-плиты (ломает %-позиционирование абсолютных детей в
-// некоторых WebView).
-const RESULTS_FRAME_ASPECT = 596 / 420
-const RESULTS_FRAME_W = 'clamp(300px, 94vmin, 400px)'
-const RESULTS_FRAME_H = `calc(${RESULTS_FRAME_W} * ${RESULTS_FRAME_ASPECT})`
-// Внутреннее поле рамки — доли (0..1) от размера рамки, замерено по файлу.
-const RESULTS_FIELD_X = 0.105
-const RESULTS_FIELD_Y = 0.075
-const RESULTS_FIELD_W = 0.789
-const RESULTS_FIELD_H = 0.847
-// Аспект плиты (420×139, высота/ширина) — задаёт ОБЁРТКЕ реальную высоту
-// через padding-bottom% (см. плиту ниже). padding-bottom% считается от
-// ШИРИНЫ элемента (она определена — 100% готовой к тому моменту колонки),
-// в отличие от auto-высоты от <img>: без этого %-позиционирование
-// внутреннего поля не работало — родитель имел auto-высоту, а проценты
-// top/height дочернего абсолютного блока относительно auto-высоты не
-// резолвятся (тот же класс бага, что и у HP-плиты/ERROR_FRAME, см. их
-// calc()-выражения выше, — здесь ширина не своя формула, а 100% колонки,
-// поэтому calc() неприменим, нужен padding-bottom-трюк).
-const RESULTS_PLATE_ASPECT = 139 / 420
-// Внутреннее поле плиты — доли от размера ПЛИТЫ, замерено по файлу заново
-// (см. задачу): левая/верхняя граница ниши и её размер.
-const RESULTS_PLATE_FIELD_X = 0.055
-const RESULTS_PLATE_FIELD_Y = 0.165
-const RESULTS_PLATE_FIELD_W = 0.89
-const RESULTS_PLATE_FIELD_H = 0.619
+// Экран итогов забега — своя каменная рамка (results_frame.png), общая с окном
+// о прошлом забеге: геометрия, плита трофеев и обе раскладки (вертикаль и
+// телефон набок) — в src/ui/ResultsFrame.tsx. Показывается ВМЕСТО обычного
+// экрана игры, когда забег завершился (см. runResult в Explore ниже) — к этому
+// моменту тикер уже остановлен (см. sendFinishExplore), так что канвас/AI под
+// ним больше не работают.
 
 // Состояние сохранения итогов забега на сервере (см. sendFinishExplore и
 // submitFinish в Explore). Раньше null значил сразу и "ждём ответа", и
@@ -700,117 +671,64 @@ function ResultsScreen({
   const trophiesLostNotDied = !result.died && result.trophiesEarned < 0
   const trophyLossView = result.died || trophiesLostNotDied
   const trophyCount = result.died ? result.trophiesLost : Math.abs(result.trophiesEarned)
+  const hasProgress = result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp || result.skillLevelUps.length > 0
+  const hasDrops = result.drops.length > 0 || result.dropsLost.length > 0
+  // Правая колонка набок (см. ResultsFrame) — только если в ней есть что
+  // показать; иначе левая занимает обе.
+  const hasRight = hasProgress || hasDrops || !!result.questCompleted
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100vw',
-        height: '100vh',
-        zIndex: 2000,
-        background: Theme.appBg,
-        // Рамка выше экрана (телефон набок: 520 px рамки на 390 px высоты) —
-        // экран прокручивается, и кнопка под рамкой достижима. До 13.10.2026
-        // рамка центрировалась без прокрутки, и в горизонтали «В МЕНЮ» уходила
-        // за нижний край: выйти с итогов можно было, только повернув телефон.
-        // Центрирует рамку её собственный margin:auto, а не alignItems:
-        // выровненное по центру содержимое, которое выше контейнера, обрезается
-        // сверху, и до его верха не докрутить.
-        display: 'flex',
-        overflowY: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        // Сверху и снизу — безопасные зоны (28.10.2026): в полном экране и в
-        // вертикали сверху кнопки Telegram и вырез, снизу полоса жеста.
-        padding: 'calc(8px + var(--rp-safe-top, 0px)) 0 calc(8px + var(--rp-safe-bottom, 0px))',
-        boxSizing: 'border-box',
-      }}
-    >
-      <div style={{ position: 'relative', width: RESULTS_FRAME_W, height: RESULTS_FRAME_H, margin: 'auto' }}>
-        <img
-          src={RESULTS_FRAME_SRC}
-          alt=""
-          draggable={false}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-        />
-        {/* Содержимое — строго внутри внутреннего поля рамки (доли выше),
-            плюс ещё ~16px отступ по кругу (padding). overflowY на случай
-            совсем маленького экрана — контент не должен вылезать на камень. */}
-        <div
-          style={{
-            position: 'absolute',
-            left: `${RESULTS_FIELD_X * 100}%`,
-            top: `${RESULTS_FIELD_Y * 100}%`,
-            width: `${RESULTS_FIELD_W * 100}%`,
-            height: `${RESULTS_FIELD_H * 100}%`,
-            padding: 16,
-            boxSizing: 'border-box',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            // space-evenly — секции распределяются РАВНЫМИ промежутками по
-            // всей высоте поля (см. задачу: "провал" внизу был из-за
-            // marginTop:'auto' на кнопке — единственный, кто забирал всё
-            // свободное место, вместо того чтобы поделить его между всеми
-            // секциями). gap — минимальный пол на случай переполнения
-            // (overflowY), когда свободного места для space-evenly не остаётся.
-            justifyContent: 'space-evenly',
-            gap: 10,
-            overflowY: 'auto',
-          }}
-        >
-          {/* 1. Заголовок + разделитель — одна секция (разделитель держится
-              вплотную к заголовку своим fixed gap, а не общим space-evenly). */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            <div
-              style={{
-                fontFamily: C.FONT_DISPLAY,
-                fontWeight: 900,
-                fontSize: 'clamp(19px, 6.2vmin, 26px)',
-                letterSpacing: '0.08em',
-                color: result.died ? Theme.danger : Theme.textMain,
-                textAlign: 'center',
-              }}
-            >
-              {result.died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'}
-            </div>
-            {/* Строка сохранения — ВСЕГДА, у каждого состояния своя: пустоты,
-                неотличимой от успеха, больше нет (см. SaveStatus выше). */}
-            <div
-              style={{
-                fontSize: 'clamp(10px, 3vmin, 12px)',
-                fontStyle: 'italic',
-                textAlign: 'center',
-                color: SAVE_STATUS_VIEW[saveStatus].color,
-              }}
-            >
-              {SAVE_STATUS_VIEW[saveStatus].text}
-            </div>
-            {/* Отдельная от saveStatus пометка — про ИСТОЧНИК самих событий,
-                не про сохранение. Сейчас оба условия совпадают (нет token),
-                но это разные факты, и оба должны быть явно видны (см. задачу
-                про молчаливый ??10-фолбэк — тихая заглушка стоит времени
-                на отладке). */}
-            {localEventFallback && (
-              <div
-                style={{
-                  fontSize: 'clamp(9px, 2.8vmin, 11px)',
-                  fontWeight: 700,
-                  letterSpacing: '0.04em',
-                  textAlign: 'center',
-                  color: '#F08A24',
-                }}
-              >
-                ⚠ ЗАГЛУШКА: события разыграны локально, не сервером
-              </div>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '68%' }}>
-              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-              <div style={{ width: 6, height: 6, background: Theme.glowEdge, transform: 'rotate(45deg)', flexShrink: 0 }} />
-              <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-            </div>
+    <ResultsFrame
+      head={
+        /* 1. Заголовок + разделитель — одна секция (разделитель держится
+            вплотную к заголовку своим fixed gap, а не общим space-evenly). */
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div
+            style={{
+              fontFamily: C.FONT_DISPLAY,
+              fontWeight: 900,
+              fontSize: 'clamp(19px, 6.2vmin, 26px)',
+              letterSpacing: '0.08em',
+              color: result.died ? Theme.danger : Theme.textMain,
+              textAlign: 'center',
+            }}
+          >
+            {result.died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'}
           </div>
-
+          {/* Строка сохранения — ВСЕГДА, у каждого состояния своя: пустоты,
+              неотличимой от успеха, больше нет (см. SaveStatus выше). */}
+          <div
+            style={{
+              fontSize: 'clamp(10px, 3vmin, 12px)',
+              fontStyle: 'italic',
+              textAlign: 'center',
+              color: SAVE_STATUS_VIEW[saveStatus].color,
+            }}
+          >
+            {SAVE_STATUS_VIEW[saveStatus].text}
+          </div>
+          {/* Отдельная от saveStatus пометка — про ИСТОЧНИК самих событий,
+              не про сохранение. Сейчас оба условия совпадают (нет token),
+              но это разные факты, и оба должны быть явно видны (см. задачу
+              про молчаливый ??10-фолбэк — тихая заглушка стоит времени
+              на отладке). */}
+          {localEventFallback && (
+            <div
+              style={{
+                fontSize: 'clamp(9px, 2.8vmin, 11px)',
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+                textAlign: 'center',
+                color: '#F08A24',
+              }}
+            >
+              ⚠ ЗАГЛУШКА: события разыграны локально, не сервером
+            </div>
+          )}
+          <ResultsDivider width="68%" />
+        </div>
+      }
+      left={
+        <>
           {/* 2. Гнёзда событий — БЕЗ круглой оправы (иконка сама уже каменная
               и круглая — обводка+заливка+кольцо были лишним слоем и
               перетягивали внимание с трофеев ниже). Иконка стоит сама по
@@ -820,7 +738,7 @@ function ResultsScreen({
               же, что весь забег были в HUD, игрок их уже знает; а два
               одинаковых кластера врагов давали бы "Враг"/"Враг" подряд,
               что читается как ошибка. */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 'clamp(18px, 6.5vmin, 30px)', flexShrink: 0 }}>
+          <div data-rf-events="" style={{ display: 'flex', justifyContent: 'center', gap: 'clamp(18px, 6.5vmin, 30px)', flexShrink: 0 }}>
             {eventClosed.map((closed, i) => {
               const kind = eventKinds[i]
               if (!kind) return null
@@ -845,49 +763,8 @@ function ResultsScreen({
             })}
           </div>
 
-          {/* 3. Плита с трофеями — обёртка получает РЕАЛЬНУЮ высоту через
-              padding-bottom% (RESULTS_PLATE_ASPECT выше), иначе %-поле внутри
-              не позиционируется (родитель без явной высоты — см. задачу). */}
-          <div style={{ position: 'relative', width: '100%', paddingBottom: `${RESULTS_PLATE_ASPECT * 100}%`, flexShrink: 0 }}>
-            <img
-              src={RESULTS_PLATE_SRC}
-              alt=""
-              draggable={false}
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
-            />
-            <div
-              style={{
-                position: 'absolute',
-                left: `${RESULTS_PLATE_FIELD_X * 100}%`,
-                top: `${RESULTS_PLATE_FIELD_Y * 100}%`,
-                width: `${RESULTS_PLATE_FIELD_W * 100}%`,
-                height: `${RESULTS_PLATE_FIELD_H * 100}%`,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 2,
-              }}
-            >
-              <div style={{ fontSize: 'clamp(8px, 2.4vmin, 10px)', letterSpacing: '0.05em', color: Theme.textDim }}>
-                {trophyLossView ? 'ТРОФЕЕВ ПОТЕРЯНО' : 'ТРОФЕЕВ ПОЛУЧЕНО'}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span
-                  style={{
-                    fontFamily: C.FONT_DISPLAY,
-                    fontWeight: 900,
-                    fontSize: 'clamp(19px, 5.8vmin, 25px)',
-                    color: result.died ? Theme.danger : Theme.glowCore,
-                    lineHeight: 1,
-                  }}
-                >
-                  {trophyCount}
-                </span>
-                <img src={C.REWARD_ICON_SRC.trophy} alt="" draggable={false} style={{ width: 20, height: 20, objectFit: 'contain' }} />
-              </div>
-            </div>
-          </div>
+          {/* 3. Плита с трофеями (общая с окном о прошлом забеге). */}
+          <TrophyPlate lossView={trophyLossView} count={trophyCount} color={result.died ? Theme.danger : Theme.glowCore} />
 
           {/* Числа выше — клиентская оценка, пока на экране нет ответа сервера
               (всё, кроме 'saved'). Пометка отдельной строкой ПОД плитой, а не
@@ -905,194 +782,156 @@ function ResultsScreen({
               {saveStatus === 'pending' ? 'Числа предварительные — ждём ответ сервера' : 'Числа — подсчёт клиента, не с сервера'}
             </div>
           )}
-
-          {/* 4. Прокачка — ТОЛЬКО прибавка (не выросло — не показываем),
-              тем же приёмом заголовка-с-разделителями, что "В СУМКЕ" ниже.
-              На прерванном забеге (interruptedRun из /auth/login) сервер
-              всегда отдаёт нули/false — секция сама не рендерится, ничего
-              лишнего проверять не нужно. Левелап — заметнее (крупнее,
-              FONT_DISPLAY, glowCore — тот же вес, что у заголовка экрана),
-              отдельной строкой над списком статов. */}
-          {(result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp || result.skillLevelUps.length > 0) && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
-                  ПРОКАЧКА
-                </div>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-              </div>
-              {result.leveledUp && (
-                <div
-                  style={{
-                    fontFamily: C.FONT_DISPLAY,
-                    fontWeight: 900,
-                    fontSize: 'clamp(14px, 4.4vmin, 18px)',
-                    letterSpacing: '0.06em',
-                    color: Theme.glowCore,
-                  }}
-                >
-                  УРОВЕНЬ ПОВЫШЕН
-                </div>
-              )}
-              {[
-                { label: 'Сила', value: result.strengthGained },
-                { label: 'Выносливость', value: result.enduranceGained },
-                { label: 'Ловкость', value: result.agilityGained },
-              ]
-                .filter((stat) => stat.value > 0)
-                .map((stat) => (
-                  <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}>
-                    +{stat.value} {stat.label}
+        </>
+      }
+      right={
+        !hasRight ? null : (
+          <>
+            {/* 4. Прокачка — ТОЛЬКО прибавка (не выросло — не показываем).
+                На прерванном забеге (interruptedRun из /auth/login) сервер
+                всегда отдаёт нули/false — секция сама не рендерится. Левелап —
+                заметнее (крупнее, FONT_DISPLAY, glowCore — тот же вес, что у
+                заголовка экрана), отдельной строкой над списком статов. */}
+            {hasProgress && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+                <ResultsSectionTitle>ПРОКАЧКА</ResultsSectionTitle>
+                {result.leveledUp && (
+                  <div
+                    style={{
+                      fontFamily: C.FONT_DISPLAY,
+                      fontWeight: 900,
+                      fontSize: 'clamp(14px, 4.4vmin, 18px)',
+                      letterSpacing: '0.06em',
+                      color: Theme.glowCore,
+                    }}
+                  >
+                    УРОВЕНЬ ПОВЫШЕН
+                  </div>
+                )}
+                {[
+                  { label: 'Сила', value: result.strengthGained },
+                  { label: 'Выносливость', value: result.enduranceGained },
+                  { label: 'Ловкость', value: result.agilityGained },
+                ]
+                  .filter((stat) => stat.value > 0)
+                  .map((stat) => (
+                    <div key={stat.label} style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}>
+                      +{stat.value} {stat.label}
+                    </div>
+                  ))}
+                {/* Выросшие уровни навыков — печать навыка и его НОВЫЙ уровень
+                    (02.10.2026). Печать, а не название: тот же значок, что на
+                    кнопке этого навыка в бою и на гнезде «Персонажа», — игрок
+                    узнаёт его быстрее, чем прочитает имя. Число приходит от
+                    сервера (result.skillLevelUps): пороги и накопленные
+                    применения живут только в БД, и клиент их не считает. */}
+                {result.skillLevelUps.map((up) => (
+                  <div
+                    key={up.skillId}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}
+                  >
+                    <img
+                      src={skillSealSrc(up.skillId)}
+                      alt=""
+                      draggable={false}
+                      style={{ width: 24, height: 24, objectFit: 'contain', display: 'block', flexShrink: 0 }}
+                    />
+                    Уровень {up.level}
                   </div>
                 ))}
-              {/* Выросшие уровни навыков — печать навыка и его НОВЫЙ уровень
-                  (02.10.2026). Печать, а не название: тот же значок, что на
-                  кнопке этого навыка в бою и на гнезде «Персонажа», — игрок
-                  узнаёт его быстрее, чем прочитает имя. Число приходит от
-                  сервера (result.skillLevelUps): пороги и накопленные
-                  применения живут только в БД, и клиент их не считает.
-                  Пустой список — самый частый исход, строк тогда нет вовсе. */}
-              {result.skillLevelUps.map((up) => (
-                <div
-                  key={up.skillId}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain }}
-                >
-                  <img
-                    src={skillSealSrc(up.skillId)}
-                    alt=""
-                    draggable={false}
-                    style={{ width: 24, height: 24, objectFit: 'contain', display: 'block', flexShrink: 0 }}
-                  />
-                  Уровень {up.level}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 5. Добыча — ТОЛЬКО когда она есть. Пустой блок с «пусто» убран
-              30.09.2026 вместе с появлением настоящего дропа: ничего не выпало —
-              это самый частый исход (шанс с группы врагов 50%), и постоянная
-              строка «пусто» читалась бы как поломка, а не как невезение. Тем же
-              приёмом, что секция «ПРОКАЧКА» выше, которая тоже не рисуется без
-              прибавок.
-              ⚠️ Числа и состав здесь ВСЕГДА серверные: клиентская оценка
-              (buildClientResult) отдаёт пустые списки, потому что дроп бросает
-              только сервер. Поэтому до ответа блока не будет вовсе — и это
-              честно, в отличие от трофеев, которые клиент оценивает сам. */}
-          {(result.drops.length > 0 || result.dropsLost.length > 0) && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
-                  ДОБЫЧА
-                </div>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
               </div>
-              {result.drops.map((drop, i) => {
-                const view = dropView(drop)
-                return (
-                  <div key={`${view.key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
-                    {/* Иконка 128×128 в строке 24px: objectFit contain, чтобы
-                        вытянутая страница не растянулась (см. docs/art-pipeline,
-                        «Вытянутые предметы»; поворот уже запечён в сам файл).
-                        iconSrc === null — каталог не знает id (см. dropView):
-                        место под иконку остаётся пустым, чтобы строки не
-                        разъезжались, а название рядом скажет, что именно
-                        пришло. */}
-                    {view.iconSrc === null ? (
-                      <div style={{ width: 24, height: 24, flexShrink: 0 }} />
-                    ) : (
-                      <img
-                        src={view.iconSrc}
-                        alt=""
-                        draggable={false}
-                        style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
-                      />
-                    )}
-                    <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, minWidth: 0 }}>
-                      {view.name}
-                    </div>
-                  </div>
-                )
-              })}
-              {/* Пропавшее — ОДНОЙ строкой и словами, без иконок: это плохая
-                  новость, и перечислять её теми же нарядными рядами, что добычу,
-                  значило бы прятать разницу. Правило вместимости названо прямо,
-                  иначе пропажа выглядит как сбой. */}
-              {result.dropsLost.length > 0 && (
-                <div
-                  style={{
-                    fontSize: 'clamp(10px, 2.9vmin, 12px)',
-                    color: Theme.danger,
-                    textAlign: 'center',
-                    lineHeight: 1.45,
-                  }}
-                >
-                  Сумка полна, пропало: {result.dropsLost.map((d) => dropView(d).name).join(', ')}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* 6. Ежедневное задание (26.10.2026) — ТОЛЬКО когда вылазка его
-              выполнила: строка с названием из общего каталога и награда теми же
-              тремя иконками, что на доске. Числа — серверные (questCompleted
-              приходит только с ответом финиша; клиентская оценка его не знает).
-              Тем же приёмом заголовка, что «ДОБЫЧА» выше. */}
-          {result.questCompleted && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-                <div style={{ fontSize: 'clamp(9px, 2.6vmin, 11px)', letterSpacing: '0.08em', color: Theme.textDim, whiteSpace: 'nowrap' }}>
-                  ЗАДАНИЕ
-                </div>
-                <div style={{ flex: 1, height: 1, background: Theme.stoneDark }} />
-              </div>
-              <div data-quest-completed="" style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', lineHeight: 1.4 }}>
-                Задание выполнено: {questById(result.questCompleted.questId)?.nameRu ?? result.questCompleted.questId}
-              </div>
-              <QuestRewardRow
-                reward={result.questCompleted}
-                numberStyle={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore }}
-                iconSize={20}
-                gap={12}
-              />
-            </div>
-          )}
-
-          {/* 7. Кнопки. "В меню" — единственный способ закрыть этот экран,
-              onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
-              При 'pending' она ЗАБЛОКИРОВАНА: уход до ответа размонтирует
-              Explore, и провал сохранения после этого никто бы не увидел.
-              При 'failed' рядом — "Повторить сохранение" (те же данные).
-              Без marginTop:'auto' — space-evenly на родителе уже распределяет
-              место равномерно, auto-маргин перетянул бы его весь на себя. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 10, flexShrink: 0 }}>
-            {saveStatus === 'failed' && (
-              <button
-                onClick={onRetrySave}
-                style={{
-                  padding: '12px 20px',
-                  borderRadius: 10,
-                  border: `2px solid ${Theme.glowEdge}`,
-                  background: Theme.nicheDeep,
-                  color: Theme.glowCore,
-                  fontFamily: C.FONT_DISPLAY,
-                  fontWeight: 700,
-                  fontSize: 'clamp(13px, 4vmin, 15px)',
-                  letterSpacing: '0.06em',
-                  cursor: 'pointer',
-                }}
-              >
-                ПОВТОРИТЬ СОХРАНЕНИЕ
-              </button>
             )}
+
+            {/* 5. Добыча — ТОЛЬКО когда она есть: ничего не выпало — самый
+                частый исход (шанс с группы врагов 50%), и постоянная строка
+                «пусто» читалась бы как поломка, а не как невезение.
+                ⚠️ Числа и состав здесь ВСЕГДА серверные: клиентская оценка
+                (buildClientResult) отдаёт пустые списки, потому что дроп бросает
+                только сервер. Поэтому до ответа блока не будет вовсе — и это
+                честно, в отличие от трофеев, которые клиент оценивает сам. */}
+            {hasDrops && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+                <ResultsSectionTitle>ДОБЫЧА</ResultsSectionTitle>
+                {result.drops.map((drop, i) => {
+                  const view = dropView(drop)
+                  return (
+                    <div key={`${view.key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+                      {/* Иконка 128×128 в строке 24px: objectFit contain, чтобы
+                          вытянутая страница не растянулась (см. docs/art-pipeline,
+                          «Вытянутые предметы»). iconSrc === null — каталог не
+                          знает id (см. dropView): место под иконку остаётся
+                          пустым, чтобы строки не разъезжались, а название рядом
+                          скажет, что именно пришло. */}
+                      {view.iconSrc === null ? (
+                        <div style={{ width: 24, height: 24, flexShrink: 0 }} />
+                      ) : (
+                        <img
+                          src={view.iconSrc}
+                          alt=""
+                          draggable={false}
+                          style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
+                        />
+                      )}
+                      <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, minWidth: 0 }}>
+                        {view.name}
+                      </div>
+                    </div>
+                  )
+                })}
+                {/* Пропавшее — ОДНОЙ строкой и словами, без иконок: это плохая
+                    новость, и перечислять её теми же нарядными рядами, что добычу,
+                    значило бы прятать разницу. Правило вместимости названо прямо,
+                    иначе пропажа выглядит как сбой. */}
+                {result.dropsLost.length > 0 && (
+                  <div
+                    style={{
+                      fontSize: 'clamp(10px, 2.9vmin, 12px)',
+                      color: Theme.danger,
+                      textAlign: 'center',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    Сумка полна, пропало: {result.dropsLost.map((d) => dropView(d).name).join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 6. Ежедневное задание (26.10.2026) — ТОЛЬКО когда вылазка его
+                выполнила: строка с названием из общего каталога и награда теми же
+                тремя иконками, что на доске. Числа — серверные (questCompleted
+                приходит только с ответом финиша; клиентская оценка его не знает). */}
+            {result.questCompleted && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+                <ResultsSectionTitle>ЗАДАНИЕ</ResultsSectionTitle>
+                <div data-quest-completed="" style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', lineHeight: 1.4 }}>
+                  Задание выполнено: {questById(result.questCompleted.questId)?.nameRu ?? result.questCompleted.questId}
+                </div>
+                <QuestRewardRow
+                  reward={result.questCompleted}
+                  numberStyle={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore }}
+                  iconSize={20}
+                  gap={12}
+                />
+              </div>
+            )}
+          </>
+        )
+      }
+      foot={
+        /* 7. Кнопки. "В меню" — единственный способ закрыть этот экран,
+            onClose родителя вызывается ТОЛЬКО отсюда (см. Explore ниже).
+            При 'pending' она ЗАБЛОКИРОВАНА: уход до ответа размонтирует
+            Explore, и провал сохранения после этого никто бы не увидел.
+            При 'failed' рядом — "Повторить сохранение" (те же данные).
+            Без marginTop:'auto' — space-evenly на родителе уже распределяет
+            место равномерно, auto-маргин перетянул бы его весь на себя. */
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 10, flexShrink: 0 }}>
+          {saveStatus === 'failed' && (
             <button
-              onClick={saveStatus === 'pending' ? undefined : onMenu}
-              disabled={saveStatus === 'pending'}
+              onClick={onRetrySave}
               style={{
-                padding: '12px 30px',
+                padding: '12px 20px',
                 borderRadius: 10,
                 border: `2px solid ${Theme.glowEdge}`,
                 background: Theme.nicheDeep,
@@ -1101,16 +940,34 @@ function ResultsScreen({
                 fontWeight: 700,
                 fontSize: 'clamp(13px, 4vmin, 15px)',
                 letterSpacing: '0.06em',
-                cursor: saveStatus === 'pending' ? 'default' : 'pointer',
-                opacity: saveStatus === 'pending' ? 0.5 : 1,
+                cursor: 'pointer',
               }}
             >
-              В МЕНЮ
+              ПОВТОРИТЬ СОХРАНЕНИЕ
             </button>
-          </div>
+          )}
+          <button
+            onClick={saveStatus === 'pending' ? undefined : onMenu}
+            disabled={saveStatus === 'pending'}
+            style={{
+              padding: '12px 30px',
+              borderRadius: 10,
+              border: `2px solid ${Theme.glowEdge}`,
+              background: Theme.nicheDeep,
+              color: Theme.glowCore,
+              fontFamily: C.FONT_DISPLAY,
+              fontWeight: 700,
+              fontSize: 'clamp(13px, 4vmin, 15px)',
+              letterSpacing: '0.06em',
+              cursor: saveStatus === 'pending' ? 'default' : 'pointer',
+              opacity: saveStatus === 'pending' ? 0.5 : 1,
+            }}
+          >
+            В МЕНЮ
+          </button>
         </div>
-      </div>
-    </div>
+      }
+    />
   )
 }
 
