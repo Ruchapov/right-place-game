@@ -33,6 +33,13 @@
 //   3. слой против сетки столкновений — та же проверка, что у A и F в
 //      build_map_art.mjs (своя копия: тот скрипт этой задачей не трогается);
 //   4. у карты C — колонна-стенка в своей клетке (wallCheck).
+//
+// ДЕКОР БЕЗ ПРЕДМЕТОВ НА ШИПАХ (28.10.2026). Сверки 1–2 идут по одобренному
+// слою декора, а в игру идёт РАБОЧАЯ версия декора — maps/crypt/ и
+// maps/abbey/decor-spikes-2026-10-28/<карта>/decor.png: тот же декор без
+// предметов (и их контактных теней), чья видимая часть ложилась на шип из пула
+// slots.hazard. Рядом removed-mask.png — след удалённых предметов; скрипт
+// проверяет, что слой игры отличается от одобренного только внутри него.
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -46,6 +53,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ART = (process.env.RIGHT_PLACE_ART ?? 'D:/dev/right-place-art').replaceAll('\\', '/')
 const CRYPT = `${ART}/maps/crypt/approved_v2`
 const ABBEY = `${ART}/maps/abbey`
+const DECOR_WORK = (theme) => `${ART}/maps/${theme}/decor-spikes-2026-10-28`
 const CHECK_ONLY = process.argv.includes('--check')
 const TILE = 64
 // Потолки размера файлов — в байтах, по строгому (десятичному) счёту мегабайта; те же, что у A и F.
@@ -101,6 +109,8 @@ const MAPS = [
     full: { file: `${CRYPT}/B/full.png`, sha: 'f1cc14a655e71c10bdd2a58add82c298f8b47892f370c0d709726387a78b5bdf' },
     hero: [320, 506, 91, 134],
     allowCovered: [],
+    // Рабочая версия декора без предметов на шипах — заменяет parts[1] в слое игры.
+    decorWork: { part: 1, file: `${DECOR_WORK('crypt')}/B/decor.png`, sha: 'ecac3758a59233ef266f733a0014bab102f4d535ef9f1c78535d465a62a10b88', mask: { file: `${DECOR_WORK('crypt')}/B/removed-mask.png`, sha: '5c202029f26c07497cd3dfeb13737ff33a0ea368a13545e38fee7953c912624e' } },
   },
   {
     id: 'D_OPEN', file: 'map_D_OPEN.txt', theme: 'flooded_crypt',
@@ -108,6 +118,8 @@ const MAPS = [
       { file: `${CRYPT}/export/D_OPEN/platforms.png`, sha: 'b073fceaae279a04bb40e38deb210400f90537381ca0c84192a2ab38916ff186' },
       { file: `${CRYPT}/export/D_OPEN/decor.png`, sha: '34ab1d2c10484abe6222b27b4e640d456787d2bcaf7066f662fceaf75a739418' },
     ],
+    // Рабочая версия декора без предметов на шипах — заменяет parts[1] в слое игры.
+    decorWork: { part: 1, file: `${DECOR_WORK('crypt')}/D_OPEN/decor.png`, sha: '0efd06a701087ca613167aee2f34df829e6ac006986209a7489a8ccc50d700a7', mask: { file: `${DECOR_WORK('crypt')}/D_OPEN/removed-mask.png`, sha: 'ea60ca2d9056e23bf9a5e745ecd7f519393e112e5e9b0a11f0a5a9ee57befa11' } },
     full: { file: `${CRYPT}/D_OPEN/full.png`, sha: '70f8677669a3675646068de36dd3901e97fa0038834b744d0f6ee85c0a178a70' },
     hero: [384, 762, 91, 134],
     allowCovered: [],
@@ -119,6 +131,8 @@ const MAPS = [
       // Декор у OPEN и SEALED — один и тот же файл (так в approved_v2).
       { file: `${CRYPT}/export/D_SEALED/decor.png`, sha: '34ab1d2c10484abe6222b27b4e640d456787d2bcaf7066f662fceaf75a739418' },
     ],
+    // Рабочая версия декора без предметов на шипах — заменяет parts[1] в слое игры.
+    decorWork: { part: 1, file: `${DECOR_WORK('crypt')}/D_SEALED/decor.png`, sha: '0efd06a701087ca613167aee2f34df829e6ac006986209a7489a8ccc50d700a7', mask: { file: `${DECOR_WORK('crypt')}/D_SEALED/removed-mask.png`, sha: 'ea60ca2d9056e23bf9a5e745ecd7f519393e112e5e9b0a11f0a5a9ee57befa11' } },
     full: { file: `${CRYPT}/D_SEALED/full.png`, sha: '3e591b359750d4ae0e979485950fb7356dd6532ab868e1a83a6557d8d6d62894' },
     hero: [384, 762, 91, 134],
     allowCovered: [],
@@ -130,6 +144,8 @@ const MAPS = [
       { file: `${ABBEY}/approved_v3/maps/E/map-E-platforms.png`, sha: 'a96eb67e36bc108f1037ee1ea423a5d165b0e96c9be3885f90556e8803467690' },
       { file: `${ABBEY}/approved_v3/maps/E/map-E-decor.png`, sha: 'f3928b0f69e54114f21e0e2fcd5420a47b99887ff23c704367f75e5710957eec' },
     ],
+    // Рабочая версия декора без предметов на шипах — заменяет parts[1] в слое игры.
+    decorWork: { part: 1, file: `${DECOR_WORK('abbey')}/E/decor.png`, sha: '02a8f067eec60c57b230cff7dfd4ced39826d37a5d33b0cbdb9d8f362e0bcd08', mask: { file: `${DECOR_WORK('abbey')}/E/removed-mask.png`, sha: 'dead8c34b6adb0377dae93fd6089c3c11fc2cfef8bef138e57ba7301b6e83aac' } },
     full: { file: `${ABBEY}/approved_v3/maps/E/map-E-full.png`, sha: '3c8355ab88b6eeab1d837aef8a344b43ebe60f94be4ab4051d9044c03bd08731' },
     hero: null,
     allowCovered: [],
@@ -143,6 +159,8 @@ const MAPS = [
       { file: `${ABBEY}/approved_v4/maps/C/map-C-columns.png`, sha: '23a09f65f59e58edaf18d9bcbe56fe71a8dfaaafa56b8a34f601697f65225f8e' },
       { file: `${ABBEY}/approved_v4/maps/C/map-C-decor.png`, sha: '38b46d9beca0e2742dc8a514a06353053cb6ee0bc76c577a2e71e31c6ea6ae50' },
     ],
+    // Рабочая версия декора без предметов на шипах — заменяет parts[2] в слое игры.
+    decorWork: { part: 2, file: `${DECOR_WORK('abbey')}/C/decor.png`, sha: '55d929fdc6d1bda43ee27e769b3e21bfeff233dc570381a3b2ebf61d1b5469f6', mask: { file: `${DECOR_WORK('abbey')}/C/removed-mask.png`, sha: '1901253989ff70548d56c3402914e575cffea1cd5a2eae6bd4e95129fc6cc33c' } },
     full: { file: `${ABBEY}/approved_v4/maps/C/map-C-full.png`, sha: '33c7b6764dfd6e33c709662c33cb0fcef695fb85ca7c02a40c414224091cb431' },
     hero: null,
     // Опора x=27 под мостом (строки 9–12) — декор без столкновений, одна на карту.
@@ -348,7 +366,7 @@ const report = { built: new Date().toISOString(), maps: [], backgrounds: [] }
 async function buildMap(m) {
   const theme = THEMES[m.theme]
   console.log(`\n== Карта ${m.id} (${m.file}, тема ${m.theme})`)
-  for (const p of [...m.parts, m.full]) pinned(p)
+  for (const p of [...m.parts, m.full, m.decorWork, m.decorWork.mask]) pinned(p)
   const fullMeta = await sharp(m.full.file).metadata()
   const W = fullMeta.width, H = fullMeta.height
   const rows = readGrid(m.file)
@@ -379,8 +397,25 @@ async function buildMap(m) {
   if (opaqueMax > 1) fail(`слой карты ${m.id} не совпадает с одобренной картинкой в камне и декоре: расхождение до ${opaqueMax}.`)
   if (seenMax > BG_TOLERANCE || seenOver2 > seen * BG_OVER2_SHARE) fail(`слой карты ${m.id}: там, где виден фон, расхождение больше допуска разницы программ (макс ${seenMax}, больше 2 у ${seenOver2}).`)
 
+  // Слой игры: те же части, но декор — рабочая версия без предметов на шипах.
+  // Отличаться от одобренного слоя он вправе только в следе удалённых предметов.
+  const gameParts = m.parts.map((p, i) => (i === m.decorWork.part ? m.decorWork : p))
+  const gamePng = await blank(W, H).composite(gameParts.map((p) => ({ input: p.file, left: 0, top: 0 }))).png().toBuffer()
+  const game = await raw(gamePng)
+  const mask = await sharp(m.decorWork.mask.file).extractChannel(0).raw().toBuffer()
+  if (mask.length !== W * H) fail(`${m.decorWork.mask.file}: не тот размер`)
+  let changed = 0, outside = 0
+  for (let p = 0; p < W * H; p++) {
+    const i = p * 4
+    if (layer[i] === game[i] && layer[i + 1] === game[i + 1] && layer[i + 2] === game[i + 2] && layer[i + 3] === game[i + 3]) continue
+    changed++
+    if (!mask[p]) outside++
+  }
+  console.log(`  без предметов на шипах: изменилось ${changed} пикселей слоя, вне следа удалённых — ${outside}`)
+  if (outside) fail(`слой карты ${m.id} с рабочим декором изменился вне удалённых предметов: ${outside} пикселей.`)
+
   // (3) слой против сетки столкновений
-  const g = geometryCheck(layer, W, rows)
+  const g = geometryCheck(game, W, rows)
   console.log(`  твердь '#': ${g.solidCells} клеток; с просветами внутри массива — ${g.thinInner.length}${g.thinInner.length ? ' ' + JSON.stringify(g.thinInner.slice(0, 12)) : ''}; нижних клеток, закрытых меньше чем на 45% — ${g.thinEdge.length}; наименьшее покрытие ${g.worstSolidCover}%`)
   if (g.thinInner.length || g.thinEdge.length) fail(`слой карты ${m.id} не закрывает твердь.`)
   console.log(`  верх поверхности '#': ${g.surfaceColumns} столбцов, смещение от линии тайла — макс ${g.surfaceOffsetMax} px, среднее ${g.surfaceOffsetMean} px (${g.topOffsets.join(', ')})`)
@@ -402,10 +437,10 @@ async function buildMap(m) {
   }
 
   // Сжатие. Альфа без потерь: кромка слоя обязана остаться той же.
-  const pick = await encodeUnder(layerPng, layer, W, H, MAP_LAYER_MAX, `слой карты ${m.id}`)
-  console.log(`  выбрано «${pick.label}»: ${mb(pick.buf.length)} (PNG без потерь — ${mb(layerPng.length)})`)
-  const srcBytes = m.parts.reduce((s, p) => s + fs.statSync(p.file).size, 0)
-  return { ...m, W, H, rows, layerPng, pick, srcBytes, fidelity: { opaque, opaqueDiff, opaqueMax, seen, seenMax, seenOver2 }, geometry: g, wallResult: wall }
+  const pick = await encodeUnder(gamePng, game, W, H, MAP_LAYER_MAX, `слой карты ${m.id}`)
+  console.log(`  выбрано «${pick.label}»: ${mb(pick.buf.length)} (PNG без потерь — ${mb(gamePng.length)})`)
+  const srcBytes = gameParts.reduce((s, p) => s + fs.statSync(p.file).size, 0)
+  return { ...m, W, H, rows, layerPng: gamePng, approvedLayerPng: layerPng, pick, srcBytes, fidelity: { opaque, opaqueDiff, opaqueMax, seen, seenMax, seenOver2 }, decorRemoval: { changed, outside }, geometry: g, wallResult: wall }
 }
 
 async function buildBackground(themeId, name) {
@@ -431,8 +466,9 @@ for (const m of maps) {
   const dir = THEMES[m.theme].exportDir
   const stem = m.file.replace(/\.txt$/, '')
   fs.writeFileSync(`${dir}/${stem}_layer_lossless.png`, m.layerPng)
+  fs.writeFileSync(`${dir}/${stem}_layer_approved_lossless.png`, m.approvedLayerPng)
   const box = await fragment(m.layerPng, m.pick.buf, m.W, m.H, `${dir}/compress_${stem}_before_after.png`, true)
-  report.maps.push({ id: m.id, file: m.file, size: [m.W, m.H], sourcePngBytes: m.srcBytes, losslessPngBytes: m.layerPng.length, webpBytes: m.pick.buf.length, quality: m.pick.label, psnr: m.pick.psnr, alphaMaxDiff: m.pick.alphaMaxDiff, detailPercent: m.pick.detail, fragmentBox: box, fidelity: m.fidelity, wall: m.wallResult, gridChecksum: '0x' + gridChecksum(m.rows).toString(16).padStart(8, '0') })
+  report.maps.push({ id: m.id, file: m.file, size: [m.W, m.H], sourcePngBytes: m.srcBytes, losslessPngBytes: m.layerPng.length, webpBytes: m.pick.buf.length, quality: m.pick.label, psnr: m.pick.psnr, alphaMaxDiff: m.pick.alphaMaxDiff, detailPercent: m.pick.detail, fragmentBox: box, fidelity: m.fidelity, decorRemoval: m.decorRemoval, wall: m.wallResult, gridChecksum: '0x' + gridChecksum(m.rows).toString(16).padStart(8, '0') })
 }
 for (const b of bgs) {
   const dir = THEMES[b.themeId].exportDir

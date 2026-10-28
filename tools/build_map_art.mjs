@@ -27,7 +27,16 @@
 //          пять блоков из f-seamless-review (restore-f-approved-panels.cjs),
 //          пять полос нижней кромки из f-solid-masses-review
 //          (restore-f-chipped-bottom.cjs + fix-f-block-bottoms.cjs).
+//
+// ДЕКОР БЕЗ ПРЕДМЕТОВ НА ШИПАХ (28.10.2026). В игру идёт слой по РАБОЧЕЙ
+// раскладке декора — maps/graveyard/decor-spikes-2026-10-28/: та же раскладка
+// одобренной версии без предметов, чья видимая часть ложилась на шип из пула
+// slots.hazard (removed.json там же). Сверки 1 и 2 по-прежнему идут по ОДОБРЕННОЙ
+// раскладке — они доказывают, что части те же; затем скрипт собирает слой по
+// рабочей и проверяет, что он отличается от одобренного ТОЛЬКО в пикселях
+// удалённых предметов (у кладбищенского декора контактных теней нет).
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
@@ -42,6 +51,13 @@ const H = `${ARCHIVE}/handoff/`
 const WK = `${ARCHIVE}/work/`
 // Сюда — слои без потерь и картинки сверки. Вне репозитория: это рабочие файлы.
 const EXPORT = `${ART}/game-export/graveyard`
+// Рабочая раскладка декора без предметов на шипах. sha256 закреплены: файл
+// поменяли — скрипт остановится, а не соберёт молча другой слой.
+const CLEAN = `${ARCHIVE}/decor-spikes-2026-10-28/`
+const CLEAN_LAYOUT = {
+  [`${WK}small-map-layout.json`]: { file: `${CLEAN}small-map-layout.json`, sha: '9ec2b2b68cb6262a08a5ddaf5bde58b6f0677186593efb787ceaf0b7cca0c1a2' },
+  [`${WK}map-f-audit.json`]: { file: `${CLEAN}map-f-audit.json`, sha: '815c2666ffe1564a15502e8ea258e2ac51d0046ec240ea9166944f42dc73b42f' },
+}
 const CHECK_ONLY = process.argv.includes('--check')
 const TILE = 64
 // Сколько пикселей на карту разрешено добрать из одобренной картинки, если их не
@@ -54,6 +70,27 @@ const BACKDROP_MAX = 600_000
 const blank = (w, h, bg = '#00000000') => sharp({ create: { width: w, height: h, channels: 4, background: bg } })
 const raw = (input) => sharp(input).ensureAlpha().raw().toBuffer()
 const pngOf = (buf, w, h) => sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer()
+
+function pinnedClean(layout) {
+  const c = CLEAN_LAYOUT[layout]
+  if (!c) fail(`нет рабочей раскладки для ${layout}`)
+  if (!fs.existsSync(c.file)) fail(`нет рабочей раскладки ${c.file}`)
+  const got = crypto.createHash('sha256').update(fs.readFileSync(c.file)).digest('hex')
+  if (got !== c.sha) fail(`рабочая раскладка ${c.file} не та: sha256 ${got}, ожидался ${c.sha}`)
+  return c.file
+}
+
+/**
+ * Предметы, которых нет в рабочей раскладке. Рабочая обязана быть подмножеством
+ * одобренной — ни одного нового или сдвинутого предмета.
+ */
+function removedDecor(approvedLayout, cleanLayout) {
+  const a = JSON.parse(fs.readFileSync(approvedLayout, 'utf8')).decor.map((d) => JSON.stringify(d))
+  const c = JSON.parse(fs.readFileSync(cleanLayout, 'utf8')).decor.map((d) => JSON.stringify(d))
+  const left = [...a]
+  for (const d of c) { const i = left.indexOf(d); if (i < 0) fail(`в рабочей раскладке ${cleanLayout} предмет, которого нет в одобренной: ${d}`); left.splice(i, 1) }
+  return left.map((d) => JSON.parse(d))
+}
 
 /** Та же постановка детали, что place() в скриптах архива: округление и обрезка по холсту. */
 async function place(list, input, x, y, W, HEIGHT) {
@@ -86,18 +123,22 @@ async function backgroundOps(W, HEIGHT) {
 }
 
 /** Передний план одной сборки: опора, сохранённый слой платформ, декор. Без фона и героя. */
-async function foregroundOps({ W, HEIGHT, platforms, support, layout, roundDecor }) {
-  const ops = []
-  const sp = await sharp(`${H}column_support_approved.png`).resize(246, support.height).modulate({ brightness: 1.05, saturation: 0.8 }).png().toBuffer()
-  await place(ops, sp, support.x, support.y, W, HEIGHT)
-  await place(ops, fs.readFileSync(platforms), 0, 0, W, HEIGHT)
-  const decor = JSON.parse(fs.readFileSync(layout, 'utf8')).decor
+async function decorOps(decor, roundDecor, ops, W, HEIGHT) {
   for (const d of decor) {
     const candle = ['candle', 'candles'].includes(d.id)
     const w = roundDecor ? Math.round(d.w) : d.w, h = roundDecor ? Math.round(d.h) : d.h
     const im = await sharp(`${H}decor_${d.id}.png`).resize(w, h).modulate({ brightness: candle ? 0.9 : 0.76, saturation: candle ? 0.72 : 0.55 }).png().toBuffer()
     await place(ops, im, d.x, d.y, W, HEIGHT)
   }
+}
+
+async function foregroundOps({ W, HEIGHT, platforms, support, layout, roundDecor }) {
+  const ops = []
+  const sp = await sharp(`${H}column_support_approved.png`).resize(246, support.height).modulate({ brightness: 1.05, saturation: 0.8 }).png().toBuffer()
+  await place(ops, sp, support.x, support.y, W, HEIGHT)
+  await place(ops, fs.readFileSync(platforms), 0, 0, W, HEIGHT)
+  const decor = JSON.parse(fs.readFileSync(layout, 'utf8')).decor
+  await decorOps(decor, roundDecor, ops, W, HEIGHT)
   return { ops, decorCount: decor.length }
 }
 
@@ -239,7 +280,17 @@ async function assembly(name, cfg) {
   // исходники или sharp не те, что были у автора предпросмотра.
   if (d.differing > RESIDUAL_LIMIT) fail(`сборка ${name} не воспроизвелась: ${d.differing} пикселей отличаются.`)
   const layer = await raw(await blank(W, HEIGHT).composite(fg.ops).png().toBuffer())
-  return { layer, bg, hero }
+  // Слой игры — по рабочей раскладке (без предметов на шипах) и след удалённых
+  // предметов: где они непрозрачны хоть немного. Только там слой вправе отличаться.
+  const cleanLayout = pinnedClean(cfg.layout)
+  const clean = await raw(await blank(W, HEIGHT).composite((await foregroundOps({ ...cfg, layout: cleanLayout })).ops).png().toBuffer())
+  const gone = removedDecor(cfg.layout, cleanLayout)
+  const goneOps = []
+  await decorOps(gone, cfg.roundDecor, goneOps, W, HEIGHT)
+  const goneRaw = await raw(await blank(W, HEIGHT).composite(goneOps).png().toBuffer())
+  const removedMask = new Uint8Array(W * HEIGHT)
+  for (let p = 0; p < W * HEIGHT; p++) if (goneRaw[p * 4 + 3] > 0) removedMask[p] = 1
+  return { layer, clean, removedMask, removed: gone, bg, hero }
 }
 
 async function buildA() {
@@ -260,7 +311,9 @@ async function buildA() {
   const body = await sharp({ create: { width: W, height: 64, channels: 4, background: '#6a6455' } }).composite(ops).raw().toBuffer()
   const layer = Buffer.from(a.layer)
   body.copy(layer, 1472 * W * 4)
-  return { id: 'A', file: 'map_A_serpentine.txt', W, HEIGHT, layer, bg: a.bg, hero: a.hero, approved: `${WK}approved_v4/map-a-full.png` }
+  const clean = Buffer.from(a.clean)
+  body.copy(clean, 1472 * W * 4)
+  return { id: 'A', file: 'map_A_serpentine.txt', W, HEIGHT, layer, clean, removedMask: a.removedMask, removed: a.removed, bg: a.bg, hero: a.hero, approved: `${WK}approved_v4/map-a-full.png` }
 }
 
 async function buildF() {
@@ -271,14 +324,18 @@ async function buildF() {
   const strict = await assembly('f-strict-review', { ...common, platforms: `${WK}f-strict-review/platforms-alpha.png`, support: { x: strictSupport.x, y: strictSupport.y, height: 356 }, full: `${WK}f-strict-review/map-f-full.png` })
   const seamless = await assembly('f-seamless-review', { ...common, platforms: `${WK}f-seamless-review/platforms-alpha.png`, support: { x: 1050, y: 948, height: 356 }, full: `${WK}f-seamless-review/map-f-full.png` })
   const solid = await assembly('f-solid-masses-review', { ...common, platforms: `${WK}f-solid-masses-review/platforms-alpha.png`, support: { x: solidSupport.x, y: solidSupport.y, height: solidSupport.height }, full: `${WK}f-solid-masses-review/map-f-full.png` })
-  const layer = Buffer.from(strict.layer)
-  const copyRect = (src, x, y, w, h) => { for (let yy = y; yy < y + h; yy++) src.copy(layer, (yy * W + x) * 4, (yy * W + x) * 4, (yy * W + x + w) * 4) }
-  // approved_v2: фасады пяти блоков из f-seamless (ниже карниза в 18 px).
-  for (const [x, y, w, h] of [[32, 11, 1, 2], [33, 10, 2, 3], [35, 11, 3, 2], [44, 19, 1, 3], [45, 18, 3, 4]]) copyRect(seamless.layer, x * 64, y * 64 + 18, w * 64, h * 64 - 18)
-  // Нижние кромки из f-solid-masses: сперва три полосы мостов, потом две полосы блоков.
-  for (const [x, y, w, h] of [[64, 414, 1536, 34], [640, 926, 1024, 34], [0, 1374, 2816, 34]]) copyRect(solid.layer, x, y, w, h)
-  for (const [x, y, w, h] of [[2048, 804, 384, 28], [2816, 1380, 256, 28]]) copyRect(solid.layer, x, y, w, h)
-  return { id: 'F', file: 'map_F_sanctuary.txt', W, HEIGHT, layer, bg: strict.bg, hero: strict.hero, approved: `${WK}approved_v3/map-f-full.png` }
+  // Мозаика одна и та же для одобренного слоя и для слоя по рабочей раскладке.
+  const mosaic = (key) => {
+    const layer = Buffer.from(strict[key])
+    const copyRect = (src, x, y, w, h) => { for (let yy = y; yy < y + h; yy++) src.copy(layer, (yy * W + x) * 4, (yy * W + x) * 4, (yy * W + x + w) * 4) }
+    // approved_v2: фасады пяти блоков из f-seamless (ниже карниза в 18 px).
+    for (const [x, y, w, h] of [[32, 11, 1, 2], [33, 10, 2, 3], [35, 11, 3, 2], [44, 19, 1, 3], [45, 18, 3, 4]]) copyRect(seamless[key], x * 64, y * 64 + 18, w * 64, h * 64 - 18)
+    // Нижние кромки из f-solid-masses: сперва три полосы мостов, потом две полосы блоков.
+    for (const [x, y, w, h] of [[64, 414, 1536, 34], [640, 926, 1024, 34], [0, 1374, 2816, 34]]) copyRect(solid[key], x, y, w, h)
+    for (const [x, y, w, h] of [[2048, 804, 384, 28], [2816, 1380, 256, 28]]) copyRect(solid[key], x, y, w, h)
+    return layer
+  }
+  return { id: 'F', file: 'map_F_sanctuary.txt', W, HEIGHT, layer: mosaic('layer'), clean: mosaic('clean'), removedMask: strict.removedMask, removed: strict.removed, bg: strict.bg, hero: strict.hero, approved: `${WK}approved_v3/map-f-full.png` }
 }
 
 async function verifyAndEncode(m) {
@@ -301,7 +358,14 @@ async function verifyAndEncode(m) {
   if (residual.length > RESIDUAL_LIMIT) fail(`слой карты ${m.id} расходится с одобренной картинкой в ${residual.length} пикселях — это больше допустимого остатка (${RESIDUAL_LIMIT}).`)
   if (residual.length) {
     let x0 = W, x1 = -1, y0 = HEIGHT, y1 = -1
-    for (const i of residual) { const p = i / 4, x = p % W, y = (p - x) / W; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); for (let c = 0; c < 3; c++) m.layer[i + c] = approved[i + c]; m.layer[i + 3] = 255 }
+    for (const i of residual) {
+      const p = i / 4, x = p % W, y = (p - x) / W; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y)
+      // Остаток — камень платформ; на месте удалённого предмета его брать нельзя:
+      // там одобренная картинка показывает предмет, которого в слое игры уже нет.
+      if (m.removedMask[p]) fail(`остаток карты ${m.id} попал на след удалённого предмета (x ${x}, y ${y}).`)
+      for (let c = 0; c < 3; c++) { m.layer[i + c] = approved[i + c]; m.clean[i + c] = approved[i + c] }
+      m.layer[i + 3] = 255; m.clean[i + 3] = 255
+    }
     console.log(`  остаток: ${residual.length} пикселей взяты из одобренной картинки как непрозрачные (рамка x ${x0}..${x1}, y ${y0}..${y1})`)
     layerPng = await pngOf(m.layer, W, HEIGHT)
     composed = await compose(layerPng)
@@ -310,6 +374,21 @@ async function verifyAndEncode(m) {
   const d = diffStats(composed, approved)
   console.log(`  слой на одобренном фоне против одобренной картинки: отличается ${d.differing} из ${d.pixels} пикселей (${(100 * d.differing / d.pixels).toFixed(3)}%), больше чем на 2 единицы — ${d.over2}, максимум ${d.max}`)
   if (d.over2 > 0 || d.max > 2) fail(`слой карты ${m.id} не совпадает с одобренной картинкой: ${d.over2} пикселей расходятся больше чем на 2 единицы (макс ${d.max}).`)
+  // Слой игры — по рабочей раскладке. Отличаться от одобренного он вправе только
+  // в следе удалённых предметов (m.removedMask); всё остальное — байт в байт.
+  let changed = 0, outside = 0
+  for (let p = 0; p < W * HEIGHT; p++) {
+    const i = p * 4
+    if (m.layer[i] === m.clean[i] && m.layer[i + 1] === m.clean[i + 1] && m.layer[i + 2] === m.clean[i + 2] && m.layer[i + 3] === m.clean[i + 3]) continue
+    changed++
+    if (!m.removedMask[p]) outside++
+  }
+  console.log(`  без предметов на шипах (${m.removed.map((d) => `${d.id} ${d.x},${d.y}`).join('; ')}): изменилось ${changed} пикселей, вне следа удалённых — ${outside}`)
+  if (outside) fail(`слой карты ${m.id} по рабочей раскладке изменился вне удалённых предметов: ${outside} пикселей.`)
+  m.layerApproved = m.layer
+  m.layer = m.clean
+  layerPng = await pngOf(m.layer, W, HEIGHT)
+
   // (3) слой против сетки столкновений
   const rows = readGrid(m.file)
   if (rows[0].length * TILE !== W || rows.length * TILE !== HEIGHT) fail(`размер слоя ${W}×${HEIGHT} не равен сетке ${rows[0].length}×${rows.length} тайлов`)
@@ -324,6 +403,8 @@ async function verifyAndEncode(m) {
   fs.mkdirSync(EXPORT, { recursive: true })
   const stem = m.file.replace(/\.txt$/, '')
   fs.writeFileSync(`${EXPORT}/${stem}_layer_lossless.png`, layerPng)
+  fs.writeFileSync(`${EXPORT}/${stem}_layer_approved_lossless.png`, await pngOf(m.layerApproved, W, HEIGHT))
+  fs.writeFileSync(`${EXPORT}/${stem}_removed_mask.png`, await sharp(Buffer.from(m.removedMask.map((v) => v * 255)), { raw: { width: W, height: HEIGHT, channels: 1 } }).png().toBuffer())
   // Сжатие. Альфа без потерь: кромка слоя обязана остаться той же.
   const pick = await encodeUnder(layerPng, m.layer, MAP_LAYER_MAX, `слой карты ${m.id}`)
   console.log(`  выбрано «${pick.label}»: ${mb(pick.buf.length)} (PNG без потерь — ${mb(layerPng.length)})`)
