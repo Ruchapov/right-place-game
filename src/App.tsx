@@ -5,7 +5,7 @@ import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat,
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
-import { QuestBoard, QuestWallBoard, QuestBoardThumb, type RefugeSceneGeometry } from './ui/QuestBoard'
+import { QuestBoard, QuestBoardSideFit, QuestWallBoard, QuestBoardThumb, type RefugeSceneGeometry } from './ui/QuestBoard'
 import { boardNotes, questCountdownLabel } from './ui/questBoardModel'
 import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
@@ -1555,6 +1555,32 @@ export default function App() {
   // Активное задание (взятое или переходящее) — о нём предупреждает вопрос
   // «Взять …?»: оно пропадёт вместе с прогрессом.
   const questActiveNote = questBoard !== null ? boardNotes(questBoard.view).find((n) => n.active) ?? null : null
+  // Вопрос — закреплён внизу экрана, поверх низа доски: под доской он
+  // на узком телефоне уходил за нижний край (замер: 320×568 — на 4 px
+  // ниже экрана), и тап по листку выглядел бы ничем.
+  // Свой stopPropagation: набок вопрос не внутри колонки доски, а тап по нему
+  // не должен закрывать доску.
+  const questConfirmBox = questConfirm !== null && (
+    <div data-quest-confirm="" onClick={(e) => e.stopPropagation()} style={{
+      position:'fixed', left:'50%', transform:'translateX(-50%)',
+      bottom:'calc(12px + var(--rp-safe-bottom, 0px))',
+      width:'calc(100vmin - 32px)',
+      boxSizing:'border-box', padding:12,
+      background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
+      boxShadow:'0 -6px 18px rgba(0,0,0,0.6)',
+    }}>
+      <SaleConfirm
+        question={
+          `Взять «${questById(questConfirm)?.nameRu ?? questConfirm}»?` +
+          (questActiveNote !== null && questActiveNote.id !== questConfirm
+            ? ` «${questById(questActiveNote.id)?.nameRu ?? questActiveNote.id}» пропадёт вместе с прогрессом (${questActiveNote.progress ?? 0} / ${questActiveNote.goal}).`
+            : '')
+        }
+        onYes={() => { const id = questConfirm; setQuestConfirm(null); void questAction('take', id) }}
+        onNo={() => setQuestConfirm(null)}
+      />
+    </div>
+  )
   // Отсчёт дошёл до нуля — новый набор уже ждёт на сервере: перечитать ОДИН раз
   // на полученный вид (новый вид приходит с новым `at`).
   const questCountdownOver = questCountdownMs !== null && questCountdownMs <= 0
@@ -4861,47 +4887,38 @@ export default function App() {
             background:'rgba(10, 8, 12, 0.82)',
             overflowY:'auto', WebkitOverflowScrolling:'touch',
             display:'flex', boxSizing:'border-box',
-            padding:'calc(12px + var(--rp-safe-top, 0px)) 0 calc(12px + var(--rp-safe-bottom, 0px))',
+            padding: sideMenu
+              ? 'calc(12px + var(--rp-safe-top, 0px)) calc(12px + var(--rp-safe-right, 0px)) calc(12px + var(--rp-safe-bottom, 0px)) calc(12px + var(--rp-safe-left, 0px))'
+              : 'calc(12px + var(--rp-safe-top, 0px)) 0 calc(12px + var(--rp-safe-bottom, 0px))',
           }}
         >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ margin:'auto', width:'calc(100vmin - 32px)', display:'flex', flexDirection:'column', gap:10,
-              // Набок доска (402 px с тремя листками) выше экрана: колонка не
-              // выше подложки, доска прокручивается внутри, а не вся подложка.
-              ...(sideMenu ? { maxHeight:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch' } : {}) }}
-          >
-            <QuestBoard
-              {...questBoardViewProps}
-              interactive={!questActionPending}
-              onTake={(id) => setQuestConfirm(id)}
-              onReplace={(id) => { setQuestConfirm(null); void questAction('replace', id) }}
-            />
-            {/* Вопрос — закреплён внизу экрана, поверх низа доски: под доской он
-                на узком телефоне уходил за нижний край (замер: 320×568 — на 4 px
-                ниже экрана), и тап по листку выглядел бы ничем. */}
-            {questConfirm !== null && (
-              <div data-quest-confirm="" style={{
-                position:'fixed', left:'50%', transform:'translateX(-50%)',
-                bottom:'calc(12px + var(--rp-safe-bottom, 0px))',
-                width:'calc(100vmin - 32px)',
-                boxSizing:'border-box', padding:12,
-                background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
-                boxShadow:'0 -6px 18px rgba(0,0,0,0.6)',
-              }}>
-                <SaleConfirm
-                  question={
-                    `Взять «${questById(questConfirm)?.nameRu ?? questConfirm}»?` +
-                    (questActiveNote !== null && questActiveNote.id !== questConfirm
-                      ? ` «${questById(questActiveNote.id)?.nameRu ?? questActiveNote.id}» пропадёт вместе с прогрессом (${questActiveNote.progress ?? 0} / ${questActiveNote.goal}).`
-                      : '')
-                  }
-                  onYes={() => { const id = questConfirm; setQuestConfirm(null); void questAction('take', id) }}
-                  onNo={() => setQuestConfirm(null)}
-                />
-              </div>
-            )}
-          </div>
+          {sideMenu ? (
+            // Набок (29.10.2026) — доска целиком в области между безопасными
+            // зонами (QuestBoardSideFit): два столбца листков и масштаб от
+            // высоты. Вопрос «Взять …?» — тот же, закреплён внизу.
+            <>
+              <QuestBoardSideFit
+                {...questBoardViewProps}
+                interactive={!questActionPending}
+                onTake={(id) => setQuestConfirm(id)}
+                onReplace={(id) => { setQuestConfirm(null); void questAction('replace', id) }}
+              />
+              {questConfirmBox}
+            </>
+          ) : (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{ margin:'auto', width:'calc(100vmin - 32px)', display:'flex', flexDirection:'column', gap:10 }}
+            >
+              <QuestBoard
+                {...questBoardViewProps}
+                interactive={!questActionPending}
+                onTake={(id) => setQuestConfirm(id)}
+                onReplace={(id) => { setQuestConfirm(null); void questAction('replace', id) }}
+              />
+              {questConfirmBox}
+            </div>
+          )}
         </div>
       )}
 

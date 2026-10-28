@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent, type RefObject } from 'react'
 import { QUEST_UNLOCK_LEVEL, questById, type QuestId } from '../quests'
 import type { QuestReward, QuestView } from '../api'
 import { C } from './theme'
@@ -201,6 +201,8 @@ export type QuestBoardProps = {
   interactive: boolean
   onTake: (id: QuestId) => void
   onReplace: (id: QuestId) => void
+  /** Листки в два столбца — только у доски набок (QuestBoardSideFit). */
+  columns?: 1 | 2
 }
 
 /**
@@ -208,7 +210,7 @@ export type QuestBoardProps = {
  * «Задания» и «новые через Ч:ММ», под ними листки. Ширину задаёт родитель,
  * высота — по содержимому.
  */
-export function QuestBoard({ view, status, level, countdown, interactive, onTake, onReplace }: QuestBoardProps) {
+export function QuestBoard({ view, status, level, countdown, interactive, onTake, onReplace, columns = 1 }: QuestBoardProps) {
   const unlockLevel = view?.unlockLevel ?? QUEST_UNLOCK_LEVEL
   const locked = view !== null ? !view.unlocked : level !== null && level < unlockLevel
   const notes = view !== null && view.unlocked ? boardNotes(view) : []
@@ -253,7 +255,12 @@ export function QuestBoard({ view, status, level, countdown, interactive, onTake
           {status === 'failed' ? 'Задания не загрузились' : 'Задания загружаются…'}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={columns === 2
+          // Два столбца (набок): промежуток между ними шире, чем между рядами, —
+          // кинжал активного листка выходит за его левый край на 25 px и не
+          // должен лечь на соседний листок.
+          ? { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', alignItems: 'start', columnGap: SIDE_COLUMN_GAP, rowGap: 8 }
+          : { display: 'flex', flexDirection: 'column', gap: 8 }}>
           {notes.map((note, i) => (
             <Note
               key={note.id}
@@ -267,6 +274,63 @@ export function QuestBoard({ view, status, level, countdown, interactive, onTake
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Доска набок (QuestBoardSideFit). Ширина в два столбца — не больше этого, в
+// один (листков меньше трёх, «ещё не готов») — как у доски в вертикали.
+const SIDE_BOARD_MAX_W = 720
+const SIDE_BOARD_ONE_COLUMN_W = 400
+const SIDE_COLUMN_GAP = 28
+const stopClick = (e: MouseEvent) => e.stopPropagation()
+
+/**
+ * Открытая доска на телефоне набок (sideMenu, 28.10.2026): целиком в области
+ * между безопасными зонами, без прокрутки. В вертикали доска узкая и высокая,
+ * набок такой она не влезает (402 px с тремя листками при 270–350 доступных),
+ * а ужатая целиком давала бы текст мельче 11 px (у 4 листков на 780×360 —
+ * ≈8 px). Поэтому листки — в два столбца в более широкой доске той же вёрстки,
+ * и уже она уменьшается transform'ом до доступной высоты (и ширины), сохраняя
+ * пропорции рамы, уголков и отступов (docs/quest-board-art.md).
+ * Касание мимо доски проходит к подложке (она закрывает доску): ловит его
+ * только сама доска.
+ */
+export function QuestBoardSideFit(props: QuestBoardProps) {
+  const areaRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement>(null)
+  const [fit, setFit] = useState<{ w: number; h: number; natH: number } | null>(null)
+  useEffect(() => {
+    const area = areaRef.current
+    const inner = innerRef.current
+    if (!area || !inner) return
+    // offsetHeight от transform не зависит — это высота доски в полный размер.
+    const measure = () => setFit((prev) => {
+      const next = { w: area.clientWidth, h: area.clientHeight, natH: inner.offsetHeight }
+      return prev && prev.w === next.w && prev.h === next.h && prev.natH === next.natH ? prev : next
+    })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(area)
+    ro.observe(inner)
+    return () => ro.disconnect()
+  }, [])
+  const { view } = props
+  const twoColumns = view !== null && view.unlocked && boardNotes(view).length >= 3
+  const maxW = twoColumns ? SIDE_BOARD_MAX_W : SIDE_BOARD_ONE_COLUMN_W
+  const natW = fit ? Math.min(fit.w, maxW) : maxW
+  const scale = fit && fit.natH > 0 ? Math.min(1, fit.h / fit.natH) : 0
+  return (
+    <div ref={areaRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+      <div
+        data-quest-board-fit=""
+        onClick={stopClick}
+        style={{ flexShrink: 0, width: natW * scale, height: fit ? fit.natH * scale : 0, visibility: scale > 0 ? 'visible' : 'hidden' }}
+      >
+        <div ref={innerRef} style={{ width: natW, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+          <QuestBoard {...props} columns={twoColumns ? 2 : 1} />
+        </div>
+      </div>
     </div>
   )
 }
