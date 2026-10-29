@@ -18,7 +18,7 @@ import {
   potionStockToColumns,
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
-import { consumableStockOf, scrollStockOf, classItemStockOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
+import { consumableStockOf, scrollStockOf, classItemStockOf, ringSlotsOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
 import type { RunResultSummary } from './run.js'
 import { readQuestState } from '../questState.js'
 
@@ -476,6 +476,7 @@ export async function authRoutes(server: FastifyInstance) {
         // Предметы классов (Осколок души, Печать отречения; 18.10.2026) — той же
         // формы и по той же причине, что страницы выше.
         classItems: classItemStockOf(char),
+        ringSlots: ringSlotsOf(char).slots,
         // Уровни навыков — объектом по id навыка, той же формы, что в
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).

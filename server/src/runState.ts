@@ -23,6 +23,7 @@ import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
 import type { ClassItemId } from './classItems.js'
+import { parseRingId, gearEffectsOf, RING_SLOT_COUNT, RING_OVERFLOW_HEAL_FRAC, RING_SAVING_CHANCE, type GearEffects, type RingId } from './crafter.js'
 import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWire, bloodClassEffects, magicClassEffects, BLOOD_PRICE_EXCLUDED_SKILLS, type HeroClassId, type HeroClassTier, type HeroClassState } from './heroClasses.js'
 
 // Shape of the active run stored in Character.currentRun for the
@@ -87,7 +88,29 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
 // он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
 // (читать через readRunConfirmedAt).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null }
+
+/**
+ * Снаряжение Мастера на ЭТОТ забег (docs/crafter.md, 29.10.2026) — снимок на
+ * старте: надетые вещи иного места и кольца в гнёздах. По нему сервер считает
+ * maxHp и глотки забега (это уже записано рядом в maxHp/sips), Старателя и
+ * Поиск навыков в добыче и запасы в потолках роста статов. Снимок, а не колонки
+ * на финише: переодеться посреди забега не должно менять его итог.
+ * Поля нет — забег начат сервером старше Мастера: без вещей иного места.
+ */
+export type RunGear = { items: string[]; rings: string[] }
+
+/** Эффекты снаряжения забега; испорченный снимок — как без снаряжения (против игрока). */
+export function readRunGear(run: ActiveExploreRun): { effects: GearEffects; malformed: boolean } {
+  const raw: unknown = run.gear
+  if (raw === undefined) return { effects: gearEffectsOf([], []), malformed: false }
+  const g = raw as Partial<RunGear> | null
+  const ok = g !== null && typeof g === 'object'
+    && Array.isArray(g.items) && g.items.every((x) => typeof x === 'string')
+    && Array.isArray(g.rings) && g.rings.every((x) => typeof x === 'string')
+  if (!ok) return { effects: gearEffectsOf([], []), malformed: true }
+  return { effects: gearEffectsOf(g.items as string[], g.rings as string[]), malformed: false }
+}
 
 export type RunHealSkill = { level: number; endurance: number }
 
@@ -315,7 +338,8 @@ export function readyWindowOpen(run: ActiveExploreRun, nowMs: number): boolean {
 export function readRunSipIds(run: ActiveExploreRun): string[] | null {
   const raw: unknown = run.sipIds
   if (raw === undefined) return []
-  if (!Array.isArray(raw) || raw.length > MAX_SIPS_PER_RUN) return null
+  // Потолок — глотки ЭТОГО забега: Чётки иного места дают на один больше.
+  if (!Array.isArray(raw) || raw.length > runSipsAllowed(run)) return null
   const out: string[] = []
   for (const id of raw) {
     const parsed = parseRequestId(id)
@@ -750,10 +774,11 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     Math.max(blood.bleedHealFrac, blood.bladeHealFrac) * hpPool
     + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
   const runHealSkill = readRunHealSkill(run)
-  const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount)
+  const gear = gearReserve(readRunGear(run).effects, runMaxHp, maxDamageDealt, enemyCount, bossCount, runSipsAllowed(run), maxHealFrac)
+  const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, gear.extraMana)
   const charmHealMax = charmReserve(run, runMaxHp)
-  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax + heal.hp + charmHealMax
-  const maxHealed = runMaxHp + heal.hp
+  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax + heal.hp + charmHealMax + gear.healMax + gear.potionHealMax
+  const maxHealed = runMaxHp + heal.hp + gear.potionHealMax
 
   return {
     progress: {
@@ -816,9 +841,11 @@ function healSkillReserve(
   heal: RunHealSkill | null | 'malformed',
   heroClass: HeroClassState,
   kills: number,
+  // Мана сверх шаров с убитых — Бригантина и Кольцо возврата (gearReserve).
+  extraMana = 0,
 ): { hp: number; uses: number } {
   if (heal === null || heal === 'malformed') return { hp: 0, uses: 0 }
-  const manaTotal = RUN_MANA_MAX + RUN_MANA_DROP_MAX * kills
+  const manaTotal = RUN_MANA_MAX + RUN_MANA_DROP_MAX * kills + extraMana
   const paidUses = Math.floor(manaTotal / HEAL_MANA_COST)
   const uses = paidUses + freeUsesBound(paidUses, magicClassEffects(heroClass).freeSkillChance)
   return { hp: uses * healSkillPerUse(heal.level, heal.endurance), uses }
@@ -828,6 +855,42 @@ function healSkillReserve(
 // только пока Плата кровью исцеление не оплачивает (см. healSkillReserve).
 if (!BLOOD_PRICE_EXCLUDED_SKILLS.includes('heal')) {
   throw new Error('runState: Плата кровью снова оплачивает «Исцеление» (BLOOD_PRICE_EXCLUDED_SKILLS) — потолок исцеления по мане больше не граница, пересчитайте healSkillReserve')
+}
+
+// Запасы под снаряжение Мастера (docs/crafter.md, 29.10.2026). Всё это лечение
+// идёт мимо healedAmount (ловкость не растит, как лечение класса), кроме
+// зелий Кольца сбережения — те пьются как обычные. Границы:
+//   • Клинок: доля нанесённого мечом — не больше доли всего нанесённого
+//     (maxDamageDealt, тот же потолок, что режет урон);
+//   • Колет: отбитых ударов не больше GEAR_HITS_PER_ENEMY на врага и
+//     GEAR_HITS_PER_BOSS на босса — враг бьёт, пока жив, и честный бой в эти
+//     числа укладывается с запасом; это граница роста статов, а не боя;
+//   • Переполнение: шаров маны не больше RUN_MANA_DROP_MAX с убитого;
+//   • Сбережение: бесплатных глотков сверх лимита — вероятностная граница
+//     freeUsesBound, как бесплатные навыки Повелителя; Чётки уже в run.sips;
+//   • Бригантина (мана от пропущенного удара, та же граница числа ударов) и
+//     Кольцо возврата (цена самого дорогого навыка за каждого убитого) дают
+//     ману, а мана — лишние применения исцеления: она уходит в healSkillReserve.
+const GEAR_HITS_PER_ENEMY = 10
+const GEAR_HITS_PER_BOSS = 40
+const GEAR_MAX_SKILL_COST = 3
+function gearReserve(
+  gear: GearEffects,
+  runMaxHp: number,
+  maxDamageDealt: number,
+  enemyCount: number,
+  bossCount: number,
+  sips: number,
+  maxHealFrac: number,
+): { healMax: number; potionHealMax: number; extraMana: number } {
+  const kills = enemyCount + bossCount
+  const hits = GEAR_HITS_PER_ENEMY * enemyCount + GEAR_HITS_PER_BOSS * bossCount
+  const overflow = gear.rings.includes('ring_overflow') ? RING_OVERFLOW_HEAL_FRAC * runMaxHp * RUN_MANA_DROP_MAX * kills : 0
+  const healMax = gear.lifestealFrac * maxDamageDealt + gear.parryHealFrac * runMaxHp * hits + overflow
+  const freeSips = gear.rings.includes('ring_saving') ? freeUsesBound(sips, RING_SAVING_CHANCE) : 0
+  const potionHealMax = (gear.extraSips + freeSips) * maxHealFrac * runMaxHp
+  const extraMana = (gear.hitManaChance > 0 ? hits : 0) + (gear.rings.includes('ring_return') ? GEAR_MAX_SKILL_COST * kills : 0)
+  return { healMax, potionHealMax, extraMana }
 }
 
 // Запас под оберег от смерти: смертельный удар вместо смерти поднимает героя с
@@ -1004,6 +1067,16 @@ export function scrollStockOf(character: ScrollColumns): Record<ScrollId, number
 export type ClassItemColumns = {
   soulShards: number
   renounceSeals: number
+  // Мастер (29.10.2026): сырьё, Слиток и кольца — те же счётчики.
+  darkClots: number
+  starPollen: number
+  otherIngots: number
+  ringSaving: number
+  ringSkillSearch: number
+  ringAsh: number
+  ringOverflow: number
+  ringProspector: number
+  ringReturn: number
 }
 
 /**
@@ -1018,7 +1091,36 @@ export function classItemStockOf(character: ClassItemColumns): Record<ClassItemI
   return {
     soul_shard: character.soulShards,
     renounce_seal: character.renounceSeals,
+    dark_clot: character.darkClots,
+    star_pollen: character.starPollen,
+    other_ingot: character.otherIngots,
+    ring_saving: character.ringSaving,
+    ring_skill_search: character.ringSkillSearch,
+    ring_ash: character.ringAsh,
+    ring_overflow: character.ringOverflow,
+    ring_prospector: character.ringProspector,
+    ring_return: character.ringReturn,
   }
+}
+
+/**
+ * Гнёзда колец (Character.ringSlots) — массив ровно из RING_SLOT_COUNT строк:
+ * id кольца или '' (гнездо пустое). Колонка — свободный text[], поэтому чужое
+ * значение (не id кольца) читается как пустое гнездо и громко пишется в лог
+ * вызывающим по `malformed`.
+ */
+export function ringSlotsOf(character: { ringSlots: string[] }): { slots: (RingId | '')[]; malformed: boolean } {
+  const raw = Array.isArray(character.ringSlots) ? character.ringSlots : []
+  let malformed = raw.length > RING_SLOT_COUNT
+  const slots: (RingId | '')[] = []
+  for (let i = 0; i < RING_SLOT_COUNT; i++) {
+    const v = raw[i]
+    if (v === undefined || v === '') { slots.push(''); continue }
+    const id = parseRingId(v)
+    if (id === null) malformed = true
+    slots.push(id ?? '')
+  }
+  return { slots, malformed }
 }
 
 // --- Класс героя: две колонки Character <-> HeroClassState ---

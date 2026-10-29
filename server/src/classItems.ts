@@ -32,7 +32,15 @@
  * id предметов. Рантайм-список рядом с типом — по нему работает parseClassItemId
  * ниже: тип в рантайме не существует, а проверять id из тела запроса надо.
  */
-export const CLASS_ITEM_IDS = ['soul_shard', 'renounce_seal'] as const
+export const CLASS_ITEM_IDS = [
+  'soul_shard', 'renounce_seal',
+  // Мастер (29.10.2026, docs/crafter.md): сырьё, Слиток и шесть колец. Это не
+  // предметы классов, но устроены так же — склад в колонке Character, место в
+  // сумке, продажа, добыча, — и живут здесь, чтобы не заводить вторую копию всей
+  // этой машинерии. Свойства колец — в общем каталоге crafter.ts.
+  'dark_clot', 'star_pollen', 'other_ingot',
+  'ring_saving', 'ring_skill_search', 'ring_ash', 'ring_overflow', 'ring_prospector', 'ring_return',
+] as const
 export type ClassItemId = typeof CLASS_ITEM_IDS[number]
 
 export type ClassItem = {
@@ -98,6 +106,99 @@ export const CLASS_ITEMS: ClassItem[] = [
     desc: 'Воск ещё тёплый. Клятва, скреплённая им, больше ничего не значит.',
     useLine: 'Убирает класс полностью, вместе с возвышением.',
     sellPrice: 500,
+    takesCell: true,
+    confirmSale: true,
+  },
+  // --- Мастер (29.10.2026). Всё занимает место в сумке, каждая штука своё
+  // (решение Андрея 26.10.2026). Цены продажи — предложение, Андрей их не
+  // называл: сырьё дёшево, Слиток и кольца дороже и с вопросом «Продать?».
+  {
+    id: 'dark_clot',
+    nameRu: 'Сгусток тьмы',
+    icon: 'item_dark_clot.png',
+    desc: 'Темнота, затвердевшая в кулаке.',
+    useLine: 'Мастер у Кузнеца переплавит его в Слиток иного места.',
+    sellPrice: 300,
+    takesCell: true,
+    confirmSale: false,
+  },
+  {
+    id: 'star_pollen',
+    nameRu: 'Звёздная пыльца',
+    icon: 'item_star_pollen.png',
+    desc: 'Свет срубленного Звёздоцвета, собранный в горсть.',
+    useLine: 'Мастер у Кузнеца переплавит её в Слиток иного места.',
+    sellPrice: 300,
+    takesCell: true,
+    confirmSale: false,
+  },
+  {
+    id: 'other_ingot',
+    nameRu: 'Слиток иного места',
+    icon: 'item_other_ingot.png',
+    desc: 'Тяжёлый и тёплый, будто живой.',
+    useLine: 'Нужен Мастеру, чтобы выковать вещь иного места.',
+    sellPrice: 1500,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_saving',
+    nameRu: 'Кольцо сбережения',
+    icon: 'ring_saving.png',
+    desc: 'С шансом 20% выпитое зелье остаётся во фляге.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_skill_search',
+    nameRu: 'Кольцо поиска навыков',
+    icon: 'ring_skill_search.png',
+    desc: 'Книги и страницы сами находят дорогу к владельцу и попадаются чаще.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_ash',
+    nameRu: 'Кольцо пепла',
+    icon: 'ring_ash.png',
+    desc: 'Рывок оставляет тлеющий след, который обжигает врагов.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_overflow',
+    nameRu: 'Кольцо переполнения',
+    icon: 'ring_overflow.png',
+    desc: 'Когда запас маны полон, новый шар не пропадает, а возвращает 10% здоровья.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_prospector',
+    nameRu: 'Кольцо старателя',
+    icon: 'ring_prospector.png',
+    desc: 'Редкие находки удваиваются: вместо одной в руки ложатся две.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
+    takesCell: true,
+    confirmSale: true,
+  },
+  {
+    id: 'ring_return',
+    nameRu: 'Кольцо возврата',
+    icon: 'ring_return.png',
+    desc: 'Сила, отнявшая жизнь, возвращается к хозяину: мана за добивающий навык не тратится.',
+    useLine: 'Надевается в гнездо Дланей иного места.',
+    sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
   },

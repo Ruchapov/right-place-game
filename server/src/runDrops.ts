@@ -27,6 +27,8 @@ import type { RunEvent, RunEventKind } from './runEvents.js'
 import { POTION_TIERS } from './potions.js'
 import { SCROLLS, type ScrollId } from './scrolls.js'
 import { SKILL_BOOK_IDS, type SkillBookId } from './consumables.js'
+import { CLASS_ITEM_IDS, type ClassItemId } from './classItems.js'
+import { CRAFTER_LEVEL, RING_IDS, RING_WEIGHTS, RING_SKILL_SEARCH_MULT, type RingId } from './crafter.js'
 
 /**
  * Бросок 1 — выпало ли ВООБЩЕ что-нибудь с этого события, до поправки на удачу.
@@ -76,7 +78,7 @@ export const DROP_CHANCE_MAX = 1
  * обычной добычи босса. Будь она категорией, ей пришлось бы назначить вес, и
  * её выпадение отнимало бы долю у страниц и зелий — дизайн просил обратного.
  */
-export type DropCategory = 'equipment' | 'scroll' | 'potion' | 'book' | 'soul_shard'
+export type DropCategory = 'equipment' | 'scroll' | 'potion' | 'book' | 'soul_shard' | 'ring'
 
 /**
  * Бросок 2 — ЧТО выпало, весами. Не долями и не процентами: веса складываются в
@@ -99,6 +101,7 @@ export type DropCategory = 'equipment' | 'scroll' | 'potion' | 'book' | 'soul_sh
  * что в docs/classes.md, и сверяются глазами.
  */
 export const DROP_WEIGHTS_COMMON: Record<DropCategory, number> = {
+  ring: 0,
   equipment: 20,
   scroll: 47,
   potion: 30,
@@ -106,6 +109,7 @@ export const DROP_WEIGHTS_COMMON: Record<DropCategory, number> = {
   soul_shard: 0,
 }
 export const DROP_WEIGHTS_BOSS: Record<DropCategory, number> = {
+  ring: 0,
   equipment: 20,
   scroll: 40,
   potion: 30,
@@ -113,6 +117,7 @@ export const DROP_WEIGHTS_BOSS: Record<DropCategory, number> = {
   soul_shard: 0,
 }
 export const DROP_WEIGHTS_COMMON_WITH_SHARD: Record<DropCategory, number> = {
+  ring: 0,
   equipment: 15,
   scroll: 47,
   potion: 30,
@@ -120,6 +125,7 @@ export const DROP_WEIGHTS_COMMON_WITH_SHARD: Record<DropCategory, number> = {
   soul_shard: 5,
 }
 export const DROP_WEIGHTS_BOSS_WITH_SHARD: Record<DropCategory, number> = {
+  ring: 0,
   equipment: 15,
   scroll: 40,
   potion: 30,
@@ -139,12 +145,43 @@ export const DROP_WEIGHTS_BOSS_WITH_SHARD: Record<DropCategory, number> = {
  */
 export const CLASS_ITEM_DROP_MIN_LEVEL = 10
 
+/**
+ * Кольца Мастера (docs/crafter.md): с CRAFTER_LEVEL уровня кольцо — новый вид
+ * добычи, доля 2 из 100 (у босса 5 из 100), и место забирается у страниц
+ * (решение 25.10.2026). Какое кольцо — второй бросок по RING_WEIGHTS.
+ */
+export const RING_DROP_WEIGHT_COMMON = 2
+export const RING_DROP_WEIGHT_BOSS = 5
+
 /** Таблица броска 2 для этого события и этого уровня героя. */
 export function dropWeightsFor(kind: RunEventKind, level: number): Record<DropCategory, number> {
   const withShard = level >= CLASS_ITEM_DROP_MIN_LEVEL
-  if (kind === 'boss') return withShard ? DROP_WEIGHTS_BOSS_WITH_SHARD : DROP_WEIGHTS_BOSS
-  return withShard ? DROP_WEIGHTS_COMMON_WITH_SHARD : DROP_WEIGHTS_COMMON
+  const base = kind === 'boss'
+    ? (withShard ? DROP_WEIGHTS_BOSS_WITH_SHARD : DROP_WEIGHTS_BOSS)
+    : (withShard ? DROP_WEIGHTS_COMMON_WITH_SHARD : DROP_WEIGHTS_COMMON)
+  if (!(level >= CRAFTER_LEVEL)) return base
+  const ring = kind === 'boss' ? RING_DROP_WEIGHT_BOSS : RING_DROP_WEIGHT_COMMON
+  return { ...base, scroll: base.scroll - ring, ring }
 }
+
+/**
+ * Кольцо поиска навыков: шанс книг И страниц ×RING_SKILL_SEARCH_MULT — именно
+ * ШАНС (вероятность получить книгу с события), а не вес. Веса этих двух
+ * категорий умножаются, и общий шанс добычи растёт ровно настолько, чтобы
+ * остальные категории остались при своих (с потолком 1 — у сундука и обелиска,
+ * где шанс уже 1, остальное немного ужмётся).
+ */
+function withSkillSearch(chance: number, weights: Record<DropCategory, number>): { chance: number; weights: Record<DropCategory, number> } {
+  const total = Object.values(weights).reduce((sum, w) => sum + Math.max(0, w), 0)
+  if (!(total > 0)) return { chance, weights }
+  const boosted = { ...weights, book: weights.book * RING_SKILL_SEARCH_MULT, scroll: weights.scroll * RING_SKILL_SEARCH_MULT }
+  const boostedTotal = Object.values(boosted).reduce((sum, w) => sum + Math.max(0, w), 0)
+  return { chance: Math.min(DROP_CHANCE_MAX, chance * boostedTotal / total), weights: boosted }
+}
+
+/** Что из колец героя влияет на БРОСОК добычи (снимок забега, currentRun.gear). */
+export type DropRings = { skillSearch: boolean }
+export const NO_DROP_RINGS: DropRings = { skillSearch: false }
 
 /**
  * Печать отречения — ОТДЕЛЬНЫЙ бросок, только у босса (docs/classes.md,
@@ -194,6 +231,9 @@ export type DropIntent =
   | { category: 'book'; bookId: SkillBookId }
   | { category: 'soul_shard' }
   | { category: 'renounce_seal' }
+  // Мастер (29.10.2026): Сгусток тьмы, Звёздная пыльца и кольца — предметы
+  // общего каталога classItems.ts, поэтому одна категория с id.
+  | { category: 'crafter'; id: ClassItemId }
 
 /**
  * Что выпало, УЖЕ разрешённое до конкретной вещи. Это форма, которая живёт в
@@ -214,6 +254,9 @@ export type EventDrop =
   // отдельным броском босса (rollEventExtraDrop).
   | { category: 'soul_shard' }
   | { category: 'renounce_seal' }
+  // Мастер (29.10.2026): Сгусток тьмы, Звёздная пыльца и кольца — предметы
+  // общего каталога classItems.ts, поэтому одна категория с id.
+  | { category: 'crafter'; id: ClassItemId }
 
 /** Равновероятный выбор одного элемента. Пустой список — null, не исключение. */
 function pickOne<T>(items: readonly T[]): T | null {
@@ -299,7 +342,20 @@ function rollWithinCategory(category: DropCategory, level: number): DropIntent |
       // Вид у осколка один — выбирать внутри категории нечего. Порог уровня
       // уже учтён весом (dropWeightsFor): ниже 10 уровня сюда не попасть.
       return { category: 'soul_shard' }
+    case 'ring':
+      return { category: 'crafter', id: pickRing() }
   }
+}
+
+/** Какое кольцо — по редкости среди колец (RING_WEIGHTS). */
+export function pickRing(): RingId {
+  const total = RING_IDS.reduce((sum, id) => sum + RING_WEIGHTS[id], 0)
+  let roll = Math.random() * total
+  for (const id of RING_IDS) {
+    roll -= RING_WEIGHTS[id]
+    if (roll < 0) return id
+  }
+  return RING_IDS[0]
 }
 
 /**
@@ -312,10 +368,13 @@ function rollWithinCategory(category: DropCategory, level: number): DropIntent |
  * null — ничего не выпало. Самый частый исход (с группы врагов — половина
  * бросков), и вызывающий обязан считать его нормой, а не сбоем.
  */
-export function rollEventDrop(kind: RunEventKind, level: number, luck: number): DropIntent | null {
+export function rollEventDrop(kind: RunEventKind, level: number, luck: number, rings: DropRings = NO_DROP_RINGS): DropIntent | null {
   if (kind === 'smuggler') return null
-  if (!(Math.random() < dropChanceFor(kind, luck))) return null
-  const category = pickCategory(dropWeightsFor(kind, level))
+  let chance = dropChanceFor(kind, luck)
+  let weights = dropWeightsFor(kind, level)
+  if (rings.skillSearch) ({ chance, weights } = withSkillSearch(chance, weights))
+  if (!(Math.random() < chance)) return null
+  const category = pickCategory(weights)
   if (category === null) return null
   return rollWithinCategory(category, level)
 }
@@ -334,9 +393,33 @@ export function rollEventDrop(kind: RunEventKind, level: number, luck: number): 
  * 10 уровня и у остальных событий — всегда).
  */
 export function rollEventExtraDrop(kind: RunEventKind, level: number, luck: number): DropIntent | null {
+  if (kind === 'enemy') {
+    const clot = darkClotChanceFor(level, luck)
+    return clot > 0 && Math.random() < clot ? { category: 'crafter', id: 'dark_clot' } : null
+  }
   const chance = renounceSealChanceFor(kind, level, luck)
   if (!(chance > 0)) return null
   return Math.random() < chance ? { category: 'renounce_seal' } : null
+}
+
+/**
+ * Сгусток тьмы (docs/crafter.md): с группы врагов, 0,5%, с 5 уровня, удача
+ * влияет. Отдельным броском поверх обычной добычи — во второй добыче события
+ * (extraDrop), которая у групп врагов до этого всегда была пустой: Печать
+ * отречения падает только с босса, и места они не делят.
+ */
+export const DARK_CLOT_CHANCE = 0.005
+export const CRAFTER_RAW_MIN_LEVEL = 5
+export function darkClotChanceFor(level: number, luck: number): number {
+  if (!(level >= CRAFTER_RAW_MIN_LEVEL)) return 0
+  return withLuck(DARK_CLOT_CHANCE, luck)
+}
+
+/** Звёздоцвет на карте (docs/crafter.md): 0,5% на вылазку, с 5 уровня. */
+export const STARBLOOM_CHANCE = 0.005
+export function rollStarbloom(level: number, luck: number): boolean {
+  if (!(level >= CRAFTER_RAW_MIN_LEVEL)) return false
+  return Math.random() < withLuck(STARBLOOM_CHANCE, luck)
 }
 
 /**
@@ -382,6 +465,13 @@ export function parseEventDrop(raw: unknown): { kind: 'none' } | { kind: 'drop';
       return { kind: 'drop', drop: { category: 'soul_shard' } }
     case 'renounce_seal':
       return { kind: 'drop', drop: { category: 'renounce_seal' } }
+    case 'crafter': {
+      // Только сырьё и кольца: Осколок и Печать ходят своими категориями, а
+      // Слиток в забеге не падает вовсе.
+      const known = typeof d.id === 'string' && (CLASS_ITEM_IDS as readonly string[]).includes(d.id)
+        && (d.id === 'dark_clot' || d.id === 'star_pollen' || (RING_IDS as readonly string[]).includes(d.id))
+      return known ? { kind: 'drop', drop: { category: 'crafter', id: d.id as ClassItemId } } : { kind: 'malformed' }
+    }
     default:
       return { kind: 'malformed' }
   }
@@ -414,12 +504,13 @@ export function rollRunDrops(
   closed: number[],
   level: number,
   luck: number,
+  rings: DropRings = NO_DROP_RINGS,
 ): DropIntent[] {
   const out: DropIntent[] = []
   for (const index of closed) {
     const event = events[index]
     if (!event) continue
-    const intent = rollEventDrop(event.kind, level, luck)
+    const intent = rollEventDrop(event.kind, level, luck, rings)
     if (intent !== null) out.push(intent)
     // Вторая добыча (Печать с босса) — тем же отдельным броском, что на старте:
     // запасной путь не должен давать меньше обычного.

@@ -58,11 +58,14 @@ import { createAbbotSystem, abbotHurtMs } from './explore/entities/abbot'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
+import { createAshTrailSystem } from './explore/entities/ashTrail'
+import { createStarbloomSystem } from './explore/entities/starbloom'
+import { loadSheetFrames } from './explore/spriteLoader'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
@@ -73,6 +76,8 @@ import { skillValue, type SkillStats } from './skillDamage'
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import { scrollById } from './scrolls'
 import { classItemById } from './classItems'
+import * as CR from './crafter'
+import type { GearEffects } from './crafter'
 import { itemIconSrc } from './itemIcons'
 import { playerAttackDamage } from './playerDamage'
 
@@ -230,6 +235,14 @@ type ExploreProps = {
    * обнулить урон ледяного шара.
    */
   agility?: number
+  /**
+   * Свойства вещей иного места и колец (Мастер, docs/crafter.md, 29.10.2026) —
+   * App.tsx считает их тем же gearEffectsOf, что и сервер на старте забега.
+   * Не задан — забег без них (офлайн-заглушка, старые профили).
+   */
+  gear?: GearEffects
+  /** Прибавка к скорости бега от надетых сапог, %, уже с потолком BOOTS_SPEED_CAP_PCT. */
+  bootsSpeedPct?: number
 }
 
 /**
@@ -480,6 +493,8 @@ type FinishPayload = {
   // Пять счётчиков ежедневных заданий (26.10.2026) — тем же снимком и по той же
   // причине: повтор финиша шлёт те же числа.
   questCounters: QuestRunCounters
+  // Срублен ли Звёздоцвет (docs/crafter.md) — тем же снимком.
+  starbloomCut: boolean
 }
 
 /**
@@ -530,6 +545,15 @@ function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string |
       return {
         key: drop.category,
         name: spec?.nameRu ?? drop.category,
+        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
+      }
+    }
+    // Мастер (29.10.2026): сырьё и кольца — тот же каталог, id внутри.
+    case 'crafter': {
+      const spec = classItemById(drop.id)
+      return {
+        key: drop.id,
+        name: spec?.nameRu ?? drop.id,
         iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
       }
     }
@@ -639,6 +663,7 @@ function dropIconKey(drop: RunDrop): string {
     case 'book': return `book:${drop.id}`
     case 'soul_shard': return 'soul_shard'
     case 'renounce_seal': return 'renounce_seal'
+    case 'crafter': return `crafter:${drop.id}`
   }
 }
 
@@ -973,7 +998,7 @@ function ResultsScreen({
   )
 }
 
-export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent }: ExploreProps) {
+export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent, gear: gearProp, bootsSpeedPct }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1363,6 +1388,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       charmUsed: charmUsedRef.current,
       skillUses: { ...skillUsesRef.current },
       questCounters: { ...questCountersRef.current },
+      starbloomCut: starbloomCutRef.current,
     }
     submitFinish()
   }
@@ -1391,6 +1417,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       payload.charmUsed,
       payload.skillUses,
       payload.questCounters,
+      payload.starbloomCut,
     )
       .then((result) => {
         setRunResult(result)
@@ -1460,8 +1487,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // брони у ещё не загруженного/DevTester-профиля).
   const armorRef = useRef(armor ?? 0)
 
-  // maxHp не меняется в течение забега — считаем один раз из endurance персонажа.
-  const maxHp = endurance && endurance > 0 ? endurance * C.HP_PER_ENDURANCE : C.FALLBACK_MAX_HP
+  // Свойства вещей иного места и колец (docs/crafter.md). В ref, потому что их
+  // читают обработчики тикера, собранные один раз при монтировании. Снаряжение
+  // во время забега не меняется, так что ref никто не переписывает.
+  const gearRef = useRef<GearEffects>(gearProp ?? CR.gearEffectsOf([], []))
+  const bootsSpeedMult = 1 + Math.max(0, Math.min(CR.BOOTS_SPEED_CAP_PCT, bootsSpeedPct ?? 0)) / 100
+
+  // maxHp не меняется в течение забега — считаем один раз из endurance персонажа
+  // (и Клобука иного места: та же формула runMaxHpOf, что у сервера).
+  const maxHp = endurance && endurance > 0 ? CR.runMaxHpOf(endurance, gearRef.current) : C.FALLBACK_MAX_HP
   // Текущее hp — в ref, не в state: меняется в игровом цикле каждый кадр,
   // ререндер React на это не нужен. HP-бар обновляется вручную через DOM-refs.
   const hpRef = useRef(maxHp)
@@ -1502,6 +1536,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const healPlayerRef = useRef<(amount: number) => number>(() => 0)
   // То же для лечения класса и Платы кровью (26.10.2026): их зовут модуль
   // навыков и код боя в setup(), а функции живут в теле компонента.
+  const restoreHpRef = useRef<(amount: number) => number>(() => 0)
+  // Срублен ли Звёздоцвет в этом забеге — уходит в финиш (docs/crafter.md).
+  const starbloomCutRef = useRef(false)
   const healPlayerByClassRef = useRef<(amount: number) => number>(() => 0)
   const payHpForManaRef = useRef<(amount: number) => void>(() => {})
   // Красная вспышка лечения класса. Ставит её setup(), когда система вспышки
@@ -2147,6 +2184,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       spawnParrySparkRef.current()
       // «Звон стали»: каждый отбитый удар — и два удара в одно окно тоже два.
       questCountersRef.current.parries += 1
+      healOnParry()
       return true
     }
     applyDamage(amount)
@@ -2174,6 +2212,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       spawnParrySparkRef.current()
       // Тот же отбив, что в takeDamage, — для «Звона стали».
       questCountersRef.current.parries += 1
+      healOnParry()
       return true
     }
     return takeDamage(amount)
@@ -2187,6 +2226,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
    * ловушку мимика отнесли сюда по смыслу — это взрыв сундука, а не удар
    * оружием, и подставлять под него меч нечему.
    */
+  // Колет иного места: отбитый удар возвращает долю здоровья. Как лечение
+  // класса — мимо healedAmountRef (ловкость от него не растёт); сервер держит под
+  // него запас в потолке урона (gearReserve в runState.ts).
+  function healOnParry(): void {
+    const frac = gearRef.current.parryHealFrac
+    if (frac > 0) restoreHp(maxHp * frac)
+  }
+
   function takeDamageUnblockable(amount: number): void {
     applyDamage(amount)
   }
@@ -2231,7 +2278,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // одинаково ко всем источникам без отдельных проверок на каждом.
     // round()/dmg-armorRef.current — оба целые (dmg целое, armorRef.current
     // целое — сумма armor надетых предметов), результат max() тоже целый.
-    const armored = Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorRef.current)
+    // Панцирь иного места: при здоровье ниже доли lowHpFrac броня удваивается
+    // (до удара, по текущему HP). Потолок ARMOR_MAX_REDUCTION тот же.
+    const gear = gearRef.current
+    const armorNow = gear.lowHpFrac > 0 && hpRef.current < maxHp * gear.lowHpFrac
+      ? Math.round(armorRef.current * gear.lowHpArmorMult)
+      : armorRef.current
+    const armored = Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorNow)
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
     // После брони, не до — иначе выносливость росла бы от урона, которого
@@ -2268,6 +2321,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       triggerDeath()
     } else {
       triggerHurt()
+      // Бригантина иного места: пропущенный удар с шансом даёт 1 ману.
+      if (gear.hitManaChance > 0 && armored > 0 && Math.random() < gear.hitManaChance) {
+        setMana(manaRef.current + 1)
+      }
     }
   }
 
@@ -2356,10 +2413,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
     healPlayerByClassRef.current = healPlayerByClass
+    restoreHpRef.current = restoreHp
     payHpForManaRef.current = payHpForMana
     // Шипы карты НЕ ПАРИРУЮТСЯ (решение дизайнера) — отсюда и unblockable:
     // от них уклоняются прыжком, а не блоком.
-    applySpikeDamageRef.current = () => takeDamageUnblockable(maxHp * C.SPIKE_DAMAGE_RATIO)
+    applySpikeDamageRef.current = () => takeDamageUnblockable(maxHp * C.SPIKE_DAMAGE_RATIO * gearRef.current.spikeMult)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     characterLevelRef.current = characterLevel
     armorRef.current = armor ?? 0
@@ -2472,6 +2530,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let abbotSystem: ReturnType<typeof createAbbotSystem> | null = null
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
+    // Мастер (docs/crafter.md): огонь кольца Пепла и Звёздоцвет — оба есть не в
+    // каждом забеге, отсюда null.
+    let ashTrailSystem: ReturnType<typeof createAshTrailSystem> | null = null
+    let starbloomSystem: ReturnType<typeof createStarbloomSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
     // Камыш и осока болота (entities/swayDecor.ts) и их собственные текстуры —
     // их уничтожает cleanup, иначе они остались бы в видеопамяти после смены карты.
@@ -2831,8 +2893,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         : attackDamageRef.current
       if (blade.swordDamageMult !== 1) console.log('Explore: урон обычной атаки с классом', plainSwordDamage, blade)
       // Красная искра крита — только герою этой ветки (см. loadBladeClassAssets).
-      const bladeAssetsLoad = blade.critMult > 1 ? loadBladeClassAssets() : Promise.resolve(null)
+      // Палаш иного места тоже критует — ему та же искра.
+      const bladeAssetsLoad = blade.critMult > 1 || gearRef.current.critChance > 0 ? loadBladeClassAssets() : Promise.resolve(null)
       bladeAssetsLoad.catch(() => {})
+      // Мастер (docs/crafter.md): огонь — только с кольцом Пепла, цветок —
+      // только если сервер его посадил. Оба листа — украшение поверх боя:
+      // не загрузился — громко в консоль и забег без них, а не экран ошибки.
+      const ashFramesLoad = gearRef.current.rings.includes('ring_ash')
+        ? loadSheetFrames(C.ASH_FIRE_SRC, C.ASH_FIRE_CELL_W, C.ASH_FIRE_CELL_H, C.ASH_FIRE_COUNT, C.ASH_FIRE_COLS)
+          .catch((e: unknown) => { console.error('Explore: огонь кольца Пепла не загрузился — след без огня и без урона', e); return null })
+        : Promise.resolve(null)
+      starbloomCutRef.current = false
+      const starbloomTile = startExploreResult ? readStarbloom(startExploreResult.starbloom) : null
+      const starbloomLoad = starbloomTile
+        ? Promise.all([
+          loadSheetFrames(C.STARBLOOM_IDLE_SRC, C.STARBLOOM_IDLE_CELL_W, C.STARBLOOM_IDLE_CELL_H, C.STARBLOOM_IDLE_COUNT, C.STARBLOOM_SHEET_COLS),
+          loadSheetFrames(C.STARBLOOM_CUT_SRC, C.STARBLOOM_CUT_CELL_W, C.STARBLOOM_CUT_CELL_H, C.STARBLOOM_CUT_COUNT, C.STARBLOOM_SHEET_COLS),
+          Assets.load(C.STARBLOOM_ICON_SRC) as Promise<Texture>,
+        ]).catch((e: unknown) => { console.error('Explore: Звёздоцвет не загрузился — в этом забеге его не будет', e); return null })
+        : Promise.resolve(null)
       // Выпад: сколько ещё длится окно после рывка (мс). Пока идёт рывок — оно
       // полное, после — убывает по тикеру; первый взмах мечом его забирает и
       // становится критическим (lungeSwingId — номер этого взмаха). Удар,
@@ -2877,7 +2956,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // плашку ниже (setLocalEventFallback), и плашка называет этот запас.
         potionStockRef.current = [...C.OFFLINE_POTION_STOCK]
         potionSipsLeftRef.current = Math.min(
-          MAX_SIPS_PER_RUN,
+          MAX_SIPS_PER_RUN + gearRef.current.extraSips,
           C.OFFLINE_POTION_STOCK.reduce((sum, n) => sum + n, 0),
         )
       }
@@ -3384,6 +3463,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         spendMana: (amount) => {
           questCountersRef.current.manaSpent += amount
           setMana(manaRef.current - amount)
+          // Кольцо возврата: цена этого применения вернётся, если навык (или его
+          // тик) добьёт врага. Один возврат на одно применение.
+          returnRefund = amount
         },
         // Каждое состоявшееся применение навыка — для «Только стали».
         onSkillCast: () => { questCountersRef.current.skillCasts += 1 },
@@ -3524,7 +3606,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // фону и запуску PixiJS выше; какие листы условные и почему — см.
       // explore/assets.ts. Любой нужный лист не загрузился — этот await бросает,
       // и setup() уходит в экран ошибки (setup().catch), как и раньше.
-      const [assets, eventAssets, , bloodFrames, bladeSparkFrames] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad, bladeAssetsLoad])
+      const [assets, eventAssets, , bloodFrames, bladeSparkFrames, ashFrames, starbloomAssets] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad, bladeAssetsLoad, ashFramesLoad, starbloomLoad])
       if (cancelled) {
         // Компонент размонтировался (или сработал предохранитель загрузки), пока
         // грузились листы — не создаём спрайты и не трогаем worldContainer.
@@ -3593,6 +3675,36 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         sparkScale: (C.HERO_DRAW_H / C.HERO_CELL_H) * C.CRIT_SPARK_SCALE,
       })
 
+      // Кольцо Пепла: тик огня — как тик кровотечения (skillDamage.slash), идёт
+      // в skillDamageDealt и, как тик, не замечает двери Привратника.
+      ashTrailSystem = ashFrames === null ? null : createAshTrailSystem({
+        worldContainer,
+        frames: ashFrames,
+        dashing: dashingRef,
+        heroFoot: () => ({ x: phys.x + C.PLAYER_WIDTH / 2, y: phys.y + C.PLAYER_HEIGHT }),
+        enemies: () => enemiesRef.current,
+        boss: () => bossRef.current,
+        burnEnemy: (enemy) => { damageEnemy(enemy, skillDamage.slash, skillDamageDealtRef, enemy.x + enemy.width / 2, 'tick') },
+        burnBoss: () => { const b = bossRef.current; if (b) damageBoss(skillDamage.slash, skillDamageDealtRef, b.x + C.BOSS_WIDTH / 2, 'tick') },
+        trailMs: CR.RING_ASH_TRAIL_MS,
+        burnMs: CR.RING_ASH_BURN_MS,
+        tickMs: CR.RING_ASH_TICK_MS,
+      })
+
+      // Звёздоцвет: срубили — пыльца всплывает над цветком, факт уходит в финиш.
+      starbloomSystem = starbloomTile === null || starbloomAssets === null ? null : createStarbloomSystem({
+        worldContainer,
+        idle: starbloomAssets[0],
+        cut: starbloomAssets[1],
+        tile: starbloomTile,
+        findGroundSurfaceY,
+        onCut: (x, y) => {
+          starbloomCutRef.current = true
+          spawnRewardFloat(x, y, [{ kind: 'drop', texture: starbloomAssets[2] }])
+          showSmugglerNotice('Звёздная пыльца')
+        },
+      })
+
       // Мана с убитых врагов (см. explore/entities/mana.ts): бросок выпадения
       // и полёт шаров в героя. Создаётся ЗДЕСЬ, после загрузки, а не рядом с
       // остальными системами выше: ей нужна готовая картинка шара. Системы
@@ -3606,6 +3718,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // выше потолка (setMana обрежет её молча).
         gainMana: (amount) => {
           questCountersRef.current.manaCollected += amount
+          // Кольцо перелива: шар в полный запас не сгорает, а лечит.
+          if (manaRef.current >= C.MANA_MAX && gearRef.current.rings.includes('ring_overflow')) {
+            restoreHpRef.current(maxHp * CR.RING_OVERFLOW_HEAL_FRAC)
+          }
           setMana(manaRef.current + amount)
         },
         // Прилив Повелителя стихий — свой шанс; у остальных общий.
@@ -4921,6 +5037,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // кровотечения). Тоже ОБЯЗАТЕЛЬНЫЙ и по той же причине, что sourceX:
       // нужен он двери Привратника, и забытый источник молча считался бы
       // не тем, чем был.
+      // Кольцо возврата (docs/crafter.md): цена последнего применения навыка,
+      // которую ещё можно вернуть добиванием. Ставит spendMana, гасит возврат.
+      let returnRefund = 0
+      const hasReturnRing = gearRef.current.rings.includes('ring_return')
+      function refundOnSkillKill(via: DamageVia): void {
+        if (!hasReturnRing || via === 'sword' || returnRefund <= 0) return
+        setMana(manaRef.current + returnRefund)
+        returnRefund = 0
+      }
+
       function damageEnemy(enemy: Enemy, amount: number, accumulator: { current: number }, sourceX: number, via: DamageVia): boolean {
         // ДВЕРЬ ПРИВРАТНИКА — здесь, в единственной общей точке списания HP,
         // чтобы правило было одно на все источники, а не по копии у меча, у
@@ -4970,6 +5096,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // доиграет и подержится DEATH_HOLD_MS, а не убираем сразу.
           enemy.dead = true
           redrawEnemyHpBar(enemy) // пустая полоса
+          refundOnSkillKill(via)
           // Пир (Владыка крови, 26.10.2026): убийство КРОВОТОЧАЩЕГО врага лечит
           // на долю максимального HP — чем бы ни добили, мечом, навыком или
           // самим тиком (запись кровотечения ещё в списке: снимается после этой
@@ -5022,7 +5149,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // и facing фиксируются навсегда; труп остаётся до конца забега, без
       // despawn/DEATH_HOLD_MS). Цель не параметр — босс в забеге один.
       // sourceX — то же, что у damageEnemy выше (X источника урона).
-      function damageBoss(amount: number, accumulator: { current: number }, sourceX: number): boolean {
+      function damageBoss(amount: number, accumulator: { current: number }, sourceX: number, via: DamageVia = 'skill'): boolean {
         const boss = bossRef.current
         if (!boss) return false
         // Настоятель срывает колокол — пока играет превращение, урон не проходит.
@@ -5048,6 +5175,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           boss.stage = 2
         }
         if (boss.hp <= 0) {
+          refundOnSkillKill(via)
           // Смерть (ФАЗА 2, шаг 6, см. задачу) — dead > attack > hurt >
           // walk > idle, ничем не прерывается: boss.dead гейтит ВЕСЬ
           // тикер (физика/AI/push-out/визуал, см. там) — мёртвый босс
@@ -5211,8 +5339,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // — по каждой цели отдельно, ниже. Бросок один, потому что и вызов один:
         // applyAttackHit за взмах зовётся ровно раз (дедуп attackHitDoneRef в
         // тикере). У других веток lungeSwingId не ставится, а шанс — 0.
-        const swingCrit = lungeSwingId === attackSwingIdRef.current
+        const classCrit = lungeSwingId === attackSwingIdRef.current
           || (blade.critChance > 0 && Math.random() < blade.critChance)
+        // Палаш иного места (docs/crafter.md): свой бросок крита. Крит не
+        // складывается: выпали оба — берётся больший множитель.
+        const gear = gearRef.current
+        const gearCrit = gear.critChance > 0 && Math.random() < gear.critChance
+        const swingCrit = classCrit || gearCrit
+        const critMult = Math.max(classCrit ? blade.critMult : 1, gearCrit ? gear.critMult : 1)
+        // Шпага иного места: удар по оглушённой или замороженной цели сильнее.
+        const disabledMult = (stun: number, parryStun: number) =>
+          gear.disabledHitMult !== 1 && (stun > 0 || parryStun > 0) ? gear.disabledHitMult : 1
+        // Клинок иного места: удар мечом лечит на долю СНЯТОГО (как Кровавый
+        // клинок — по приросту аккумулятора). Мимо healedAmountRef.
+        const lifesteal = (dealt: number) => { if (gear.lifestealFrac > 0 && dealt > 0) restoreHpRef.current(dealt * gear.lifestealFrac) }
         // Урон этого взмаха до крита: обычная атака — с бонусом Дуэлянта (у
         // остальных он равен attackDamageRef), взмах навыка slash — без него.
         const swingDamage = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
@@ -5258,10 +5398,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // Казнь (Мастер клинка): у врага ДО удара HP ниже доли максимума
               // — удар на весь остаток, враг убит. Не крит: искры у неё нет.
               const execute = !doorBlocks && blade.executeHpFrac > 0 && enemy.hp < enemy.maxHp * blade.executeHpFrac
-              const swordHit = crit ? swingDamage * blade.critMult : swingDamage
+              const swordHit = (crit ? swingDamage * critMult : swingDamage) * disabledMult(enemy.stunTimer, enemy.parryStunTimer)
               const swordDealtBefore = attackDamageDealtRef.current
-              const swordKilled = damageEnemy(enemy, execute ? Math.max(swordHit, enemy.hp) : swordHit, attackDamageDealtRef, swordSourceX, 'sword')
+              const swordKilled = damageEnemy(enemy, execute ? Math.max(swordHit, enemy.hp) : Math.floor(swordHit), attackDamageDealtRef, swordSourceX, 'sword')
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
+              lifesteal(attackDamageDealtRef.current - swordDealtBefore)
               if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, enemy.x, enemy.width), overlapCenter(hb.y, hb.height, enemy.y, enemy.height), enemy.sprite)
               if (swordKilled) continue
               applyEnemyHitReaction(enemy)
@@ -5301,9 +5442,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               const bossBladeBleeding = blood.bladeHealFrac > 0 && skills!.isBleeding(null)
               const bossDealtBefore = attackDamageDealtRef.current
               // Крит — как у врага выше; Казни на боссе нет (docs/classes.md).
-              const bossHit = swingCrit ? swingDamage * blade.critMult : swingDamage
-              const bossKilled = damageBoss(bossHit, attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2)
+              const bossHit = (swingCrit ? swingDamage * critMult : swingDamage) * disabledMult(boss.stunTimer, boss.parryStunTimer)
+              const bossKilled = damageBoss(Math.floor(bossHit), attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')
               if (bossBladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - bossDealtBefore) * blood.bladeHealFrac)
+              lifesteal(attackDamageDealtRef.current - bossDealtBefore)
               if (!bossKilled) {
                 applyBossHitReaction(boss)
               }
@@ -5316,6 +5458,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // attackSwingIdRef, как у врагов: opening=true уже само по себе
         // блокирует повторный запуск на следующих свингах, дедуп не нужен).
         // Сундук не бьёт и не имеет HP — только открытие анимации.
+        // Звёздоцвет срубается тем же взмахом, что открывает сундук.
+        if (attackHitboxRef.current) starbloomSystem?.strike(attackHitboxRef.current)
+
         if (attackHitboxRef.current) {
           const hb = attackHitboxRef.current
           for (const chest of chestsRef.current) {
@@ -5494,7 +5639,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // умеет. Заодно это замораживает facing (тот же гейт ниже): развернуться
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
         const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current
-        phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED
+        phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED * bootsSpeedMult
         // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
         // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
         // столкновений, тот же clamp по краям карты. Своей геометрии у dash
@@ -6249,14 +6394,23 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
               // долитого в healedAmountRef живут там, здесь не дублируются.
               healPlayer(maxHp * POTION_TIERS[tier - 1].healFrac)
-              potionStockRef.current[tier - 1] -= 1
-              potionsDrunkByTierRef.current[tier - 1] += 1
-              potionSipsLeftRef.current -= 1
-              potionCdRef.current = C.POTION_COOLDOWN
-              updatePotionButton()
-              // Фиксация глотка на сервере — после всей локальной логики и без
-              // ожидания ответа: лечение уже случилось (см. sendSip).
-              sendSip(tier)
+              // Кольцо бережливости: с шансом глоток не тратит ни зелье, ни
+              // глоток забега — и сервер о нём не узнаёт (запас на такие
+              // глотки он держит сам, gearReserve в runState.ts).
+              if (gearRef.current.rings.includes('ring_saving') && Math.random() < CR.RING_SAVING_CHANCE) {
+                potionCdRef.current = C.POTION_COOLDOWN
+                updatePotionButton()
+                showSmugglerNotice('Зелье осталось во фляге')
+              } else {
+                potionStockRef.current[tier - 1] -= 1
+                potionsDrunkByTierRef.current[tier - 1] += 1
+                potionSipsLeftRef.current -= 1
+                potionCdRef.current = C.POTION_COOLDOWN
+                updatePotionButton()
+                // Фиксация глотка на сервере — после всей локальной логики и без
+                // ожидания ответа: лечение уже случилось (см. sendSip).
+                sendSip(tier)
+              }
             }
           }
           // Доиграла (тот же способ определения конца, что у атаки: конец
@@ -6385,6 +6539,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // систем врагов и босса: tint босса каждый кадр пишет boss.ts, и цвет
         // крита попадает в кадр, только если записан позже (см. critFlash.ts).
         critFlashSystem!.update(ticker.deltaMS)
+        ashTrailSystem?.update(ticker.deltaMS)
 
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
         // независимая от игровой логики анимация, реальное время
@@ -6502,6 +6657,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       skills?.dispose()
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
+      ashTrailSystem?.dispose()
+      starbloomSystem?.dispose()
       // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
       // систему уже уничтоженной сцены (тот же приём, что clearManaOrbsRef ниже).
       classHealFlashRef.current = () => {}

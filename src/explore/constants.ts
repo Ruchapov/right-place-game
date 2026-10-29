@@ -2224,3 +2224,45 @@ export const ATMO_FOG_PER_PX = 6 / 1200
 export const ATMO_FOG_STEP = 205
 export const ATMO_FOG_DRIFT = 0.8
 export const ATMO_FOG_BOB = 22
+
+// --- МАСТЕР (29.10.2026, docs/crafter.md): Звёздоцвет и огонь кольца Пепла ---
+//
+// Листы уменьшены вдвое от исходного арта (art/starbloom, art/fire): исходники
+// 2144×2694 и 3296×3624 и полоса огня высотой 6593 px не влезают в текстуру
+// телефона (4096). Огонь ещё и обрезан до полосы пламени и сложен сеткой.
+export const STARBLOOM_IDLE_SRC = `${import.meta.env.BASE_URL}assets/objects/starbloom_idle.webp`
+export const STARBLOOM_CUT_SRC = `${import.meta.env.BASE_URL}assets/objects/starbloom_cut.webp`
+export const STARBLOOM_IDLE_CELL_W = 134
+export const STARBLOOM_IDLE_CELL_H = 225
+export const STARBLOOM_IDLE_COUNT = 48
+export const STARBLOOM_CUT_CELL_W = 206
+export const STARBLOOM_CUT_CELL_H = 227
+export const STARBLOOM_CUT_COUNT = 62
+export const STARBLOOM_SHEET_COLS = 8
+// Стебель стоит в клетке не по центру: x основания из starbloom_anim.json (150
+// из 268 у покоя, 205 из 412 у срубания), низ клетки — земля.
+export const STARBLOOM_IDLE_ANCHOR_X = 0.56
+export const STARBLOOM_CUT_ANCHOR_X = 0.5
+// Высота цветка в мире: с героя ростом (PLAYER_HEIGHT = 128), чтобы редкую находку было видно.
+export const STARBLOOM_DRAW_H = 130
+// Куда должен попасть взмах, чтобы срубить: узкий стебель, а не вся клетка.
+export const STARBLOOM_HITBOX_W = 56
+// 12 кадров в секунду, как у видео, из которого нарезаны листы.
+export const STARBLOOM_ANIM_SPEED = 12 / 60
+export const STARBLOOM_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/item_star_pollen.png`
+
+export const ASH_FIRE_SRC = `${import.meta.env.BASE_URL}assets/vfx/ash_fire.webp`
+export const ASH_FIRE_CELL_W = 380
+export const ASH_FIRE_CELL_H = 75
+export const ASH_FIRE_COUNT = 19
+export const ASH_FIRE_COLS = 4
+// Низ языков пламени в клетке (base_y 284 исходника минус обрезка 150, пополам).
+export const ASH_FIRE_ANCHOR_Y = 67 / 75
+// Высота полосы огня в мире и высота зоны, где враг его задевает.
+export const ASH_FIRE_DRAW_H = 48
+export const ASH_FIRE_HIT_H = 40
+// Короче этого след не рисуется: рывок у стены оставил бы точку огня.
+export const ASH_FIRE_MIN_W = 48
+export const ASH_FIRE_ANIM_SPEED = 12 / 60
+// Последние столько мс след гаснет (альфа к нулю), а не пропадает разом.
+export const ASH_FIRE_FADE_MS = 400

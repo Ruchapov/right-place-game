@@ -1,3 +1,4 @@
+import { OTHER_TIER, otherItemById } from './crafter'
 // Иконка предмета экипировки: путь ВЫВОДИТСЯ из слота и тира.
 //
 // Жило в App.tsx, вынесено 30.09.2026 — читателей стало ДВА: меню (ячейки
@@ -34,7 +35,13 @@ export const SLOT_CODE: Record<string, string> = {
  * Вызывающий обязан решить, что рисовать (ItemIcon в App.tsx показывает
  * название текстом), а не получить ".../undefined_t3.png".
  */
-export function itemIconSrc(slot: string, tier: number): string | null {
+export function itemIconSrc(slot: string, tier: number, itemId?: string): string | null {
+  // Вещи иного места (Мастер, тир 7): в слоте их по несколько (три меча, три
+  // доспеха), и тир с слотом вещь не называют — иконка по id строки Item.
+  if (tier === OTHER_TIER) {
+    const other = itemId === undefined ? null : otherItemById(itemId)
+    return other === null ? null : `${import.meta.env.BASE_URL}assets/icons/items/${other.icon}`
+  }
   const code = SLOT_CODE[slot]
   if (!code) return null
   return `${import.meta.env.BASE_URL}assets/icons/items/${code}_t${tier}.png`

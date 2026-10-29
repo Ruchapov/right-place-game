@@ -1,6 +1,7 @@
 import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, type ClassItemId } from './classItems'
+import { parseRingId, RING_SLOT_COUNT, type CrafterRawId, type OtherItemId, type RingId } from './crafter'
 import { parseHeroClassWire, type HeroClassId, type HeroClassState } from './heroClasses'
 import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
@@ -206,6 +207,9 @@ export type LoginResponse = {
     // объектом по id каталога classItems.ts. Опциональное по той же причине, что
     // scrolls выше. Разбирать ТОЛЬКО через readClassItems.
     classItems?: Record<string, number>
+    // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
+    // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
+    ringSlots?: unknown
     // Класс героя (20.10.2026): null — класса нет, {id, tier} — есть, поля нет
     // — сервер старше 20.10.2026 (или испорченная пара колонок). Разбирать
     // ТОЛЬКО через readHeroClass: отсутствие поля — «класс неизвестен», а не
@@ -525,6 +529,15 @@ export type StartExploreResult = {
    * через readHeroClass (см. setup() в Explore.tsx).
    */
   heroClass?: unknown
+  /** Мастер (29.10.2026): где растёт Звёздоцвет, [x, y] в клетках карты; null или нет поля — цветка нет. */
+  starbloom?: unknown
+}
+
+/** Место Звёздоцвета из ответа старта; всё, что не пара чисел, — цветка нет. */
+export function readStarbloom(raw: unknown): [number, number] | null {
+  return Array.isArray(raw) && raw.length === 2 && raw.every((n) => typeof n === 'number' && Number.isFinite(n))
+    ? [raw[0] as number, raw[1] as number]
+    : null
 }
 
 // mapFile необязателен — не передан → сервер сам выбирает карту (см.
@@ -615,6 +628,8 @@ export type RunDrop =
   // из каталога classItems.ts.
   | { category: 'soul_shard' }
   | { category: 'renounce_seal' }
+  // Мастер (29.10.2026): сырьё и кольца, id из каталога classItems.ts.
+  | { category: 'crafter'; id: string }
 
 export type RunResultSummary = {
   interrupted: boolean
@@ -861,11 +876,14 @@ export async function finishRunExplore(
   // Пять счётчиков ежедневных заданий (26.10.2026) — см. QuestRunCounters. В
   // тело уходят ПЛОСКО (parries, manaCollected, …), как их читает сервер.
   questCounters?: QuestRunCounters,
+  // Срублен ли Звёздоцвет (Мастер, 29.10.2026). Сервер верит, только если цветок
+  // в этом забеге был (currentRun.starbloom), и кладёт Звёздную пыльцу в итог.
+  starbloomCut?: boolean,
 ): Promise<FinishExploreResult> {
   // runId (15.10.2026): повтор финиша с тем же id сервер узнаёт и отдаёт
   // сохранённый итог вместо 400 'No active explore run'. Снимается ОДИН раз,
   // вместе с телом: все попытки этого вызова несут один и тот же id.
-  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters })
+  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters, starbloomCut })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -1427,6 +1445,8 @@ export type ProfileResult = {
   upgrades: UpgradeCounts | null
   /** null — сервер не назвал класс героя (см. readHeroClass). */
   heroClass: HeroClassState | null
+  /** Гнёзда колец (Мастер); null — сервер не назвал. */
+  ringSlots: (RingId | '')[] | null
   /** null — сервер не назвал значки охотника (сервер старше заданий, см. readCurrencyCount). */
   hunterBadges: number | null
   /** null — сервер не назвал RP (см. readCurrencyCount). */
@@ -1468,6 +1488,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillUses?: unknown
     upgrades?: unknown
     heroClass?: unknown
+    ringSlots?: unknown
     hunterBadges?: unknown
     rp?: unknown
     strength?: unknown
@@ -1500,6 +1521,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skillUses: readSkillUses(raw.skillUses),
     upgrades: readUpgrades(raw.upgrades),
     heroClass: readHeroClass(raw.heroClass),
+    ringSlots: readRingSlots(raw.ringSlots),
     hunterBadges: readCurrencyCount(raw.hunterBadges),
     rp: readCurrencyCount(raw.rp),
     strength: readCurrencyCount(raw.strength),
@@ -1838,6 +1860,9 @@ export function readRunDrops(raw: unknown): RunDrop[] {
       out.push({ category: e.category, id: e.id })
     } else if (e.category === 'soul_shard' || e.category === 'renounce_seal') {
       out.push({ category: e.category })
+    } else if (e.category === 'crafter') {
+      if (typeof e.id !== 'string') continue
+      out.push({ category: 'crafter', id: e.id })
     }
   }
   return out
@@ -2479,4 +2504,104 @@ export function sellItem(token: string, inventoryItemId: string): Promise<SellIt
     },
     UPGRADE_TIMEOUT_MS,
   )
+}
+
+// --- МАСТЕР (29.10.2026, docs/crafter.md): переплавка, ковка, кольца ---
+
+/**
+ * Гнёзда колец из ответа сервера: ровно RING_SLOT_COUNT элементов, id кольца или
+ * '' (пусто). null — сервер не назвал (старый сервер или мусор): кольца
+ * показываются прочерком, а не пустыми гнёздами.
+ */
+export function readRingSlots(raw: unknown): (RingId | '')[] | null {
+  if (!Array.isArray(raw) || raw.length !== RING_SLOT_COUNT) return null
+  const out: (RingId | '')[] = []
+  for (const v of raw) {
+    if (v === '') { out.push(''); continue }
+    const id = parseRingId(v)
+    if (id === null) return null
+    out.push(id)
+  }
+  return out
+}
+
+const CRAFTER_TIMEOUT_MS = 5000
+
+export type SmeltResult = {
+  classItems: Record<ClassItemId, number> | null
+  potions: number[] | null
+  /** Удачная плавка: вышло два Слитка. */
+  crit: boolean
+  /** Удачная плавка была, но второму Слитку не хватило места в сумке. */
+  critLost: boolean
+  replayed: boolean
+}
+
+function readPotionArray(raw: unknown): number[] | null {
+  return Array.isArray(raw) && raw.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0) ? [...raw as number[]] : null
+}
+
+/** Переплавить 1 сырьё + 1 Кровь пилигрима в Слиток. */
+export async function smeltRaw(token: string, raw: CrafterRawId): Promise<SmeltResult> {
+  const res = await keyedPurchase(`crafter-smelt:${raw}`, (requestId) => requestJson<{ classItems?: unknown; potions?: unknown; crit?: unknown; critLost?: unknown; replayed?: unknown }>(
+    `${SERVER_URL}/character/crafter/smelt`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw, requestId }),
+    },
+    CRAFTER_TIMEOUT_MS,
+  ))
+  return {
+    classItems: readClassItems(res.classItems),
+    potions: readPotionArray(res.potions),
+    crit: res.crit === true,
+    critLost: res.critLost === true,
+    replayed: res.replayed === true,
+  }
+}
+
+export type ForgeResult = {
+  gold: number | null
+  rp: number | null
+  classItems: Record<ClassItemId, number> | null
+  replayed: boolean
+}
+
+/** Выковать вещь иного места из вещи шестого тира того же слота (лежит в сумке). */
+export async function forgeOtherItem(token: string, itemId: OtherItemId, sourceInventoryItemId: string): Promise<ForgeResult> {
+  const res = await keyedPurchase(`crafter-forge:${itemId}:${sourceInventoryItemId}`, (requestId) => requestJson<{ gold?: unknown; rp?: unknown; classItems?: unknown; replayed?: unknown }>(
+    `${SERVER_URL}/character/crafter/forge`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId, sourceInventoryItemId, requestId }),
+    },
+    CRAFTER_TIMEOUT_MS,
+  ))
+  return {
+    gold: readCurrencyCount(res.gold),
+    rp: readCurrencyCount(res.rp),
+    classItems: readClassItems(res.classItems),
+    replayed: res.replayed === true,
+  }
+}
+
+export type RingSlotResult = {
+  classItems: Record<ClassItemId, number> | null
+  ringSlots: (RingId | '')[] | null
+}
+
+/** Надеть кольцо из сумки в гнездо (ringId) или снять кольцо из гнезда (null). */
+export async function setRingSlot(token: string, slot: number, ringId: RingId | null): Promise<RingSlotResult> {
+  const res = await keyedPurchase(`crafter-ring:${slot}:${ringId ?? '-'}`, (requestId) => requestJson<{ classItems?: unknown; ringSlots?: unknown }>(
+    `${SERVER_URL}/character/crafter/ring`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slot, ringId, requestId }),
+    },
+    CRAFTER_TIMEOUT_MS,
+  ))
+  return { classItems: readClassItems(res.classItems), ringSlots: readRingSlots(res.ringSlots) }
 }

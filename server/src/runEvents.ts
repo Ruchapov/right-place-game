@@ -466,3 +466,16 @@ function clientEventDrop(drop: EventDrop | null | undefined): ClientEventDrop | 
     ? { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
     : drop
 }
+
+/**
+ * Место Звёздоцвета (docs/crafter.md, 29.10.2026): одна из точек награды (reward)
+ * той же карты, на которой в этом забеге НЕ стоит событие, — там ровный пол и
+ * свободное место под объект размером с сундук. Свободных нет — null, и цветка
+ * в этом забеге не будет: ставить его поверх сундука нельзя.
+ */
+export function pickStarbloomPoint(mapFile: string, events: RunEvent[]): [number, number] | null {
+  const slots = readSlots(mapFile)
+  const taken = new Set(events.map((ev) => `${ev.x},${ev.y}`))
+  const free = (slots.reward ?? []).filter(isPointXY).filter((p) => !taken.has(`${p[0]},${p[1]}`))
+  return pickRandom(free, 1)[0] ?? null
+}

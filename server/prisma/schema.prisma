@@ -104,6 +104,20 @@ model Character {
   // забег, а у Item (таблица снаряжения) нет ни слота, ни тира для них.
   soulShards          Int      @default(0)
   renounceSeals       Int      @default(0)
+  // Мастер (docs/crafter.md, миграция 20261029120000_crafter_items_add):
+  // склад сырья, Слитков и колец — те же колонки-счётчики, что выше (каталог
+  // classItems.ts), и гнёзда колец Дланей иного места (id колец, не больше двух;
+  // надетое кольцо со склада уходит). Читать гнёзда через ringSlotsOf (runState.ts).
+  darkClots           Int      @default(0)
+  starPollen          Int      @default(0)
+  otherIngots         Int      @default(0)
+  ringSaving          Int      @default(0)
+  ringSkillSearch     Int      @default(0)
+  ringAsh             Int      @default(0)
+  ringOverflow        Int      @default(0)
+  ringProspector      Int      @default(0)
+  ringReturn          Int      @default(0)
+  ringSlots           String[] @default([])
   // Класс героя (каталог src/heroClasses.ts / server/src/heroClasses.ts,
   // миграция 20261020120000_hero_class_add). Выбирается у Отшельника с 10
   // уровня, возвышается до второй ступени своей ветки с 30, снимается

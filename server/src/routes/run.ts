@@ -3,13 +3,14 @@ import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, clientRunEvents, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
-import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, type DropIntent, type EventDrop } from '../runDrops.js'
+import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
+import { OTHER_TIER, RING_PROSPECTOR_MULT, RING_SLOT_COUNT, CRAFTER_LEVEL, FORGE_GOLD, FORGE_RP, FORGE_INGOTS, FORGE_SOURCE_TIER, SMELT_POTION_TIER, SMELT_CRIT_CHANCE, SMELT_CRIT_INGOTS, parseCrafterRawId, parseOtherItemId, parseRingId, otherItemById, gearEffectsOf, runMaxHpOf } from '../crafter.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -49,6 +50,9 @@ import {
   readRunSipIds,
   readyWindowOpen,
   judgeUnshownCancel,
+  ringSlotsOf,
+  readRunGear,
+  type RunGear,
 } from '../runState.js'
 import {
   readQuestState,
@@ -238,28 +242,34 @@ async function bagCellsUsed(
 }
 
 // Прибавка к складу ОДНОГО предмета класса и фильтр/списание для продажи —
-// готовыми куска́ми для условных записей (дроп на финише, продажа). Switch по
-// ClassItemId — тот же приём, что у страниц и книг: третий предмет без ветки
-// здесь не скомпилируется.
+// готовыми куска́ми для условных записей (дроп на финише, продажа). Колонка по
+// id — Record по ClassItemId: предмет без колонки здесь не скомпилируется (тот
+// же приём, что был у switch'а до Мастера, 29.10.2026, — с одиннадцатью id
+// switch стал бы втрое длиннее той же таблицы).
+const CLASS_ITEM_COLUMN: Record<ClassItemId, keyof ClassItemColumns> = {
+  soul_shard: 'soulShards',
+  renounce_seal: 'renounceSeals',
+  dark_clot: 'darkClots',
+  star_pollen: 'starPollen',
+  other_ingot: 'otherIngots',
+  ring_saving: 'ringSaving',
+  ring_skill_search: 'ringSkillSearch',
+  ring_ash: 'ringAsh',
+  ring_overflow: 'ringOverflow',
+  ring_prospector: 'ringProspector',
+  ring_return: 'ringReturn',
+}
+
 function classItemStockIncrement(id: ClassItemId, count: number): Prisma.CharacterUpdateManyMutationInput {
-  switch (id) {
-    case 'soul_shard': return { soulShards: { increment: count } }
-    case 'renounce_seal': return { renounceSeals: { increment: count } }
-  }
+  return { [CLASS_ITEM_COLUMN[id]]: { increment: count } }
 }
 
-function classItemStockFilter(id: ClassItemId): Prisma.CharacterWhereInput {
-  switch (id) {
-    case 'soul_shard': return { soulShards: { gte: 1 } }
-    case 'renounce_seal': return { renounceSeals: { gte: 1 } }
-  }
+function classItemStockFilter(id: ClassItemId, min = 1): Prisma.CharacterWhereInput {
+  return { [CLASS_ITEM_COLUMN[id]]: { gte: min } }
 }
 
-function classItemStockDecrement(id: ClassItemId): Prisma.CharacterUpdateManyMutationInput {
-  switch (id) {
-    case 'soul_shard': return { soulShards: { decrement: 1 } }
-    case 'renounce_seal': return { renounceSeals: { decrement: 1 } }
-  }
+function classItemStockDecrement(id: ClassItemId, count = 1): Prisma.CharacterUpdateManyMutationInput {
+  return { [CLASS_ITEM_COLUMN[id]]: { decrement: count } }
 }
 
 // Изменение склада зелий ПО ТИРАМ (индекс = тир-1) — кусками для условной
@@ -639,6 +649,8 @@ export type RunDrop =
   // classItems.ts по категории — у каждой категории один вид.
   | { category: 'soul_shard' }
   | { category: 'renounce_seal' }
+  // Мастер (29.10.2026): сырьё и кольца, id — из каталога classItems.ts.
+  | { category: 'crafter'; id: string }
 
 /**
  * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
@@ -666,6 +678,8 @@ async function resolveDropIntent(
       const pool = await prisma.item.findMany({
         where: {
           slot: intent.slot,
+          // Вещи иного места (тир 7) только куются у Мастера, в добычу не идут.
+          tier: { lt: OTHER_TIER },
           OR: [{ levelRequired: { lte: characterLevel } }, { tier: ITEM_DROP_FLOOR_TIER }],
         },
         select: { id: true, nameRu: true, slot: true, tier: true },
@@ -687,6 +701,8 @@ async function resolveDropIntent(
       return { category: 'soul_shard' }
     case 'renounce_seal':
       return { category: 'renounce_seal' }
+    case 'crafter':
+      return { category: 'crafter', id: intent.id }
   }
 }
 
@@ -705,11 +721,12 @@ async function attachEventDrops(
   events: RunEvent[],
   characterLevel: number,
   luck: number,
+  rings: DropRings,
   log: FastifyRequest['log'],
 ): Promise<RunEvent[]> {
   const out: RunEvent[] = []
   for (const event of events) {
-    const intent = rollEventDrop(event.kind, characterLevel, luck)
+    const intent = rollEventDrop(event.kind, characterLevel, luck, rings)
     const drop = intent === null ? null : await resolveDropIntent(intent, characterLevel, log)
     const extraIntent = rollEventExtraDrop(event.kind, characterLevel, luck)
     const extraDrop = extraIntent === null ? null : await resolveDropIntent(extraIntent, characterLevel, log)
@@ -803,6 +820,9 @@ async function applyDrops(
   drops: EventDrop[],
   character: { id: number } & ConsumableColumns & ClassItemColumns,
   log: FastifyRequest['log'],
+  // Кольцо старателя на этот забег (снимок currentRun.gear): каждая находка
+  // сырья — две штуки, и каждая берёт своё место в сумке.
+  prospector = false,
 ): Promise<AppliedDrops> {
   const gained: RunDrop[] = []
   const lost: RunDrop[] = []
@@ -886,6 +906,28 @@ async function applyDrops(
         if (needsCell) cellsUsed++
         classGain[id] = (classGain[id] ?? 0) + 1
         gained.push(view)
+        break
+      }
+      case 'crafter': {
+        // Мастер (29.10.2026): сырьё и кольца. Тот же каталог и то же правило
+        // места, что у Печати: каждая штука — своя ячейка, не влезло — пропало.
+        const spec = classItemById(drop.id)
+        if (spec === null) {
+          log.error({ id: drop.id }, 'finish-explore: crafter drop is not in the catalog')
+          continue
+        }
+        const isRaw = parseCrafterRawId(drop.id) !== null
+        const pieces = isRaw && prospector ? RING_PROSPECTOR_MULT : 1
+        for (let i = 0; i < pieces; i++) {
+          const view: RunDrop = { category: 'crafter', id: spec.id }
+          if (spec.takesCell && !bagFits(cellsUsed, 1)) {
+            lost.push(view)
+            continue
+          }
+          if (spec.takesCell) cellsUsed++
+          classGain[spec.id] = (classGain[spec.id] ?? 0) + 1
+          gained.push(view)
+        }
         break
       }
     }
@@ -1037,6 +1079,10 @@ type FinishExploreBody = {
   manaSpent?: unknown
   spikeHits?: unknown
   skillCasts?: unknown
+  // Мастер (29.10.2026): срублен ли Звёздоцвет. Верится как `died` — бой на
+  // клиенте; проверяется только то, что цветок в этом забеге БЫЛ
+  // (currentRun.starbloom).
+  starbloomCut?: unknown
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
 // sipId (15.10.2026) — id ЭТОГО глотка, один на все попытки повтора: глоток,
@@ -1244,11 +1290,9 @@ export async function runRoutes(server: FastifyInstance) {
     }
 
     const newEnergy = regen.energy - RUN_COST
-    const maxHp = character.endurance * 8
     // Снимок склада ПО ТИРАМ + отдельный лимит глотков. Раньше здесь был один
     // Math.min(potionCharges, 3), смешивавший «сколько есть» и «сколько можно».
     const potionStock = potionStockOf(character)
-    const potionSips = Math.min(MAX_SIPS_PER_RUN, potionStock.reduce((sum, n) => sum + n, 0))
 
     const equippedItems = await prisma.inventoryItem.findMany({
       where: { characterId: character.id, equipped: true },
@@ -1261,15 +1305,37 @@ export async function runRoutes(server: FastifyInstance) {
     const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
       + upgradeBonus('armor', upgradesOf(character))
 
+    // Снаряжение Мастера на этот забег (docs/crafter.md): надетые вещи иного
+    // места и кольца в гнёздах — снимком в currentRun.gear. Клобук поднимает
+    // maxHp, Чётки — лимит глотков; та же gearEffectsOf считает их на клиенте.
+    const ringRead = ringSlotsOf(character)
+    if (ringRead.malformed) {
+      request.log.error({ userId, ringSlots: character.ringSlots }, 'start-explore: corrupt ringSlots — bad entries read as empty')
+    }
+    const runGear: RunGear = {
+      items: equippedItems.map((inv) => inv.itemId).filter((id) => parseOtherItemId(id) !== null),
+      rings: ringRead.slots.filter((id) => id !== ''),
+    }
+    const gear = gearEffectsOf(runGear.items, runGear.rings)
+    const maxHp = runMaxHpOf(character.endurance, gear)
+    const potionSips = Math.min(MAX_SIPS_PER_RUN + gear.extraSips, potionStock.reduce((sum, n) => sum + n, 0))
+    // Удача = своя + удача надетого амулета (29.10.2026: до этого амулет удачи
+    // только показывал число в карточке, а добыча читала одну колонку героя).
+    const luck = character.luck + equippedItems.reduce((sum, inv) => sum + (inv.item.luck ?? 0), 0)
+
     // level больше не колонка в БД — вычисляется на месте из статов+бонуса
     // (см. game.ts calculateLevel), никогда не читается напрямую.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+    const rolledEvents = rollRunEvents(mapFile, characterLevel)
     const events = await attachEventDrops(
-      rollRunEvents(mapFile, characterLevel),
+      rolledEvents,
       characterLevel,
-      character.luck,
+      luck,
+      { skillSearch: gear.rings.includes('ring_skill_search') },
       request.log,
     )
+    // Звёздоцвет: бросок на забег, место — свободная точка награды этой карты.
+    const starbloom = rollStarbloom(characterLevel, luck) ? pickStarbloomPoint(mapFile, rolledEvents) : null
 
     // confirmed: false — забег создан, но игрок его ещё не видел. Снимет флаг
     // POST /run/ready, когда клиент построит мир (а также первый глоток или
@@ -1318,6 +1384,7 @@ export async function runRoutes(server: FastifyInstance) {
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
+      gear: runGear, starbloom,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1414,6 +1481,8 @@ export async function runRoutes(server: FastifyInstance) {
       // Класс на этот забег (26.10.2026): null — класса нет, {id, tier} — класс.
       // Тот же, что записан в currentRun выше; старый клиент поле не читает.
       heroClass: runHeroClass,
+      // Мастер: где растёт Звёздоцвет ([x, y] в клетках карты) или null.
+      starbloom,
     })
   })
 
@@ -2020,9 +2089,14 @@ export async function runRoutes(server: FastifyInstance) {
     // died в этот расчёт НЕ передаётся вовсе: добыча начисляется и при смерти
     // (решение дизайнера — сгорают только трофеи, см. docs/items.md). Отсутствие
     // параметра и есть гарантия, что смерть сюда не просочится.
+    const runGearRead = readRunGear(run)
+    if (runGearRead.malformed) {
+      request.log.error({ userId, gear: run.gear }, 'finish-explore: corrupt gear in currentRun — counted without gear')
+    }
+    const runRings = runGearRead.effects.rings
     const storedDrops = storedEventDrops(run, closedEvents, request.log)
     const eventDrops = storedDrops ?? await (async () => {
-      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck)
+      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck, { skillSearch: runRings.includes('ring_skill_search') })
       const resolved: EventDrop[] = []
       for (const intent of intents) {
         const drop = await resolveDropIntent(intent, characterLevel, request.log)
@@ -2030,6 +2104,16 @@ export async function runRoutes(server: FastifyInstance) {
       }
       return resolved
     })()
+    // Звёздоцвет (docs/crafter.md): срубленный цветок даёт Звёздную пыльцу —
+    // той же добычей, что события, с тем же правилом места в сумке.
+    const starbloomCut = !unconfirmedPenalty && request.body.starbloomCut === true
+    if (starbloomCut) {
+      if (Array.isArray(run.starbloom)) {
+        eventDrops.push({ category: 'crafter', id: 'star_pollen' })
+      } else {
+        request.log.warn({ userId, starbloom: run.starbloom }, 'finish-explore: starbloomCut without a starbloom in this run')
+      }
+    }
     // Вместимость (applyDrops) и склад зелий считаются ВНУТРИ транзакции ниже,
     // под блокировкой строки персонажа, — см. там.
 
@@ -2100,7 +2184,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!fresh) return null
       // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
       // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
-      const resolvedDrops = await applyDrops(tx, eventDrops, fresh, request.log)
+      const resolvedDrops = await applyDrops(tx, eventDrops, fresh, request.log, runRings.includes('ring_prospector'))
       // Склад после забега: свежий склад минус выпитое (никогда не в минус — см.
       // subtractPotionStock) плюс выпавшее. Пишется разницей со свежим складом.
       const freshPotions = potionStockOf(fresh)
@@ -3255,6 +3339,7 @@ export async function runRoutes(server: FastifyInstance) {
       // Предметы классов (18.10.2026) — той же формы и по той же причине, что
       // страницы выше. Отдельным полем: свой каталог, в витрине их нет.
       classItems: classItemStockOf(character),
+      ringSlots: ringSlotsOf(character).slots,
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -3361,6 +3446,198 @@ export async function runRoutes(server: FastifyInstance) {
       upgrades: upgradesOf(updated),
       ...(applied.replayed ? { replayed: true } : {}),
     })
+  })
+
+  // --- Мастер (docs/crafter.md, 29.10.2026): переплавка, ковка, кольца ---
+  //
+  // Раздел у Кузнеца, открыт с CRAFTER_LEVEL (30). Все три ручки — одна
+  // транзакция под lockCharacterRow (место в сумке — COUNT по другой таблице,
+  // фильтром записи не выражается), requestId — ключ идемпотентности (applyOnce),
+  // как у покупок: повтор уже применённого получает «уже сделано» с текущими
+  // числами, а не отказ «мало сырья».
+
+  // Переплавка: 1 сырьё (Сгусток тьмы или Звёздная пыльца) + 1 Кровь пилигрима
+  // → 1 Слиток; с шансом SMELT_CRIT_CHANCE «Удачная плавка» — два. Второй
+  // Слиток, которому не хватило места в сумке, пропадает (общее правило «не
+  // влезло — пропало»), и ответ это говорит (critLost).
+  // ⚠️ Во время вылазки — 400 Run in progress: финиш списывает выпитые зелья
+  // условной записью «не меньше, чем было», и Кровь пилигрима, ушедшая в
+  // переплавку посреди забега, развернула бы финиш в бесконечный 409.
+  server.post<{ Body: { raw?: unknown; requestId?: unknown } | null }>('/character/crafter/smelt', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+    const raw = parseCrafterRawId(request.body?.raw)
+    if (raw === null) return reply.status(400).send({ error: 'Unknown raw material' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+    if (calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels) < CRAFTER_LEVEL) {
+      return reply.status(400).send({ error: 'Level too low', levelRequired: CRAFTER_LEVEL })
+    }
+    if (character.currentRun !== null) return reply.status(400).send({ error: 'Run in progress' })
+
+    const potionColumn = POTION_COLUMNS[SMELT_POTION_TIER - 1]
+    let applied: AppliedOnce<{ crit: boolean; critLost: boolean }>
+    try {
+      applied = await applyOnce(character.id, requestId, 'crafter-smelt', request.log, async (db) => {
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        const stock = classItemStockOf(fresh)
+        if (stock[raw] < 1) throw new RouteRejection(400, { error: 'Not enough raw material', id: raw })
+        if (fresh[potionColumn] < 1) throw new RouteRejection(400, { error: 'Not enough potions', tier: SMELT_POTION_TIER })
+        const crit = Math.random() < SMELT_CRIT_CHANCE
+        // Сырьё уходит, Слиток приходит — ячеек столько же. Лишняя нужна только
+        // второму Слитку удачной плавки.
+        let ingots = 1
+        let critLost = false
+        if (crit) {
+          const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
+          if (bagFits(used, SMELT_CRIT_INGOTS - 1)) ingots = SMELT_CRIT_INGOTS
+          else critLost = true
+        }
+        const written = await db.character.updateMany({
+          where: { userId, currentRun: { equals: Prisma.DbNull }, ...classItemStockFilter(raw), [potionColumn]: { gte: 1 } },
+          data: { ...classItemStockDecrement(raw), [potionColumn]: { decrement: 1 }, ...classItemStockIncrement('other_ingot', ingots) },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry' })
+        return { crit, critLost }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) return reply.status(500).send({ error: 'Smelted but state could not be read' })
+    return reply.send({
+      classItems: classItemStockOf(updated),
+      potions: potionStockOf(updated),
+      ...(applied.replayed ? { replayed: true, crit: false, critLost: false } : applied.value),
+    })
+  })
+
+  // Ковка: FORGE_RP + FORGE_INGOTS Слиток + FORGE_GOLD + вещь шестого тира того
+  // же слота, которая ЛЕЖИТ в сумке (надетая не годится — решение Андрея
+  // 26.10.2026) → вещь иного места в сумку. Место в сумке: вещь Т6 уходит, вещь
+  // иного места приходит, Слиток уходит — свободнее, чем было; проверять нечего.
+  server.post<{ Body: { itemId?: unknown; sourceInventoryItemId?: unknown; requestId?: unknown } | null }>('/character/crafter/forge', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+    const otherId = parseOtherItemId(request.body?.itemId)
+    const target = otherId === null ? null : otherItemById(otherId)
+    if (target === null) return reply.status(400).send({ error: 'Unknown item' })
+    const sourceId = request.body?.sourceInventoryItemId
+    if (typeof sourceId !== 'string' || sourceId === '') return reply.status(400).send({ error: 'Invalid sourceInventoryItemId' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+    if (calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels) < CRAFTER_LEVEL) {
+      return reply.status(400).send({ error: 'Level too low', levelRequired: CRAFTER_LEVEL })
+    }
+
+    let applied: AppliedOnce<{ inventoryItemId: string }>
+    try {
+      applied = await applyOnce(character.id, requestId, 'crafter-forge', request.log, async (db) => {
+        const source = await db.inventoryItem.findFirst({
+          where: { id: sourceId, characterId: character.id },
+          include: { item: true },
+        })
+        if (!source) throw new RouteRejection(404, { error: 'Source item not found' })
+        if (source.equipped) throw new RouteRejection(400, { error: 'Source item is equipped' })
+        if (source.item.tier !== FORGE_SOURCE_TIER || source.item.slot !== target.slot) {
+          throw new RouteRejection(400, { error: 'Wrong source item', tier: FORGE_SOURCE_TIER, slot: target.slot })
+        }
+        const written = await db.character.updateMany({
+          where: { userId, gold: { gte: FORGE_GOLD }, rp: { gte: FORGE_RP }, ...classItemStockFilter('other_ingot', FORGE_INGOTS) },
+          data: { gold: { decrement: FORGE_GOLD }, rp: { decrement: FORGE_RP }, ...classItemStockDecrement('other_ingot', FORGE_INGOTS) },
+        })
+        if (written.count === 0) throw new RouteRejection(400, { error: 'Not enough resources', gold: FORGE_GOLD, rp: FORGE_RP, ingots: FORGE_INGOTS })
+        const removed = await db.inventoryItem.deleteMany({ where: { id: sourceId, characterId: character.id, equipped: false } })
+        if (removed.count !== 1) throw new RouteRejection(409, { error: 'State changed, retry' })
+        const created = await db.inventoryItem.create({ data: { characterId: character.id, itemId: target.id } })
+        return { inventoryItemId: created.id }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) return reply.status(500).send({ error: 'Forged but state could not be read' })
+    return reply.send({
+      gold: updated.gold,
+      rp: updated.rp,
+      classItems: classItemStockOf(updated),
+      ...(applied.replayed ? { replayed: true } : { inventoryItemId: applied.value.inventoryItemId }),
+    })
+  })
+
+  // Кольца: положить кольцо из сумки в гнездо (ringId) или снять (ringId: null).
+  // Надеть можно, только пока надеты Длани иного места; снять — всегда (сняли
+  // Длани — кольца в гнёздах остаются и молчат, см. gearEffectsOf). Кольцо,
+  // которое было в гнезде, возвращается в сумку — при замене место не меняется,
+  // при снятии нужна свободная ячейка. Два одинаковых кольца надеть можно.
+  // Запись условная по прежним гнёздам: гонка — 409.
+  server.post<{ Body: { slot?: unknown; ringId?: unknown; requestId?: unknown } | null }>('/character/crafter/ring', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+    const slot = request.body?.slot
+    if (!Number.isInteger(slot) || (slot as number) < 0 || (slot as number) >= RING_SLOT_COUNT) {
+      return reply.status(400).send({ error: 'Invalid slot' })
+    }
+    const slotIndex = slot as number
+    const rawRing = request.body?.ringId
+    const ringId = rawRing === null ? null : parseRingId(rawRing)
+    if (rawRing !== null && ringId === null) return reply.status(400).send({ error: 'Unknown ring' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    try {
+      await applyOnce(character.id, requestId, 'crafter-ring', request.log, async (db) => {
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        const slots = ringSlotsOf(fresh).slots
+        const prev = slots[slotIndex]
+        const stock = classItemStockOf(fresh)
+        let where: Prisma.CharacterWhereInput = { userId, ringSlots: { equals: fresh.ringSlots } }
+        let data: Prisma.CharacterUpdateManyMutationInput
+        if (ringId !== null) {
+          const gloves = await db.inventoryItem.count({ where: { characterId: fresh.id, equipped: true, itemId: 'other_dlani' } })
+          if (gloves === 0) throw new RouteRejection(400, { error: 'Gloves not equipped' })
+          // То же кольцо в то же гнездо — менять нечего.
+          if (prev === ringId) return
+          if (stock[ringId] < 1) throw new RouteRejection(400, { error: 'Ring not in bag', id: ringId })
+          where = { ...where, ...classItemStockFilter(ringId) }
+          data = { ...classItemStockDecrement(ringId) }
+          // Прежнее кольцо — назад в сумку.
+          if (prev !== '') data = { ...data, ...classItemStockIncrement(prev, 1) }
+        } else {
+          if (prev === '') throw new RouteRejection(400, { error: 'Slot is empty' })
+          const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
+          if (!bagFits(used, 1)) throw new RouteRejection(400, { error: 'Bag is full' })
+          data = { ...classItemStockIncrement(prev, 1) }
+        }
+        const next = slots.map((s, i) => (i === slotIndex ? (ringId ?? '') : s))
+        const written = await db.character.updateMany({ where, data: { ...data, ringSlots: next } })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry' })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) return reply.status(500).send({ error: 'Ring changed but state could not be read' })
+    return reply.send({ classItems: classItemStockOf(updated), ringSlots: ringSlotsOf(updated).slots })
   })
 
   // Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): +1 к силе, ловкости или

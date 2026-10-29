@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, smeltRaw, forgeOtherItem, setRingSlot, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -16,6 +16,9 @@ import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCellsOf, bagFits, b
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, classItemById, type ClassItemId } from './classItems'
+import { CRAFTER_LEVEL, OTHER_TIER, BOOTS_SPEED_CAP_PCT, gearEffectsOf, otherItemById, type CrafterRawId, type OtherItemId, type RingId } from './crafter'
+import { CrafterSection } from './ui/CrafterSection'
+import { RingSlots } from './ui/RingSlots'
 // Ловчий (27.10.2026) — общий каталог src/hunter.ts ↔ server/src/hunter.ts.
 import { HUNTER_STATS, hunterStatPrice, type HunterStat } from './hunter'
 import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
@@ -121,7 +124,10 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    * readCurrencyCount в api.ts), а не ноль. Тратить их пока не на что.
    */
   hunterBadges: number | null
-  rp: number | null }
+  rp: number | null
+  // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): id кольца или ''.
+  // null — сервер не назвал (readRingSlots): прочерк, а не пустые гнёзда.
+  ringSlots: (RingId | '')[] | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -318,6 +324,17 @@ const ITEM_FLAVOR: Record<string, string[]> = {
 // хранится — по дизайну это tier*5%, выводится из тира на лету (так и
 // записано в комментарии к миграции 20260903120000_reseed_item_catalog).
 function itemStatLine(item: InventoryItem['item']): string {
+  // Вещь иного места (Мастер, тир 7): рост статов у неё не задуман, вместо него
+  // — её свойство строкой из каталога crafter.ts.
+  const other = item.tier === OTHER_TIER ? otherItemById(item.id) : null
+  if (other !== null) {
+    const v = (x: number | null) => (x === null ? '?' : `+${x}`)
+    const base = item.slot === 'weapon' ? `Урон ${v(item.damage)}`
+      : item.slot === 'boots' ? `Скорость ${v(item.moveSpeed)}%`
+        : item.slot === 'amulet' ? `Удача ${v(item.luck)}`
+          : `Броня ${v(item.armor)}`
+    return `${base} · ${other.effectLine}`
+  }
   const growth = item.tier * 5
   // Поля nullable по схеме (damage только у оружия, armor у шлема/брони/
   // перчаток, и так далее). null там, где для этого слота число обязательно —
@@ -467,7 +484,13 @@ function devScrollStock(): Record<ScrollId, number> {
  * Record<ClassItemId, number> не соберётся, если третий предмет забудут здесь.
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
-const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = { soul_shard: 12, renounce_seal: 1 }
+const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = {
+  soul_shard: 12, renounce_seal: 1,
+  // Мастер (29.10.2026): по штуке-две, чтобы в браузере были видны и сумка, и
+  // переплавка, и выбор кольца в гнездо.
+  dark_clot: 2, star_pollen: 1, other_ingot: 1,
+  ring_saving: 1, ring_skill_search: 0, ring_ash: 1, ring_overflow: 0, ring_prospector: 0, ring_return: 0,
+}
 /**
  * TEMP_DEV_HERO_CLASS — ТЕСТОВЫЙ класс героя для офлайн-заглушки DevTester
  * (20.10.2026). Настоящий лежит в колонках Character.classId / classTier и
@@ -855,6 +878,12 @@ export default function App() {
   const [hunterPending, setHunterPending] = useState<HunterStat | null>(null)
   const hunterPendingRef = useRef(false)
   const [hunterError, setHunterError] = useState<string | null>(null)
+  // Мастер у Кузнеца и гнёзда колец (29.10.2026, docs/crafter.md).
+  const [crafterPending, setCrafterPending] = useState(false)
+  const [crafterError, setCrafterError] = useState<string | null>(null)
+  const [smeltNote, setSmeltNote] = useState<string | null>(null)
+  const [ringPending, setRingPending] = useState(false)
+  const [ringError, setRingError] = useState<string | null>(null)
   // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
   // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
   const [shopSelected, setShopSelected] = useState<
@@ -1121,7 +1150,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3 })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, ringSlots: ['ring_ash', ''] })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1151,7 +1180,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), ringSlots: readRingSlots(data.character.ringSlots) })
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -1322,6 +1351,14 @@ export default function App() {
       : equippedWeapon === undefined ? 0
         : equippedWeapon.item.damage
 
+  // Снаряжение Мастера на забег (29.10.2026, docs/crafter.md): та же общая
+  // gearEffectsOf, что у сервера на старте (maxHp, глотки, потолки). Гнёзда не
+  // названы — колец нет: в бою это строгая сторона.
+  const runGear = gearEffectsOf(inventory.filter(i => i.equipped).map(i => i.item.id), player?.ringSlots ?? [])
+  // Скорость с сапог (29.10.2026): до этого число было только в карточке и в бою
+  // не читалось. Потолок 10% — docs/items.md.
+  const bootsSpeedPct = Math.min(BOOTS_SPEED_CAP_PCT, inventory.filter(i => i.equipped && i.item.slot === 'boots').reduce((sum, i) => sum + (i.item.moveSpeed ?? 0), 0))
+
   // Всё, от чего зависят урон и лечение НАВЫКОВ (02.10.2026, src/skillDamage.ts):
   // статы героя, итоговая броня и урон меча. Нужно строке «что делает» в трёх
   // местах — витрина магазина, карточка книги в сумке, карточка навыка.
@@ -1355,12 +1392,14 @@ export default function App() {
         // Флейвора на этот слот/тир в ITEM_FLAVOR нет — блок текста
         // просто не рисуется (см. разметку), выдуманной строки здесь
         // не появляется.
-        desc: ITEM_FLAVOR[inv.item.slot]?.[inv.item.tier - 1] ?? null,
+        desc: inv.item.tier === OTHER_TIER
+          ? (otherItemById(inv.item.id)?.desc ?? null)
+          : (ITEM_FLAVOR[inv.item.slot]?.[inv.item.tier - 1] ?? null),
         stat: itemStatLine(inv.item),
         // "у тебя: N" — реальный подсчёт строк того же предмета в
         // ответе сервера, а не выдуманный qty.
         qty: inventory.filter((i) => i.item.id === inv.item.id).length,
-        iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
+        iconSrc: itemIconSrc(inv.item.slot, inv.item.tier, inv.item.id),
         equipped: inv.equipped,
         // Без расширяющих приведений к "| null": в ветке kind === 'item'
         // оба поля обязаны сузиться до числа и строки — карточка
@@ -1946,6 +1985,111 @@ export default function App() {
     }
   }
 
+  // --- Мастер (29.10.2026, docs/crafter.md) ---
+
+  function describeCrafterRefusal(e: RequestError): string {
+    switch (e.serverError) {
+      case 'Level too low': return `Мастер работает с героями с ${CRAFTER_LEVEL} уровня.`
+      case 'Run in progress': return 'Идёт вылазка — переплавка после её конца.'
+      case 'Not enough raw material': return 'Сырья не хватает — обнови баланс.'
+      case 'Not enough potions': return 'Нет Крови пилигрима.'
+      case 'Not enough resources': return 'Не хватает RP, Слитка или золота.'
+      case 'Source item not found': return 'Вещи шестого тира больше нет в сумке.'
+      case 'Source item is equipped': return 'Вещь надета — сначала сними её.'
+      case 'Wrong source item': return 'Нужна вещь шестого тира того же слота.'
+      case 'Gloves not equipped': return 'Сначала надень Длани иного места.'
+      case 'Ring not in bag': return 'Этого кольца нет в сумке — обнови баланс.'
+      case 'Slot is empty': return 'Гнездо и так пустое.'
+      case 'Bag is full': return 'Сумка полна — освободи ячейку.'
+      case 'State changed, retry': return 'Данные успели измениться — обнови баланс и попробуй снова.'
+      default: return `Сервер отказал: ${e.status}${e.serverError !== null ? ` — ${e.serverError}` : ''}`
+    }
+  }
+
+  function crafterFailure(e: unknown, setError: (s: string) => void) {
+    if (e instanceof RequestError && e.serverError !== null && !e.retryable) {
+      setError(describeCrafterRefusal(e))
+      return
+    }
+    if (e instanceof RequestError && e.retryable) {
+      setShopBalanceUnknown(true)
+      setError('Ответ не пришёл — действие могло пройти. Обнови баланс.')
+      return
+    }
+    setError('Не удалось — сервер не ответил или отказал. Попробуй ещё раз.')
+  }
+
+  async function handleSmelt(raw: CrafterRawId) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) { setCrafterError('Профиль не загружен — действие недоступно.'); return }
+    if (crafterPending) return
+    setCrafterPending(true)
+    setCrafterError(null)
+    setSmeltNote(null)
+    try {
+      const res = await smeltRaw(token, raw)
+      setPlayer(prev => prev ? {
+        ...prev,
+        classItems: res.classItems,
+        ...(res.potions !== null ? { potions: res.potions } : {}),
+      } : prev)
+      if (res.classItems === null || res.potions === null) setShopBalanceUnknown(true)
+      setSmeltNote(res.replayed ? 'Переплавка уже прошла.'
+        : res.crit && !res.critLost ? 'Удачная плавка! +2 Слитка'
+          : res.critLost ? 'Удачная плавка, но второму Слитку не хватило места в сумке. +1 Слиток'
+            : '+1 Слиток иного места')
+    } catch (e) {
+      console.error('Smelt failed', raw, e)
+      crafterFailure(e, setCrafterError)
+    } finally {
+      setCrafterPending(false)
+    }
+  }
+
+  async function handleForge(itemId: OtherItemId, sourceInventoryItemId: string) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) { setCrafterError('Профиль не загружен — действие недоступно.'); return }
+    if (crafterPending) return
+    setCrafterPending(true)
+    setCrafterError(null)
+    try {
+      const res = await forgeOtherItem(token, itemId, sourceInventoryItemId)
+      setPlayer(prev => prev ? {
+        ...prev,
+        classItems: res.classItems,
+        ...(res.gold !== null ? { gold: res.gold } : {}),
+        ...(res.rp !== null ? { rp: res.rp } : {}),
+      } : prev)
+      if (res.classItems === null || res.gold === null || res.rp === null) setShopBalanceUnknown(true)
+      await loadInventory()
+      const name = otherItemById(itemId)?.nameRu ?? 'Вещь'
+      setSmeltNote(`${name} готова и лежит в сумке.`)
+    } catch (e) {
+      console.error('Forge failed', itemId, e)
+      crafterFailure(e, setCrafterError)
+    } finally {
+      setCrafterPending(false)
+    }
+  }
+
+  async function handleRingSlot(slot: number, ringId: RingId | null) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) { setRingError('Профиль не загружен — действие недоступно.'); return }
+    if (ringPending) return
+    setRingPending(true)
+    setRingError(null)
+    try {
+      const res = await setRingSlot(token, slot, ringId)
+      setPlayer(prev => prev ? { ...prev, classItems: res.classItems, ringSlots: res.ringSlots } : prev)
+      if (res.classItems === null || res.ringSlots === null) setShopBalanceUnknown(true)
+    } catch (e) {
+      console.error('Ring slot failed', slot, ringId, e)
+      crafterFailure(e, setRingError)
+    } finally {
+      setRingPending(false)
+    }
+  }
+
   async function handleSkillAction(action: SkillAction) {
     const token = localStorage.getItem('jwt')
     if (!token || !player) {
@@ -2323,6 +2467,8 @@ export default function App() {
         // финиш забега с выполненным заданием. null — «сервер не назвал».
         hunterBadges: profile.hunterBadges,
         rp: profile.rp,
+        // Гнёзда колец (Мастер, 29.10.2026) — их меняет ручка колец.
+        ringSlots: profile.ringSlots,
         // Статы и уровень (27.10.2026): их меняет покупка у Ловчего, и после
         // 409 или потерянного ответа сверка обязана их показать. null — сервер
         // старше Ловчего: статы вне забега тогда не менял никто, прежние верны.
@@ -2760,7 +2906,7 @@ export default function App() {
                           // item.iconPath (почему — см. комментарий у itemIconSrc).
                           // null и провал загрузки разбирает ItemIcon.
                           <ItemIcon
-                            src={itemIconSrc(equippedItem.item.slot, equippedItem.item.tier)}
+                            src={itemIconSrc(equippedItem.item.slot, equippedItem.item.tier, equippedItem.item.id)}
                             name={equippedItem.item.nameRu}
                             size={22}
                           />
@@ -2777,6 +2923,19 @@ export default function App() {
                     )
                   })}
                 </div>
+                {/* Гнёзда колец (Мастер, 29.10.2026): видны, когда надеты Длани
+                    иного места или в гнёздах что-то лежит (сняли Длани — кольца
+                    остались и молчат). */}
+                {(inventory.some(i => i.equipped && i.item.id === 'other_dlani') || (p.ringSlots ?? []).some(s => s !== '')) && (
+                  <RingSlots
+                    slots={p.ringSlots}
+                    classItems={p.classItems}
+                    glovesOn={inventory.some(i => i.equipped && i.item.id === 'other_dlani')}
+                    pending={ringPending}
+                    error={ringError}
+                    onChange={(slot, ringId) => { void handleRingSlot(slot, ringId) }}
+                  />
+                )}
                 {/* Сетка гнёзд читает то же inventory, что и статы выше: не
                     загрузился — шесть пустых гнёзд молча утверждают "ничего
                     не надето". Разводим это одной подписью; сами гнёзда не
@@ -3458,6 +3617,27 @@ export default function App() {
                 })}
               </div>}
 
+              {/* Мастер (29.10.2026, docs/crafter.md): раздел у Кузнеца под
+                  закалками — переплавка и ковка вещей иного места. */}
+              {shopTab === 'Кузнец' && (
+                <CrafterSection
+                  level={playerLevel}
+                  classItems={player?.classItems ?? null}
+                  potions={player?.potions ?? null}
+                  gold={player?.gold ?? null}
+                  rp={player?.rp ?? null}
+                  inventory={inventory}
+                  columns={5}
+                  pending={crafterPending}
+                  error={crafterError}
+                  smeltNote={smeltNote}
+                  onSmelt={(raw) => { void handleSmelt(raw) }}
+                  onForge={(itemId, sourceId) => { void handleForge(itemId, sourceId) }}
+                  overlayPad={sideOverlayPad}
+                  overlayCard={sideOverlayCard}
+                />
+              )}
+
               {/* Карточка обмена трофеев (её открывает плитка выше) рисуется НЕ
                   здесь, а прямым потомком корня, рядом с тостом, — причина в
                   комментарии у неё. */}
@@ -3772,7 +3952,7 @@ export default function App() {
               .filter((inv) => !inv.equipped)
               .map((inv) => ({
                 key: inv.inventoryItemId,
-                iconSrc: itemIconSrc(inv.item.slot, inv.item.tier),
+                iconSrc: itemIconSrc(inv.item.slot, inv.item.tier, inv.item.id),
                 alt: inv.item.nameRu,
                 qty: null,
                 equipped: inv.equipped,
@@ -4951,7 +5131,7 @@ export default function App() {
         </div>
       )}
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} heroClass={player?.heroClass ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} gear={runGear} bootsSpeedPct={bootsSpeedPct} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} heroClass={player?.heroClass ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Карточка предмета — ПОСЛЕДНИМ в дереве, а не внутри вкладки: её
           открывают и «Инвентарь», и гнёзда снаряжения на «Персонаже».
