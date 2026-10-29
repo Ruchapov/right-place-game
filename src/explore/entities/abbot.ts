@@ -142,10 +142,11 @@ export function createAbbotSystem(deps: AbbotDeps) {
     const hpBarFill = new Graphics()
     deps.worldContainer.addChild(hpBarFill)
 
-    // HP и урон — те же формулы, что у Твари: сервер считает потолки по
-    // событию boss и не знает, какой босс вышел (scaledBossMaxHp в game.ts).
+    // Урон — те же формулы, что у Твари; HP — её HP × ABBOT_HP_MULT. Сервер
+    // считает потолок урона по той же формуле для карт Настоятеля
+    // (bossMaxHpForMap в server/src/game.ts).
     const level = deps.characterLevel.current
-    const maxHp = scaledBossMaxHp(level)
+    const maxHp = Math.round(scaledBossMaxHp(level) * C.ABBOT_HP_MULT)
     const abbot: AbbotState = {
       anim: 'idle',
       transforming: false,
@@ -325,29 +326,35 @@ export function createAbbotSystem(deps: AbbotDeps) {
     impact.play()
   }
 
-  // Призыв: по Звонарю слева и справа, на том же полу. Нет пола или стена — ищем
-  // ближе к боссу; не нашлось места — с этой стороны никого.
+  // Призыв: по Звонарю слева и справа, в ABBOT_SUMMON_OFFSET_TILES (8) тайлах от
+  // босса, на ТОМ ЖЕ полу (30.10.2026, Андрей). Идём от босса наружу тайл за
+  // тайлом: стена или край пола — дальше хода нет, и Звонарь встаёт на последнем
+  // годном тайле, то есть ближе. Совсем нет места с этой стороны — там никого.
   function summonZvonars(boss: Boss) {
     const a = boss.abbot!
     const floorRow = Math.floor((boss.y + C.BOSS_HEIGHT) / C.TILE_SIZE)
     const standRow = floorRow - 1
     const centerTile = Math.floor((boss.x + C.BOSS_WIDTH / 2) / C.TILE_SIZE)
+    const cellCenter = (t: number) => t * C.TILE_SIZE + C.TILE_SIZE / 2
     for (const side of [-1, 1]) {
       if (a.summoned.length >= C.ABBOT_SUMMON_MAX) break
-      for (let off = C.ABBOT_SUMMON_OFFSET_TILES; off >= 2; off--) {
+      let spot: number | null = null
+      for (let off = 1; off <= C.ABBOT_SUMMON_OFFSET_TILES; off++) {
         const tx = centerTile + side * off
-        if (tx < 0 || tx >= deps.grid[0].length) continue
+        if (tx < 0 || tx >= deps.grid[0].length) break
         const hasFloor = cellFootBlockTop(deps.grid, C.TILE_SIZE, tx, floorRow) !== null
+        // Звонарь — два тайла ростом: обе клетки над полом свободны.
         const free =
-          !isSolid(deps.grid, C.TILE_SIZE, tx * C.TILE_SIZE + C.TILE_SIZE / 2, standRow * C.TILE_SIZE + C.TILE_SIZE / 2) &&
-          !isSolid(deps.grid, C.TILE_SIZE, tx * C.TILE_SIZE + C.TILE_SIZE / 2, (standRow - 1) * C.TILE_SIZE + C.TILE_SIZE / 2)
-        if (!hasFloor || !free) continue
-        const z = deps.spawnZvonar(tx, standRow)
-        if (z) {
-          z.facing = (side === -1 ? 1 : -1) as 1 | -1
-          a.summoned.push(z)
-        }
-        break
+          !isSolid(deps.grid, C.TILE_SIZE, cellCenter(tx), cellCenter(standRow)) &&
+          !isSolid(deps.grid, C.TILE_SIZE, cellCenter(tx), cellCenter(standRow - 1))
+        if (!hasFloor || !free) break
+        spot = tx
+      }
+      if (spot === null) continue
+      const z = deps.spawnZvonar(spot, standRow)
+      if (z) {
+        z.facing = (side === -1 ? 1 : -1) as 1 | -1
+        a.summoned.push(z)
       }
     }
   }

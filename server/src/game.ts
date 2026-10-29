@@ -319,6 +319,18 @@ export function scaledBossMaxHp(level: number): number {
   return Math.round(BOSS_HP_MULT * scaledEnemyMaxHp(level))
 }
 
+// Настоятель (30.10.2026) — второй босс, выходит вместо Твари на своих картах
+// (mirrors ABBOT_MAP_PREFIXES и ABBOT_HP_MULT в src/explore/constants.ts, тот же
+// ручной синк). HP — HP Твари × ABBOT_HP_MULT, округление как у клиента.
+export const ABBOT_MAP_PREFIXES = ['map_C2'] as const
+export const ABBOT_HP_MULT = 1.5
+
+/** HP босса забега на этой карте — для потолка нанесённого урона. */
+export function bossMaxHpForMap(mapFile: string, level: number): number {
+  const base = scaledBossMaxHp(level)
+  return ABBOT_MAP_PREFIXES.some((prefix) => mapFile.startsWith(prefix)) ? Math.round(base * ABBOT_HP_MULT) : base
+}
+
 // Привратник — тоже множитель поверх HP зверя (mirrors GATEKEEPER_HP_MULT в
 // src/explore/constants.ts, тот же ручной синк). Нужен потолку нанесённого
 // урона в runState.ts: группа Привратников живучее звериной в полтора раза, и

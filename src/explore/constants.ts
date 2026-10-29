@@ -2072,8 +2072,15 @@ export const ABBOT_HURT2_STUN_FRAME = 12
 // --- Настоятель в бою (29.10.2026, entities/abbot.ts) ---
 // Появляется на карте, где есть место босса и карта — его (ABBOT_MAP_PREFIXES):
 // сейчас это болотная C2. На карте C по-прежнему Тварь. Событие, шанс, награда
-// и потолки сервера — общие для босса (kind 'boss'), поэтому сервер не менялся.
+// и награда — общие для босса (kind 'boss').
 export const ABBOT_MAP_PREFIXES = ['map_C2'] as const
+/**
+ * HP — в полтора раза больше, чем у Твари того же уровня (30.10.2026, Андрей:
+ * «слишком лёгкий»). ⚠️ Ручной синк с сервером: ABBOT_HP_MULT и
+ * ABBOT_MAP_PREFIXES в server/src/game.ts — по ним потолок нанесённого урона
+ * считает HP босса на его карте. Разъедутся — сервер молча срежет рост силы.
+ */
+export const ABBOT_HP_MULT = 1.5
 /**
  * ОДИН масштаб на все 13 листов: они нарезаны в одном масштабе фигуры (стадия 2
  * подогнана к стадии 1 при нарезке), и деление на высоту клетки дало бы скачок
@@ -2084,34 +2091,40 @@ export const ABBOT_SCALE = 0.82
 // Подгонка ступней к полу, px мира (как BOSS_OFFSET_Y у Твари).
 export const ABBOT_OFFSET_Y = -2
 /**
- * Скорость листов (PixiJS animationSpeed = fps / 60). Все — с fps листа, кроме
- * двух: хитстан ускорен (иначе одно попадание держало бы его больше секунды), а
- * превращение чуть быстрее, чтобы пауза неуязвимости не тянулась.
+ * Скорость листов (PixiJS animationSpeed = fps / 60). Стойки и смерть — с fps
+ * листа. Удары ускорены вдвое (30.10.2026, Андрей: «слишком долгая анимация»):
+ * кулак и взмах — 24 к/с, как удар Твари (BOSS_ANIM_SPEED.melee = 0.4); удар в
+ * пол и призыв чуть медленнее — 20 к/с, их замах и есть предупреждение. Ходьба
+ * ускорена вместе с шагом (ноги не скользят), хитстан и превращение — тоже.
  */
 export const ABBOT_HURT_FPS = 22
-export const ABBOT_TRANSFORM_FPS = 14
+export const ABBOT_TRANSFORM_FPS = 18
+export const ABBOT_STRIKE_FPS = 24
+export const ABBOT_CAST_FPS = 20
+export const ABBOT_WALK_FPS = 14
+export const ABBOT_WALK2_FPS = 13
 export const ABBOT_ANIM_SPEED: Record<keyof typeof ABBOT_SHEETS, number> = {
   idle: ABBOT_SHEETS.idle.fps / 60,
-  walk: ABBOT_SHEETS.walk.fps / 60,
-  attack: ABBOT_SHEETS.attack.fps / 60,
+  walk: ABBOT_WALK_FPS / 60,
+  attack: ABBOT_STRIKE_FPS / 60,
   hurt: ABBOT_HURT_FPS / 60,
   death: ABBOT_SHEETS.death.fps / 60,
   transform: ABBOT_TRANSFORM_FPS / 60,
   idle2: ABBOT_SHEETS.idle2.fps / 60,
-  walk2: ABBOT_SHEETS.walk2.fps / 60,
-  swing: ABBOT_SHEETS.swing.fps / 60,
-  slam: ABBOT_SHEETS.slam.fps / 60,
-  summon: ABBOT_SHEETS.summon.fps / 60,
+  walk2: ABBOT_WALK2_FPS / 60,
+  swing: ABBOT_STRIKE_FPS / 60,
+  slam: ABBOT_CAST_FPS / 60,
+  summon: ABBOT_CAST_FPS / 60,
   hurt2: ABBOT_HURT_FPS / 60,
   death2: ABBOT_SHEETS.death2.fps / 60,
 }
 // Хитстан — ровно длина листа hurt своей стадии на ABBOT_HURT_FPS (≈727 и ≈1136 мс).
 export const ABBOT_HURT_MS = (1000 * ABBOT_SHEETS.hurt.count) / ABBOT_HURT_FPS
 export const ABBOT_HURT2_MS = (1000 * ABBOT_SHEETS.hurt2.count) / ABBOT_HURT_FPS
-// Ходьба, px за кадр при 60 к/с (как BOSS_MOVE_SPEED = 2.0 у Твари). Во второй
-// стадии шаг длиннее — и быстрее.
-export const ABBOT_MOVE_SPEED = 1.6
-export const ABBOT_MOVE_SPEED_2 = 2.1
+// Ходьба, px за кадр при 60 к/с — почти как у Твари (BOSS_MOVE_SPEED = 2.0),
+// во второй стадии чуть быстрее её (30.10.2026, Андрей: «вообще не мобильный»).
+export const ABBOT_MOVE_SPEED = 1.9
+export const ABBOT_MOVE_SPEED_2 = 2.2
 // Стоп-дистанция (центр — центр, px мира) и запас на трогание с места.
 export const ABBOT_STOP_DISTANCE = 105
 export const ABBOT_STOP_DISTANCE_2 = 140
@@ -2125,19 +2138,20 @@ export const ABBOT_FIST_RANGE = 105
 export const ABBOT_FIST_REACH = 135
 export const ABBOT_SWING_RANGE = 165
 export const ABBOT_SWING_REACH = 185
-export const ABBOT_ATTACK_COOLDOWN_MS = 900
+export const ABBOT_ATTACK_COOLDOWN_MS = 600 // как BOSS_ATTACK_COOLDOWN_MS
 // Удар колоколом в пол: только дальше этого (волне нужно докатиться), кулдаун.
 export const ABBOT_SLAM_MIN_TILES = 2.5
-export const ABBOT_SLAM_COOLDOWN_MS = 6000
+export const ABBOT_SLAM_COOLDOWN_MS = 5000 // как топот Твари
 // Колокол касается пола на ABBOT_SLAM_CONTACT_FRAME — в стольких px листа ВПЕРЁД
 // от якоря (замер: −104…−147 по кадру касания, арт смотрит влево).
 export const ABBOT_BELL_FORWARD = 120
 // Призыв Звонарей: кулдаун, первый призыв после превращения, сколько живых
-// вызванных самое большее, на сколько тайлов в стороны от босса они встают.
+// вызванных самое большее, на сколько тайлов в стороны от босса они встают
+// (30.10.2026: 8, было 3).
 export const ABBOT_SUMMON_COOLDOWN_MS = 15000
 export const ABBOT_SUMMON_FIRST_MS = 3000
 export const ABBOT_SUMMON_MAX = 2
-export const ABBOT_SUMMON_OFFSET_TILES = 3
+export const ABBOT_SUMMON_OFFSET_TILES = 8 // нет места — ближе, по тому же полу
 // Первые удары после превращения — не сразу: пусть герой увидит новую стадию.
 export const ABBOT_STAGE2_ATTACK_DELAY_MS = 800
 export const ABBOT_STAGE2_SLAM_DELAY_MS = 2500

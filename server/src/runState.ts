@@ -17,7 +17,7 @@
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
-import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
+import { bossMaxHpForMap, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
 import type { RunEvent, RunPatrol } from './runEvents.js'
 import { ELITE_HP_MULT } from './runExtras.js'
 import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
@@ -767,7 +767,8 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     return sum + ((ev.clusterPoints?.length ?? 0) + eliteExtra) * perEnemyHp(ev.enemyKind)
   }, 0) + patrols.reduce((sum, p) => sum + perEnemyHp(p.enemyKind), 0)
   const bossCount = events.filter((ev) => ev.kind === 'boss').length
-  const hpPool = enemyHpTotal + bossCount * scaledBossMaxHp(characterLevel)
+  // HP босса — по карте забега: на картах Настоятеля он живучее Твари.
+  const hpPool = enemyHpTotal + bossCount * bossMaxHpForMap(typeof run.mapFile === 'string' ? run.mapFile : '', characterLevel)
   const maxDamageDealt = hpPool * 1.5
 
   const combinedDealt = raw.attackDamageDealt + raw.skillDamageDealt
