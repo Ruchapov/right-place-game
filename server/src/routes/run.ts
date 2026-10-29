@@ -86,6 +86,9 @@ function finishKey(runId: string): string {
   return `finish:${runId}`
 }
 
+/** Потолок книг за одно улучшение навыка (POST /character/upgrade-skill, count). */
+const UPGRADE_SKILL_MAX_COUNT = 999
+
 /** Ключи старше этого удаляются при записи нового (клиент держит ключ минуты). */
 const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -367,23 +370,25 @@ function consumableStockIncrement(id: ConsumableId, count: number): Prisma.Chara
 // УЗКОМУ типу SkillBookId, а не по всему ConsumableId: иначе пришлось бы писать
 // заведомо недостижимые ветки для камня и оберега, а шестая книга добавилась бы
 // молча, без колонки. Здесь же она развалит сборку.
-function bookStockFilter(id: SkillBookId): Prisma.CharacterWhereInput {
+// count (30.10.2026) — сколько книг: улучшение пачкой списывает N разом; надеть и
+// продать передают 1.
+function bookStockFilter(id: SkillBookId, count: number): Prisma.CharacterWhereInput {
   switch (id) {
-    case 'book_fire': return { bookFire: { gte: 1 } }
-    case 'book_ice': return { bookIce: { gte: 1 } }
-    case 'book_bleed': return { bookBleed: { gte: 1 } }
-    case 'book_heal': return { bookHeal: { gte: 1 } }
-    case 'book_dash': return { bookDash: { gte: 1 } }
+    case 'book_fire': return { bookFire: { gte: count } }
+    case 'book_ice': return { bookIce: { gte: count } }
+    case 'book_bleed': return { bookBleed: { gte: count } }
+    case 'book_heal': return { bookHeal: { gte: count } }
+    case 'book_dash': return { bookDash: { gte: count } }
   }
 }
 
-function bookStockDecrement(id: SkillBookId): Prisma.CharacterUpdateManyMutationInput {
+function bookStockDecrement(id: SkillBookId, count: number): Prisma.CharacterUpdateManyMutationInput {
   switch (id) {
-    case 'book_fire': return { bookFire: { decrement: 1 } }
-    case 'book_ice': return { bookIce: { decrement: 1 } }
-    case 'book_bleed': return { bookBleed: { decrement: 1 } }
-    case 'book_heal': return { bookHeal: { decrement: 1 } }
-    case 'book_dash': return { bookDash: { decrement: 1 } }
+    case 'book_fire': return { bookFire: { decrement: count } }
+    case 'book_ice': return { bookIce: { decrement: count } }
+    case 'book_bleed': return { bookBleed: { decrement: count } }
+    case 'book_heal': return { bookHeal: { decrement: count } }
+    case 'book_dash': return { bookDash: { decrement: count } }
   }
 }
 
@@ -439,20 +444,20 @@ function equippedSkillsUnchanged(prev: string[]): Prisma.StringNullableListFilte
   return prev.length === 0 ? { isEmpty: true } : { equals: prev }
 }
 
-// +1 к уровню навыка за книгу, готовым куском data. Тот же приём и та же
+// +count к уровню навыка — по одному за каждую книгу, готовым куском data. Тот же приём и та же
 // причина, что выше: switch по SkillBookSkillId, шестой навык без ветки не
 // скомпилируется.
 //
 // ⚠️ ВТОРОЙ путь роста тех же колонок — применения за забег
 // (skillLevelGrowthColumns, runState.ts). Два писателя и есть причина, по которой
 // оба растят уровень increment'ом, а не вычисленным числом.
-function skillLevelIncrement(skillId: SkillBookSkillId): Prisma.CharacterUpdateManyMutationInput {
+function skillLevelIncrement(skillId: SkillBookSkillId, count: number): Prisma.CharacterUpdateManyMutationInput {
   switch (skillId) {
-    case 'fireball': return { skillLevelFireball: { increment: 1 } }
-    case 'iceball': return { skillLevelIceball: { increment: 1 } }
-    case 'slash': return { skillLevelSlash: { increment: 1 } }
-    case 'heal': return { skillLevelHeal: { increment: 1 } }
-    case 'dash': return { skillLevelDash: { increment: 1 } }
+    case 'fireball': return { skillLevelFireball: { increment: count } }
+    case 'iceball': return { skillLevelIceball: { increment: count } }
+    case 'slash': return { skillLevelSlash: { increment: count } }
+    case 'heal': return { skillLevelHeal: { increment: count } }
+    case 'dash': return { skillLevelDash: { increment: count } }
   }
 }
 
@@ -2493,8 +2498,8 @@ export async function runRoutes(server: FastifyInstance) {
     // ловится и параллельное надевание второго навыка, которое иначе прошло бы
     // мимо потолка и дало бы три навыка в двух гнёздах.
     const written = await prisma.character.updateMany({
-      where: { userId, equippedSkills: equippedSkillsUnchanged(equipped), ...bookStockFilter(bookId) },
-      data: { equippedSkills: [...equipped, skillId], ...bookStockDecrement(bookId) },
+      where: { userId, equippedSkills: equippedSkillsUnchanged(equipped), ...bookStockFilter(bookId, 1) },
+      data: { equippedSkills: [...equipped, skillId], ...bookStockDecrement(bookId, 1) },
     })
     if (written.count === 0) {
       // Две причины неразличимы по числу строк: книга кончилась ИЛИ набор навыков
@@ -2532,12 +2537,26 @@ export async function runRoutes(server: FastifyInstance) {
 
   // Улучшить навык книгой: книга списывается, уровень +1. Работает и для
   // НЕнадетого навыка — уровень принадлежит герою, а не гнезду.
-  server.post<{ Body: { id?: string } }>('/character/upgrade-skill', async (request, reply) => {
+  // count (30.10.2026, решение Андрея 27.10.2026) — сколько книг вложить разом,
+  // уровень +count. Нет поля — 1 (так шлёт клиент старее 30.10.2026); не целое
+  // 1..UPGRADE_SKILL_MAX_COUNT — 400 Invalid count. Запись ОДНА и условная (книг
+  // >= count): вложились либо все N, либо ни одной.
+  // requestId — ключ идемпотентности (applyOnce), как у buy-upgrade: потерянный
+  // ответ на пачку и повторное нажатие иначе стоили бы ещё N книг. Нет поля —
+  // без ключа, как раньше.
+  server.post<{ Body: { id?: string; count?: unknown; requestId?: unknown } }>('/character/upgrade-skill', async (request, reply) => {
     const userId = getUserId(request)
     if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
 
     const bookId = parseSkillBookId(request.body?.id)
     if (bookId === null) return reply.status(400).send({ error: 'Unknown book' })
+    const rawCount = request.body?.count
+    const count = rawCount === undefined ? 1 : rawCount
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > UPGRADE_SKILL_MAX_COUNT) {
+      return reply.status(400).send({ error: 'Invalid count' })
+    }
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
     const spec = consumableById(bookId)
     const skillId = spec === null ? null : consumableSkillBook(spec)
     if (skillId === null) {
@@ -2545,21 +2564,23 @@ export async function runRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Catalog mismatch' })
     }
 
-    // Персонажа читать НЕ НУЖНО: ни одной проверки от его состояния здесь нет —
-    // потолка уровня нет (что даёт уровень, ещё не решено), надетость роли не
-    // играет, а «книга есть» проверяет сам фильтр записи. Лишнее чтение только
-    // добавило бы окно между проверкой и записью.
-    const written = await prisma.character.updateMany({
-      where: { userId, ...bookStockFilter(bookId) },
-      data: { ...bookStockDecrement(bookId), ...skillLevelIncrement(skillId) },
-    })
-    if (written.count === 0) {
-      // Персонажа не читали, поэтому 0 строк значит ЛИБО «нет книги», ЛИБО «нет
-      // персонажа». Второе — у авторизованного пользователя аномалия, и
-      // притворяться, что дело в книге, не стоит: различаем одним чтением.
-      const exists = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
-      if (!exists) return reply.status(404).send({ error: 'Character not found' })
-      return reply.status(400).send({ error: 'No book in stock' })
+    // Состояние персонажа не нужно ни одной проверке — потолка уровня нет,
+    // надетость роли не играет, «книг хватает» проверяет фильтр записи. Читаем
+    // только id: он нужен ключу идемпотентности, и без персонажа — 404.
+    const character = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    try {
+      await applyOnce(character.id, requestId, 'upgrade-skill', request.log, async (db) => {
+        const written = await db.character.updateMany({
+          where: { userId, ...bookStockFilter(bookId, count) },
+          data: { ...bookStockDecrement(bookId, count), ...skillLevelIncrement(skillId, count) },
+        })
+        if (written.count === 0) throw new RouteRejection(400, { error: 'No book in stock' })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
     }
 
     return await sendSkillState(request, reply, userId)
@@ -2581,8 +2602,8 @@ export async function runRoutes(server: FastifyInstance) {
     const payout = consumableSellPrice(spec)
 
     const written = await prisma.character.updateMany({
-      where: { userId, ...bookStockFilter(bookId) },
-      data: { ...bookStockDecrement(bookId), gold: { increment: payout } },
+      where: { userId, ...bookStockFilter(bookId, 1) },
+      data: { ...bookStockDecrement(bookId, 1), gold: { increment: payout } },
     })
     if (written.count === 0) {
       const exists = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
