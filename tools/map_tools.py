@@ -68,11 +68,21 @@ def build(g):
         return g[y][x] in '#='
 
     def path_clear(ax, ay, bx, by):
-        """Консервативная проверка коридора подъёма (ax,ay) -> (bx,by), by < ay."""
+        """
+        Консервативная проверка коридора подъёма (ax,ay) -> (bx,by), by < ay:
+        прыжок вверх в СВОЁМ столбце до высоты цели (ноги by, голова by-1), затем
+        вбок на этой высоте.
+        ⚠️ До 29.10.2026 здесь проверялись ВСЕ строки от by-1 до ay-1 по всей
+        ширине прыжка. При подъёме на 2 строка ay-1 — это строка опоры самой
+        цели, и подъём на 2 на блок не засчитывался НИКОГДА (проверено на
+        сетке 7×6), хотя правило скилла его разрешает (dx ≤ 2). Подъём на 1
+        от правки не изменился: его строки те же.
+        """
         x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
-        rows = set(range(by, ay))   # промежуточные строки: от ay-1 до by включительно
-        rows.add(by - 1)            # рост игрока 2 тайла — голова над целевой строкой
-        for y in rows:
+        for y in range(by - 1, ay):  # свой столбец: от головы на высоте цели до головы на старте
+            if blocked(ax, y):
+                return False
+        for y in (by - 1, by):       # вбок на высоте цели: голова и ноги
             for x in range(x0, x1 + 1):
                 if blocked(x, y):
                     return False
@@ -140,10 +150,12 @@ def build_walls(g):
         return g[y][x] == '#'          # '=' НЕ преграда — только стены
 
     def path_clear(ax, ay, bx, by):
+        # Тот же коридор, что в build() (правка 29.10.2026): свой столбец, затем вбок.
         x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
-        rows = set(range(by, ay))
-        rows.add(by - 1)
-        for y in rows:
+        for y in range(by - 1, ay):
+            if blocked(ax, y):
+                return False
+        for y in (by - 1, by):
             for x in range(x0, x1 + 1):
                 if blocked(x, y):
                     return False

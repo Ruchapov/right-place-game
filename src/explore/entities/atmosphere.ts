@@ -107,7 +107,9 @@ type Emitter = { s: Sprite; x: number; y0: number; phaseEnd: number }
 type FogBand = { start: number; end: number; floorTop: number; blobs: Sprite[] }
 
 export function createAtmosphereSystem(deps: AtmosphereDeps) {
-  const look = C.ATMOSPHERE[deps.theme]
+  const themeLook = C.ATMOSPHERE[deps.theme]
+  if (themeLook === null) throw new Error(`Atmosphere: у темы ${deps.theme} атмосферы нет — систему не создавать (Explore.tsx)`)
+  const look: C.AtmosphereThemeLook = themeLook
   const { grid, mapWidth, mapHeight } = deps
   const T = C.TILE_SIZE
   const cols = Math.round(mapWidth / T)

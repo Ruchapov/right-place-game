@@ -27,18 +27,23 @@ export const KNOWN_MAP_FILES = [
   'map_D_SEALED.txt',
   'map_E_towers.txt',
   'map_F_sanctuary.txt',
+  // Болото (29.10.2026): имена с вторым токеном, чтобы первый (B2, C2) не путался
+  // с B и C — по нему slotsFileForMap берёт слоты, а клиент — тему фона.
+  'map_B2_swamp.txt',
+  'map_C2_swamp_boss.txt',
 ] as const
 
 export type MapFile = (typeof KNOWN_MAP_FILES)[number]
 
 // Логический пул карт для авто-выбора сервером, когда клиент не прислал
-// mapFile (см. POST /run/start-explore) — 6 СЛОТОВ, не 7 файлов из
+// mapFile (см. POST /run/start-explore) — СЛОТЫ, а не файлы из
 // KNOWN_MAP_FILES: карта D — ОДНА позиция в пуле, а не две (D_OPEN и
 // D_SEALED там — два отдельных элемента белого списка), иначе D выпадала бы
 // вдвое чаще остальных пяти карт. Если выпал слот D — состояние (OPEN/SEALED)
 // разыгрывается отдельным 50/50, тем же броском, что раньше делал клиент в
 // App.tsx (кнопка "D Тайник (50/50)": `Math.random() < 0.5`).
-const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F'] as const
+// С 29.10.2026 слотов 8: + болото B2 и C2, с тем же шансом, что у остальных.
+const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F', 'B2', 'C2'] as const
 
 // Выбирает карту забега сама (см. POST /run/start-explore: mapFile в теле
 // запроса теперь необязателен). Возвращает готовое имя файла из
@@ -53,6 +58,8 @@ export function pickRunMapFile(): MapFile {
     case 'D': return Math.random() < 0.5 ? 'map_D_OPEN.txt' : 'map_D_SEALED.txt'
     case 'E': return 'map_E_towers.txt'
     case 'F': return 'map_F_sanctuary.txt'
+    case 'B2': return 'map_B2_swamp.txt'
+    case 'C2': return 'map_C2_swamp_boss.txt'
   }
 }
 

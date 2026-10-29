@@ -15,6 +15,8 @@ export const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
   D: 'flooded_crypt',  // Тайник
   E: 'foundry',        // Башни
   F: 'graveyard',      // Святилище
+  B2: 'swamp',         // Провал (болото, 29.10.2026)
+  C2: 'swamp',         // Провал, с боссом
 }
 
 export const TILE_SIZE = 64
@@ -2023,13 +2025,16 @@ export type AtmosphereThemeLook = {
   /** Капли с потолков (только склеп). */
   drips: boolean
 }
-export const ATMOSPHERE: Record<BackdropPreset, AtmosphereThemeLook> = {
+// null — у темы атмосферы нет: болото (B2, C2) — атмосфера его отдельной
+// задачей (ветер, туман, камыш), пока забег идёт без неё.
+export const ATMOSPHERE: Record<BackdropPreset, AtmosphereThemeLook | null> = {
   // Кладбище (A, F): порывы, пыль и сухие листья.
   graveyard: { speed: 65, sway: 9, dust: 24, flakes: 22, fog: 0, color: 0xc7b182, dustFall: 3, flakeFall: 13, flakeRx: 5, flakeRy: 1.8, drips: false },
   // Склеп (B, D_OPEN, D_SEALED): слабый сквозняк, пыль, туман у пола, капли.
   flooded_crypt: { speed: 19, sway: 4, dust: 18, flakes: 0, fog: 0.15, color: 0xa8b9c1, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: true },
   // Литейная (C, E): сухой ветер, пыль и зола.
   foundry: { speed: 57, sway: 7, dust: 45, flakes: 8, fog: 0, color: 0xc7bca8, dustFall: 7, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
+  swamp: null,
 }
 // Время атмосферы на старте забега, с — как у образца (там часы стартуют с 2).
 export const ATMO_START_TIME_S = 2

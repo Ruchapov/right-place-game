@@ -5,7 +5,11 @@ import { pickRandom } from './utils'
 
 export function backdropForMap(mapFile: string): BackdropPreset {
   const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
-  return C.BACKDROP_BY_MAP[mapId] ?? 'graveyard'
+  const theme = C.BACKDROP_BY_MAP[mapId]
+  if (theme) return theme
+  // Неизвестная карта — громко: иначе она молча получила бы фон кладбища.
+  console.error(`backdropForMap: у карты ${mapFile} (id ${mapId}) нет темы в BACKDROP_BY_MAP — фон кладбища как запасной`)
+  return 'graveyard'
 }
 
 // Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt

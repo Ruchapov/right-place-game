@@ -1,0 +1,423 @@
+{
+  "mapId": "C2",
+  "name": "Провал",
+  "start": [
+    3,
+    22
+  ],
+  "enemyClusters": [
+    {
+      "zone": "кластер-1",
+      "points": [
+        [
+          30,
+          35
+        ],
+        [
+          32,
+          35
+        ],
+        [
+          34,
+          35
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-2",
+      "points": [
+        [
+          38,
+          35
+        ],
+        [
+          40,
+          35
+        ],
+        [
+          42,
+          35
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-3",
+      "points": [
+        [
+          31,
+          22
+        ],
+        [
+          32,
+          22
+        ],
+        [
+          33,
+          22
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-4",
+      "points": [
+        [
+          22,
+          10
+        ],
+        [
+          23,
+          10
+        ],
+        [
+          24,
+          10
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-5",
+      "points": [
+        [
+          61,
+          10
+        ],
+        [
+          62,
+          10
+        ],
+        [
+          63,
+          10
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-6",
+      "points": [
+        [
+          78,
+          22
+        ],
+        [
+          79,
+          22
+        ],
+        [
+          80,
+          22
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-7",
+      "points": [
+        [
+          5,
+          32
+        ],
+        [
+          6,
+          32
+        ],
+        [
+          7,
+          32
+        ]
+      ]
+    },
+    {
+      "zone": "кластер-8",
+      "points": [
+        [
+          50,
+          22
+        ],
+        [
+          51,
+          22
+        ],
+        [
+          52,
+          22
+        ]
+      ]
+    }
+  ],
+  "reward": [
+    [
+      2,
+      32
+    ],
+    [
+      95,
+      10
+    ],
+    [
+      51,
+      35
+    ],
+    [
+      24,
+      35
+    ],
+    [
+      58,
+      22
+    ],
+    [
+      92,
+      22
+    ]
+  ],
+  "hazard": [
+    [
+      45,
+      35
+    ],
+    [
+      44,
+      35
+    ],
+    [
+      74,
+      22
+    ],
+    [
+      75,
+      22
+    ],
+    [
+      79,
+      10
+    ],
+    [
+      80,
+      10
+    ],
+    [
+      11,
+      10
+    ],
+    [
+      12,
+      10
+    ],
+    [
+      38,
+      22
+    ],
+    [
+      54,
+      22
+    ],
+    [
+      12,
+      32
+    ],
+    [
+      13,
+      32
+    ]
+  ],
+  "npc": {
+    "smuggler": null,
+    "puzzle": null
+  },
+  "boss": [
+    42,
+    10
+  ],
+  "obelisk": null,
+  "decor": [
+    {
+      "x": 17,
+      "y": 22,
+      "type": "grave_mourner_statue"
+    },
+    {
+      "x": 8,
+      "y": 32,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 30,
+      "y": 22,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 49,
+      "y": 22,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 29,
+      "y": 35,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 39,
+      "y": 35,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 21,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 77,
+      "y": 22,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 18,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 19,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 16,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 15,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 43,
+      "y": 35,
+      "type": "grave_cross"
+    },
+    {
+      "x": 11,
+      "y": 32,
+      "type": "grave_cross"
+    },
+    {
+      "x": 36,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 37,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 45,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 47,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 51,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 25,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 29,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 32,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 70,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 66,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 60,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 56,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 53,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 50,
+      "y": 10,
+      "type": "grave_lantern"
+    },
+    {
+      "x": 85,
+      "y": 22,
+      "type": "grave_open_grave"
+    },
+    {
+      "x": 89,
+      "y": 22,
+      "type": "grave_open_grave"
+    },
+    {
+      "x": 90,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 91,
+      "y": 22,
+      "type": "grave_urn"
+    },
+    {
+      "x": 50,
+      "y": 35,
+      "type": "grave_urn"
+    },
+    {
+      "x": 4,
+      "y": 32,
+      "type": "grave_urn"
+    },
+    {
+      "x": 94,
+      "y": 10,
+      "type": "grave_urn"
+    },
+    {
+      "x": 78,
+      "y": 10,
+      "type": "grave_cross"
+    },
+    {
+      "x": 36,
+      "y": 35,
+      "type": "grave_mourner_statue"
+    },
+    {
+      "x": 82,
+      "y": 22,
+      "type": "grave_mourner_statue"
+    }
+  ]
+}

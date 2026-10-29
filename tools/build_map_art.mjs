@@ -426,8 +426,157 @@ async function backgrounds() {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// БОЛОТО: B2 и C2 (29.10.2026). Источник — рабочая версия архива
+// maps/swamp/approved-maps-v1-steps-2026-10-29: одобренные approved-maps-v1
+// (платформы approved-architecture-v1 + декор stage-09) без предметов на шипах
+// (28.10.2026) и со ступенями из '#' (29.10.2026, решение Андрея: обязательный
+// подъём только по кладке, без прыжков на 3 вверх). Слой = платформы + декор.
+// Проверки: файлы те самые (sha256); слой отличается от ОДОБРЕННОГО только в
+// changed-mask.png (ступени и удалённый декор); слой против сетки.
+// C2 шириной 6144 px в одну текстуру не влезает (потолок 4096 по стороне):
+// слой режется по ширине на равные части (slices в манифесте), игра ставит их
+// встык. Части режутся ДО сжатия, поэтому стык — граница пикселей, без сдвига.
+const SWAMP = `${ART}/maps/swamp`
+const SWAMP_WORK = `${SWAMP}/approved-maps-v1-steps-2026-10-29`
+const SWAMP_OK = `${SWAMP}/approved-maps-v1`
+const TEXTURE_MAX_SIDE = 4096
+const pin = (file, sha) => {
+  if (!fs.existsSync(file)) fail(`нет исходника ${file}`)
+  const got = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+  if (got !== sha) fail(`исходник ${file} не тот: sha256 ${got}, ожидался ${sha}`)
+  return file
+}
+const SWAMP_MAPS = [
+  {
+    id: 'B2', file: 'map_B2_swamp.txt',
+    platforms: [`${SWAMP_WORK}/B2/map-B2-platforms-64px.png`, '4e379f5719b700131366f00925a446812bc1217fbc43281aeeb02fd3726d0890'],
+    decor: [`${SWAMP_WORK}/B2/map-B2-decor-64px.png`, 'c39458319cc6c1c27375cb601ebc7ea58ca15e70d7f33680b4df31e7809a482d'],
+    mask: [`${SWAMP_WORK}/B2/changed-mask.png`, 'c9be08658d270e9f286df4c80a16bf6278343d27df362f40d65e7cc55229b13a'],
+    approvedPlatforms: [`${SWAMP_OK}/approved-architecture-v1/maps/map-B2-platforms-64px.png`, '629ab7f1beb61f6ea3f64226df12f114a2cf89691fb1d63b658f3c7a77342a69'],
+    approvedDecor: [`${SWAMP_OK}/stage-09-ground-contact/map-B2-decor-64px.png`, '6e4c88b77c82733aa1382088d9b4f19132dafef8817b37b8c0d5151a6be6b3fa'],
+  },
+  {
+    id: 'C2', file: 'map_C2_swamp_boss.txt',
+    platforms: [`${SWAMP_WORK}/C2/map-C2-platforms-64px.png`, 'dd491d0c740bb18d4113fa42297e761f4f09afef3f522ba0bd60e387884dc74d'],
+    decor: [`${SWAMP_WORK}/C2/map-C2-decor-64px.png`, '17ff1a6c13e1e4e426f896548612cf0861d6ac8779ce17f46ca77039a79158f3'],
+    mask: [`${SWAMP_WORK}/C2/changed-mask.png`, 'ccc755ca7cf04a33f67430bfcb6e183a2b4d24833d03df0ba876190498077ffd'],
+    approvedPlatforms: [`${SWAMP_OK}/approved-architecture-v1/maps/map-C2-platforms-64px.png`, '758cd05288b43147d4271127495709622a7cac7e398f044a1fc78d6e9720b6a2'],
+    approvedDecor: [`${SWAMP_OK}/stage-09-ground-contact/map-C2-decor-64px.png`, '6d50dfaba3a93735e1e31981e28d0d0da63059023cea93afde4db093d2721be8'],
+  },
+]
+// Фон болота: одобренные слои, обрезанные сверху на 450 px — так их кадрировал
+// предпросмотр (build-full-maps.py, «убрана часть неба»). Высоту под карту
+// задаёт игра (worldHeight 'map' в BACKDROP_LOOK), вуаль (20,23,27,155) — тоже она.
+const SWAMP_BG = {
+  far: [`${SWAMP_OK}/approved-architecture-v1/backgrounds/swamp-far.png`, '39248ef44605fc1eb205daad8be17c8da2193f9a90c3184c3b0f79a492deadae'],
+  mid: [`${SWAMP_OK}/approved-architecture-v1/backgrounds/swamp-near.png`, '122deda5d5fd44d5ab8bd0ed324bf45b7aa07730fe87b60f43b44af01cb73609'],
+}
+const SWAMP_BG_CROP_TOP = 450
+
+async function buildSwamp(m) {
+  console.log(`\n== Карта ${m.id} (${m.file}, болото)`)
+  for (const k of ['platforms', 'decor', 'mask', 'approvedPlatforms', 'approvedDecor']) pin(...m[k])
+  const meta = await sharp(m.platforms[0]).metadata()
+  const W = meta.width, HEIGHT = meta.height
+  const rows = readGrid(m.file)
+  if (rows[0].length * TILE !== W || rows.length * TILE !== HEIGHT) fail(`размер слоя ${W}×${HEIGHT} не равен сетке ${rows[0].length}×${rows.length} тайлов`)
+  const layerPng = await blank(W, HEIGHT).composite([{ input: m.platforms[0] }, { input: m.decor[0] }]).png().toBuffer()
+  const layer = await raw(layerPng)
+  const approved = await raw(await blank(W, HEIGHT).composite([{ input: m.approvedPlatforms[0] }, { input: m.approvedDecor[0] }]).png().toBuffer())
+  const mask = await sharp(m.mask[0]).extractChannel(0).raw().toBuffer()
+  let changed = 0, outside = 0
+  for (let p = 0; p < W * HEIGHT; p++) {
+    const i = p * 4
+    let d = 0
+    for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(layer[i + c] - approved[i + c]))
+    // ±1 — округление наложения: маску считал PIL, слой сводит sharp.
+    if (d <= 1) continue
+    changed++
+    if (!mask[p]) outside++
+  }
+  console.log(`  против одобренного (платформы + декор approved-maps-v1): изменилось ${changed} пикселей (ступени и удалённый декор), вне changed-mask — ${outside}`)
+  if (outside) fail(`слой карты ${m.id} отличается от одобренного вне разрешённой маски: ${outside} пикселей.`)
+  const g = geometryCheck(layer, W, rows)
+  console.log(`  твердь '#': ${g.solidCells} клеток; с просветами внутри массива — ${g.thinInner.length}; нижних клеток, закрытых меньше чем на 45% — ${g.thinEdge.length}`)
+  if (g.thinInner.length || g.thinEdge.length) fail(`слой карты ${m.id} не закрывает твердь: ${JSON.stringify([...g.thinInner, ...g.thinEdge].slice(0, 8))}`)
+  console.log(`  верх поверхности '#': смещение макс ${g.surfaceOffsetMax} px; полки '=': макс ${g.thinOffsetMax} px; воздух закрыт камнем больше чем на 90% — ${g.airBlocked}`)
+  // Полки '=' болота — одобренные бревенчатые доски (approved-platforms-v1): верх
+  // бревна в среднем на ~5 px ниже линии клетки, у скруглённых концов ниже. Это
+  // вид одобренного арта, поэтому стоп только по '#'; полки — в отчёт.
+  if (g.surfaceOffsetMax > 2) fail(`верх опорной поверхности '#' карты ${m.id} не на линии тайла.`)
+  if (g.airBlocked) fail(`на карте ${m.id} камень закрывает клетки воздуха ${JSON.stringify(g.airBlockedList)}.`)
+  // Части по ширине. Обычное сжатие с потерями на этой текстуре (корни, мох)
+  // даёт лишь 31–35 дБ даже на q98 — цвет у него прорежен вдвое. Поэтому для
+  // болота качество не ниже «почти без потерь 40» (~41 дБ, как у слоя D): частей
+  // столько, чтобы КАЖДАЯ в нём влезла в MAP_LAYER_MAX и была не шире
+  // TEXTURE_MAX_SIDE. Ширина части кратна клетке.
+  const ladder = [['без потерь', { lossless: true, effort: 6 }], ['почти без потерь 60', { nearLossless: true, quality: 60, effort: 6 }], ['почти без потерь 40', { nearLossless: true, quality: 40, effort: 6 }]]
+  let slices = null
+  for (let n = Math.ceil(W / TEXTURE_MAX_SIDE); !slices; n++) {
+    if (n > 8) fail(`слой карты ${m.id} не уложился в ${kb(MAP_LAYER_MAX)} на часть и при 8 частях`)
+    const cellsPer = Math.ceil(W / TILE / n)
+    const tryParts = []
+    for (let k = 0, x = 0; x < W; k++, x += cellsPer * TILE) {
+      const width = Math.min(cellsPer * TILE, W - x)
+      const png = await sharp(layerPng).extract({ left: x, top: 0, width, height: HEIGHT }).png().toBuffer()
+      const rawPart = await raw(png)
+      let pick = null
+      for (const [label, opts] of ladder) {
+        const buf = await sharp(png).webp(opts).toBuffer()
+        if (buf.length <= MAP_LAYER_MAX) { pick = { label, buf, psnr: psnr(rawPart, await raw(buf)).psnr }; break }
+      }
+      if (!pick) { console.log(`  ${n} част.: часть ${k + 1} (${width} px) не влезает — режем мельче`); tryParts.length = 0; break }
+      tryParts.push({ x, width, png, rawPart, webp: pick.buf, quality: pick.label, psnr: pick.psnr })
+    }
+    if (tryParts.length) slices = tryParts.map((s, k) => ({ ...s, file: m.file.replace(/\.txt$/, '') + (tryParts.length > 1 ? `_${k + 1}` : '') + '.webp' }))
+  }
+  for (const s of slices) console.log(`  — ${s.file}: x ${s.x}..${s.x + s.width - 1}, ${s.width}×${HEIGHT}, «${s.quality}», ${mb(s.webp.length)}, PSNR ${s.psnr} дБ`)
+  if (slices.length > 1) {
+    // Стык: пиксели частей, положенных встык, — ровно исходный слой (до сжатия).
+    let bad = 0
+    for (const s of slices) for (let y = 0; y < HEIGHT; y++) if (Buffer.compare(s.rawPart.subarray(y * s.width * 4, (y + 1) * s.width * 4), layer.subarray((y * W + s.x) * 4, (y * W + s.x + s.width) * 4)) !== 0) bad++
+    if (bad) fail(`части слоя ${m.id}, положенные встык, не дают исходный слой (${bad} строк).`)
+    // После сжатия: ошибка у стыка (по 2 столбца с каждой стороны) не больше, чем по части в целом.
+    let seamMax = 0, allMax = 0
+    for (const s of slices) {
+      const dec = await raw(s.webp)
+      for (let y = 0; y < HEIGHT; y++) for (let x = 0; x < s.width; x++) {
+        const i = (y * s.width + x) * 4, j = (y * W + s.x + x) * 4
+        // Видимый цвет — умноженный на альфу: near-lossless меняет цвет почти
+        // прозрачных пикселей, а на экране от него остаётся доля альфы.
+        let d = Math.abs(dec[i + 3] - layer[j + 3])
+        for (let c = 0; c < 3; c++) d = Math.max(d, Math.round(Math.abs(dec[i + c] * dec[i + 3] - layer[j + c] * layer[j + 3]) / 255))
+        allMax = Math.max(allMax, d)
+        if ((s.x > 0 && x < 2) || (s.x + s.width < W && x >= s.width - 2)) seamMax = Math.max(seamMax, d)
+      }
+    }
+    console.log(`  стык частей: встык до сжатия — байт в байт; после сжатия у стыка макс ${seamMax}, по слою макс ${allMax}`)
+  }
+  fs.mkdirSync(`${ART}/game-export/swamp`, { recursive: true })
+  fs.writeFileSync(`${ART}/game-export/swamp/${m.file.replace(/\.txt$/, '')}_layer_lossless.png`, layerPng)
+  return { ...m, W, HEIGHT, rows, slices, checksum: gridChecksum(rows), changed }
+}
+
+async function swampBackgrounds() {
+  const out = []
+  for (const name of ['far', 'mid']) {
+    const src = pin(...SWAMP_BG[name])
+    const meta = await sharp(src).metadata()
+    const png = await sharp(src).extract({ left: 0, top: SWAMP_BG_CROP_TOP, width: meta.width, height: meta.height - SWAMP_BG_CROP_TOP }).png().toBuffer()
+    console.log(`\n== Фон болота, ${name}: ${meta.width}×${meta.height} → обрезка сверху ${SWAMP_BG_CROP_TOP} px → ${meta.width}×${meta.height - SWAMP_BG_CROP_TOP}`)
+    const pick = await encodeUnder(png, await raw(png), BACKDROP_MAX, `фон болота ${name}`)
+    console.log(`  выбрано «${pick.label}»: ${kb(pick.buf.length)}`)
+    out.push({ name, buf: pick.buf, width: meta.width, height: meta.height - SWAMP_BG_CROP_TOP, quality: pick.label })
+  }
+  return out
+}
+
 const maps = [await verifyAndEncode(await (console.log('== Сборки карты A'), buildA())), await verifyAndEncode(await (console.log('\n== Сборки карты F'), buildF()))]
 const bgs = await backgrounds()
+const swamps = []
+for (const m of SWAMP_MAPS) swamps.push(await buildSwamp(m))
+const swampBgs = await swampBackgrounds()
 
 if (CHECK_ONLY) { console.log('\n--check: в проект ничего не записано.'); process.exit(0) }
 
@@ -435,16 +584,23 @@ const artDir = path.join(REPO, 'public/assets/maps/art')
 fs.mkdirSync(artDir, { recursive: true })
 for (const m of maps) fs.writeFileSync(path.join(artDir, m.file.replace(/\.txt$/, '.webp')), m.webp)
 for (const b of bgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgrounds/bg_graveyard_${b.name}.webp`), b.buf)
+for (const m of swamps) for (const s of m.slices) fs.writeFileSync(path.join(artDir, s.file), s.webp)
+for (const b of swampBgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgrounds/bg_swamp_${b.name}.webp`), b.buf)
 
+const sliceList = (m) => (m.slices.length > 1 ? `, slices: [${m.slices.map((s) => `{ file: '${s.file}', x: ${s.x}, width: ${s.width} }`).join(', ')}]` : '')
 const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art.mjs — руками не править, пересобирать скриптом.
 //
-// Готовые слои платформ и декора карт A и F. gridChecksum — контрольная сумма
-// сетки .txt, под которую слой собран: поменяют геометрию карты и не пересоберут
-// слой — картинка разойдётся со столкновениями, и игра скажет об этом в консоли.
-export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number }
+// Готовые слои платформ и декора карт A, F и болота (B2, C2). gridChecksum —
+// контрольная сумма сетки .txt, под которую слой собран: поменяют геометрию карты
+// и не пересоберут слой — картинка разойдётся со столкновениями, и игра скажет об
+// этом в консоли. slices — слой шире потолка текстуры (4096 px) нарезан по
+// ширине: части ставятся встык с x, file тогда — первая часть.
+export type MapArtSlice = { file: string; x: number; width: number }
+export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number; slices?: MapArtSlice[] }
 
 export const MAP_ART: Record<string, MapArtEntry> = {
 ${maps.map((m) => `  '${m.file}': { file: '${m.file.replace(/\.txt$/, '.webp')}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')} },`).join('\n')}
+${swamps.map((m) => `  '${m.file}': { file: '${m.slices[0].file}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')}${sliceList(m)} },`).join('\n')}
 }
 `
 fs.writeFileSync(path.join(REPO, 'src/explore/mapArtManifest.ts'), manifest)
@@ -452,5 +608,7 @@ fs.writeFileSync(path.join(REPO, 'src/explore/mapArtManifest.ts'), manifest)
 console.log('\n== Записано')
 for (const m of maps) console.log(`  public/assets/maps/art/${m.file.replace(/\.txt$/, '.webp')}  ${m.W}×${m.HEIGHT}  ${mb(m.webp.length)}  сжатие: ${m.quality}`)
 for (const b of bgs) console.log(`  public/assets/maps/backgrounds/bg_graveyard_${b.name}.webp  ${b.width}×${b.height}  ${kb(b.buf.length)}  сжатие: ${b.quality}`)
+for (const m of swamps) for (const s of m.slices) console.log(`  public/assets/maps/art/${s.file}  ${s.width}×${m.HEIGHT} (x ${s.x})  ${mb(s.webp.length)}  сжатие: ${s.quality}`)
+for (const b of swampBgs) console.log(`  public/assets/maps/backgrounds/bg_swamp_${b.name}.webp  ${b.width}×${b.height}  ${kb(b.buf.length)}  сжатие: ${b.quality}`)
 console.log('  src/explore/mapArtManifest.ts')
-console.log(`  слои без потерь и сверка: ${EXPORT}`)
+console.log(`  слои без потерь и сверка: ${EXPORT}, ${ART}/game-export/swamp`)

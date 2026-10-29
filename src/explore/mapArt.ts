@@ -3,7 +3,7 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
 
 /**
  * ГОТОВЫЕ СЛОИ КАРТ: A и F (07.10.2026), B, D_OPEN, D_SEALED и E (19.10.2026),
- * C (20.10.2026) — у всех шести.
+ * C (20.10.2026), болото B2 и C2 (29.10.2026, tools/build_map_art.mjs) — у всех.
  *
  * У этих карт платформы и декор — не плитка из атласа, а одна прозрачная
  * картинка на всю карту, собранная из одобренных исходников художественного
@@ -18,14 +18,24 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
  * .txt, слой — только вид. Шипы и объекты событий рисуются поверх него своим
  * кодом.
  */
-export type MapArt = { src: string; width: number; height: number; gridChecksum: number }
+export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number }
 
-/** Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега). */
+/**
+ * Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега).
+ *
+ * slices — части слоя по ширине, слева направо, каждая со своего x. У слоя не
+ * шире потолка текстуры (4096 px) часть одна — вся карта. Шире (болото C2, 6144
+ * px) — tools/build_map_art.mjs режет его на равные части, кратные клетке, ДО
+ * сжатия, и Explore.tsx ставит их встык.
+ */
 export function mapArtFor(mapFile: string): MapArt | null {
   const entry = MAP_ART[mapFile] ?? MAP_ART_CRYPT_FOUNDRY[mapFile]
   if (!entry) return null
+  const src = (file: string) => `${import.meta.env.BASE_URL}assets/maps/art/${file}`
   return {
-    src: `${import.meta.env.BASE_URL}assets/maps/art/${entry.file}`,
+    slices: entry.slices
+      ? entry.slices.map((s) => ({ src: src(s.file), x: s.x, width: s.width }))
+      : [{ src: src(entry.file), x: 0, width: entry.width }],
     width: entry.width,
     height: entry.height,
     gridChecksum: entry.gridChecksum,

@@ -345,6 +345,8 @@ const EXPLORE_MAPS: { label: string; file: string }[] = [
   { label: 'C Спуск к боссу', file: 'map_C_boss_descent.txt' },
   { label: 'E Башни', file: 'map_E_towers.txt' },
   { label: 'F Святилище', file: 'map_F_sanctuary.txt' },
+  { label: 'B2 Провал', file: 'map_B2_swamp.txt' },
+  { label: 'C2 Провал (босс)', file: 'map_C2_swamp_boss.txt' },
 ]
 
 const SLOT_SVG_PATHS: Record<string, string> = {

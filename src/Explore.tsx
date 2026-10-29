@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
-import { renderSpikeTile, backdropPaths, backdropLook } from './mapRenderer'
+import { renderSpikeTile, spikeGlintAlpha, backdropPaths, backdropLook } from './mapRenderer'
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
@@ -2669,7 +2669,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const backdropLoad = Promise.all([
         loadBackdropLayer(backdropUrls.far, 'far'),
         loadBackdropLayer(backdropUrls.mid, 'mid'),
-        Assets.load(mapArt.src) as Promise<Texture>,
+        // Слой шире потолка текстуры — несколько частей по ширине (mapArt.slices).
+        Promise.all(mapArt.slices.map((s) => Assets.load(s.src) as Promise<Texture>)),
       ])
       backdropLoad.catch(() => {})
 
@@ -3052,7 +3053,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
       // Шипы (их вставили в сетку выше) — поверх готового слоя: отдельными
       // спрайтами одной клетки, см. ниже.
-      let spikeTile: HTMLCanvasElement | null = null
+      let spikeTile: Awaited<ReturnType<typeof renderSpikeTile>> | null = null
       const spikeCells: [number, number][] = []
       for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) if (grid[y][x] === '^') spikeCells.push([x, y])
       if (spikeCells.length > 0) spikeTile = await renderSpikeTile(C.TILE_SIZE)
@@ -3112,13 +3113,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // только стала известна карта (backdropLoad) — здесь её только дожидаемся.
       // null у слоя фона — его нет; промах готового слоя карты — ошибка, и она
       // поднимается этим await.
-      const [farTexture, midTexture, artTexture] = await backdropLoad
-      if (artTexture.width !== mapArt.width || artTexture.height !== mapArt.height) {
-        throw new Error(
-          `Готовый слой карты ${resolvedMapFile} не того размера: ${artTexture.width}×${artTexture.height}, ` +
-          `ожидался ${mapArt.width}×${mapArt.height}. Пересобрать: node tools/build_map_art.mjs`,
-        )
-      }
+      const [farTexture, midTexture, artTextures] = await backdropLoad
+      artTextures.forEach((t, i) => {
+        const s = mapArt.slices[i]
+        if (t.width !== s.width || t.height !== mapArt.height) {
+          throw new Error(
+            `Готовый слой карты ${resolvedMapFile} (часть ${i + 1} из ${mapArt.slices.length}) не того размера: ${t.width}×${t.height}, ` +
+            `ожидался ${s.width}×${mapArt.height}. Пересобрать: node tools/build_map_art.mjs`,
+          )
+        }
+      })
       // ВИД ЗАБЕГА ПОД ТЕКУЩИЙ ЭКРАН (12.10.2026): масштаб мира и признак
       // низкого горизонтального экрана. Считаются здесь и заново — на каждой
       // смене размера холста (поворот телефона, полный экран Telegram), см.
@@ -3197,7 +3201,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // рендерер и так платит за кадр в десятки раз больше) и при «уменьшении
       // движения» в системе — решение Андрея 20.10.2026.
       const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
-      if (!onCanvasRenderer && !reduceMotion) {
+      if (C.ATMOSPHERE[mapTheme] === null) {
+        console.info(`Explore: у темы ${mapTheme} атмосферы пока нет`)
+      } else if (!onCanvasRenderer && !reduceMotion) {
         atmosphereSystem = createAtmosphereSystem({
           parent: worldContainer, theme: mapTheme, grid, mapWidth: mapArt.width, mapHeight: mapArt.height,
         })
@@ -3210,18 +3216,40 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
       // Готовый слой платформ и декора — первым, в (0, 0) и без масштаба: он
       // собран пиксель в пиксель под мир игры, 64 px на тайл.
-      const artSprite = new Sprite(artTexture)
-      artSprite.x = 0
-      artSprite.y = 0
-      worldContainer.addChild(artSprite)
+      // Части слоя — встык по ширине, каждая со своего x (у большинства карт часть одна).
+      artTextures.forEach((t, i) => {
+        const artSprite = new Sprite(t)
+        artSprite.x = mapArt.slices[i].x
+        artSprite.y = 0
+        worldContainer.addChild(artSprite)
+      })
       // Шипы — поверх слоя: одна текстура клетки, по спрайту на шип.
+      // Блик (29.10.2026, docs/maps.md, «Шипы») — тоже одна текстура клетки и по
+      // спрайту на шип, все в ОДНОМ контейнере над шипами: синхронность и одна
+      // фаза держатся тем, что тикер пишет прозрачность контейнера, а не спрайтов.
+      // Своего таймера у шипа нет. При «уменьшении движения» блика нет.
+      let spikeGlintLayer: Container | null = null
+      let spikeGlintTimeS = 0
       if (spikeTile) {
-        const spikeTexture = Texture.from(spikeTile)
+        const spikeTexture = Texture.from(spikeTile.spike)
         for (const [sx, sy] of spikeCells) {
           const spike = new Sprite(spikeTexture)
           spike.x = sx * C.TILE_SIZE
           spike.y = sy * C.TILE_SIZE
           worldContainer.addChild(spike)
+        }
+        if (spikeTile.glint && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches !== true) {
+          const glintTexture = Texture.from(spikeTile.glint)
+          spikeGlintLayer = new Container()
+          spikeGlintLayer.label = 'spike-glint'
+          spikeGlintLayer.visible = false
+          for (const [sx, sy] of spikeCells) {
+            const glint = new Sprite(glintTexture)
+            glint.x = sx * C.TILE_SIZE
+            glint.y = sy * C.TILE_SIZE
+            spikeGlintLayer.addChild(glint)
+          }
+          worldContainer.addChild(spikeGlintLayer)
         }
       }
       const phys = physicsRef.current
@@ -6317,6 +6345,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         cameraFieldsAgeMs += ticker.deltaMS
         if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
+        // Блик шипов: одна фаза на все шипы карты, по игровому времени.
+        if (spikeGlintLayer !== null) {
+          spikeGlintTimeS += ticker.deltaMS / 1000
+          const glintAlpha = spikeGlintAlpha(spikeGlintTimeS)
+          spikeGlintLayer.visible = glintAlpha > 0
+          spikeGlintLayer.alpha = glintAlpha
+        }
         // Атмосфера — после камеры: рамка частиц — тот кадр, что будет нарисован.
         if (atmosphereSystem !== null) {
           atmosphereView.left = -worldContainer.x / viewScale
