@@ -3000,6 +3000,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         smuggler: chosenEvents.some((ev) => ev.kind === 'smuggler'),
         obelisk: chosenEvents.some((ev) => ev.kind === 'obelisk'),
         boss: bossWillSpawn,
+        // ВРЕМЕННО (шаг 1 Настоятеля): события у него ещё нет — листы грузятся в
+        // забеге с Тварью, только чтобы проверить нарезку. Шаг 2 заменит условие.
+        abbot: bossWillSpawn,
       }
       const eventAssetsLoad = loadEventAssets(runAssetNeeds)
       eventAssetsLoad.catch(() => {})

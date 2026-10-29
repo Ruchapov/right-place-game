@@ -95,6 +95,8 @@ export type ZvonarAssets = {
 
 export type GatekeeperAssets = Record<keyof typeof C.GATEKEEPER_SHEETS, Texture[]>
 
+export type AbbotAssets = Record<keyof typeof C.ABBOT_SHEETS, Texture[]>
+
 /** Сундук: добрый лист и лист мимика. Исход решает бросок на первом ударе, поэтому нужны оба. */
 export type ChestAssets = {
   open: Texture[]
@@ -131,6 +133,7 @@ export type RunAssetNeeds = {
   smuggler: boolean
   obelisk: boolean
   boss: boolean
+  abbot: boolean
 }
 
 /**
@@ -147,6 +150,7 @@ export type EventAssets = {
   smuggler: Texture[] | null
   obelisk: ObeliskAssets | null
   boss: BossAssets | null
+  abbot: AbbotAssets | null
 }
 
 // Сверка нарезанного листа с ожидаемым размером — ГРОМКАЯ. loadSheetFrames
@@ -426,6 +430,27 @@ async function loadGatekeeperAssets(): Promise<GatekeeperAssets> {
   return sheets
 }
 
+// Настоятель — тем же путём, что Привратник: набор листов — ключи ABBOT_SHEETS,
+// у каждого своё число колонок и сверка размера.
+async function loadAbbotAssets(): Promise<AbbotAssets> {
+  const keys = Object.keys(C.ABBOT_SHEETS) as (keyof typeof C.ABBOT_SHEETS)[]
+  const figure = await Promise.all(keys.map((key) => {
+    const spec = C.ABBOT_SHEETS[key]
+    return loadCheckedSheet(
+      spec.src.split('/').pop() ?? spec.src,
+      spec.src,
+      spec.cellW,
+      spec.cellH,
+      spec.count,
+      spec.cols,
+      Math.ceil(spec.count / spec.cols),
+    )
+  }))
+  const sheets = {} as AbbotAssets
+  keys.forEach((key, i) => { sheets[key] = figure[i] })
+  return sheets
+}
+
 async function loadChestAssets(): Promise<ChestAssets> {
   const [open, trap] = await Promise.all([
     // Сундук. Лист ОДНОРЯДНЫЙ (1820×178px = 13 колонок × 1 ряд, проверено по
@@ -564,7 +589,7 @@ async function loadBossAssets(): Promise<BossAssets> {
  * ошибки, как и раньше (кроме трёх эффектов босса, см. BossAssets).
  */
 export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets> {
-  const [beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss] = await Promise.all([
+  const [beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot] = await Promise.all([
     needs.beast ? loadBeastAssets() : null,
     needs.zvonar ? loadZvonarAssets() : null,
     needs.gatekeeper ? loadGatekeeperAssets() : null,
@@ -572,6 +597,7 @@ export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets
     needs.smuggler ? loadSmugglerAssets() : null,
     needs.obelisk ? loadObeliskAssets() : null,
     needs.boss ? loadBossAssets() : null,
+    needs.abbot ? loadAbbotAssets() : null,
   ])
-  return { beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss }
+  return { beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot }
 }

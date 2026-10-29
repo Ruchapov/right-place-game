@@ -1991,6 +1991,38 @@ export const GATEKEEPER_SHEETS = {
   death: { src: `${GATEKEEPER_DIR}Gatekeeper_Death.webp`, cellW: 246, cellH: 286, cols: 8, count: 31, anchorX: 0.531, anchorY: 0.971, speed: GATEKEEPER_DEATH_ANIM_SPEED, loop: false },
 } as const
 
+// ============================================================================
+// НАСТОЯТЕЛЬ (Abbot) — новый босс, листы (шаг 1: только загрузка, 29.10.2026)
+// ============================================================================
+// Геймплея и спавна пока нет. Две стадии: первая — idle … transform, вторая —
+// листы с суффиксом 2 и swing / slam / summon. Скорость PixiJS у листа —
+// fps / 60 (animationSpeed при тикере 60 к/с).
+// death и death2 держат последний кадр. После любой анимации второй стадии
+// idle2 запускается с кадра 0.
+export const ABBOT_DIR = `${import.meta.env.BASE_URL}assets/sprites/abbot/`
+export const ABBOT_SHEETS = {
+  idle:        { src: `${ABBOT_DIR}Abbot_Idle.webp`,         cellW: 201, cellH: 296, count: 16, cols: 13, anchorX: 0.5082, anchorY: 0.9848, fps: 8,  loop: true },
+  walk:        { src: `${ABBOT_DIR}Abbot_Walk.webp`,         cellW: 205, cellH: 300, count: 16, cols: 13, anchorX: 0.5,    anchorY: 0.975,  fps: 12, loop: true },
+  attack:      { src: `${ABBOT_DIR}Abbot_Attack.webp`,       cellW: 283, cellH: 296, count: 36, cols: 13, anchorX: 0.5323, anchorY: 0.9848, fps: 12, loop: false },
+  hurt:        { src: `${ABBOT_DIR}Abbot_Hurt.webp`,         cellW: 240, cellH: 298, count: 16, cols: 13, anchorX: 0.5087, anchorY: 0.9849, fps: 12, loop: false },
+  death:       { src: `${ABBOT_DIR}Abbot_Death.webp`,        cellW: 290, cellH: 301, count: 32, cols: 13, anchorX: 0.4922, anchorY: 0.9671, fps: 12, loop: false },
+  transform:   { src: `${ABBOT_DIR}Abbot_Transform.webp`,    cellW: 311, cellH: 309, count: 55, cols: 13, anchorX: 0.6268, anchorY: 0.9515, fps: 12, loop: false },
+  idle2:       { src: `${ABBOT_DIR}Abbot2_Idle.webp`,        cellW: 176, cellH: 291, count: 16, cols: 13, anchorX: 0.4236, anchorY: 0.9821, fps: 8,  loop: true },
+  walk2:       { src: `${ABBOT_DIR}Abbot2_Walk.webp`,        cellW: 230, cellH: 289, count: 26, cols: 13, anchorX: 0.5248, anchorY: 0.9637, fps: 12, loop: true },
+  swing:       { src: `${ABBOT_DIR}Abbot2_AttackSwing.webp`, cellW: 361, cellH: 293, count: 46, cols: 11, anchorX: 0.6485, anchorY: 0.9804, fps: 12, loop: false },
+  slam:        { src: `${ABBOT_DIR}Abbot2_AttackSlam.webp`,  cellW: 348, cellH: 395, count: 49, cols: 11, anchorX: 0.5873, anchorY: 0.9709, fps: 12, loop: false },
+  summon:      { src: `${ABBOT_DIR}Abbot2_Summon.webp`,      cellW: 341, cellH: 321, count: 48, cols: 12, anchorX: 0.6586, anchorY: 0.9821, fps: 12, loop: false },
+  hurt2:       { src: `${ABBOT_DIR}Abbot2_Hurt.webp`,        cellW: 338, cellH: 298, count: 25, cols: 12, anchorX: 0.505,  anchorY: 0.9825, fps: 12, loop: false },
+  death2:      { src: `${ABBOT_DIR}Abbot2_Death.webp`,       cellW: 364, cellH: 343, count: 34, cols: 11, anchorX: 0.6415, anchorY: 0.8207, fps: 12, loop: false },
+} as const
+// Ключевые кадры (с 0).
+export const ABBOT_ATTACK_HIT_FRAME = 20
+export const ABBOT_HURT_STUN_FRAME = 7
+export const ABBOT_SWING_HIT_FRAME = 28
+export const ABBOT_SLAM_CONTACT_FRAME = 29
+export const ABBOT_SUMMON_SPAWN_FRAME = 30
+export const ABBOT_HURT2_STUN_FRAME = 12
+
 
 // ============================================================================
 // АТМОСФЕРА ТЕМ — ветер, пыль, листья, зола, туман и капли (20.10.2026)
