@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent } from '../runEvents.js'
+import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
@@ -52,6 +52,7 @@ import {
   judgeUnshownCancel,
   ringSlotsOf,
   readRunGear,
+  readRunPatrols,
   type RunGear,
 } from '../runState.js'
 import {
@@ -962,6 +963,13 @@ function parseClosedEventIndices(raw: unknown, run: ActiveExploreRun): number[] 
   return [...new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < run.events.length))]
 }
 
+// Индексы убитых патрульных (30.10.2026) — те же правила, что у закрытых
+// событий: целые, в диапазоне списка патрульных этого забега, без повторов.
+function parseKilledPatrolIndices(raw: unknown, patrols: readonly RunPatrol[]): number[] {
+  const list = Array.isArray(raw) ? raw : []
+  return [...new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < patrols.length))]
+}
+
 // Индекс события Контрабандиста в забеге, или -1 если его в этом забеге нет.
 // Событие в розыгрыше одно (см. runEvents.ts), findIndex этого достаточно.
 function smugglerEventIndex(run: ActiveExploreRun): number {
@@ -1083,6 +1091,10 @@ type FinishExploreBody = {
   // клиенте; проверяется только то, что цветок в этом забеге БЫЛ
   // (currentRun.starbloom).
   starbloomCut?: unknown
+  // Патрульные (30.10.2026): индексы убитых в currentRun.patrols. Разбор как у
+  // closedEvents (parseKilledPatrolIndices): мусор отбрасывается молча. Поля нет
+  // (клиент старше) — патрульные трофеи 0.
+  killedPatrols?: unknown
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
 // sipId (15.10.2026) — id ЭТОГО глотка, один на все попытки повтора: глоток,
@@ -1336,6 +1348,9 @@ export async function runRoutes(server: FastifyInstance) {
     )
     // Звёздоцвет: бросок на забег, место — свободная точка награды этой карты.
     const starbloom = rollStarbloom(characterLevel, luck) ? pickStarbloomPoint(mapFile, rolledEvents) : null
+    // Патрульные (30.10.2026): одиночные враги на группах, не выпавших событием.
+    // Не события — в HUD их нет, на конец забега они не влияют.
+    const patrols = rollRunPatrols(mapFile, rolledEvents, characterLevel)
 
     // confirmed: false — забег создан, но игрок его ещё не видел. Снимет флаг
     // POST /run/ready, когда клиент построит мир (а также первый глоток или
@@ -1384,7 +1399,7 @@ export async function runRoutes(server: FastifyInstance) {
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
-      gear: runGear, starbloom,
+      gear: runGear, starbloom, patrols,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1483,6 +1498,9 @@ export async function runRoutes(server: FastifyInstance) {
       heroClass: runHeroClass,
       // Мастер: где растёт Звёздоцвет ([x, y] в клетках карты) или null.
       starbloom,
+      // Патрульные (30.10.2026): [{x, y, enemyKind, trophyReward}]. Старый клиент
+      // поле не читает — патрульных у него просто нет.
+      patrols,
     })
   })
 
@@ -1933,6 +1951,17 @@ export async function runRoutes(server: FastifyInstance) {
     } else {
       total = bank + trophySumOf(run, closedEvents)
     }
+    // Убитые патрульные (30.10.2026) — поверх, без множителя сделки: они не
+    // события, и ставка у Контрабандиста их не включает. Штрафной путь
+    // неподтверждённого забега — ничего, как и событий. Испорченный список —
+    // без них и громкий лог.
+    const patrolsRead = readRunPatrols(run)
+    if (patrolsRead === 'malformed') {
+      request.log.error({ userId, patrols: run.patrols }, 'finish-explore: currentRun.patrols is malformed — patrol trophies not counted')
+    }
+    const runPatrols = patrolsRead === 'malformed' ? [] : patrolsRead
+    const killedPatrols = unconfirmedPenalty ? [] : parseKilledPatrolIndices(request.body.killedPatrols, runPatrols)
+    total += killedPatrols.reduce((sum, i) => sum + runPatrols[i].trophyReward, 0)
 
     // ⚠️ Поле smugglerOutcome из тела запроса НЕ ЧИТАЕТСЯ вообще — исход бросает
     // сервер в /run/smuggler-deal и хранит в currentRun.smugglerDeal. Старый

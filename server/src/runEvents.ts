@@ -69,7 +69,9 @@ export function pickRunMapFile(): MapFile {
 export const EVENTS_PER_RUN = 3 // constants.ts:763
 export const BOSS_SPAWN_CHANCE = 0.3 // constants.ts:767
 export const CHEST_MIMIC_CHANCE = 0.2 // constants.ts:371
-export const TROPHY_MULT_ENEMY = 1 // constants.ts:457
+// 1 → 1.5 (30.10.2026, «забег насыщеннее»): в группе 5 врагов вместо 3. Пара
+// на клиенте — TROPHY_MULT_ENEMY в constants.ts (её читает только офлайн-заглушка).
+export const TROPHY_MULT_ENEMY = 1.5 // constants.ts:457
 export const TROPHY_MULT_CHEST = 3 // constants.ts:458
 export const TROPHY_MULT_OBELISK = 2 // constants.ts:459
 export const TROPHY_MULT_BOSS = 4 // constants.ts:460
@@ -142,6 +144,7 @@ export function rollEnemyKind(): RunEnemyKind {
 // --- Типы ---
 
 import type { EventDrop } from './runDrops.js'
+import { ELITE_CHANCE, PATROLS_PER_RUN, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies } from './runExtras.js'
 
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
@@ -193,6 +196,13 @@ export type RunEvent = {
    * заводим ровно потому, что отсутствие и значит «звери».
    */
   enemyKind?: RunEnemyKind
+  /**
+   * Элитный враг группы (30.10.2026) — индекс в clusterPoints. Только у
+   * kind === 'enemy', с шансом ELITE_CHANCE (runExtras.ts). Поля НЕТ — элиты
+   * нет (и у забегов, начатых раньше). Его трофеи уже внутри trophyReward
+   * (eliteGroupTrophies), его HP — ×ELITE_HP_MULT в потолке (clampRunProgress).
+   */
+  eliteIndex?: number
   /**
    * Что выпадет с этого события, разыгранное НА СТАРТЕ (30.09.2026).
    *
@@ -380,10 +390,17 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       // Вид врагов — отдельный бросок ПОСЛЕ награды и НЕЗАВИСИМО от неё:
       // трофеи и добыча у группы Звонарей и Привратников ровно те же, что у
       // звериной (решение дизайнера), поэтому множитель здесь ни при чём.
+      const base = multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0
+      // Элита (30.10.2026): один случайный враг группы с шансом ELITE_CHANCE.
+      // Его лишние доли трофеев — сразу в trophyReward: всплывашка группы одна,
+      // и финиш начислит ровно то, что она покажет.
+      const size = ev.clusterPoints?.length ?? 0
+      const elite = size > 0 && Math.random() < ELITE_CHANCE
       return {
         ...ev,
-        trophyReward: multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0,
+        trophyReward: elite ? eliteGroupTrophies(base, size) : base,
         enemyKind: rollEnemyKind(),
+        ...(elite ? { eliteIndex: Math.floor(Math.random() * size) } : {}),
       }
     }
 
@@ -392,6 +409,51 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       trophyReward: multiplier !== undefined ? rollTrophies(multiplier, characterLevel) : 0,
     }
   })
+}
+
+/**
+ * Патрульный (30.10.2026): одиночный враг вне событий. Стоит на точке группы,
+ * которая в этот забег НЕ выпала событием. Это не событие: его нет в HUD, на
+ * конец забега он не влияет, добычи у него нет. Убитых клиент называет на
+ * финише индексами (killedPatrols), сервер прибавляет их trophyReward.
+ * Элиты у патрульных нет.
+ */
+export type RunPatrol = {
+  x: number
+  y: number
+  enemyKind: RunEnemyKind
+  trophyReward: number
+}
+
+/**
+ * До PATROLS_PER_RUN патрульных: по одному на группу enemyClusters, не
+ * выпавшую событием. Стоит в средней точке группы; если она ближе
+ * PATROL_EVENT_CLEARANCE клеток (на том же ряду) к точке любого выпавшего
+ * события, берётся ближайшая к середине точка группы, которая дальше; такой
+ * нет — этой группе патруля нет. Свободных групп меньше — патрульных меньше.
+ */
+export function rollRunPatrols(mapFile: string, events: RunEvent[], characterLevel: number): RunPatrol[] {
+  const slots = readSlots(mapFile)
+  const key = (p: [number, number]) => `${p[0]},${p[1]}`
+  const taken = new Set(events.filter((ev) => ev.kind === 'enemy').map((ev) => key([ev.x, ev.y])))
+  const eventPoints: [number, number][] = events.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
+  const clear = (p: [number, number]) =>
+    eventPoints.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
+  const spots: [number, number][] = []
+  for (const cluster of slots.enemyClusters ?? []) {
+    const points = Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : []
+    if (points.length === 0 || taken.has(key(points[0]))) continue
+    const sorted = [...points].sort((a, b) => a[0] - b[0])
+    const mid = sorted[Math.floor((sorted.length - 1) / 2)]
+    const spot = [...sorted].sort((a, b) => Math.abs(a[0] - mid[0]) - Math.abs(b[0] - mid[0])).find(clear)
+    if (spot) spots.push(spot)
+  }
+  return pickRandom(spots, PATROLS_PER_RUN).map(([x, y]) => ({
+    x,
+    y,
+    enemyKind: rollEnemyKind(),
+    trophyReward: rollTrophies(TROPHY_MULT_PATROL, characterLevel),
+  }))
 }
 
 /**
@@ -405,6 +467,8 @@ export type ClientRunEvent = {
   y: number
   clusterPoints?: [number, number][]
   enemyKind?: RunEnemyKind
+  /** Элитный враг группы (30.10.2026); поля нет — элиты нет. */
+  eliteIndex?: number
   isMimic?: boolean
   trophyReward: number
   drop: ClientEventDrop | null
@@ -450,6 +514,7 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     // забега, начатого старым сервером, поля нет вовсе, и клиент читает это
     // как «звери» — см. readEnemyKind в src/api.ts.
     ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
+    ...(ev.eliteIndex !== undefined ? { eliteIndex: ev.eliteIndex } : {}),
     ...(ev.kind === 'chest' ? { isMimic: ev.isMimic } : {}),
     trophyReward: ev.trophyReward,
     drop: clientEventDrop(ev.drop),

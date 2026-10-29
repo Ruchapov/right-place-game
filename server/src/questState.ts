@@ -33,7 +33,7 @@ import {
 } from './quests.js'
 import { RUN_MANA_MAX, RUN_MANA_DROP_MAX, SKILL_BOOK_SKILL_IDS } from './game.js'
 import type { SkillBookSkillId } from './consumables.js'
-import { type ActiveExploreRun, readRunPotionsDrunk, readRunConfirmedAt, readRunStartedAt } from './runState.js'
+import { type ActiveExploreRun, readRunPotionsDrunk, readRunConfirmedAt, readRunStartedAt, readRunPatrols } from './runState.js'
 
 // --- Форма ---
 
@@ -382,7 +382,12 @@ export function collectQuestRunFacts(
   const groupsOf = (kind: 'beast' | 'zvonar' | 'gatekeeper') =>
     closed.filter((ev) => ev.kind === 'enemy' && (ev.enemyKind ?? 'beast') === kind).length
 
+  // + патрульные (30.10.2026): с них тоже падает мана. В «Перебей группу …»
+  // они не идут — groupsOf считает только закрытые события.
+  const patrolsRead = readRunPatrols(run)
   const kills = events.reduce((sum, ev) => sum + (ev.kind === 'enemy' ? ev.clusterPoints?.length ?? 0 : ev.kind === 'boss' ? 1 : 0), 0)
+    + (patrolsRead === 'malformed' ? 0 : patrolsRead.length)
+
   const clamped: string[] = []
   const capped = { ...counters }
   const collectedMax = RUN_MANA_DROP_MAX * kills

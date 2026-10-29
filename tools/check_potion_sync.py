@@ -13,6 +13,7 @@
     src/quests.ts       → server/src/quests.ts
     src/hunter.ts       → server/src/hunter.ts
     src/crafter.ts      → server/src/crafter.ts
+    src/runExtras.ts    → server/src/runExtras.ts
 
 Общего пакета в проекте нет (tsconfig.app.json включает только "src", у
 сервера rootDir "./src"), поэтому каталоги живут байт-в-байт копиями.
@@ -56,6 +57,7 @@ PAIRS = [
     ("каталог ежедневных заданий", Path("src/quests.ts"), Path("server/src/quests.ts")),
     ("каталог Ловчего", Path("src/hunter.ts"), Path("server/src/hunter.ts")),
     ("каталог Мастера", Path("src/crafter.ts"), Path("server/src/crafter.ts")),
+    ("патрули и элита", Path("src/runExtras.ts"), Path("server/src/runExtras.ts")),
 ]
 
 

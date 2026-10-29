@@ -18,7 +18,8 @@
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
 import { scaledBossMaxHp, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
-import type { RunEvent } from './runEvents.js'
+import type { RunEvent, RunPatrol } from './runEvents.js'
+import { ELITE_HP_MULT } from './runExtras.js'
 import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
@@ -88,7 +89,7 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
 // он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
 // (читать через readRunConfirmedAt).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[] }
 
 /**
  * Снаряжение Мастера на ЭТОТ забег (docs/crafter.md, 29.10.2026) — снимок на
@@ -750,13 +751,21 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   // Любое другое значение, включая отсутствие поля, считается звериным: у
   // Звонаря HP меньше, и такой счёт потолок только завышает.
   const enemyGroups = events.filter((ev) => ev.kind === 'enemy')
-  // Число врагов в потолок больше не входит (его заменила сумма HP ниже), но
-  // остаётся в ответе функции: по нему читаются логи расхождений на финише.
-  const enemyCount = enemyGroups.reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0)
+  const perEnemyHp = (kind: unknown) => kind === 'gatekeeper' ? scaledGatekeeperMaxHp(characterLevel) : scaledEnemyMaxHp(characterLevel)
+  // Патрульные (30.10.2026) — такие же враги: их HP в пул, их число — в
+  // enemyCount (по нему считаются мана, Пир и запасы снаряжения). Испорченный
+  // список — без них, против игрока.
+  const patrolsRead = readRunPatrols(run)
+  const patrols = patrolsRead === 'malformed' ? [] : patrolsRead
+  // Число врагов — не потолок урона (его задаёт сумма HP ниже), но по нему
+  // считаются запасы маны и лечения и читаются логи расхождений на финише.
+  const enemyCount = enemyGroups.reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0) + patrols.length
+  // Элита (30.10.2026) — ×ELITE_HP_MULT к HP своего врага: (ELITE_HP_MULT − 1)
+  // лишних «врагов» по HP в её группе.
   const enemyHpTotal = enemyGroups.reduce((sum, ev) => {
-    const perEnemy = ev.enemyKind === 'gatekeeper' ? scaledGatekeeperMaxHp(characterLevel) : scaledEnemyMaxHp(characterLevel)
-    return sum + (ev.clusterPoints?.length ?? 0) * perEnemy
-  }, 0)
+    const eliteExtra = ev.eliteIndex !== undefined ? ELITE_HP_MULT - 1 : 0
+    return sum + ((ev.clusterPoints?.length ?? 0) + eliteExtra) * perEnemyHp(ev.enemyKind)
+  }, 0) + patrols.reduce((sum, p) => sum + perEnemyHp(p.enemyKind), 0)
   const bossCount = events.filter((ev) => ev.kind === 'boss').length
   const hpPool = enemyHpTotal + bossCount * scaledBossMaxHp(characterLevel)
   const maxDamageDealt = hpPool * 1.5
@@ -1161,6 +1170,28 @@ export function readRunHeroClass(run: ActiveExploreRun): HeroClassState | 'malfo
  * но негодное — 'malformed': его пишет только сам сервер, и порча — повод
  * сказать громко; запас тогда 0, против игрока, как у всех потолков.
  */
+/**
+ * Патрульные забега (30.10.2026, runEvents.ts rollRunPatrols). Поля нет —
+ * забег начат раньше, патрульных не было: пустой список. Испорчено — 'malformed':
+ * финиш патрульных трофеев не начисляет и пишет log.error, потолки считают без
+ * них (против игрока, как у всех потолков).
+ */
+export function readRunPatrols(run: ActiveExploreRun): RunPatrol[] | 'malformed' {
+  const raw: unknown = run.patrols
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return 'malformed'
+  const out: RunPatrol[] = []
+  for (const p of raw) {
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) return 'malformed'
+    const { x, y, enemyKind, trophyReward } = p as Record<string, unknown>
+    if (!Number.isInteger(x) || !Number.isInteger(y)) return 'malformed'
+    if (enemyKind !== 'beast' && enemyKind !== 'zvonar' && enemyKind !== 'gatekeeper') return 'malformed'
+    if (typeof trophyReward !== 'number' || !Number.isInteger(trophyReward) || trophyReward < 0) return 'malformed'
+    out.push({ x: x as number, y: y as number, enemyKind, trophyReward })
+  }
+  return out
+}
+
 export function readRunHealSkill(run: ActiveExploreRun): RunHealSkill | null | 'malformed' {
   const raw: unknown = run.healSkill
   if (raw === undefined || raw === null) return null
