@@ -905,6 +905,11 @@ export default function App() {
   // оперирует POST /character/equip, и именно он различает два одинаковых
   // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
   // slot+tier на это не годилась и досталась от фейкового TEST_INVENTORY.
+  // Сколько книг вложить в «Улучшить навык» (30.10.2026, решение Андрея
+  // 27.10.2026). По умолчанию 1; сбрасывается на 1 при открытии и закрытии
+  // карточки и после ответа сервера. Сверху ограничивается запасом книги прямо
+  // в карточке (Math.min), поэтому «лишнее» число здесь безопасно.
+  const [upgradeCount, setUpgradeCount] = useState(1)
   const [gearSelectedItem, setGearSelectedItem] = useState<
     | { kind: 'item'; inventoryItemId: string }
     | { kind: 'potion'; potionId: string }
@@ -1905,7 +1910,7 @@ export default function App() {
   type SkillAction =
     | { kind: 'equip'; bookId: SkillBookId }
     | { kind: 'forget'; skillId: SkillBookSkillId }
-    | { kind: 'upgrade'; bookId: SkillBookId }
+    | { kind: 'upgrade'; bookId: SkillBookId; count: number }
     | { kind: 'sell'; bookId: SkillBookId }
     // Страницы ходят тем же обработчиком: у них тот же ответ сервера
     // (SkillStateResult), та же блокировка на время полёта и тот же разбор
@@ -1924,6 +1929,7 @@ export default function App() {
       case 'No free skill slot': return 'Обе ячейки навыков заняты — сначала забудь один.'
       case 'Skill not equipped': return 'Этот навык не надет.'
       case 'No book in stock': return 'Книги нет на складе — обнови баланс.'
+      case 'Invalid count': return 'Сервер не принял число книг.'
       case 'Unknown book': return 'Сервер не знает такой книги.'
       case 'Unknown scroll': return 'Сервер не знает такой страницы.'
       case 'Unknown class item': return 'Сервер не знает такого предмета.'
@@ -1953,7 +1959,7 @@ export default function App() {
       const result: SkillStateResult =
         action.kind === 'equip' ? await equipBook(token, action.bookId)
           : action.kind === 'forget' ? await forgetSkill(token, action.skillId)
-            : action.kind === 'upgrade' ? await upgradeSkill(token, action.bookId)
+            : action.kind === 'upgrade' ? await upgradeSkill(token, action.bookId, action.count)
               : action.kind === 'assemble' ? await assembleBook(token, action.scrollId)
                 : action.kind === 'sellScroll' ? await sellScroll(token, action.scrollId)
                   : action.kind === 'sellClassItem' ? await sellClassItem(token, action.classItemId)
@@ -1984,7 +1990,11 @@ export default function App() {
       }
       // Успех — закрываем то окно, из которого действие пришло. «Забыть» живёт
       // в карточке навыка на «Персонаже», остальные три — в карточке книги.
-      if (action.kind === 'forget') {
+      // Улучшение (30.10.2026) карточку не закрывает, пока такие книги ещё
+      // есть: видно новый уровень, и можно вложить ещё.
+      if (action.kind === 'upgrade' && (result.consumables[action.bookId] ?? 0) > 0) {
+        // карточка остаётся открытой
+      } else if (action.kind === 'forget') {
         setHeroSkillSelected(null)
         setForgetConfirm(false)
       } else {
@@ -2007,6 +2017,9 @@ export default function App() {
       setSkillActionError('Не удалось — сервер не ответил или отказал. Попробуй ещё раз.')
     } finally {
       setSkillActionPending(false)
+      // После любого ответа на улучшение число снова 1 (в карточке оно ещё
+      // ограничено остатком книг).
+      if (action.kind === 'upgrade') setUpgradeCount(1)
     }
   }
 
@@ -4184,7 +4197,7 @@ export default function App() {
                 <div style={{ display:'grid', gridTemplateColumns:`repeat(${sideMenu ? 8 : 5}, minmax(0, 1fr))`, gap:5, padding:'0 8px' }}>
                   {shownCells.map((cell) => (
                     <div key={cell.key}
-                      onClick={() => setGearSelectedItem(cell.open)}
+                      onClick={() => { setGearSelectedItem(cell.open); setUpgradeCount(1) }}
                       style={{
                         boxSizing:'border-box', position:'relative', aspectRatio:'1',
                         background:C.nicheDeep,
@@ -4204,7 +4217,12 @@ export default function App() {
                       {/* null (неизвестный слот) и провал загрузки — в ItemIcon. */}
                       <ItemIcon src={cell.iconSrc} name={cell.alt} size="fill" />
                       {cell.qty !== null && cell.qty > 1 && (
-                        <div style={{ position:'absolute', right:2, bottom:1, fontSize:9, color:C.bone }}>×{cell.qty}</div>
+                        // Подложка и тёмная обводка (30.10.2026): на красной
+                        // обложке Книги крови и на светлых зельях голый «×N»
+                        // терялся.
+                        <div style={{ position:'absolute', right:2, bottom:2, fontSize:9, lineHeight:'11px', color:C.bone,
+                          background:'rgba(8,6,10,0.72)', borderRadius:3, padding:'0 2px',
+                          textShadow:'0 0 2px #000, 0 0 1px #000' }}>×{cell.qty}</div>
                       )}
                     </div>
                   ))}
@@ -4945,7 +4963,7 @@ export default function App() {
           // сбрасывается: иначе он переезжал в следующую открытую карточку и
           // читался как ответ на то, чего в ней не нажимали (так же сделано у
           // карточки навыка на «Персонаже»).
-          onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null); setStockSellConfirm(null); setSkillActionError(null) }}
+          onClick={() => { setGearSelectedItem(null); setGearEquipError(null); setSellConfirm(null); setStockSellConfirm(null); setSkillActionError(null); setUpgradeCount(1) }}
           style={{
             position:'fixed', top:0, left:0, right:0, bottom:0,
             background:'rgba(0,0,0,0.55)',
@@ -5142,6 +5160,12 @@ export default function App() {
                 opacity: disabled ? 0.5 : 1,
                 ...(primary ? { boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)' } : {}),
               })
+              const upgradeStock = player?.consumables?.[bookId] ?? null
+              const upgradeMax = Math.max(1, upgradeStock ?? 1)
+              const upgradeN = Math.min(Math.max(1, upgradeCount), upgradeMax)
+              const stepStyle = (disabled: boolean) => ({
+                ...actionStyle(false, disabled), flex:'none' as const, width:44, padding:0, fontSize:20,
+              })
               return (
               <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                 {/* «Надеть» — основное действие, своей строкой во всю
@@ -5158,13 +5182,34 @@ export default function App() {
                     {skillActionPending ? 'Надеваю...' : 'Надеть'}
                   </div>
                 )}
+                {/* Сколько книг вложить (30.10.2026, решение Андрея 27.10.2026):
+                    «−» N «+» и «Все», от 1 до запаса этой книги. Запас неизвестен
+                    (сервер не назвал склад) — только 1: больше не обещаем, а
+                    хватает ли и одной, ответит сервер. */}
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <div data-upgrade-step="minus"
+                    onClick={() => { if (!skillActionPending && upgradeN > 1) setUpgradeCount(upgradeN - 1) }}
+                    style={stepStyle(skillActionPending || upgradeN <= 1)}>−</div>
+                  <div data-upgrade-count=""
+                    style={{ flex:1, minWidth:0, textAlign:'center', fontSize:18, color:C.textMain, fontVariantNumeric:'tabular-nums' }}>
+                    {upgradeN}
+                  </div>
+                  <div data-upgrade-step="plus"
+                    onClick={() => { if (!skillActionPending && upgradeN < upgradeMax) setUpgradeCount(upgradeN + 1) }}
+                    style={stepStyle(skillActionPending || upgradeN >= upgradeMax)}>+</div>
+                  <div data-upgrade-step="all"
+                    onClick={() => { if (!skillActionPending && upgradeN < upgradeMax) setUpgradeCount(upgradeMax) }}
+                    style={{ ...actionStyle(false, skillActionPending || upgradeN >= upgradeMax), flex:'none', padding:'0 12px', fontSize:13 }}>
+                    Все
+                  </div>
+                </div>
                 <div style={{ display:'flex', gap:8 }}>
                   {/* «Улучшить навык» работает и для НЕнадетого навыка:
                       уровень принадлежит герою, а не гнезду. */}
-                  <div
-                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'upgrade', bookId }) }}
+                  <div data-upgrade-go=""
+                    onClick={() => { if (!skillActionPending) void handleSkillAction({ kind: 'upgrade', bookId, count: upgradeN }) }}
                     style={actionStyle(false, skillActionPending)}>
-                    Улучшить навык
+                    {skillActionPending ? 'Улучшаю...' : `Улучшить навык (+${upgradeN})`}
                   </div>
                   <div
                     onClick={() => { if (!skillActionPending) setStockSellConfirm(bookId) }}

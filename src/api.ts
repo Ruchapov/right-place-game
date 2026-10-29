@@ -2274,9 +2274,15 @@ export function forgetSkill(token: string, skillId: SkillBookSkillId): Promise<S
   return skillBookRequest('/character/forget-skill', token, { skillId })
 }
 
-/** Улучшить навык книгой: книга списывается, уровень +1. Надетость не нужна. */
-export function upgradeSkill(token: string, id: SkillBookId): Promise<SkillStateResult> {
-  return skillBookRequest('/character/upgrade-skill', token, { id })
+/**
+ * Улучшить навык книгами: списывается count книг, уровень +count (30.10.2026,
+ * решение Андрея 27.10.2026 — пачкой, число выбирает игрок). Надетость не нужна.
+ * С ключом идемпотентности, как покупки (keyedPurchase): после неизвестного
+ * исхода следующее такое же улучшение (та же книга, то же число) несёт тот же
+ * ключ, и второй раз сервер книги не спишет. Повторов нет.
+ */
+export function upgradeSkill(token: string, id: SkillBookId, count: number): Promise<SkillStateResult> {
+  return keyedPurchase(`upgrade-skill:${id}:${count}`, (requestId) => skillBookRequest('/character/upgrade-skill', token, { id, count, requestId }))
 }
 
 /** Продать книгу: списывается, золото +цена/10 (consumableSellPrice, каталог). */
