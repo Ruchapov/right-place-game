@@ -42,6 +42,33 @@ export type BossAnimKind = 'idle' | 'walk' | 'melee' | 'melee2' | 'hurt' | 'deat
 
 // Листы Звонаря. Ровно ключи ZVONAR_SHEETS (constants.ts) — вид анимации и
 // набор листов у него одно и то же, отдельного состояния вроде 'run' нет.
+// Настоятель (29.10.2026) — ключи его листов, см. ABBOT_SHEETS.
+export type AbbotAnimKind =
+  | 'idle' | 'walk' | 'attack' | 'hurt' | 'death' | 'transform'
+  | 'idle2' | 'walk2' | 'swing' | 'slam' | 'summon' | 'hurt2' | 'death2'
+
+/**
+ * Настоятель — состояние, которого нет у Твари. Лежит в Boss.abbot: босс в забеге
+ * один, и всё общее (HP, урон мечом и скиллами, стан льда, парирование, вспышка,
+ * полоса HP, закрытие события) идёт по тем же полям Boss, что у неё.
+ */
+export type AbbotState = {
+  /** Какой лист сейчас на спрайте — якорь меняется только при смене листа. */
+  anim: AbbotAnimKind | null
+  /** Идёт превращение: урон не проходит, решений нет. */
+  transforming: boolean
+  /** Превращение доиграло — дальше листы второй стадии. */
+  transformed: boolean
+  /** Атака, которая сейчас играет (attackAnimPlaying общий с Тварью). */
+  action: 'attack' | 'swing' | 'slam' | 'summon' | null
+  /** Ключевой кадр этой атаки уже отработал. */
+  actionKeyDone: boolean
+  slamCooldownTimer: number
+  summonCooldownTimer: number
+  /** Сколько вызванных им Звонарей сейчас живы. */
+  summoned: Enemy[]
+}
+
 export type ZvonarAnimKind = 'idle' | 'walk' | 'attack' | 'hurt' | 'death'
 
 // Листы Привратника — ровно ключи GATEKEEPER_SHEETS (constants.ts). Стойка и
@@ -241,6 +268,12 @@ export type Enemy = {
    * признак «двери у него не бывает», а не забытая инициализация.
    */
   gatekeeper?: GatekeeperState
+  /**
+   * Звонарь, вызванный Настоятелем (29.10.2026, entities/abbot.ts). События у
+   * него нет (eventIndex = -1), и с трупа он не роняет ману: награды за него
+   * нет, а сервер не знает о нём ничего, кроме того, что босс был.
+   */
+  summoned?: boolean
   // >0 — идёт hurt (хитстан от урона игрока), в мс, тикает вниз в ticker'е.
   // Главнее attack (перебивает/отменяет замах, см. applyAttackHit) и
   // блокирует новый windup/движение, пока не истечёт — см. приоритет в
@@ -506,6 +539,8 @@ export type Boss = {
   melee2Damage: number
   spikeDamage: number
   waveDamage: number
+  /** Только у Настоятеля (29.10.2026); у Твари поля нет. */
+  abbot?: AbbotState
 }
 
 // HUD события обелисков (таймер + счётчик над экраном, см. задачу) — ЭТО

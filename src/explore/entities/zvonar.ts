@@ -143,7 +143,9 @@ export function createZvonarSystem(deps: ZvonarDeps) {
     if (enemy.sprite.playing || enemy.sprite.currentFrame !== frame) enemy.sprite.gotoAndStop(frame)
   }
 
-  function spawn(tileX: number, tileY: number, eventIndex: number): void {
+  // Возвращает врага: Настоятель (entities/abbot.ts) считает своих вызванных.
+  // eventIndex = -1 и summoned — Звонарь без события (см. Enemy.summoned).
+  function spawn(tileX: number, tileY: number, eventIndex: number, summoned = false): Enemy {
     const worldX = tileX * C.TILE_SIZE + C.TILE_SIZE / 2 - C.ZVONAR_WIDTH / 2
     const worldY = (tileY + 1) * C.TILE_SIZE - C.ZVONAR_HEIGHT
 
@@ -233,8 +235,10 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       hpBarBg,
       hpBarFill,
     }
+    if (summoned) enemy.summoned = true
     redrawEnemyHpBar(enemy)
     deps.enemies.current.push(enemy)
+    return enemy
   }
 
   // Выстрел — на кадре вспышки колокола. Точка вылета считается от ЯКОРЯ
@@ -383,8 +387,10 @@ export function createZvonarSystem(deps: ZvonarDeps) {
           if (enemy.deathHoldTimer >= C.DEATH_HOLD_MS) {
             const deathX = enemy.sprite.x
             const deathY = enemy.sprite.y - enemy.sprite.height
-            // Мана — с каждого убитого, как у зверя (см. enemy.ts).
-            deps.dropMana(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2)
+            // Мана — с каждого убитого, как у зверя (см. enemy.ts). Кроме
+            // вызванных Настоятелем: награды за них нет, а запас лечения на
+            // сервере считает ману только с врагов и боссов событий.
+            if (!enemy.summoned) deps.dropMana(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2)
             deps.worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
             enemy.rect.destroy()
             enemy.sprite.destroy()

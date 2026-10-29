@@ -1385,11 +1385,15 @@ export const PARRY_STUN_STAR_FAR_ALPHA = 0.75
  * ⚠️ Макушка — НЕ верх силуэта: у зверя выше головы шипы на холке, у босса —
  * шипы на спине, и по верху силуэта звёзды встали бы над спиной.
  */
-export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss', { x: number; y: number; endX: number; endY: number; size: number }> = {
+export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss' | 'abbot' | 'abbot2', { x: number; y: number; endX: number; endY: number; size: number }> = {
   beast: { x: 172, y: 150, endX: 168, endY: 98, size: 1 },
   zvonar: { x: 62, y: 28, endX: 68, endY: 20, size: 1 },
   gatekeeper: { x: 62, y: 27, endX: 88, endY: 12, size: 1 },
   boss: { x: 55, y: 30, endX: 75, endY: 14, size: 1.35 },
+  // Настоятель (29.10.2026): колокол на ярме — лист Abbot_Hurt, кадры 7 и 15;
+  // во второй стадии — огонь над шеей, Abbot2_Hurt, кадры 12 и 24.
+  abbot: { x: 105, y: 22, endX: 100, endY: 12, size: 1.35 },
+  abbot2: { x: 226, y: 16, endX: 160, endY: 26, size: 1.35 },
 }
 
 // Искра на клинке в момент отбива: сколько живёт спрайт и во сколько раз он
@@ -2022,6 +2026,97 @@ export const ABBOT_SWING_HIT_FRAME = 28
 export const ABBOT_SLAM_CONTACT_FRAME = 29
 export const ABBOT_SUMMON_SPAWN_FRAME = 30
 export const ABBOT_HURT2_STUN_FRAME = 12
+
+// --- Настоятель в бою (29.10.2026, entities/abbot.ts) ---
+// Появляется на карте, где есть место босса и карта — его (ABBOT_MAP_PREFIXES):
+// сейчас это болотная C2. На карте C по-прежнему Тварь. Событие, шанс, награда
+// и потолки сервера — общие для босса (kind 'boss'), поэтому сервер не менялся.
+export const ABBOT_MAP_PREFIXES = ['map_C2'] as const
+/**
+ * ОДИН масштаб на все 13 листов: они нарезаны в одном масштабе фигуры (стадия 2
+ * подогнана к стадии 1 при нарезке), и деление на высоту клетки дало бы скачок
+ * размера при каждой смене листа — то же правило, что ZVONAR_SCALE. Стойка
+ * 286 px листа → ≈235 px мира: вдвое с лишним выше героя, полоса HP над колоколом.
+ */
+export const ABBOT_SCALE = 0.82
+// Подгонка ступней к полу, px мира (как BOSS_OFFSET_Y у Твари).
+export const ABBOT_OFFSET_Y = -2
+/**
+ * Скорость листов (PixiJS animationSpeed = fps / 60). Все — с fps листа, кроме
+ * двух: хитстан ускорен (иначе одно попадание держало бы его больше секунды), а
+ * превращение чуть быстрее, чтобы пауза неуязвимости не тянулась.
+ */
+export const ABBOT_HURT_FPS = 22
+export const ABBOT_TRANSFORM_FPS = 14
+export const ABBOT_ANIM_SPEED: Record<keyof typeof ABBOT_SHEETS, number> = {
+  idle: ABBOT_SHEETS.idle.fps / 60,
+  walk: ABBOT_SHEETS.walk.fps / 60,
+  attack: ABBOT_SHEETS.attack.fps / 60,
+  hurt: ABBOT_HURT_FPS / 60,
+  death: ABBOT_SHEETS.death.fps / 60,
+  transform: ABBOT_TRANSFORM_FPS / 60,
+  idle2: ABBOT_SHEETS.idle2.fps / 60,
+  walk2: ABBOT_SHEETS.walk2.fps / 60,
+  swing: ABBOT_SHEETS.swing.fps / 60,
+  slam: ABBOT_SHEETS.slam.fps / 60,
+  summon: ABBOT_SHEETS.summon.fps / 60,
+  hurt2: ABBOT_HURT_FPS / 60,
+  death2: ABBOT_SHEETS.death2.fps / 60,
+}
+// Хитстан — ровно длина листа hurt своей стадии на ABBOT_HURT_FPS (≈727 и ≈1136 мс).
+export const ABBOT_HURT_MS = (1000 * ABBOT_SHEETS.hurt.count) / ABBOT_HURT_FPS
+export const ABBOT_HURT2_MS = (1000 * ABBOT_SHEETS.hurt2.count) / ABBOT_HURT_FPS
+// Ходьба, px за кадр при 60 к/с (как BOSS_MOVE_SPEED = 2.0 у Твари). Во второй
+// стадии шаг длиннее — и быстрее.
+export const ABBOT_MOVE_SPEED = 1.6
+export const ABBOT_MOVE_SPEED_2 = 2.1
+// Стоп-дистанция (центр — центр, px мира) и запас на трогание с места.
+export const ABBOT_STOP_DISTANCE = 105
+export const ABBOT_STOP_DISTANCE_2 = 140
+export const ABBOT_STOP_HYSTERESIS = 20
+/**
+ * Удары ближнего боя — зона перед боксом босса шириной RANGE (замер по кадру
+ * удара: кулак уходит на 146 px листа от якоря, колокол взмаха — на 230).
+ * Начинает удар, если герой ближе REACH (центр — центр). Оба удара ПАРИРУЮТСЯ.
+ */
+export const ABBOT_FIST_RANGE = 105
+export const ABBOT_FIST_REACH = 135
+export const ABBOT_SWING_RANGE = 165
+export const ABBOT_SWING_REACH = 185
+export const ABBOT_ATTACK_COOLDOWN_MS = 900
+// Удар колоколом в пол: только дальше этого (волне нужно докатиться), кулдаун.
+export const ABBOT_SLAM_MIN_TILES = 2.5
+export const ABBOT_SLAM_COOLDOWN_MS = 6000
+// Колокол касается пола на ABBOT_SLAM_CONTACT_FRAME — в стольких px листа ВПЕРЁД
+// от якоря (замер: −104…−147 по кадру касания, арт смотрит влево).
+export const ABBOT_BELL_FORWARD = 120
+// Призыв Звонарей: кулдаун, первый призыв после превращения, сколько живых
+// вызванных самое большее, на сколько тайлов в стороны от босса они встают.
+export const ABBOT_SUMMON_COOLDOWN_MS = 15000
+export const ABBOT_SUMMON_FIRST_MS = 3000
+export const ABBOT_SUMMON_MAX = 2
+export const ABBOT_SUMMON_OFFSET_TILES = 3
+// Первые удары после превращения — не сразу: пусть герой увидит новую стадию.
+export const ABBOT_STAGE2_ATTACK_DELAY_MS = 800
+export const ABBOT_STAGE2_SLAM_DELAY_MS = 2500
+/**
+ * Волны удара в пол — лист Звонаря (Zvonar_Wave.png), крупнее его волны на
+ * ABBOT_WAVE_SIZE. Катятся по полу в обе стороны от колокола, не парируются,
+ * от них прыгают; рывок проходит сквозь. Гаснут о стену (со вспышкой), на краю
+ * пола и на ABBOT_WAVE_RANGE_TILES (без вспышки). В героя — вспышка
+ * Zvonar_Wave_Impact_v2 вдвое крупнее волны, как у Звонаря.
+ * Замер листа волны по альфе: x 10…155, y 11…148 из 161×160.
+ */
+export const ABBOT_WAVE_SIZE = 1.3
+export const ABBOT_WAVE_SCALE = ZVONAR_SCALE * ABBOT_WAVE_SIZE
+export const ABBOT_WAVE_DRAW_W = ZVONAR_WAVE_CELL_W * ABBOT_WAVE_SCALE // ≈100
+export const ABBOT_WAVE_DRAW_H = ZVONAR_WAVE_CELL_H * ABBOT_WAVE_SCALE // ≈100
+export const ABBOT_WAVE_ANCHOR_Y = 148 / 160 // низ волны — на полу
+export const ABBOT_WAVE_HIT_W = 145 * ABBOT_WAVE_SCALE
+export const ABBOT_WAVE_HIT_H = 137 * ABBOT_WAVE_SCALE
+export const ABBOT_WAVE_SPEED = 350 // px/сек, как у Звонаря
+export const ABBOT_WAVE_RANGE_TILES = 12
+export const ABBOT_WAVE_IMPACT_DRAW = ZVONAR_WAVE_IMPACT_DRAW * ABBOT_WAVE_SIZE
 
 
 // ============================================================================

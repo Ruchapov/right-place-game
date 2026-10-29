@@ -54,6 +54,7 @@ import type { ZvonarFrames } from './explore/entities/zvonar'
 import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekeeperIsShiftingGuard } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
+import { createAbbotSystem, abbotHurtMs } from './explore/entities/abbot'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
@@ -2466,6 +2467,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let zvonarSystem: ReturnType<typeof createZvonarSystem> | null = null
     let gatekeeperSystem: ReturnType<typeof createGatekeeperSystem> | null = null
     let bossSystem: ReturnType<typeof createBossSystem> | null = null
+    // Настоятель — второй босс (29.10.2026). В забеге одна из двух систем босса
+    // или ни одной: какой босс выйдет, решает карта (ABBOT_MAP_PREFIXES).
+    let abbotSystem: ReturnType<typeof createAbbotSystem> | null = null
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
@@ -2992,17 +2996,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // (см. explore/assets.ts). Загрузка стартует сразу, параллельно общим
       // листам, холсту карты и фону; дожидаемся её там же, где общие.
       // Пустой .catch — по той же причине, что у commonAssetsLoad выше.
+      // Какой босс: на карте Настоятеля (сейчас болотная C2) — он, на остальных
+      // с местом босса — Тварь. Событие у обоих одно (kind 'boss'), сервер их не
+      // различает. Настоятелю нужны и листы Звонаря: он их зовёт, а его удар в
+      // пол катит их волну.
+      const abbotWillSpawn = bossWillSpawn && C.ABBOT_MAP_PREFIXES.some((prefix) => resolvedMapFile.startsWith(prefix))
       const runAssetNeeds: RunAssetNeeds = {
         beast: eventEnemyKinds.includes('beast'),
-        zvonar: eventEnemyKinds.includes('zvonar'),
+        zvonar: eventEnemyKinds.includes('zvonar') || abbotWillSpawn,
         gatekeeper: eventEnemyKinds.includes('gatekeeper'),
         chest: chosenEvents.some((ev) => ev.kind === 'chest'),
         smuggler: chosenEvents.some((ev) => ev.kind === 'smuggler'),
         obelisk: chosenEvents.some((ev) => ev.kind === 'obelisk'),
-        boss: bossWillSpawn,
-        // ВРЕМЕННО (шаг 1 Настоятеля): события у него ещё нет — листы грузятся в
-        // забеге с Тварью, только чтобы проверить нарезку. Шаг 2 заменит условие.
-        abbot: bossWillSpawn,
+        boss: bossWillSpawn && !abbotWillSpawn,
+        abbot: abbotWillSpawn,
       }
       const eventAssetsLoad = loadEventAssets(runAssetNeeds)
       eventAssetsLoad.catch(() => {})
@@ -3625,6 +3632,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function playBossAnim(kind: BossAnimKind) {
         const boss = bossRef.current
         if (!boss) return
+        // Настоятель — свои листы на каждую стадию (entities/abbot.ts).
+        if (boss.abbot) {
+          sheetsFor(abbotSystem, 'Настоятель').playBossKind(boss, kind)
+          return
+        }
         // Уже эта анимация — не рестартить (см. задачу шаг 3: hurt/idle
         // читаются из ticker'а КАЖДЫЙ тик, без гейта это отматывало бы
         // анимацию на кадр 0 каждый тик, как playSpriteAnim у зверя выше).
@@ -3952,6 +3964,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // что у enemy.hpBarBg/hpBarFill в основном цикле врагов — позиция
       // должна следовать за boss.y, который меняется гравитацией).
       function applyBossLayout(boss: Boss) {
+        if (boss.abbot) {
+          sheetsFor(abbotSystem, 'Настоятель').layout(boss)
+          return
+        }
         // Ranged — лист НЕ приведён к общему масштабу, в отличие от
         // остальных. Определяем "сейчас активен ranged" сравнением textures
         // (тот же приём, что playBossAnim использует для гейта "уже эта
@@ -4018,6 +4034,30 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         bossSpikeImpactFrames: bossAssets.spikeImpactFrames,
         bossWaveLeftFrames: bossAssets.waveLeftFrames,
         bossWaveRightFrames: bossAssets.waveRightFrames,
+        characterLevel: characterLevelRef,
+      })
+
+      // Настоятель (entities/abbot.ts) — по тому же правилу, что Тварь: система
+      // есть только в забеге, куда загружены его листы.
+      const abbotAssets = eventAssets.abbot
+      abbotSystem = abbotAssets === null ? null : createAbbotSystem({
+        phys,
+        getPlayerCombatBox,
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
+        findGroundSurfaceY,
+        closeEvent,
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
+        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
+        dashing: dashingRef,
+        // Звонарь без события: -1 — ни одно событие его не ждёт (см. Enemy.summoned).
+        spawnZvonar: (tileX, tileY) => (zvonarFramesRef.current ? zvonarSystem!.spawn(tileX, tileY, -1, true) : null),
+        boss: bossRef,
+        bossEventIndex: bossEventIndexRef,
+        worldContainer,
+        grid,
+        frames: abbotAssets,
+        zvonarFrames: zvonarFramesRef,
         characterLevel: characterLevelRef,
       })
 
@@ -4177,7 +4217,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       if (bossWillSpawn && isPointXY(bossPoint)) {
         // Система босса создаётся по тому же признаку, что его листы (см. выше).
         // Босс среди событий есть, а системы нет — условия разошлись: громко.
-        sheetsFor(bossSystem, 'босс').spawn(bossPoint[0], bossPoint[1])
+        if (abbotWillSpawn) sheetsFor(abbotSystem, 'Настоятель').spawn(bossPoint[0], bossPoint[1])
+        else sheetsFor(bossSystem, 'босс').spawn(bossPoint[0], bossPoint[1])
       } else {
         bossRef.current = null
       }
@@ -4984,6 +5025,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function damageBoss(amount: number, accumulator: { current: number }, sourceX: number): boolean {
         const boss = bossRef.current
         if (!boss) return false
+        // Настоятель срывает колокол — пока играет превращение, урон не проходит.
+        if (boss.abbot?.transforming) return false
         accumulator.current += Math.min(amount, boss.hp)
         boss.hp = Math.max(0, boss.hp - amount)
         // Расследование — та же роль и та же причина, что у damageEnemy выше.
@@ -5104,6 +5147,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
 
       function applyBossHitReaction(boss: Boss) {
+        // Превращение Настоятеля: урона не было (см. damageBoss), реакции тоже.
+        if (boss.abbot?.transforming) return
         if (boss.attackAnimPlaying || boss.rangedAnimPlaying) {
           // СЛОЙ 1 (главный, см. задачу) — во время атаки ИЛИ броска
           // Hurt НЕ проигрывается ВООБЩЕ, ни на каком кадре, независимо
@@ -5146,7 +5191,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // Свежий хит: босс НЕ атаковал, Hurt ещё НЕ шёл, иммунитета
             // нет — обычный запуск хитстана. stunCount НЕ растёт (как
             // у зверя в ветке !wasWindingUp) — это не "сбитое" состояние.
-            boss.hurtTimer = C.BOSS_HURT_MS
+            // У Настоятеля хитстан — длина его листа hurt своей стадии.
+            boss.hurtTimer = boss.abbot ? abbotHurtMs(boss) : C.BOSS_HURT_MS
           }
         }
       }
@@ -5927,6 +5973,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // ?. — системы босса нет в забеге без босса (его листы туда не грузятся,
         // см. создание bossSystem выше); обновлять тогда нечего.
         bossSystem?.update(dt, ticker.deltaMS)
+        // Настоятель — на том же месте кадра; в забеге есть только один из двух.
+        abbotSystem?.update(dt, ticker.deltaMS)
 
         // Шары маны — ПОСЛЕ всех трёх систем врагов: выпадение случается
         // внутри них (там, где труп снимается со сцены), и шар, родившийся в
@@ -6461,6 +6509,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       zvonarSystem?.dispose()
       gatekeeperSystem?.dispose()
       bossSystem?.dispose()
+      abbotSystem?.dispose()
       stunStarsSystem?.dispose()
       manaSystem?.dispose()
       // Атмосфера сама уничтожает свою текстуру — app.destroy ниже снимает

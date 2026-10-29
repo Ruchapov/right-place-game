@@ -90,7 +90,7 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
     return free
   }
 
-  function place(owner: Enemy | Boss, kind: EnemyKind | 'boss', deltaMS: number) {
+  function place(owner: Enemy | Boss, kind: EnemyKind | 'boss' | 'abbot' | 'abbot2', deltaMS: number) {
     let halo = haloOf(owner)
     if (halo) {
       // Под льдом таймер оглушения стоит (заслон льда выше заслона оглушения) —
@@ -154,7 +154,8 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
       if (isParryStunned(enemies[i])) place(enemies[i], enemies[i].kind, deltaMS)
     }
     const boss = deps.boss.current
-    if (boss && isParryStunned(boss)) place(boss, 'boss', deltaMS)
+    // Настоятель — своя точка головы на стадию (колокол на ярме / огонь над шеей).
+    if (boss && isParryStunned(boss)) place(boss, boss.abbot ? (boss.abbot.transformed ? 'abbot2' : 'abbot') : 'boss', deltaMS)
   }
 
   function dispose() {

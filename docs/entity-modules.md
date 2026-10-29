@@ -21,6 +21,7 @@ createEnemySystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createZvonarSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createGatekeeperSystem(deps) → { spawn, update(dt, deltaMS), dispose }
 createBossSystem(deps)  → { spawn, update(dt, deltaMS), dispose }
+createAbbotSystem(deps) → { spawn, update(dt, deltaMS), dispose, playBossKind, layout }
 createSkillsSystem(deps) → { update(dt), dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding, isSlashStrike }
 createManaSystem(deps)   → { dropFrom, update(deltaMS), clear, dispose }
 createStunStarsSystem(deps) → { update(deltaMS), dispose }
