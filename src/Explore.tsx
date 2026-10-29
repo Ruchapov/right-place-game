@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, TilingSprite } from 'pixi.js'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, Ticker, TilingSprite } from 'pixi.js'
 import { renderSpikeTile, spikeGlintAlpha, backdropPaths, backdropLook } from './mapRenderer'
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
@@ -58,6 +58,8 @@ import { createAbbotSystem, abbotHurtMs } from './explore/entities/abbot'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
+import { createEliteGlowSystem } from './explore/entities/eliteGlow'
+import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, PATROLS_PER_RUN, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { loadSheetFrames } from './explore/spriteLoader'
@@ -65,7 +67,7 @@ import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClas
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, readPatrols, readEliteIndex, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
@@ -495,6 +497,7 @@ type FinishPayload = {
   questCounters: QuestRunCounters
   // Срублен ли Звёздоцвет (docs/crafter.md) — тем же снимком.
   starbloomCut: boolean
+  killedPatrols: number[]
 }
 
 /**
@@ -641,6 +644,30 @@ function devEnemyKind(): EnemyKind {
   return 'beast'
 }
 
+// Патрульные офлайн-заглушки (30.10.2026) — то же правило, что rollRunPatrols
+// на сервере (runEvents.ts): группы, не выпавшие событием, враг в средней точке
+// (или ближайшей к ней не ближе PATROL_EVENT_CLEARANCE клеток к точкам событий
+// на том же ряду), до PATROLS_PER_RUN штук. Вид — devEnemyKind, трофеи — свой
+// бросок заглушки.
+function devRollPatrols(pool: EventCandidate[], chosen: EventCandidate[]): StartExplorePatrol[] {
+  const key = (x: number, y: number) => `${x},${y}`
+  const taken = new Set(chosen.filter((ev) => ev.kind === 'enemy').map((ev) => key(ev.x, ev.y)))
+  const eventPoints: [number, number][] = chosen.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
+  const clear = (p: [number, number]) =>
+    eventPoints.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
+  const spots: [number, number][] = []
+  for (const ev of pool) {
+    if (ev.kind !== 'enemy' || !ev.clusterPoints || ev.clusterPoints.length === 0 || taken.has(key(ev.x, ev.y))) continue
+    const sorted = [...ev.clusterPoints].sort((a, b) => a[0] - b[0])
+    const mid = sorted[Math.floor((sorted.length - 1) / 2)]
+    const spot = [...sorted].sort((a, b) => Math.abs(a[0] - mid[0]) - Math.abs(b[0] - mid[0])).find(clear)
+    if (spot) spots.push(spot)
+  }
+  return pickRandom(spots, PATROLS_PER_RUN).map(([x, y]) => ({
+    x, y, enemyKind: devEnemyKind(), trophyReward: rollTrophies(TROPHY_MULT_PATROL, C.PLAYER_LEVEL_FALLBACK),
+  }))
+}
+
 // chestIsMimic — решение заглушки по сундуку (для остальных событий false).
 // Правило сервера: у ловушки трофеев нет, добыча та же, что у обычного сундука.
 function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: number | null; drops: RunDrop[] } {
@@ -653,6 +680,13 @@ function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: num
     trophies: mult === 0 ? 0 : rollTrophies(mult, C.PLAYER_LEVEL_FALLBACK),
     drops: TEMP_DEV_EVENT_DROPS[kind],
   }
+}
+
+// Элита заглушки (30.10.2026): лишние доли группы — тем же правилом, что сервер.
+function devEliteReward(reward: { trophies: number | null; drops: RunDrop[] }, eliteIndex: number | null, groupSize: number) {
+  return eliteIndex !== null && reward.trophies !== null
+    ? { ...reward, trophies: eliteGroupTrophies(reward.trophies, groupSize) }
+    : reward
 }
 
 function dropIconKey(drop: RunDrop): string {
@@ -1075,6 +1109,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const deathFramesRef = useRef<Texture[] | null>(null)
   const dirRef = useRef(0) // -1 влево, 0 стоп, 1 вправо — читается каждый кадр в ticker
   const jumpPressedRef = useRef(false) // флаг нажатия, читается и сбрасывается в ticker
+  // Удерживается ли прыжок прямо сейчас (30.10.2026): ▲ (TouchControls) или
+  // ArrowUp/Space. Отпустил, пока герой летит вверх, — прыжок ниже (JUMP_CUT_MULT).
+  const jumpHeldRef = useRef(false)
   // Окна прощения прыжка (мс, тикают по ticker.deltaMS — см. C.JUMP_BUFFER_MS
   // и C.COYOTE_MS). jumpBufferRef — нажатие ждёт опоры; coyoteRef — опора
   // «помнится» после схода с края. Оба обнуляются в ветке реального прыжка:
@@ -1140,6 +1177,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // ЭТОГО забега, используется как fallback экрана итогов (buildClientResult
   // ниже), пока не пришёл (или не придёт вовсе) ответ сервера.
   const trophiesEarnedRef = useRef(0)
+  // Убитые патрульные (30.10.2026) — индексы в списке патрульных ответа старта;
+  // уходят финишу полем killedPatrols. Пишет onPatrolKilled в setup().
+  const killedPatrolsRef = useRef<number[]>([])
   // Сырые счётчики за забег — ФАКТИЧЕСКИ снятые/нанесённые/восстановленные,
   // не запрошенные (см. takeDamage/applyAttackHit/питьё зелья ниже:
   // смертельный удар засчитывает только остаток HP цели, а не полный урон
@@ -1389,6 +1429,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       skillUses: { ...skillUsesRef.current },
       questCounters: { ...questCountersRef.current },
       starbloomCut: starbloomCutRef.current,
+      killedPatrols: [...killedPatrolsRef.current],
     }
     submitFinish()
   }
@@ -1418,6 +1459,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       payload.skillUses,
       payload.questCounters,
       payload.starbloomCut,
+      payload.killedPatrols,
     )
       .then((result) => {
         setRunResult(result)
@@ -2447,6 +2489,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         case 'ArrowUp':
         case 'Space':
           e.preventDefault()
+          jumpHeldRef.current = true
           if (e.repeat) return
           jumpPressedRef.current = true
           break
@@ -2484,6 +2527,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         case 'ArrowRight':
         case 'KeyD':
           if (dirRef.current === 1) dirRef.current = 0
+          break
+        case 'ArrowUp':
+        case 'Space':
+          jumpHeldRef.current = false
           break
       }
     }
@@ -2542,6 +2589,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let swayTextures: Map<string, Texture> | null = null
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
+    let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -2991,6 +3039,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // на клиенте — берём готовый массив как есть.
       let chosenEvents: EventCandidate[]
       let bossWillSpawn: boolean
+      // Патрульные офлайн-заглушки (30.10.2026); в настоящей сессии их называет
+      // сервер (readPatrols ниже).
+      let devPatrols: StartExplorePatrol[] = []
       if (startExploreResult) {
         chosenEvents = startExploreResult.events
         bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
@@ -3033,11 +3084,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // здесь нет (см. devEnemyKind и плашку «ЗАГЛУШКА»).
         // Ловушку у сундука — тоже, и КАК СЕРВЕР: здесь, на старте забега, один
         // раз на сундук, а не на первом ударе (см. rollRunEvents на сервере).
+        // Элиту (30.10.2026) — тоже как сервер: один враг группы с ELITE_CHANCE.
         chosenEvents = chosenEvents.map((ev) =>
-          ev.kind === 'enemy' ? { ...ev, enemyKind: devEnemyKind() }
+          ev.kind === 'enemy' ? {
+            ...ev,
+            enemyKind: devEnemyKind(),
+            ...(Math.random() < ELITE_CHANCE && ev.clusterPoints && ev.clusterPoints.length > 0
+              ? { eliteIndex: Math.floor(Math.random() * ev.clusterPoints.length) } : {}),
+          }
             : ev.kind === 'chest' ? { ...ev, isMimic: Math.random() < C.CHEST_MIMIC_CHANCE }
               : ev,
         )
+        devPatrols = devRollPatrols(eventPool, chosenEvents)
       }
       // Вид врагов КАЖДОГО события, разобранный один раз здесь — ровно как
       // награды ниже: дальше по коду оба пути (сервер и заглушка) дают одну
@@ -3046,6 +3104,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const eventEnemyKinds: (EnemyKind | null)[] = chosenEvents.map((ev) =>
         ev.kind === 'enemy' ? readEnemyKind(ev.enemyKind) : null,
       )
+      // Элитный враг каждой группы (30.10.2026): индекс в clusterPoints или null.
+      const eventElite: (number | null)[] = chosenEvents.map((ev) =>
+        ev.kind === 'enemy' ? readEliteIndex(ev.eliteIndex, ev.clusterPoints?.length ?? 0) : null,
+      )
+      // Патрульные (30.10.2026): одиночные враги вне событий. null — кривая запись
+      // сервера (пропускается, но индексы остальных сохраняются для финиша).
+      const runPatrols: (StartExplorePatrol | null)[] = startExploreResult ? readPatrols(startExploreResult.patrols) : devPatrols
+      const patrolKinds = runPatrols.map((p) => p?.enemyKind ?? null)
       // Ловушка или обычный — у КАЖДОГО сундука, тоже один раз здесь и одной
       // формой на оба пути. null — событие не сундук.
       // ⚠️ Сундук без решения — ГРОМКИЙ отказ, а не свой бросок и не «обычный»
@@ -3081,9 +3147,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // пол катит их волну.
       const abbotWillSpawn = bossWillSpawn && C.ABBOT_MAP_PREFIXES.some((prefix) => resolvedMapFile.startsWith(prefix))
       const runAssetNeeds: RunAssetNeeds = {
-        beast: eventEnemyKinds.includes('beast'),
-        zvonar: eventEnemyKinds.includes('zvonar') || abbotWillSpawn,
-        gatekeeper: eventEnemyKinds.includes('gatekeeper'),
+        beast: eventEnemyKinds.includes('beast') || patrolKinds.includes('beast'),
+        zvonar: eventEnemyKinds.includes('zvonar') || patrolKinds.includes('zvonar') || abbotWillSpawn,
+        gatekeeper: eventEnemyKinds.includes('gatekeeper') || patrolKinds.includes('gatekeeper'),
         chest: chosenEvents.some((ev) => ev.kind === 'chest'),
         smuggler: chosenEvents.some((ev) => ev.kind === 'smuggler'),
         obelisk: chosenEvents.some((ev) => ev.kind === 'obelisk'),
@@ -3106,7 +3172,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // настоящей сессии. Числа его никуда не уходят (финиш в этом режиме на
           // сервер не идёт вовсе), и оранжевая плашка «ЗАГЛУШКА» уже говорит
           // игроку, что забег ненастоящий.
-          : devEventReward(ev.kind, eventChestMimic[eventIndex] === true),
+          : devEliteReward(devEventReward(ev.kind, eventChestMimic[eventIndex] === true), eventElite[eventIndex], ev.clusterPoints?.length ?? 0),
       )
 
       // Иконки выпавшего — ЗАРАНЕЕ, здесь, а не в момент закрытия события:
@@ -3528,6 +3594,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         playSpriteAnim,
         findGroundSurfaceY,
         closeEvent,
+        onPatrolKilled,
         // Система шаров маны создаётся НИЖЕ, после загрузки ассетов (ей нужна
         // готовая картинка), поэтому здесь обёртка, а не сама функция: зовётся
         // она только из тикера, когда система уже есть.
@@ -3556,6 +3623,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
         findGroundSurfaceY,
         closeEvent,
+        onPatrolKilled,
         // Та же обёртка и по той же причине, что у зверя выше.
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
@@ -3578,6 +3646,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
         findGroundSurfaceY,
         closeEvent,
+        onPatrolKilled,
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         // Обёртка над рефом — по той же причине, что takeDamage у зверя. Точка
         // своя: у тарана широкое окно парирования (см. takeRamDamage).
@@ -3674,6 +3743,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         frames: bladeSparkFrames,
         sparkScale: (C.HERO_DRAW_H / C.HERO_CELL_H) * C.CRIT_SPARK_SCALE,
       })
+      // Золотое свечение элиты (30.10.2026) — копия кадра позади врага.
+      eliteGlowSystem = createEliteGlowSystem({ worldContainer })
 
       // Кольцо Пепла: тик огня — как тик кровотечения (skillDamage.slash), идёт
       // в skillDamageDealt и, как тик, не замечает двери Привратника.
@@ -3976,6 +4047,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       smugglerDealPendingRef.current = false
       smugglerRequestSeqRef.current = 0
       trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
+      killedPatrolsRef.current = [] // сброс на случай повторного запуска setup()
       damageTakenRef.current = 0 // сброс на случай повторного запуска setup()
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
@@ -4177,6 +4249,24 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         characterLevel: characterLevelRef,
       })
 
+      // Враг нужного вида — его системой (общая на группы событий и патрульных).
+      function spawnEnemyOfKind(kind: EnemyKind, tileX: number, tileY: number, eventIndex: number): Enemy {
+        if (kind === 'gatekeeper') return gatekeeperSystem!.spawn(tileX, tileY, eventIndex)
+        if (kind === 'zvonar') return zvonarSystem!.spawn(tileX, tileY, eventIndex)
+        return enemySystem!.spawn(tileX, tileY, eventIndex)
+      }
+      // Элита (30.10.2026): HP ×ELITE_HP_MULT и урон ×ELITE_DMG_MULT — сразу
+      // после спавна, поверх масштаба по уровню; у Звонаря урон в волне,
+      // множитель — в zvonar.ts по enemy.elite. Плюс золотое свечение.
+      function makeElite(enemy: Enemy) {
+        enemy.elite = true
+        enemy.maxHp = Math.round(enemy.maxHp * ELITE_HP_MULT)
+        enemy.hp = enemy.maxHp
+        enemy.attackDamage = Math.round(enemy.attackDamage * ELITE_DMG_MULT)
+        redrawEnemyHpBar(enemy)
+        eliteGlowSystem!.attach(enemy)
+      }
+
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         const reward = eventRewards[eventIndex]
         if (ev.kind === 'enemy') {
@@ -4201,10 +4291,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             : groupKind === 'zvonar' ? zvonarFramesRef.current
               : beastFramesRef.current
           sheetsFor(groupSheets, `враги (${groupKind})`)
-          points.forEach(([ex, ey]) => {
-            if (groupKind === 'gatekeeper') gatekeeperSystem!.spawn(ex, ey, eventIndex)
-            else if (groupKind === 'zvonar') zvonarSystem!.spawn(ex, ey, eventIndex)
-            else enemySystem!.spawn(ex, ey, eventIndex)
+          points.forEach(([ex, ey], pointIndex) => {
+            const spawned = spawnEnemyOfKind(groupKind, ex, ey, eventIndex)
+            if (eventElite[eventIndex] === pointIndex) makeElite(spawned)
           })
           return { ...ev, closed: false, remainingEnemies: points.length, trophyReward: reward.trophies, drops: reward.drops }
         }
@@ -4843,6 +4932,24 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Переменная setup(), а не ref: закрытие и тикер живут в одном замыкании,
       // и новый запуск setup() начинает с false сам.
       let allEventsClosed = false
+
+      // Патрульные (30.10.2026): одиночные враги вне событий, событие -1. В HUD
+      // их нет, на конец забега они не влияют. Листы их вида грузятся вместе с
+      // листами групп (runAssetNeeds выше).
+      runPatrols.forEach((p, patrolIndex) => {
+        if (!p) return
+        const enemy = spawnEnemyOfKind(p.enemyKind, p.x, p.y, -1)
+        enemy.patrolIndex = patrolIndex
+      })
+      // Убит патрульный — зовут модули врагов, когда убран его труп (как
+      // закрытие события у группы): индекс уходит финишу, трофеи всплывают.
+      function onPatrolKilled(patrolIndex: number, worldX: number, worldY: number) {
+        if (killedPatrolsRef.current.includes(patrolIndex)) return
+        killedPatrolsRef.current.push(patrolIndex)
+        const p = runPatrols[patrolIndex]
+        if (p && p.trophyReward > 0) spawnRewardFloat(worldX, worldY, [{ kind: 'trophy', amount: p.trophyReward }])
+      }
+
       function closeEvent(index: number, worldX?: number, worldY?: number) {
         const ev = eventsRef.current[index]
         if (!ev || ev.closed) return
@@ -5332,6 +5439,51 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         return (Math.max(a, b) + Math.min(a + aw, b + bw)) / 2
       }
 
+      // Прыжок от длины нажатия (30.10.2026): ждёт ли текущий прыжок среза и
+      // сколько мс прошло от толчка. Переменные setup(), как allEventsClosed.
+      let jumpCutPending = false
+      let jumpAirMs = 0
+      // Хитстоп (30.10.2026): сколько мс игре ещё стоять. Не копится — новое
+      // попадание только продлевает до HITSTOP_MS, а не прибавляет.
+      let hitstopMsLeft = 0
+      function startHitstop() {
+        hitstopMsLeft = Math.max(hitstopMsLeft, C.HITSTOP_MS)
+        Ticker.shared.speed = 0
+      }
+      // Отдача от меча (30.10.2026): враг отъезжает от героя на KNOCKBACK_PX за
+      // KNOCKBACK_MS. Не боссу (его ведёт boss.ts), не Привратнику с поднятой
+      // дверью и не замороженному льдом (лёд держит на месте). Повторный удар
+      // начинает отъезд заново, а не складывает.
+      function startKnockback(enemy: Enemy, sourceX: number) {
+        if (enemy.kind === 'gatekeeper' && enemy.gatekeeper?.guard === 'up') return
+        if (enemy.stunTimer > 0) return
+        enemy.knockMs = C.KNOCKBACK_MS
+        enemy.knockDir = enemy.x + enemy.width / 2 >= sourceX ? 1 : -1
+      }
+      // Шаг отдачи за кадр. Шаг не делается (и отъезд кончается), если впереди
+      // стена или под передним краем нет пола: враг не уходит в стену и не
+      // падает с платформы. Мёртвого не двигает.
+      function applyKnockback(deltaMS: number) {
+        for (const enemy of enemiesRef.current) {
+          if (!enemy.knockMs || enemy.knockMs <= 0) continue
+          if (enemy.dead) { enemy.knockMs = 0; continue }
+          const ms = Math.min(deltaMS, enemy.knockMs)
+          enemy.knockMs -= ms
+          const dir = enemy.knockDir ?? 1
+          const nextX = enemy.x + dir * C.KNOCKBACK_PX * (ms / C.KNOCKBACK_MS)
+          // Передний край — сама граница бокса (без запаса в 1 px: с ним враг
+          // заезжал за край пола на долю пикселя).
+          const lead = dir > 0 ? nextX + enemy.width - 1e-3 : nextX
+          const wall =
+            isSolid(grid, C.TILE_SIZE, lead, enemy.y + 1) ||
+            isSolid(grid, C.TILE_SIZE, lead, enemy.y + enemy.height / 2) ||
+            isSolid(grid, C.TILE_SIZE, lead, enemy.y + enemy.height - 1)
+          const floor = isSolid(grid, C.TILE_SIZE, lead, enemy.y + enemy.height + 1)
+          if (wall || !floor || lead < 0 || lead >= worldWidthPx) { enemy.knockMs = 0; continue }
+          enemy.x = nextX
+        }
+      }
+
       function applyAttackHit() {
         // Крит ветки «Клинок» (26.10.2026) решается ОДИН раз на взмах: Выпад
         // (этот взмах забрал окно после рывка) или Острый глаз (бросок). Оба
@@ -5404,8 +5556,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
               lifesteal(attackDamageDealtRef.current - swordDealtBefore)
               if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, enemy.x, enemy.width), overlapCenter(hb.y, hb.height, enemy.y, enemy.height), enemy.sprite)
+              // Хитстоп (30.10.2026) — на попадание, которое сняло HP (меч в
+              // поднятую дверь его не даёт: урона там нет).
+              if (attackDamageDealtRef.current > swordDealtBefore) startHitstop()
               if (swordKilled) continue
               applyEnemyHitReaction(enemy)
+              if (!doorBlocks) startKnockback(enemy, swordSourceX)
             }
           }
         }
@@ -5449,6 +5605,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               if (!bossKilled) {
                 applyBossHitReaction(boss)
               }
+              // Хитстоп и по боссу (30.10.2026); отдачи у босса нет.
+              if (attackDamageDealtRef.current > bossDealtBefore) startHitstop()
               if (swingCrit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, boss.x, C.BOSS_WIDTH), overlapCenter(hb.y, hb.height, boss.y, C.BOSS_HEIGHT), boss.sprite)
             }
           }
@@ -5545,6 +5703,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const worldWidthPx = grid[0].length * C.TILE_SIZE
 
       app.ticker.add((ticker) => {
+        // Хитстоп (30.10.2026): пока он идёт, игра стоит — логика этого кадра не
+        // выполняется, а анимации спрайтов (их крутит общий Ticker.shared, а не
+        // этот тикер) стоят на speed 0. Нажатия копятся во флагах и сработают
+        // следующим живым кадром.
+        if (hitstopMsLeft > 0) {
+          hitstopMsLeft -= ticker.deltaMS
+          if (hitstopMsLeft > 0) return
+          hitstopMsLeft = 0
+          Ticker.shared.speed = 1
+        }
         const dt = ticker.deltaTime
         const startX = phys.x
         const startY = phys.y
@@ -5744,12 +5912,33 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         ) {
           phys.vy = -C.JUMP_VELOCITY
           phys.onGround = false
+          // Прыжок от длины нажатия (30.10.2026): срез ещё возможен.
+          jumpCutPending = true
+          jumpAirMs = 0
           // Оба окна гасим ЗДЕСЬ и только здесь: буфер — чтобы одно нажатие не
           // дало второй прыжок в следующем кадре, койот — чтобы прыжок из
           // койот-окна не оставил это же окно на второй прыжок в воздухе.
           jumpBufferRef.current = 0
           coyoteRef.current = 0
           jumpedThisFrame = true
+        }
+
+        // Прыжок от длины нажатия (30.10.2026): отпустил ▲ (или ArrowUp/Space),
+        // пока герой летит вверх, — скорость подъёма один раз × JUMP_CUT_MULT, но
+        // не раньше JUMP_MIN_HOLD_MS от толчка (иначе касание давало бы меньше
+        // полутора клеток). Удержание — полный прыжок, как раньше. Прыжок из
+        // буфера: кнопку уже отпустили к толчку — он низкий, срез на 110-й мс.
+        // Высшая точка или удар головой (vy >= 0) — срез больше не нужен.
+        if (jumpCutPending) {
+          if (phys.vy >= 0) {
+            jumpCutPending = false
+          } else if (!jumpedThisFrame) {
+            jumpAirMs += ticker.deltaMS
+            if (!jumpHeldRef.current && jumpAirMs >= C.JUMP_MIN_HOLD_MS) {
+              phys.vy *= C.JUMP_CUT_MULT
+              jumpCutPending = false
+            }
+          }
         }
 
         // Вертикальная физика (гравитация + приземление)
@@ -6097,6 +6286,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // skills.update() и до AI босса (порядок кадра не менялся, см.
         // задачу). dt — кадро-масштабированный (как у phys игрока),
         // ticker.deltaMS — реальные мс для таймеров внутри enemy.ts.
+        // Отдача от меча (30.10.2026) — до систем врагов: они ставят спрайт по
+        // enemy.x в этом же кадре.
+        applyKnockback(ticker.deltaMS)
         enemySystem!.update(dt, ticker.deltaMS)
 
         // Звонарь — СРАЗУ за зверем, по тому же списку врагов и с теми же двумя
@@ -6539,6 +6731,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // систем врагов и босса: tint босса каждый кадр пишет boss.ts, и цвет
         // крита попадает в кадр, только если записан позже (см. critFlash.ts).
         critFlashSystem!.update(ticker.deltaMS)
+        // Свечение элиты — после систем врагов: копия берёт кадр этого тика.
+        eliteGlowSystem!.update(ticker.deltaMS)
         ashTrailSystem?.update(ticker.deltaMS)
 
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
@@ -6657,6 +6851,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       skills?.dispose()
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
+      eliteGlowSystem?.dispose()
+      // Хитстоп мог остановить общий тикер анимаций — вернуть ход (30.10.2026).
+      Ticker.shared.speed = 1
       ashTrailSystem?.dispose()
       starbloomSystem?.dispose()
       // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
@@ -7055,6 +7252,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           <TouchControls
             dirRef={dirRef}
             jumpPressedRef={jumpPressedRef}
+            jumpHeldRef={jumpHeldRef}
             attackPressedRef={attackPressedRef}
             dodgePressedRef={dodgePressedRef}
             drinkPressedRef={drinkPressedRef}

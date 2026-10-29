@@ -464,6 +464,8 @@ export function paintSkillAffordable(el: HTMLElement, affordable: boolean) {
 interface TouchControlsProps {
   dirRef: MutableRefObject<number>
   jumpPressedRef: MutableRefObject<boolean>
+  // Удерживается ли ▲ (30.10.2026): прыжок от длины нажатия, см. JUMP_CUT_MULT.
+  jumpHeldRef: MutableRefObject<boolean>
   attackPressedRef: MutableRefObject<boolean>
   dodgePressedRef: MutableRefObject<boolean>
   drinkPressedRef: MutableRefObject<boolean>
@@ -499,6 +501,7 @@ interface TouchControlsProps {
 export default function TouchControls({
   dirRef,
   jumpPressedRef,
+  jumpHeldRef,
   attackPressedRef,
   dodgePressedRef,
   drinkPressedRef,
@@ -727,25 +730,39 @@ export default function TouchControls({
             // удержании пальца (в отличие от keydown), так что действие
             // естественно срабатывает один раз за нажатие — повтор только
             // после нового pointerdown, т.е. после отпускания.
-            const bindTap = (el: HTMLElement, action: () => void) => {
+            // onRelease (30.10.2026, только у ▲) — палец, нажавший кнопку,
+            // отпущен: pointerup, pointercancel, pointerleave или потеря захвата.
+            // Слушается именно ЭТОТ палец (pointerId): второй палец на ▶ или
+            // повторное касание ▲ удержание не сбивают.
+            const bindTap = (el: HTMLElement, action: () => void, onRelease?: () => void) => {
+              let heldPointer: number | null = null
               el.onpointerdown = (e) => {
                 e.preventDefault()
                 el.setPointerCapture(e.pointerId)
+                heldPointer = e.pointerId
                 action()
                 // Подсветка — сразу за записью в реф внутри action(): горит,
                 // только если код дошёл до фиксации нажатия.
                 pressOn(el)
               }
+              const letGo = (e: PointerEvent) => {
+                if (heldPointer !== e.pointerId) return
+                heldPointer = null
+                onRelease?.()
+              }
               const release = (e: PointerEvent) => {
+                letGo(e)
                 pressOffAfterMin(el)
                 if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
               }
               el.onpointerup = release
               el.onpointercancel = release
+              el.onpointerleave = letGo
+              el.onlostpointercapture = letGo
             }
 
             bindTap(atk, () => { attackPressedRef.current = true })
-            bindTap(jump, () => { jumpPressedRef.current = true })
+            bindTap(jump, () => { jumpPressedRef.current = true; jumpHeldRef.current = true }, () => { jumpHeldRef.current = false })
 
             const dodgeEl = container.querySelector('[data-btn="dodge"]') as HTMLElement
             if (dodgeEl) bindTap(dodgeEl, () => { dodgePressedRef.current = true })

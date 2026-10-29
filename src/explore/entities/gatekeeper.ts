@@ -62,6 +62,9 @@ export type GatekeeperDeps = {
   ) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Убит патрульный (30.10.2026, Enemy.patrolIndex) — зовётся там же, где
+  // закрытие события, когда убран труп: индекс в killedPatrols и всплывашка.
+  onPatrolKilled: (patrolIndex: number, worldX: number, worldY: number) => void
   // Мана с убитого — то же, что у зверя (см. EnemyDeps в enemy.ts).
   dropMana: (worldX: number, worldY: number) => void
   /**
@@ -235,7 +238,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     return Math.min(C.GATEKEEPER_ATTACK_COUNT - 1, C.GATEKEEPER_STRIKE_FRAME + passed)
   }
 
-  function spawn(tileX: number, tileY: number, eventIndex: number): void {
+  function spawn(tileX: number, tileY: number, eventIndex: number): Enemy {
     const worldX = tileX * C.TILE_SIZE + C.TILE_SIZE / 2 - C.GATEKEEPER_WIDTH / 2
     const worldY = (tileY + 1) * C.TILE_SIZE - C.GATEKEEPER_HEIGHT
 
@@ -336,6 +339,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     }
     redrawEnemyHpBar(enemy)
     deps.enemies.current.push(enemy)
+    return enemy
   }
 
   function pushPlayerOut(enemy: Enemy, playerBox: { x: number; y: number; w: number; h: number }) {
@@ -414,6 +418,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
               ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
               if (ownerEvent.remainingEnemies <= 0) deps.closeEvent(enemy.eventIndex, deathX, deathY)
             }
+            if (enemy.patrolIndex !== undefined) deps.onPatrolKilled(enemy.patrolIndex, deathX, deathY)
           }
         }
         continue

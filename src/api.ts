@@ -445,6 +445,12 @@ export type StartExploreEvent = {
    */
   enemyKind?: StartExploreEnemyKind
   /**
+   * Элитный враг группы (30.10.2026) — индекс в clusterPoints. Поля нет —
+   * элиты нет. Разбирать через readEliteIndex. Его трофеи уже внутри
+   * trophyReward.
+   */
+  eliteIndex?: number
+  /**
    * Ловушка или обычный сундук — только у kind === 'chest' (13.10.2026). Бросает
    * СЕРВЕР на старте забега; клиент по этому полю играет взрыв и бьёт героя, а
    * своего броска не делает. Разбирать ТОЛЬКО через readChestMimic ниже: у
@@ -531,6 +537,52 @@ export type StartExploreResult = {
   heroClass?: unknown
   /** Мастер (29.10.2026): где растёт Звёздоцвет, [x, y] в клетках карты; null или нет поля — цветка нет. */
   starbloom?: unknown
+  /**
+   * Патрульные (30.10.2026): одиночные враги вне событий. Форма — RunPatrol в
+   * server/src/runEvents.ts (менять парой). Поля нет — сервер старше, патрульных
+   * нет. Разбирать ТОЛЬКО через readPatrols.
+   */
+  patrols?: unknown
+}
+
+/** Патрульный из ответа старта (пара RunPatrol в server/src/runEvents.ts). */
+export type StartExplorePatrol = {
+  x: number
+  y: number
+  enemyKind: StartExploreEnemyKind
+  trophyReward: number
+}
+
+/**
+ * Патрульные из ответа старта. Нет поля — пусто (сервер старше). Кривая
+ * запись пропускается с console.error: патрульный не событие, забег без него
+ * играется, а финиш начислит только тех, кого клиент назовёт по индексу —
+ * поэтому индексы сохраняются (кривой патрульный — null на своём месте).
+ */
+export function readPatrols(raw: unknown): (StartExplorePatrol | null)[] {
+  if (raw === undefined || raw === null) return []
+  if (!Array.isArray(raw)) {
+    console.error('api: patrols в ответе старта не список', raw)
+    return []
+  }
+  return raw.map((p) => {
+    const r = p as Record<string, unknown> | null
+    if (r && Number.isInteger(r.x) && Number.isInteger(r.y)
+      && (r.enemyKind === 'beast' || r.enemyKind === 'zvonar' || r.enemyKind === 'gatekeeper')
+      && typeof r.trophyReward === 'number' && Number.isInteger(r.trophyReward) && r.trophyReward >= 0) {
+      return { x: r.x as number, y: r.y as number, enemyKind: r.enemyKind, trophyReward: r.trophyReward }
+    }
+    console.error('api: кривой патрульный в ответе старта', p)
+    return null
+  })
+}
+
+/** Элитный враг группы: индекс в пределах группы или null (элиты нет). */
+export function readEliteIndex(raw: unknown, groupSize: number): number | null {
+  if (raw === undefined || raw === null) return null
+  if (Number.isInteger(raw) && (raw as number) >= 0 && (raw as number) < groupSize) return raw as number
+  console.error('api: кривой eliteIndex в событии', raw)
+  return null
 }
 
 /** Место Звёздоцвета из ответа старта; всё, что не пара чисел, — цветка нет. */
@@ -879,11 +931,14 @@ export async function finishRunExplore(
   // Срублен ли Звёздоцвет (Мастер, 29.10.2026). Сервер верит, только если цветок
   // в этом забеге был (currentRun.starbloom), и кладёт Звёздную пыльцу в итог.
   starbloomCut?: boolean,
+  // Индексы убитых патрульных (30.10.2026) в списке patrols ответа старта.
+  // Сервер прибавит их trophyReward к добыче забега.
+  killedPatrols?: number[],
 ): Promise<FinishExploreResult> {
   // runId (15.10.2026): повтор финиша с тем же id сервер узнаёт и отдаёт
   // сохранённый итог вместо 400 'No active explore run'. Снимается ОДИН раз,
   // вместе с телом: все попытки этого вызова несут один и тот же id.
-  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters, starbloomCut })
+  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters, starbloomCut, killedPatrols })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0

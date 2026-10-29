@@ -869,7 +869,9 @@ export const TROPHY_LEVEL_POWER = 0.446
 export const TROPHY_SPREAD = 0.4 // разброс +-20%
 export const PLAYER_LEVEL_FALLBACK = 1 // ВРЕМЕННО: уровень в Explore пока
 
-export const TROPHY_MULT_ENEMY = 1
+// 1 → 1.5 (30.10.2026): в группе 5 врагов вместо 3. Пара — TROPHY_MULT_ENEMY в
+// server/src/runEvents.ts; здесь её читает только офлайн-заглушка.
+export const TROPHY_MULT_ENEMY = 1.5
 export const TROPHY_MULT_CHEST = 3
 export const TROPHY_MULT_OBELISK = 2
 export const TROPHY_MULT_BOSS = 4
@@ -1492,6 +1494,34 @@ export const JUMP_VELOCITY = 11.5 // сила толчка вверх (было 
 // задержки, ложный койот — прыжка из воздуха.
 export const JUMP_BUFFER_MS = 120
 export const COYOTE_MS = 80
+
+// ПРЫЖОК ОТ ДЛИНЫ НАЖАТИЯ (30.10.2026). Пока прыжок удерживается — полный
+// прыжок, как раньше (JUMP_VELOCITY, высота 207.6 px — модель прыжка карт не
+// меняется). Отпустил, пока герой ещё летит вверх, — скорость подъёма один раз
+// умножается на JUMP_CUT_MULT. Но не раньше JUMP_MIN_HOLD_MS от толчка: так
+// самое короткое касание даёт ≈1.5 клетки (расчёт по шагу физики: срез на
+// 110 мс — 97 px; на 80 мс было бы 1.29 клетки, на одном кадре — 0.79).
+export const JUMP_CUT_MULT = 0.5
+export const JUMP_MIN_HOLD_MS = 110
+
+// ОТДАЧА И ХИТСТОП от удара мечом (30.10.2026). Враг (не босс, не Привратник с
+// поднятой дверью) отъезжает от героя на KNOCKBACK_PX за KNOCKBACK_MS, если
+// впереди нет стены и под новым местом есть пол. Хитстоп — вся игра (логика и
+// анимации) замирает на HITSTOP_MS; несколько попаданий подряд не складываются.
+export const KNOCKBACK_PX = 7
+export const KNOCKBACK_MS = 100
+export const HITSTOP_MS = 40
+
+// Золотое свечение элиты (30.10.2026, entities/eliteGlow.ts): копия кадра
+// позади врага, крупнее в ELITE_GLOW_SCALE, золотым тоном; прозрачность
+// пульсирует между MIN и MAX с периодом PERIOD_MS; после смерти гаснет за
+// FADE_MS.
+export const ELITE_GLOW_TINT = 0xffc23a
+export const ELITE_GLOW_SCALE = 1.12
+export const ELITE_GLOW_ALPHA_MIN = 0.35
+export const ELITE_GLOW_ALPHA_MAX = 0.75
+export const ELITE_GLOW_PERIOD_MS = 1400
+export const ELITE_GLOW_FADE_MS = 300
 
 // НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН — телефон, повёрнутый набок (12.10.2026).
 // Экран шире своей высоты И не выше этого числа px. Высоты телефонов набок —

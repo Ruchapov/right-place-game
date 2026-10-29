@@ -48,6 +48,9 @@ export type EnemyDeps = {
   // spawnRewardFloat системе врагов больше НЕ нужен, зато closeEvent берёт
   // координаты: попап должен появиться там, где упал последний враг группы.
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Убит патрульный (30.10.2026, Enemy.patrolIndex) — зовётся там же, где
+  // закрытие события, когда убран труп: индекс в killedPatrols и всплывашка.
+  onPatrolKilled: (patrolIndex: number, worldX: number, worldY: number) => void
   // Мана с убитого (см. entities/mana.ts): бросок выпадения и шары — там, сюда
   // приходит только «вот тело, оно здесь». Зовётся на КАЖДОГО врага, в отличие
   // от closeEvent, который срабатывает на последнем в группе.
@@ -119,7 +122,7 @@ export function createEnemySystem(deps: EnemyDeps) {
   // координатах (tileX,tileY), привязанного к enemy-событию eventIndex
   // (для декремента remainingEnemies при смерти). Ставит ногами на пол
   // клетки, как игрока.
-  function spawn(tileX: number, tileY: number, eventIndex: number): void {
+  function spawn(tileX: number, tileY: number, eventIndex: number): Enemy {
     const enemyWorldX = tileX * C.TILE_SIZE + C.TILE_SIZE / 2 - C.ENEMY_WIDTH / 2
     const enemyWorldY = (tileY + 1) * C.TILE_SIZE - C.ENEMY_HEIGHT
 
@@ -229,6 +232,7 @@ export function createEnemySystem(deps: EnemyDeps) {
     }
     redrawEnemyHpBar(enemy)
     deps.enemies.current.push(enemy)
+    return enemy
   }
 
   // dt — кадро-масштабированный (ticker.deltaTime, как у phys игрока) — для
@@ -312,6 +316,7 @@ export function createEnemySystem(deps: EnemyDeps) {
               ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
               if (ownerEvent.remainingEnemies <= 0) deps.closeEvent(enemy.eventIndex, deathX, deathY)
             }
+            if (enemy.patrolIndex !== undefined) deps.onPatrolKilled(enemy.patrolIndex, deathX, deathY)
           }
         }
         continue

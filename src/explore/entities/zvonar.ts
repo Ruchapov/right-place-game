@@ -7,6 +7,7 @@ import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
+import { ELITE_DMG_MULT } from '../../runExtras'
 
 /**
  * ЗВОНАРЬ — второй враг, дальний бой (04.10.2026).
@@ -68,6 +69,9 @@ export type ZvonarDeps = {
   ) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  // Убит патрульный (30.10.2026, Enemy.patrolIndex) — зовётся там же, где
+  // закрытие события, когда убран труп: индекс в killedPatrols и всплывашка.
+  onPatrolKilled: (patrolIndex: number, worldX: number, worldY: number) => void
   // Мана с убитого — то же, что у зверя (см. EnemyDeps в enemy.ts).
   dropMana: (worldX: number, worldY: number) => void
   /**
@@ -261,7 +265,8 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       sprite,
       dir: enemy.facing,
       travelled: 0,
-      damage: scaledZvonarWaveDamage(deps.characterLevel.current),
+      // Элита (30.10.2026): у Звонаря урон в волне — множитель здесь.
+      damage: Math.round(scaledZvonarWaveDamage(deps.characterLevel.current) * (enemy.elite ? ELITE_DMG_MULT : 1)),
       hitApplied: false,
     })
   }
@@ -403,6 +408,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
               ownerEvent.remainingEnemies = Math.max(0, (ownerEvent.remainingEnemies ?? 1) - 1)
               if (ownerEvent.remainingEnemies <= 0) deps.closeEvent(enemy.eventIndex, deathX, deathY)
             }
+            if (enemy.patrolIndex !== undefined) deps.onPatrolKilled(enemy.patrolIndex, deathX, deathY)
           }
         }
         continue
