@@ -3,7 +3,8 @@ import type { BackdropPreset } from '../../mapRenderer'
 import type { Grid } from '../types'
 import * as C from '../constants'
 
-// АТМОСФЕРА ТЕМ КАРТ (20.10.2026): ветер, пыль, листья, зола, туман и капли.
+// АТМОСФЕРА ТЕМ КАРТ (20.10.2026; болото — 29.10.2026): ветер, пыль, листья,
+// зола, соринки, туман и капли.
 //
 // Перенос одобренного образца four-theme-atmosphere-v2 (архив арта, вне
 // репозитория). Формулы движения — образца дословно, числа — в constants.ts
@@ -50,8 +51,8 @@ export type AtmosphereDeps = {
 }
 
 /**
- * Ветер образца: порывы от ≈−0.03 до ≈0.89. Один на всё — его же накопление
- * сносит частицы, им же (этап 2) качается подвесной декор.
+ * Ветер образца: порывы от ≈−0.03 до ≈0.89. Один на всё — его накопление
+ * сносит частицы, им же качаются камыш и осока болота (entities/swayDecor.ts).
  */
 export function windAt(t: number): number {
   return 0.12 + 0.62 * Math.pow(0.5 + 0.5 * Math.sin(t * 0.51 + Math.sin(t * 0.19)), 3) + 0.15 * Math.sin(t * 1.7)
@@ -249,7 +250,7 @@ export function createAtmosphereSystem(deps: AtmosphereDeps) {
       p.s.position.set(x, y)
     }
 
-    // Листья (кладбище) или зола (литейная).
+    // Листья (кладбище), зола (литейная) или соринки (болото).
     if (look.flakes > 0) {
       const fW = view.width + 2 * C.ATMO_FLAKE_MARGIN_X, fH = view.height + 2 * C.ATMO_FLAKE_MARGIN_Y
       const fL = view.left - C.ATMO_FLAKE_MARGIN_X, fT = view.top - C.ATMO_FLAKE_MARGIN_Y
@@ -295,7 +296,7 @@ export function createAtmosphereSystem(deps: AtmosphereDeps) {
         const fade = Math.min(1, Math.max(0, Math.min(x - band.start, band.end - x) / C.ATMO_FOG_R))
         if (fade <= 0 || x + C.ATMO_FOG_R < view.left || x - C.ATMO_FOG_R > viewRight) { s.visible = false; continue }
         s.visible = true
-        s.position.set(x, band.floorTop - C.ATMO_FOG_LIFT + C.ATMO_FOG_BOB * Math.sin(t * 0.27 + i))
+        s.position.set(x, band.floorTop - look.fogLift + C.ATMO_FOG_BOB * Math.sin(t * 0.27 + i))
         s.alpha = look.fog * fade
       }
     }

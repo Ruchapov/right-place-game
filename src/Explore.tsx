@@ -59,6 +59,7 @@ import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
+import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult } from './api'
 import { questById } from './quests'
@@ -2468,6 +2469,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
+    // Камыш и осока болота (entities/swayDecor.ts) и их собственные текстуры —
+    // их уничтожает cleanup, иначе они остались бы в видеопамяти после смены карты.
+    let swayDecorSystem: ReturnType<typeof createSwayDecorSystem> | null = null
+    let swayDecorAnimate = false
+    let swayTextures: Map<string, Texture> | null = null
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
 
@@ -2671,6 +2677,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         loadBackdropLayer(backdropUrls.mid, 'mid'),
         // Слой шире потолка текстуры — несколько частей по ширине (mapArt.slices).
         Promise.all(mapArt.slices.map((s) => Assets.load(s.src) as Promise<Texture>)),
+        // Камыш и осока (у прочих карт список пуст) — тоже часть вида карты: их
+        // нет в слое, и без них болото было бы с голыми тенями. Промах — ошибка.
+        loadSwayTextures(mapArt.sway.map((v) => v.src)),
       ])
       backdropLoad.catch(() => {})
 
@@ -3113,7 +3122,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // только стала известна карта (backdropLoad) — здесь её только дожидаемся.
       // null у слоя фона — его нет; промах готового слоя карты — ошибка, и она
       // поднимается этим await.
-      const [farTexture, midTexture, artTextures] = await backdropLoad
+      const [farTexture, midTexture, artTextures, loadedSway] = await backdropLoad
+      swayTextures = loadedSway
       artTextures.forEach((t, i) => {
         const s = mapArt.slices[i]
         if (t.width !== s.width || t.height !== mapArt.height) {
@@ -3223,6 +3233,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         artSprite.y = 0
         worldContainer.addChild(artSprite)
       })
+      // Камыш и осока — поверх слоя (как лежали в нём) и под шипами. Качаются
+      // только вместе с атмосферой: без WebGL и при «уменьшении движения» стоят
+      // на своём месте обычными спрайтами.
+      if (mapArt.sway.length > 0) {
+        const look = C.ATMOSPHERE[mapTheme]
+        swayDecorAnimate = !onCanvasRenderer && !reduceMotion && look !== null
+        swayDecorSystem = createSwayDecorSystem({
+          parent: worldContainer,
+          items: mapArt.sway.map((v) => ({ texture: loadedSway.get(v.src)!, x: v.x, y: v.y, w: v.w, h: v.h, phase: v.phase })),
+          sway: look?.sway ?? 0,
+          animate: swayDecorAnimate,
+        })
+      }
       // Шипы — поверх слоя: одна текстура клетки, по спрайту на шип.
       // Блик (29.10.2026, docs/maps.md, «Шипы») — тоже одна текстура клетки и по
       // спрайту на шип, все в ОДНОМ контейнере над шипами: синхронность и одна
@@ -6360,6 +6383,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           atmosphereView.height = app!.screen.height / viewScale
           atmosphereSystem.update(ticker.deltaMS, atmosphereView)
         }
+        if (swayDecorSystem !== null && swayDecorAnimate) {
+          swayDecorSystem.update(ticker.deltaMS)
+        }
 
         // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:
         // после всех источников урона этого кадра. Герой мёртв — не завершаем
@@ -6439,6 +6465,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // на каждый повторный заход на карту.
       atmosphereSystem?.dispose()
       atmosphereSystem = null
+      // Стебли снимают свои узлы, их собственные текстуры уничтожаются здесь.
+      swayDecorSystem?.dispose()
+      swayDecorSystem = null
+      if (swayTextures) for (const t of swayTextures.values()) t.destroy(true)
+      swayTextures = null
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
       // чтобы он не держал систему уже уничтоженной сцены и не звал её clear().
       clearManaOrbsRef.current = () => {}

@@ -18,7 +18,8 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
  * .txt, слой — только вид. Шипы и объекты событий рисуются поверх него своим
  * кодом.
  */
-export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number }
+export type MapArtSwayItem = { src: string; x: number; y: number; w: number; h: number; phase: number }
+export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number; sway: MapArtSwayItem[] }
 
 /**
  * Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега).
@@ -27,6 +28,10 @@ export type MapArt = { slices: { src: string; x: number; width: number }[]; widt
  * шире потолка текстуры (4096 px) часть одна — вся карта. Шире (болото C2, 6144
  * px) — tools/build_map_art.mjs режет его на равные части, кратные клетке, ДО
  * сжатия, и Explore.tsx ставит их встык.
+ *
+ * sway — камыш и осока болота (29.10.2026): вынуты из слоя (их тени в слое
+ * остались), качаются отдельными спрайтами (entities/swayDecor.ts). У прочих
+ * карт список пуст.
  */
 export function mapArtFor(mapFile: string): MapArt | null {
   const entry = MAP_ART[mapFile] ?? MAP_ART_CRYPT_FOUNDRY[mapFile]
@@ -39,6 +44,7 @@ export function mapArtFor(mapFile: string): MapArt | null {
     width: entry.width,
     height: entry.height,
     gridChecksum: entry.gridChecksum,
+    sway: (entry.sway ?? []).map((v) => ({ src: src(`sway/${v.sprite}.png`), x: v.x, y: v.y, w: v.w, h: v.h, phase: v.phase })),
   }
 }
 

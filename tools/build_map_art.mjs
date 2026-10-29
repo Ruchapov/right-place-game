@@ -428,17 +428,27 @@ async function backgrounds() {
 
 // ---------------------------------------------------------------------------
 // БОЛОТО: B2 и C2 (29.10.2026). Источник — рабочая версия архива
-// maps/swamp/approved-maps-v1-steps-2026-10-29: одобренные approved-maps-v1
+// maps/swamp/approved-maps-v1-sway-2026-10-29 (до 29.10.2026 вечера — steps):
+// одобренные approved-maps-v1
 // (платформы approved-architecture-v1 + декор stage-09) без предметов на шипах
 // (28.10.2026) и со ступенями из '#' (29.10.2026, решение Андрея: обязательный
 // подъём только по кладке, без прыжков на 3 вверх). Слой = платформы + декор.
+// КАМЫШ И ОСОКА (29.10.2026) из слоя вынуты — их контактные тени остались в слое,
+// а сами стебли игра качает отдельными спрайтами (entities/swayDecor.ts). Спрайты
+// — исходные части stage-08, экземпляры и фазы — movers.json рабочей версии;
+// скрипт кладёт спрайты в public/assets/maps/art/sway/ и список в манифест (sway).
 // Проверки: файлы те самые (sha256); слой отличается от ОДОБРЕННОГО только в
 // changed-mask.png (ступени и удалённый декор); слой против сетки.
 // C2 шириной 6144 px в одну текстуру не влезает (потолок 4096 по стороне):
 // слой режется по ширине на равные части (slices в манифесте), игра ставит их
 // встык. Части режутся ДО сжатия, поэтому стык — граница пикселей, без сдвига.
 const SWAMP = `${ART}/maps/swamp`
-const SWAMP_WORK = `${SWAMP}/approved-maps-v1-steps-2026-10-29`
+const SWAMP_WORK = `${SWAMP}/approved-maps-v1-sway-2026-10-29`
+const SWAMP_SWAY_SPRITES = {
+  reeds: [`${SWAMP_WORK}/sprites/reeds.png`, 'a45e13a61b4b9122476e182131f1e6f1e1e1a7c6cbe31d94b11e838a47930929'],
+  sedge: [`${SWAMP_WORK}/sprites/sedge.png`, '700a5d9606effbb81e34fbdc9e2d4407ccee829a59485432aa6182b38a35a13d'],
+}
+const SWAMP_MOVERS = [`${SWAMP_WORK}/movers.json`, 'edf6a77fc4d0f961a1d20106d13199ab5d37a765484fed1fa1dafac65002b98f']
 const SWAMP_OK = `${SWAMP}/approved-maps-v1`
 const TEXTURE_MAX_SIDE = 4096
 const pin = (file, sha) => {
@@ -451,16 +461,16 @@ const SWAMP_MAPS = [
   {
     id: 'B2', file: 'map_B2_swamp.txt',
     platforms: [`${SWAMP_WORK}/B2/map-B2-platforms-64px.png`, '4e379f5719b700131366f00925a446812bc1217fbc43281aeeb02fd3726d0890'],
-    decor: [`${SWAMP_WORK}/B2/map-B2-decor-64px.png`, 'c39458319cc6c1c27375cb601ebc7ea58ca15e70d7f33680b4df31e7809a482d'],
-    mask: [`${SWAMP_WORK}/B2/changed-mask.png`, 'c9be08658d270e9f286df4c80a16bf6278343d27df362f40d65e7cc55229b13a'],
+    decor: [`${SWAMP_WORK}/B2/map-B2-decor-64px.png`, '0ac827d031361170f7bd1cda8aff7424571498e299c3d7ece0da6bfc6006bfb8'],
+    mask: [`${SWAMP_WORK}/B2/changed-mask.png`, '01bb99459e73d65ca91eccea518025b2aa1cf1e8dfb0c3395e4fd94ceedde49b'],
     approvedPlatforms: [`${SWAMP_OK}/approved-architecture-v1/maps/map-B2-platforms-64px.png`, '629ab7f1beb61f6ea3f64226df12f114a2cf89691fb1d63b658f3c7a77342a69'],
     approvedDecor: [`${SWAMP_OK}/stage-09-ground-contact/map-B2-decor-64px.png`, '6e4c88b77c82733aa1382088d9b4f19132dafef8817b37b8c0d5151a6be6b3fa'],
   },
   {
     id: 'C2', file: 'map_C2_swamp_boss.txt',
     platforms: [`${SWAMP_WORK}/C2/map-C2-platforms-64px.png`, 'dd491d0c740bb18d4113fa42297e761f4f09afef3f522ba0bd60e387884dc74d'],
-    decor: [`${SWAMP_WORK}/C2/map-C2-decor-64px.png`, '17ff1a6c13e1e4e426f896548612cf0861d6ac8779ce17f46ca77039a79158f3'],
-    mask: [`${SWAMP_WORK}/C2/changed-mask.png`, 'ccc755ca7cf04a33f67430bfcb6e183a2b4d24833d03df0ba876190498077ffd'],
+    decor: [`${SWAMP_WORK}/C2/map-C2-decor-64px.png`, 'cf7509eeb885947e583d786146a62319d34c3c1e6f4428cbdda9e03c097b8f77'],
+    mask: [`${SWAMP_WORK}/C2/changed-mask.png`, 'c2c0ba892e6463ca08b80d3a85caea921681ef1d935494edd6f479b65afd1f44'],
     approvedPlatforms: [`${SWAMP_OK}/approved-architecture-v1/maps/map-C2-platforms-64px.png`, '758cd05288b43147d4271127495709622a7cac7e398f044a1fc78d6e9720b6a2'],
     approvedDecor: [`${SWAMP_OK}/stage-09-ground-contact/map-C2-decor-64px.png`, '6d50dfaba3a93735e1e31981e28d0d0da63059023cea93afde4db093d2721be8'],
   },
@@ -477,6 +487,8 @@ const SWAMP_BG_CROP_TOP = 450
 async function buildSwamp(m) {
   console.log(`\n== Карта ${m.id} (${m.file}, болото)`)
   for (const k of ['platforms', 'decor', 'mask', 'approvedPlatforms', 'approvedDecor']) pin(...m[k])
+  pin(...SWAMP_MOVERS)
+  for (const src of Object.values(SWAMP_SWAY_SPRITES)) pin(...src)
   const meta = await sharp(m.platforms[0]).metadata()
   const W = meta.width, HEIGHT = meta.height
   const rows = readGrid(m.file)
@@ -555,7 +567,16 @@ async function buildSwamp(m) {
   }
   fs.mkdirSync(`${ART}/game-export/swamp`, { recursive: true })
   fs.writeFileSync(`${ART}/game-export/swamp/${m.file.replace(/\.txt$/, '')}_layer_lossless.png`, layerPng)
-  return { ...m, W, HEIGHT, rows, slices, checksum: gridChecksum(rows), changed }
+  // Качающиеся стебли: экземпляры из movers.json рабочей версии. Каждый — в
+  // пределах карты и на месте вынутого из слоя спрайта (его тень — в слое).
+  const movers = JSON.parse(fs.readFileSync(SWAMP_MOVERS[0], 'utf8')).maps[m.id]?.movers
+  if (!Array.isArray(movers)) fail(`в ${SWAMP_MOVERS[0]} нет экземпляров карты ${m.id}`)
+  for (const v of movers) {
+    if (!SWAMP_SWAY_SPRITES[v.item]) fail(`неизвестный качающийся предмет ${v.item}`)
+    if (v.x < 0 || v.y < 0 || v.x + v.w > W || v.y + v.h > HEIGHT) fail(`стебель ${v.item} ${v.x},${v.y} вне карты ${m.id}`)
+  }
+  console.log(`  качаются: ${movers.length} (${['reeds', 'sedge'].map((k) => `${k} ${movers.filter((v) => v.item === k).length}`).join(', ')})`)
+  return { ...m, W, HEIGHT, rows, slices, checksum: gridChecksum(rows), changed, movers }
 }
 
 async function swampBackgrounds() {
@@ -585,8 +606,11 @@ fs.mkdirSync(artDir, { recursive: true })
 for (const m of maps) fs.writeFileSync(path.join(artDir, m.file.replace(/\.txt$/, '.webp')), m.webp)
 for (const b of bgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgrounds/bg_graveyard_${b.name}.webp`), b.buf)
 for (const m of swamps) for (const s of m.slices) fs.writeFileSync(path.join(artDir, s.file), s.webp)
+fs.mkdirSync(path.join(artDir, 'sway'), { recursive: true })
+for (const [k, src] of Object.entries(SWAMP_SWAY_SPRITES)) fs.copyFileSync(pin(...src), path.join(artDir, 'sway', `${k}.png`))
 for (const b of swampBgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgrounds/bg_swamp_${b.name}.webp`), b.buf)
 
+const swayList = (m) => `, sway: [${m.movers.map((v) => `{ sprite: '${v.item}', x: ${v.x}, y: ${v.y}, w: ${v.w}, h: ${v.h}, phase: ${v.phase} }`).join(', ')}]`
 const sliceList = (m) => (m.slices.length > 1 ? `, slices: [${m.slices.map((s) => `{ file: '${s.file}', x: ${s.x}, width: ${s.width} }`).join(', ')}]` : '')
 const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art.mjs — руками не править, пересобирать скриптом.
 //
@@ -596,11 +620,14 @@ const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art.mjs — ру
 // этом в консоли. slices — слой шире потолка текстуры (4096 px) нарезан по
 // ширине: части ставятся встык с x, file тогда — первая часть.
 export type MapArtSlice = { file: string; x: number; width: number }
-export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number; slices?: MapArtSlice[] }
+// sway — качающиеся стебли (болото): спрайт sway/<sprite>.png, левый верхний угол
+// в покое (x, y), размер, своя фаза; качается вокруг нижней точки (корень).
+export type MapArtSway = { sprite: string; x: number; y: number; w: number; h: number; phase: number }
+export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number; slices?: MapArtSlice[]; sway?: MapArtSway[] }
 
 export const MAP_ART: Record<string, MapArtEntry> = {
 ${maps.map((m) => `  '${m.file}': { file: '${m.file.replace(/\.txt$/, '.webp')}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')} },`).join('\n')}
-${swamps.map((m) => `  '${m.file}': { file: '${m.slices[0].file}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')}${sliceList(m)} },`).join('\n')}
+${swamps.map((m) => `  '${m.file}': { file: '${m.slices[0].file}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')}${sliceList(m)}${swayList(m)} },`).join('\n')}
 }
 `
 fs.writeFileSync(path.join(REPO, 'src/explore/mapArtManifest.ts'), manifest)

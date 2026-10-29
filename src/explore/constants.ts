@@ -2000,19 +2000,20 @@ export const GATEKEEPER_SHEETS = {
 // масштабе 1, поэтому все размеры и скорости здесь — в пикселях МИРА (64 на
 // тайл), как у образца; на экране они умножаются на масштаб мира. Плотность —
 // «столько-то на рамку образца», модуль сам пересчитывает её на видимую
-// область камеры (entities/atmosphere.ts). Болото (B2, C2) в образце есть, в
-// игре его нет — сюда не перенесено.
+// область камеры (entities/atmosphere.ts). Болото (B2, C2) — с 29.10.2026.
 export type AtmosphereThemeLook = {
   /** Скорость сноса ветром, px мира на единицу накопленного ветра. */
   speed: number
-  /** Сила раскачивания подвесного декора (этап 2, пока не читается). */
+  /** Сила раскачивания декора, px у макушки на единицу волны (болото — камыш и осока, entities/swayDecor.ts). */
   sway: number
   /** Пылинок на рамку ATMO_DUST_BOX. */
   dust: number
-  /** Листьев (кладбище) или хлопьев золы (литейная) на рамку ATMO_FLAKE_BOX; 0 — нет. */
+  /** Листьев (кладбище), хлопьев золы (литейная) или соринок (болото) на рамку ATMO_FLAKE_BOX; 0 — нет. */
   flakes: number
   /** Плотность тумана в центре пятна; 0 — тумана нет. */
   fog: number
+  /** На сколько px мира центр пятна тумана выше пола: у образца склеп — 40, болото — 36. */
+  fogLift: number
   /** Цвет пыли, листьев, золы и тумана. */
   color: number
   /** Оседание пыли, px мира в секунду. */
@@ -2025,17 +2026,31 @@ export type AtmosphereThemeLook = {
   /** Капли с потолков (только склеп). */
   drips: boolean
 }
-// null — у темы атмосферы нет: болото (B2, C2) — атмосфера его отдельной
-// задачей (ветер, туман, камыш), пока забег идёт без неё.
+// null — у темы атмосферы нет (сейчас таких нет; модуль на null бросает ошибку,
+// Explore.tsx его тогда не создаёт).
 export const ATMOSPHERE: Record<BackdropPreset, AtmosphereThemeLook | null> = {
   // Кладбище (A, F): порывы, пыль и сухие листья.
-  graveyard: { speed: 65, sway: 9, dust: 24, flakes: 22, fog: 0, color: 0xc7b182, dustFall: 3, flakeFall: 13, flakeRx: 5, flakeRy: 1.8, drips: false },
+  graveyard: { speed: 65, sway: 9, dust: 24, flakes: 22, fog: 0, fogLift: 0, color: 0xc7b182, dustFall: 3, flakeFall: 13, flakeRx: 5, flakeRy: 1.8, drips: false },
   // Склеп (B, D_OPEN, D_SEALED): слабый сквозняк, пыль, туман у пола, капли.
-  flooded_crypt: { speed: 19, sway: 4, dust: 18, flakes: 0, fog: 0.15, color: 0xa8b9c1, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: true },
+  flooded_crypt: { speed: 19, sway: 4, dust: 18, flakes: 0, fog: 0.15, fogLift: 40, color: 0xa8b9c1, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: true },
   // Литейная (C, E): сухой ветер, пыль и зола.
-  foundry: { speed: 57, sway: 7, dust: 45, flakes: 8, fog: 0, color: 0xc7bca8, dustFall: 7, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
-  swamp: null,
+  foundry: { speed: 57, sway: 7, dust: 45, flakes: 8, fog: 0, fogLift: 0, color: 0xc7bca8, dustFall: 7, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
+  // Болото (B2, C2), 29.10.2026: ветер, пыль, соринки (как зола: 2.7×1.2 px,
+  // оседание 7), туман у пола нижнего яруса — на 36 px выше пола (у образца
+  // туман на y 144 при поле на 180). Камыш и осока качаются (entities/swayDecor.ts).
+  swamp: { speed: 43, sway: 15, dust: 21, flakes: 17, fog: 0.2, fogLift: 36, color: 0xa3b297, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
 }
+// Камыш и осока болота (29.10.2026) — формула мувера «grass» образца v2: волна
+// wave = sin(t·1.35 + фаза)·0.28 + ветер·0.72, строка стебля на высоте y (0 —
+// макушка, h — корень) сдвигается на wave · sway · (1 − y/h)^1.8. Корень стоит.
+export const SWAY_WAVE_FREQ = 1.35
+export const SWAY_WAVE_OSC = 0.28
+export const SWAY_WAVE_WIND = 0.72
+export const SWAY_FLEX_POW = 1.8
+// Строк сетки стебля: изгиб (1 − y/h)^1.8 приближается ломаной из столько
+// отрезков. Образец двигал полосы по 2 px (31 полоса на 63 px) — 16 строк дают
+// отклонение от его кривой меньше 0.3 px при размахе 13.8 px.
+export const SWAY_ROWS = 16
 // Время атмосферы на старте забега, с — как у образца (там часы стартуют с 2).
 export const ATMO_START_TIME_S = 2
 // Длиннее шаг не делаем (как образец): после свёрнутого приложения ветер и
@@ -2072,9 +2087,9 @@ export const ATMO_DRIP_ALPHA = 0.72
 // (B — ряд 21, x 0–47; D_OPEN и D_SEALED — ряд 21, x 7–45). Пятно — эллипс
 // радиусом 175 px, сжатый по вертикали до 0.28, плотность в центре — fog темы,
 // к краю линейно до нуля (как у образца). Пятен — 6 на 1200 px полосы, шаг 205,
-// дрейф 0.8 от сноса ветром, покачивание ±22 px. Центр — на ATMO_FOG_LIFT выше
-// пола: нижняя половина пятна уходит за камень, туман лежит у ног. У концов
-// полосы пятно гаснет на длине своего радиуса.
+// дрейф 0.8 от сноса ветром, покачивание ±22 px. Центр — на fogLift темы выше
+// пола (склеп 40, болото 36): нижняя половина пятна уходит за камень, туман лежит
+// у ног. У концов полосы пятно гаснет на длине своего радиуса.
 export const ATMO_FOG_MIN_CELLS = 8
 export const ATMO_FOG_R = 175
 export const ATMO_FOG_SQUASH = 0.28
@@ -2082,4 +2097,3 @@ export const ATMO_FOG_PER_PX = 6 / 1200
 export const ATMO_FOG_STEP = 205
 export const ATMO_FOG_DRIFT = 0.8
 export const ATMO_FOG_BOB = 22
-export const ATMO_FOG_LIFT = 40
