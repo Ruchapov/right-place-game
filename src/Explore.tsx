@@ -59,6 +59,7 @@ import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
 import { createEliteGlowSystem } from './explore/entities/eliteGlow'
+import { createMapEdges } from './explore/entities/mapEdges'
 import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, PATROLS_PER_RUN, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
 import { createStarbloomSystem } from './explore/entities/starbloom'
@@ -2590,6 +2591,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
     let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
+    let mapEdges: ReturnType<typeof createMapEdges> | null = null
 
     async function setup() {
       app = new Application()
@@ -3387,6 +3389,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         artSprite.x = mapArt.slices[i].x
         artSprite.y = 0
         worldContainer.addChild(artSprite)
+      })
+      // Продолжение карты за левым и правым краем (30.10.2026) — видно только в
+      // боковых полях камеры низкого горизонтального экрана (см. updateCamera).
+      mapEdges = createMapEdges({
+        worldContainer, slices: mapArt.slices, textures: artTextures, mapWidth: mapArt.width, mapHeight: mapArt.height,
       })
       // Камыш и осока — поверх слоя (как лежали в нём) и под шипами. Качаются
       // только вместе с атмосферой: без WebGL и при «уменьшении движения» стоят
@@ -4755,15 +4762,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         pushPlayerOutX(body, playerCombatBox)
       }
 
-      // Камера: центрируем игрока на экране, зажимая по границам карты — в любом
-      // положении экрана карта упирается в края экрана.
-      // ⚠️ БОКОВЫХ ПОЛЕЙ в низком горизонтальном экране БОЛЬШЕ НЕТ (решение Андрея
-      // 28.10.2026): с 12.10.2026 камера упиралась в край карты раньше края
-      // экрана, на ширину блоков кнопок, и у края карты была видна пустая полоса
-      // (только фон). Цена решения, принятая Андреем: у самого края карты герой
-      // может стоять рядом с кнопками или частично за ними.
-      // ГЕРОЙ НЕ ПОД КНОПКАМИ осталось одно правило, меряется по самим кнопкам
-      // (они уже включают безопасные зоны, раскладку и всё, что на них повлияет):
+      // Камера: центрируем игрока на экране, зажимая по границам карты.
+      // ГЕРОЙ НЕ ПОД КНОПКАМИ — два правила, по одному на положение экрана, оба
+      // меряются по самим кнопкам (они уже включают безопасные зоны, раскладку и
+      // всё, что на них повлияет потом):
+      //   низкий горизонтальный экран — БОКОВЫЕ ПОЛЯ (px экрана): камера
+      //     упирается в край карты раньше края экрана, на ширину блоков кнопок
+      //     (см. C.CAMERA_FIELD_GAP). Герой там на одной высоте с кнопками, и
+      //     поднять его некуда — высоты мало. Были с 12.10.2026, убраны 28.10.2026
+      //     (в поле была пустая полоса), ВОЗВРАЩЕНЫ 30.10.2026 (решение Андрея: без
+      //     них у края карты герой стоял под кнопками); пустоты больше нет — в
+      //     поле продолжение карты (entities/mapEdges.ts);
       //   узкий экран (телефон в вертикали) — НИЖНЯЯ ГРАНИЦА (13.10.2026): ноги
       //     героя не опускаются ниже верха блока кнопок (cameraFloorY). Блок
       //     дугой шире прежнего, и на узком экране герой, глядящий влево, стоит
@@ -4771,14 +4780,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       //     навыками по пояс.
       // HUD ещё нет в дереве (экран «ПОДГОТОВКА») — берутся числа раскладки и
       // проба безопасной зоны; как только кнопки появятся, замер их уточнит.
-      // В низком горизонтальном экране замер ничего не ставит (правила нет).
       // ⚠️ Замер читает раскладку DOM, поэтому зовётся РЕДКО: на смене вида и раз
       // в CAMERA_FIELDS_EVERY_MS из тикера — этого хватает, чтобы поймать
       // безопасные зоны, которые Telegram сообщает позже самого поворота. В
       // тикере каждый кадр ему не место.
+      let cameraFieldLeft = 0
+      let cameraFieldRight = 0
       // Экранная y, ниже которой ноги героя не рисуются. Infinity — правила нет:
-      // низкий горизонтальный экран (высоты мало, поднимать героя некуда) и
-      // широкий (там герой до кнопок не дотягивается).
+      // низкий экран (там поля) и широкий (там герой до кнопок не дотягивается).
       let cameraFloorY = Infinity
       let cameraFieldsAgeMs = 0
       const CAMERA_FIELDS_EVERY_MS = 500
@@ -4817,9 +4826,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const rightEdge = Number.isFinite(blockLeft) ? screenW - blockLeft : RIGHT_BLOCK_EDGE + safeInsetPx('right')
         const pad = C.CAMERA_FIELD_GAP + C.CAMERA_FIELD_HERO_PAD * viewScale
         if (viewLow) {
+          cameraFieldLeft = leftEdge + pad
+          cameraFieldRight = rightEdge + pad
           cameraFloorY = Infinity
           return
         }
+        cameraFieldLeft = 0
+        cameraFieldRight = 0
         // Нижняя граница нужна, только если герой вообще дотягивается до кнопок:
         // камера держит его в стороне от середины экрана не дальше упреждения
         // (LOOKAHEAD_TILES) плюс полфигуры. На широком экране (планшет, окно
@@ -4850,14 +4863,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // упреждение остаётся прежним, а не прыгает к центру.
         const lookaheadPx = facingRef.current * C.LOOKAHEAD_TILES * C.TILE_SIZE
         const focusX = player.x + player.width / 2 + lookaheadPx
-        // Края: карта упирается в края экрана в любом положении (под безопасную
-        // зону она может заходить — так и задумано). Карта уже экрана (окно шире
-        // 1690 px при высоте до 540 — телефонов таких нет) — clamp отдаёт 0, то
-        // есть карта прижата к левому краю, без дёрганья.
+        // Края: в обычном экране карта упирается в края экрана (поля нулевые), в
+        // низком горизонтальном — останавливается раньше, на ширину блоков кнопок
+        // (в поле — продолжение карты, entities/mapEdges.ts). Карта уже экрана с
+        // полями — clamp отдаёт левое поле, карта прижата к нему, без дёрганья.
         const targetX = clamp(
           app!.screen.width / 2 - focusX * s,
-          app!.screen.width - worldWidth,
-          0,
+          app!.screen.width - worldWidth - cameraFieldRight,
+          cameraFieldLeft,
         )
         // Плавно догоняем target (lerp), а не прыгаем скачком. Коэффициент
         // масштабирован по dt (не зависит от fps) и зажат в [0,1] — на первом
@@ -4898,7 +4911,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       updateCamera(Infinity)
 
       // Вид сменился (поворот, полный экран): новый масштаб — контейнеру мира,
-      // нижняя граница — заново по кнопкам, камера — СРАЗУ на место, без доезда: иначе
+      // поля и нижняя граница — заново по кнопкам, камера — СРАЗУ на место, без доезда: иначе
       // после поворота мир секунду плыл бы к герою из прежнего положения.
       onViewChanged = () => {
         worldContainer.scale.set(viewScale)
@@ -6762,9 +6775,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           rewardFloatsRef.current = stillActive
         }
 
-        // Нижняя граница камеры — редкий повторный замер по кнопкам (см.
-        // measureCameraFields): в вертикали по ним считается нижняя граница, и
-        // первый замер после появления HUD — этот.
+        // Поля и нижняя граница камеры — редкий повторный замер по кнопкам (см.
+        // measureCameraFields). В любом положении экрана: в горизонтали по ним
+        // считаются поля, в вертикали — нижняя граница; первый замер после
+        // появления HUD — этот.
         cameraFieldsAgeMs += ticker.deltaMS
         if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
@@ -6852,6 +6866,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
       eliteGlowSystem?.dispose()
+      mapEdges?.dispose()
       // Хитстоп мог остановить общий тикер анимаций — вернуть ход (30.10.2026).
       Ticker.shared.speed = 1
       ashTrailSystem?.dispose()
