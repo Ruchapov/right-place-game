@@ -223,6 +223,8 @@ export type LoginResponse = {
     // readCurrencyCount.
     hunterBadges?: unknown
     rp?: unknown
+    // Элитные трофеи (30.10.2026, гильдии). Разбирать через readCurrencyCount.
+    eliteTrophies?: unknown
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -543,6 +545,20 @@ export type StartExploreResult = {
    * нет. Разбирать ТОЛЬКО через readPatrols.
    */
   patrols?: unknown
+  /**
+   * Молитвы алтаря гильдии на этот забег (30.10.2026): проценты к атаке без
+   * силы и к броне. Поля нет — сервер старше гильдий: баффов нет. Разбирать
+   * ТОЛЬКО через readGuildBuffs.
+   */
+  guildBuffs?: unknown
+}
+
+/** Баффы гильдии из ответа старта; мусор и отсутствие — нули (баффа нет). */
+export function readGuildBuffs(raw: unknown): { attackPct: number; armorPct: number } {
+  const pct = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 25 ? v : 0)
+  if (typeof raw !== 'object' || raw === null) return { attackPct: 0, armorPct: 0 }
+  const r = raw as { attackPct?: unknown; armorPct?: unknown }
+  return { attackPct: pct(r.attackPct), armorPct: pct(r.armorPct) }
 }
 
 /** Патрульный из ответа старта (пара RunPatrol в server/src/runEvents.ts). */
@@ -768,6 +784,12 @@ export type RunResultSummary = {
   gold?: number | null
   hunterBadges?: number | null
   rp?: number | null
+  /**
+   * Элитные трофеи (30.10.2026, гильдии): запас после забега и сколько дал этот
+   * забег (+1 за событие с элитой; смерть — 0). null/нет поля — старый сервер.
+   */
+  eliteTrophies?: number | null
+  eliteTrophiesEarned?: number | null
   /**
    * Задание, выполненное этой вылазкой, и награда за него; null — не выполнено
    * ни одно. Опциональное: вход (interruptedRun) и старый сервер его не
@@ -1020,6 +1042,8 @@ export async function finishRunExplore(
           gold: readCurrencyCount(data.gold),
           hunterBadges: readCurrencyCount(data.hunterBadges),
           rp: readCurrencyCount(data.rp),
+          eliteTrophies: readCurrencyCount(data.eliteTrophies),
+          eliteTrophiesEarned: readCurrencyCount(data.eliteTrophiesEarned),
           questCompleted: readQuestCompleted(data.questCompleted),
           quests: readQuestView(data.quests),
         }
@@ -1506,6 +1530,8 @@ export type ProfileResult = {
   hunterBadges: number | null
   /** null — сервер не назвал RP (см. readCurrencyCount). */
   rp: number | null
+  /** null — сервер не назвал элитные трофеи (сервер старше гильдий). */
+  eliteTrophies: number | null
   /**
    * Сохранённые статы и уровень (27.10.2026, Ловчий: покупка стата меняет их вне
    * забега). null — сервер старше Ловчего и их не прислал.
@@ -1546,6 +1572,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     ringSlots?: unknown
     hunterBadges?: unknown
     rp?: unknown
+    eliteTrophies?: unknown
     strength?: unknown
     agility?: unknown
     endurance?: unknown
@@ -1579,6 +1606,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     ringSlots: readRingSlots(raw.ringSlots),
     hunterBadges: readCurrencyCount(raw.hunterBadges),
     rp: readCurrencyCount(raw.rp),
+    eliteTrophies: readCurrencyCount(raw.eliteTrophies),
     strength: readCurrencyCount(raw.strength),
     agility: readCurrencyCount(raw.agility),
     endurance: readCurrencyCount(raw.endurance),
@@ -2659,4 +2687,259 @@ export async function setRingSlot(token: string, slot: number, ringId: RingId | 
     CRAFTER_TIMEOUT_MS,
   ))
   return { classItems: readClassItems(res.classItems), ringSlots: readRingSlots(res.ringSlots) }
+}
+
+// --- Гильдии (30.10.2026, docs/guilds.md) ---
+//
+// Каждая пишущая ручка отвечает полным состоянием «моя гильдия» (GuildMe) —
+// клиенту не нужно собирать его из кусков. Повторов нет ни у одной: деньги и
+// предметы идут с ключом идемпотентности (keyedPurchase), и следующее нажатие
+// того же действия после неизвестного исхода несёт тот же ключ.
+
+const GUILD_TIMEOUT_MS = 8000
+
+export type GuildEmblemView = { symbol: number; frame: number; bg: number; color: number }
+
+export type GuildSummary = {
+  id: number
+  name: string
+  tag: string
+  level: number
+  members: number
+  cap: number
+  joinMode: string
+  emblem: GuildEmblemView
+}
+
+export type GuildWallet = {
+  gold: number
+  eliteTrophies: number
+  rp: number
+  potions: number[]
+  consumables: Record<ConsumableId, number> | null
+  classItems: Record<ClassItemId, number> | null
+}
+
+export type GuildMemberView = { characterId: number; name: string; role: string; level: number; lastSeenAt: number | null; joinedAt: number }
+export type GuildStorageRow = { kind: string; ref: string; count: number; item?: { nameRu: string; slot: string; tier: number } }
+export type GuildRequestView = { characterId: number; name: string; level: number; createdAt: number }
+export type GuildBuff = { pct: number; untilMs: number | null }
+
+export type GuildFull = GuildSummary & {
+  inviteCode: string
+  gold: number
+  eliteTrophies: number
+  buildings: { level: number; storage: number; cauldron: number; library: number; altar: number }
+  storageUsed: number
+  storageCap: number
+  createdAt: number
+}
+
+export type GuildMemberState = {
+  kind: 'member'
+  guild: GuildFull
+  role: 'leader' | 'deputy' | 'member'
+  members: GuildMemberView[]
+  storage: GuildStorageRow[]
+  requests: GuildRequestView[]
+  me: { characterId: number; cauldronInMs: number; libraryInMs: number; buffs: { attack: GuildBuff; armor: GuildBuff } }
+  wallet: GuildWallet
+  at: number
+}
+
+/** Состояние «моя гильдия»; `at` — момент получения (для таймеров). */
+export type GuildMe =
+  | { kind: 'none'; rejoinInMs: number; myRequests: number[]; createCostRp: number; wallet: GuildWallet; at: number }
+  | GuildMemberState
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+function num(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function readGuildSummary(raw: unknown): GuildSummary | null {
+  if (!isObj(raw) || !isObj(raw.emblem)) return null
+  const id = num(raw.id), level = num(raw.level), members = num(raw.members), cap = num(raw.cap)
+  const e = raw.emblem
+  const symbol = num(e.symbol), frame = num(e.frame), bg = num(e.bg), color = num(e.color)
+  if (id === null || level === null || members === null || cap === null || symbol === null || frame === null || bg === null || color === null) return null
+  if (typeof raw.name !== 'string' || typeof raw.tag !== 'string' || typeof raw.joinMode !== 'string') return null
+  return { id, name: raw.name, tag: raw.tag, level, members, cap, joinMode: raw.joinMode, emblem: { symbol, frame, bg, color } }
+}
+
+function readGuildWallet(raw: unknown): GuildWallet | null {
+  if (!isObj(raw)) return null
+  const gold = num(raw.gold), eliteTrophies = num(raw.eliteTrophies), rp = num(raw.rp)
+  if (gold === null || eliteTrophies === null || rp === null || !Array.isArray(raw.potions)) return null
+  return {
+    gold, eliteTrophies, rp,
+    potions: raw.potions.map((n) => (typeof n === 'number' ? n : 0)),
+    consumables: readConsumables(raw.consumables),
+    classItems: readClassItems(raw.classItems),
+  }
+}
+
+function readBuff(raw: unknown): GuildBuff {
+  if (!isObj(raw)) return { pct: 0, untilMs: null }
+  return { pct: num(raw.pct) ?? 0, untilMs: num(raw.untilMs) }
+}
+
+/** Разбор ответа «моя гильдия». null — ответ не того вида (громко в консоль). */
+export function readGuildMe(raw: unknown): GuildMe | null {
+  if (!isObj(raw)) return null
+  const wallet = readGuildWallet(raw.wallet)
+  if (wallet === null) return null
+  const at = Date.now()
+  if (raw.guild === null) {
+    return {
+      kind: 'none',
+      rejoinInMs: num(raw.rejoinInMs) ?? 0,
+      myRequests: Array.isArray(raw.myRequests) ? raw.myRequests.filter((x): x is number => typeof x === 'number') : [],
+      createCostRp: num(raw.createCostRp) ?? 0,
+      wallet,
+      at,
+    }
+  }
+  const summary = readGuildSummary(raw.guild)
+  if (summary === null || !isObj(raw.guild) || !isObj(raw.me)) return null
+  const g = raw.guild
+  const b = isObj(g.buildings) ? g.buildings : {}
+  const role = raw.role === 'leader' || raw.role === 'deputy' || raw.role === 'member' ? raw.role : null
+  if (role === null || typeof g.inviteCode !== 'string') return null
+  const me = raw.me
+  const buffs = isObj(me.buffs) ? me.buffs : {}
+  return {
+    kind: 'member',
+    guild: {
+      ...summary,
+      inviteCode: g.inviteCode,
+      gold: num(g.gold) ?? 0,
+      eliteTrophies: num(g.eliteTrophies) ?? 0,
+      buildings: {
+        level: num(b.level) ?? summary.level,
+        storage: num(b.storage) ?? 1,
+        cauldron: num(b.cauldron) ?? 0,
+        library: num(b.library) ?? 0,
+        altar: num(b.altar) ?? 0,
+      },
+      storageUsed: num(g.storageUsed) ?? 0,
+      storageCap: num(g.storageCap) ?? 0,
+      createdAt: num(g.createdAt) ?? 0,
+    },
+    role,
+    members: Array.isArray(raw.members) ? raw.members.filter(isObj).map((m) => ({
+      characterId: num(m.characterId) ?? 0,
+      name: typeof m.name === 'string' ? m.name : '?',
+      role: typeof m.role === 'string' ? m.role : 'member',
+      level: num(m.level) ?? 1,
+      lastSeenAt: num(m.lastSeenAt),
+      joinedAt: num(m.joinedAt) ?? 0,
+    })) : [],
+    storage: Array.isArray(raw.storage) ? raw.storage.filter(isObj).map((r) => ({
+      kind: typeof r.kind === 'string' ? r.kind : '',
+      ref: typeof r.ref === 'string' ? r.ref : '',
+      count: num(r.count) ?? 0,
+      ...(isObj(r.item) && typeof r.item.nameRu === 'string' && typeof r.item.slot === 'string'
+        ? { item: { nameRu: r.item.nameRu, slot: r.item.slot, tier: num(r.item.tier) ?? 1 } }
+        : {}),
+    })) : [],
+    requests: Array.isArray(raw.requests) ? raw.requests.filter(isObj).map((r) => ({
+      characterId: num(r.characterId) ?? 0,
+      name: typeof r.name === 'string' ? r.name : '?',
+      level: num(r.level) ?? 1,
+      createdAt: num(r.createdAt) ?? 0,
+    })) : [],
+    me: {
+      characterId: num(me.characterId) ?? 0,
+      cauldronInMs: num(me.cauldronInMs) ?? 0,
+      libraryInMs: num(me.libraryInMs) ?? 0,
+      buffs: { attack: readBuff(buffs.attack), armor: readBuff(buffs.armor) },
+    },
+    wallet,
+    at,
+  }
+}
+
+/** Итог пишущей ручки: состояние и то, что вернуло само действие. */
+export type GuildActionResult = {
+  me: GuildMe
+  cauldron?: { tier: number; potions: number; reflect: number }
+  libraryBook?: string
+  prayer?: { kind: string; label: string; pct: number; crit: boolean }
+  replayed: boolean
+}
+
+function guildMeOrThrow(path: string, raw: unknown): GuildMe {
+  const me = readGuildMe(raw)
+  if (me === null) {
+    console.error(`api: ${path} — состояние гильдии не разобрано`, raw)
+    throw new RequestError(`${path}: unreadable guild state`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+  }
+  return me
+}
+
+export async function fetchGuildMe(token: string): Promise<GuildMe> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/guild/me`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
+  return guildMeOrThrow('/guild/me', raw)
+}
+
+export async function fetchGuildList(token: string, query: string, top: boolean): Promise<GuildSummary[]> {
+  const url = top ? `${SERVER_URL}/guild/top` : `${SERVER_URL}/guild/list?q=${encodeURIComponent(query)}`
+  const raw = await requestJson<{ guilds?: unknown }>(url, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
+  return Array.isArray(raw.guilds) ? raw.guilds.map(readGuildSummary).filter((g): g is GuildSummary => g !== null) : []
+}
+
+export async function fetchGuildByInvite(token: string, code: string): Promise<GuildSummary | null> {
+  const raw = await requestJson<{ guild?: unknown }>(`${SERVER_URL}/guild/invite/${encodeURIComponent(code)}`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
+  return readGuildSummary(raw.guild)
+}
+
+/**
+ * Пишущая ручка гильдии. `signature` — что за действие (для ключа
+ * идемпотентности): одинаковое нажатие после неизвестного исхода несёт тот же
+ * ключ, и сервер не применит его второй раз.
+ */
+export async function guildAction(token: string, path: string, body: Record<string, unknown>, signature: string): Promise<GuildActionResult> {
+  const raw = await keyedPurchase(`guild:${signature}`, (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}${path}`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, requestId }),
+    },
+    GUILD_TIMEOUT_MS,
+  ))
+  const me = guildMeOrThrow(path, raw)
+  const out: GuildActionResult = { me, replayed: raw.replayed === true }
+  if (isObj(raw.cauldron)) out.cauldron = { tier: num(raw.cauldron.tier) ?? 1, potions: num(raw.cauldron.potions) ?? 0, reflect: num(raw.cauldron.reflect) ?? 0 }
+  if (typeof raw.libraryBook === 'string') out.libraryBook = raw.libraryBook
+  if (isObj(raw.prayer)) out.prayer = { kind: String(raw.prayer.kind), label: String(raw.prayer.label), pct: num(raw.prayer.pct) ?? 0, crit: raw.prayer.crit === true }
+  return out
+}
+
+export type GuildChatMessage = { id: number; text: string; system: boolean; author: string | null; mine: boolean; createdAt: number }
+
+export async function fetchGuildChat(token: string, after: number): Promise<{ tag: string; messages: GuildChatMessage[] }> {
+  const raw = await requestJson<{ tag?: unknown; messages?: unknown }>(`${SERVER_URL}/guild/chat?after=${after}`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
+  const messages = Array.isArray(raw.messages)
+    ? raw.messages.filter(isObj).map((m) => ({
+        id: num(m.id) ?? 0,
+        text: typeof m.text === 'string' ? m.text : '',
+        system: m.system === true,
+        author: typeof m.author === 'string' ? m.author : null,
+        mine: m.mine === true,
+        createdAt: num(m.createdAt) ?? 0,
+      })).filter((m) => m.id > 0)
+    : []
+  return { tag: typeof raw.tag === 'string' ? raw.tag : '', messages }
+}
+
+export async function sendGuildChat(token: string, text: string): Promise<void> {
+  await requestJson<unknown>(`${SERVER_URL}/guild/chat`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }, GUILD_TIMEOUT_MS)
 }

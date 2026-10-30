@@ -25,6 +25,7 @@ import type {
   MapEvent,
   EnemyKind,
   DamageVia,
+  DamageSource,
 } from './explore/types'
 import {
   isSolid,
@@ -59,6 +60,7 @@ import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
 import { createEliteGlowSystem } from './explore/entities/eliteGlow'
+import { createReflectGlowSystem } from './explore/entities/reflectGlow'
 import { createMapEdges } from './explore/entities/mapEdges'
 import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
@@ -68,12 +70,12 @@ import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClas
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, readPatrols, readEliteIndex, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
 import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ui/ResultsFrame'
-import { consumableById, consumableReviveFrac, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
+import { consumableById, consumableReviveFrac, consumableReflectsFirstHit, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
@@ -737,7 +739,9 @@ function ResultsScreen({
   const trophyLossView = result.died || trophiesLostNotDied
   const trophyCount = result.died ? result.trophiesLost : Math.abs(result.trophiesEarned)
   const hasProgress = result.strengthGained > 0 || result.enduranceGained > 0 || result.agilityGained > 0 || result.leveledUp || result.skillLevelUps.length > 0
-  const hasDrops = result.drops.length > 0 || result.dropsLost.length > 0
+  // Элитные трофеи (30.10.2026, гильдии) — только серверное число и только > 0.
+  const eliteEarned = result.eliteTrophiesEarned ?? 0
+  const hasDrops = result.drops.length > 0 || result.dropsLost.length > 0 || eliteEarned > 0
   // Правая колонка набок (см. ResultsFrame) — только если в ней есть что
   // показать; иначе левая занимает обе.
   const hasRight = hasProgress || hasDrops || !!result.questCompleted
@@ -917,6 +921,20 @@ function ResultsScreen({
             {hasDrops && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
                 <ResultsSectionTitle>ДОБЫЧА</ResultsSectionTitle>
+                {eliteEarned > 0 && (
+                  <div data-elite-earned="" style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+                    <img
+                      src={`${import.meta.env.BASE_URL}assets/icons/icon_elite_trophy.png`}
+                      alt=""
+                      draggable={false}
+                      onError={(e) => { e.currentTarget.style.visibility = 'hidden' }}
+                      style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
+                    />
+                    <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore, minWidth: 0 }}>
+                      +{eliteEarned} {eliteEarned === 1 ? 'элитный трофей' : eliteEarned < 5 ? 'элитных трофея' : 'элитных трофеев'}
+                    </div>
+                  </div>
+                )}
                 {result.drops.map((drop, i) => {
                   const view = dropView(drop)
                   return (
@@ -1563,7 +1581,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // которые будут жить внутри ticker'а (см. useEffect ниже): вызывают через
   // takeDamageRef.current(amount), не импортируя функцию напрямую.
   // ⚠️ Возвращает boolean: true — герой ПАРИРОВАЛ, урона не было (см. takeDamage).
-  const takeDamageRef = useRef<(amount: number) => boolean>(() => false)
+  const takeDamageRef = useRef<(amount: number, source?: DamageSource) => boolean>(() => false)
+  // Зелье отражения (30.10.2026, гильдии): готово ли — первый удар врага за
+  // забег гасится и уходит ударившему. Ставит ответ старта (consumablesTaken),
+  // гасит срабатывание. reflectHitRef — сама отдача урона: damageEnemy и
+  // damageBoss живут в замыкании setup(), а зовёт её takeDamage.
+  const reflectReadyRef = useRef(false)
+  const reflectHitRef = useRef<(source: DamageSource, amount: number) => void>(() => {})
+  // Молитва брони гильдии на этот забег: проценты к броне (0 — баффа нет).
+  // Отдельным рефом, а не правкой armorRef: тот перезаписывает эффект рендера.
+  const armorBuffPctRef = useRef(0)
   // Таран Привратника — своя парируемая точка, с широким окном (см. takeRamDamage).
   const takeRamDamageRef = useRef<(amount: number, enemy: Enemy) => boolean>(() => false)
   // Непарируемый урон (волна босса, шипы карты, ловушка мимика) — отдельная
@@ -2225,13 +2252,23 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
    * applyDamage: отбив — событие боя, и игрок должен увидеть искру даже с
    * включённым тумблером, иначе тестировать парирование было бы нечем.
    */
-  function takeDamage(amount: number): boolean {
+  function takeDamage(amount: number, source?: DamageSource): boolean {
     if (parryWindowRef.current > 0) {
       spawnParrySparkRef.current()
       // «Звон стали»: каждый отбитый удар — и два удара в одно окно тоже два.
       questCountersRef.current.parries += 1
       healOnParry()
       return true
+    }
+    // Зелье отражения: ПЕРВЫЙ удар врага за забег гасится целиком, его урон до
+    // брони уходит ударившему. Парирование главнее (выше) — отбитый удар зелье не
+    // тратит. Не тратится и там, где урона всё равно не было бы (рывок, окно
+    // оберега, мёртвый герой, тестовое бессмертие). Шипы и ловушки сюда не
+    // приходят — у них takeDamageUnblockable и нет источника.
+    if (source !== undefined && reflectReadyRef.current && !invincible && !deathRef.current && !dashingRef.current && !(charmIframeRef.current > 0)) {
+      reflectReadyRef.current = false
+      reflectHitRef.current(source, Math.ceil(amount))
+      return false
     }
     applyDamage(amount)
     return false
@@ -2261,7 +2298,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       healOnParry()
       return true
     }
-    return takeDamage(amount)
+    return takeDamage(amount, enemy)
   }
 
   /**
@@ -2327,9 +2364,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // Панцирь иного места: при здоровье ниже доли lowHpFrac броня удваивается
     // (до удара, по текущему HP). Потолок ARMOR_MAX_REDUCTION тот же.
     const gear = gearRef.current
+    // Молитва брони гильдии (30.10.2026): +N% к броне на весь забег.
+    const armorBase = Math.round(armorRef.current * (1 + armorBuffPctRef.current / 100))
     const armorNow = gear.lowHpFrac > 0 && hpRef.current < maxHp * gear.lowHpFrac
-      ? Math.round(armorRef.current * gear.lowHpArmorMult)
-      : armorRef.current
+      ? Math.round(armorBase * gear.lowHpArmorMult)
+      : armorBase
     const armored = Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorNow)
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
@@ -2594,6 +2633,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
     let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
+    let reflectGlowSystem: ReturnType<typeof createReflectGlowSystem> | null = null
     let mapEdges: ReturnType<typeof createMapEdges> | null = null
 
     async function setup() {
@@ -2722,6 +2762,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       charmIframeRef.current = 0
       charmReviveFracRef.current = 0
       setCharmReady(false)
+      reflectReadyRef.current = false
+      armorBuffPctRef.current = 0
 
       // Листы, нужные ЛЮБОМУ забегу (герой, эффекты навыков, иконки наград, шар
       // маны), начинают грузиться ЗДЕСЬ — раньше ответа /run/start-explore и
@@ -2846,6 +2888,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           charmReadyRef.current = true
           setCharmReady(true)
         }
+        // Зелье отражения — тоже по списку сервера.
+        if ((takenFromServer ?? []).some((id) => {
+          const spec = typeof id === 'string' ? consumableById(id) : null
+          return spec !== null && consumableReflectsFirstHit(spec)
+        })) {
+          reflectReadyRef.current = true
+        }
 
         const rawMult: unknown = startExploreResult.attackMult
         if (typeof rawMult !== 'number' || !Number.isFinite(rawMult) || rawMult < 1) {
@@ -2857,8 +2906,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // как раз в его пользу, и это осознанно: камень куплен за золото, и
         // терять его эффект на округлении вниз игрок не должен. Правило
         // «ceil для урона» (CLAUDE.md) соблюдено буквально — ceil и есть.
-        attackDamageRef.current = Math.ceil(baseAttackDamage * rawMult)
-        console.log(`Explore: урон атаки ${baseAttackDamage} × ${rawMult} = ${attackDamageRef.current}`)
+        // Молитва силы гильдии (30.10.2026, docs/guilds.md): +N% ТОЛЬКО от урона
+        // без силы (15 + оружие + закалки), прибавкой к базе ДО множителя камня —
+        // камень множит её так же, как всю базу. Навыков не касается: skillStats
+        // ниже берут baseAttackDamage без баффа.
+        const guildBuffs = readGuildBuffs(startExploreResult.guildBuffs)
+        const attackBuffBonus = (baseAttackDamage - Math.floor(strength / 2)) * guildBuffs.attackPct / 100
+        attackDamageRef.current = Math.ceil((baseAttackDamage + attackBuffBonus) * rawMult)
+        armorBuffPctRef.current = guildBuffs.armorPct
+        console.log(`Explore: урон атаки (${baseAttackDamage} + ${attackBuffBonus}) × ${rawMult} = ${attackDamageRef.current}, броня +${guildBuffs.armorPct}%`)
 
         // --- Склад расходников после списания ---
         //
@@ -3625,7 +3681,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // собираются один раз здесь, а takeDamageRef синхронизируется
         // отдельным useEffect'ом на каждый рендер именно затем, чтобы
         // тикер всегда звал актуальную версию функции (см. EnemyDeps).
-        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         events: eventsRef,
         worldContainer,
         grid,
@@ -3649,7 +3705,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Та же обёртка и по той же причине, что у зверя выше.
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         // Та же обёртка над takeDamageRef и по той же причине, что у зверя.
-        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         // Рывок — волна проходит сквозь героя, а не гаснет об него (см. ZvonarDeps).
         dashing: dashingRef,
         events: eventsRef,
@@ -3767,6 +3823,22 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       })
       // Золотое свечение элиты (30.10.2026) — копия кадра позади врага.
       eliteGlowSystem = createEliteGlowSystem({ worldContainer })
+      reflectGlowSystem = createReflectGlowSystem({ worldContainer, getHero: () => heroSpriteRef.current })
+      // Отдача зелья отражения: урон до брони — ударившему, мимо двери
+      // Привратника ('tick' — дверь его не держит) и без хитстана, как тик крови.
+      // В урон оружием (attackDamageDealtRef): потолок сервера — HP врагов
+      // забега, так что отражённое его не раздувает.
+      reflectHitRef.current = (source, amount) => {
+        reflectGlowSystem?.flash()
+        const heroX = phys.x + C.PLAYER_WIDTH / 2
+        if (source === 'boss') {
+          const b = bossRef.current
+          if (b && !b.dead) damageBoss(amount, attackDamageDealtRef, heroX, 'tick')
+        } else if (!source.dead) {
+          damageEnemy(source, amount, attackDamageDealtRef, heroX, 'tick')
+        }
+        showSmugglerNotice('Удар отражён')
+      }
 
       // Кольцо Пепла: тик огня — как тик кровотечения (skillDamage.slash), идёт
       // в skillDamageDealt и, как тик, не замечает двери Привратника.
@@ -4231,7 +4303,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         closeEvent,
         // Та же обёртка, что у зверя и Звонаря: мана падает и с босса.
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
-        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
         boss: bossRef,
         bossSpikes: bossSpikesRef,
@@ -4257,7 +4329,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         findGroundSurfaceY,
         closeEvent,
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
-        takeDamage: (amount: number) => takeDamageRef.current(amount),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
         dashing: dashingRef,
         // Звонарь без события: -1 — ни одно событие его не ждёт (см. Enemy.summoned).
@@ -6761,6 +6833,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         critFlashSystem!.update(ticker.deltaMS)
         // Свечение элиты — после систем врагов: копия берёт кадр этого тика.
         eliteGlowSystem!.update(ticker.deltaMS)
+        // Голубое свечение зелья отражения: горит, пока зелье готово; вспышку
+        // ставит само срабатывание (reflectHitRef).
+        reflectGlowSystem!.setActive(reflectReadyRef.current)
+        reflectGlowSystem!.update(ticker.deltaMS)
         ashTrailSystem?.update(ticker.deltaMS)
 
         // Плавающие попапы наград (см. RewardFloat/spawnRewardFloat выше) —
@@ -6881,6 +6957,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
       eliteGlowSystem?.dispose()
+      reflectGlowSystem?.dispose()
       mapEdges?.dispose()
       // Хитстоп мог остановить общий тикер анимаций — вернуть ход (30.10.2026).
       Ticker.shared.speed = 1

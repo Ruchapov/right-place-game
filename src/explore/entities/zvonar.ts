@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics, Sprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
-import type { Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind } from '../types'
+import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
@@ -58,6 +58,8 @@ type ZvonarWave = {
   // босса: стрелок мог умереть, пока она летит.
   damage: number
   hitApplied: boolean
+  // Кто выпустил волну — ему уходит отражённый урон (зелье отражения).
+  owner: Enemy
 }
 
 export type ZvonarDeps = {
@@ -84,7 +86,7 @@ export type ZvonarDeps = {
    * парировать летящий снаряд — не то же самое, что поймать на меч замах; стрелок
    * в этот момент уже закончил свой и стоит далеко.
    */
-  takeDamage: (amount: number) => boolean
+  takeDamage: (amount: number, source?: DamageSource) => boolean
   /**
    * Идёт ли рывок героя — тот же dashingRef, что даёт неуязвимость в applyDamage.
    *
@@ -268,6 +270,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       // Элита (30.10.2026): у Звонаря урон в волне — множитель здесь.
       damage: Math.round(scaledZvonarWaveDamage(deps.characterLevel.current) * (enemy.elite ? ELITE_DMG_MULT : 1)),
       hitApplied: false,
+      owner: enemy,
     })
   }
 
@@ -341,7 +344,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
           impact = true
           // Парирование разруливает сама takeDamage. Отбил — урона не было, но
           // волна всё равно гаснет со вспышкой: отбитая волна не летит дальше.
-          deps.takeDamage(w.damage)
+          deps.takeDamage(w.damage, w.owner)
         }
       }
 

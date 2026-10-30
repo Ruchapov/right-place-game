@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics, Sprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
-import type { Grid, PlayerPhysics, Boss, BossSpike, BossWave, BossAnimKind } from '../types'
+import type { DamageSource, Grid, PlayerPhysics, Boss, BossSpike, BossWave, BossAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
@@ -58,7 +58,7 @@ export type BossDeps = {
    * шип уничтожается, но босс НЕ станится (он далеко, парировать можно только
    * снаряд).
    */
-  takeDamage: (amount: number) => boolean
+  takeDamage: (amount: number, source?: DamageSource) => boolean
   /**
    * Урон, который парировать НЕЛЬЗЯ (волна топота). Отдельная функция, а не флаг
    * у takeDamage: на вызове видно, что это решение дизайна, а не забытый
@@ -659,7 +659,7 @@ export function createBossSystem(deps: BossDeps) {
               // ветке «анимация доиграла» ниже, а она после обрыва не
               // выполнится — без этой строки босс ударил бы снова сразу после
               // стана.
-              if (deps.takeDamage(damage)) {
+              if (deps.takeDamage(damage, 'boss')) {
                 boss.parryStunTimer = C.PARRY_STUN_MS
                 boss.attackAnimPlaying = false
                 boss.attackKind = null
@@ -835,7 +835,7 @@ export function createBossSystem(deps: BossDeps) {
             // отбить можно только снаряд, не самого босса. Импакт в этом случае
             // не рисуем: искра отбива (см. takeDamage в Explore.tsx) и так
             // показывает, что удар пришёлся на клинок.
-            if (!deps.takeDamage(spike.damage)) {
+            if (!deps.takeDamage(spike.damage, 'boss')) {
               spawnBossSpikeImpact(spike.sprite.x, spike.sprite.y)
             }
           }

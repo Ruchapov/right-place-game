@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
-import type { Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
+import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
@@ -72,7 +72,7 @@ export type EnemyDeps = {
    * неуязвимости удалено целиком. Непарируемые источники (волна босса, шипы
    * карты) ходят через ОТДЕЛЬНУЮ takeDamageUnblockable, см. Explore.tsx.
    */
-  takeDamage: (amount: number) => boolean
+  takeDamage: (amount: number, source?: DamageSource) => boolean
   events: MutableRefObject<MapEvent[]>
   worldContainer: Container
   grid: Grid
@@ -743,7 +743,7 @@ export function createEnemySystem(deps: EnemyDeps) {
                 // Кулдаун атаки СПЕЦИАЛЬНО не трогаем: он уже взведён в конце
                 // windup (enemy.attackTimer = ENEMY_ATTACK_INTERVAL, см. выше),
                 // то есть «как после обычного удара» выполнено само.
-                if (deps.takeDamage(enemy.attackDamage)) {
+                if (deps.takeDamage(enemy.attackDamage, enemy)) {
                   enemy.parryStunTimer = C.PARRY_STUN_MS
                   enemy.attackAnimPlaying = false
                   enemy.windingUp = false

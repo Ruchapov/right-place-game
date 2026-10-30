@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, smeltRaw, forgeOtherItem, setRingSlot, RequestError, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, RequestError, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -19,6 +19,9 @@ import { CLASS_ITEMS, classItemById, type ClassItemId } from './classItems'
 import { CRAFTER_LEVEL, OTHER_TIER, BOOTS_SPEED_CAP_PCT, gearEffectsOf, otherItemById, type CrafterRawId, type OtherItemId, type RingId } from './crafter'
 import { CrafterSection } from './ui/CrafterSection'
 import { RingSlots } from './ui/RingSlots'
+import { GuildPanel, GuildBuffChips } from './ui/GuildPanel'
+import { hasActiveGuildBuff } from './ui/guildText'
+import { GUILD_INVITE_PREFIX, parseGuildInviteCode } from './guild'
 // Ловчий (27.10.2026) — общий каталог src/hunter.ts ↔ server/src/hunter.ts.
 import { HUNTER_STATS, hunterStatPrice, type HunterStat } from './hunter'
 import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
@@ -125,6 +128,11 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
    */
   hunterBadges: number | null
   rp: number | null
+  /**
+   * Элитные трофеи (30.10.2026, гильдии): +1 за событие с элитным врагом,
+   * сдаются в казну гильдии. null — сервер не назвал (сервер старше гильдий).
+   */
+  eliteTrophies: number | null
   // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): id кольца или ''.
   // null — сервер не назвал (readRingSlots): прочерк, а не пустые гнёзда.
   ringSlots: (RingId | '')[] | null }
@@ -1000,6 +1008,19 @@ export default function App() {
   // Номер гнезда, для которого открыт список выбора. null — список закрыт.
   const [prepPickerSlot, setPrepPickerSlot] = useState<number | null>(null)
   const [friendsLinkCopied, setFriendsLinkCopied] = useState(false)
+  // «Сообщество» (до 30.10.2026 — «Друзья»): переключатель «Гильдия | Друзья»,
+  // состояние гильдии (GuildPanel, docs/guilds.md) и код приглашения из
+  // start_param (g_<код>), ещё не показанный игроку.
+  const [communityTab, setCommunityTab] = useState<'guild' | 'friends'>('guild')
+  const [guildMe, setGuildMe] = useState<GuildMe | null>(null)
+  const [guildInviteCode, setGuildInviteCode] = useState<string | null>(null)
+  // Тик для иконок баффов алтаря («Персонаж», подготовка): раз в секунду, только
+  // пока молитва действует и забег не открыт (под тикером PixiJS меню не
+  // перерисовываем — тот же приём, что у таймера энергии). Без баффа не тикает.
+  const [buffTick, setBuffTick] = useState(() => Date.now())
+  // Момент для иконок — не раньше получения состояния гильдии (guildMe.at):
+  // свежая молитва видна сразу, не дожидаясь тика.
+  const buffNow = Math.max(buffTick, guildMe?.at ?? 0)
   const [showExploreDebug, setShowExploreDebug] = useState(false)
   const [inventory, setInventory] = useState<InventoryItem[]>([])
   // Состояние загрузки инвентаря — ЧЕТЫРЕ явных значения вместо булева
@@ -1150,7 +1171,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, ringSlots: ['ring_ash', ''] })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''] })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1175,12 +1196,33 @@ export default function App() {
     const data: LoginResponse = await loginWithTelegram(initDataRaw)
     localStorage.setItem('jwt', data.token)
     setIsTelegramSession(true)
+    // Приглашение в гильдию (30.10.2026): ссылка ?startapp=g_<код> — открыть
+    // «Сообщество» → «Гильдия» и предложить вступить. Читается после входа
+    // (вступить без токена нельзя); не наш префикс или без него — ничего.
+    try {
+      const startParam = retrieveLaunchParams(true).tgWebAppStartParam
+      if (typeof startParam === 'string' && startParam.startsWith(GUILD_INVITE_PREFIX)) {
+        const code = parseGuildInviteCode(startParam.slice(GUILD_INVITE_PREFIX.length))
+        if (code !== null) {
+          setGuildInviteCode(code)
+          setCommunityTab('guild')
+          setActiveTab('friends')
+        } else {
+          console.warn('App: start_param с префиксом гильдии, но код негодный', startParam)
+        }
+      }
+    } catch {
+      // Параметров запуска нет — обычный вход.
+    }
+    // Гильдия — сразу после входа: иконки баффов алтаря на «Персонаже» и в
+    // подготовке. Лучшим усилием: без неё игра работает, раздел перечитает сам.
+    fetchGuildMe(data.token).then(setGuildMe).catch((e) => console.warn('App: гильдия не загрузилась после входа', e))
     // consumables — через readConsumables, а не присваиванием: нет поля или мусор
     // дают null, то есть «запас неизвестен», и экраны скажут это прочерком.
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), ringSlots: readRingSlots(data.character.ringSlots) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots) })
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -1581,6 +1623,12 @@ export default function App() {
   // а во время забега (Explore смонтирован) секундный ре-рендер меню — это
   // работа впустую под PixiJS-тикером на слабом телефоне.
   const energyTickMs = showExploreTest || energyCountdown === null ? 15000 : 1000
+  const buffTicking = !showExploreTest && hasActiveGuildBuff(guildMe, buffNow)
+  useEffect(() => {
+    if (!buffTicking) return
+    const id = setInterval(() => setBuffTick(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [buffTicking])
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), energyTickMs)
     return () => clearInterval(id)
@@ -1683,6 +1731,8 @@ export default function App() {
         ...(typeof result.gold === 'number' ? { gold: result.gold } : {}),
         ...(typeof result.hunterBadges === 'number' ? { hunterBadges: result.hunterBadges } : {}),
         ...(typeof result.rp === 'number' ? { rp: result.rp } : {}),
+        // Элитные трофеи (30.10.2026, гильдии): финиш даёт +1 за элитное событие.
+        ...(typeof result.eliteTrophies === 'number' ? { eliteTrophies: result.eliteTrophies } : {}),
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -2467,6 +2517,7 @@ export default function App() {
         // финиш забега с выполненным заданием. null — «сервер не назвал».
         hunterBadges: profile.hunterBadges,
         rp: profile.rp,
+        eliteTrophies: profile.eliteTrophies,
         // Гнёзда колец (Мастер, 29.10.2026) — их меняет ручка колец.
         ringSlots: profile.ringSlots,
         // Статы и уровень (27.10.2026): их меняет покупка у Ловчего, и после
@@ -2569,6 +2620,21 @@ export default function App() {
       setGoldToast(null)
       goldToastTimerRef.current = null
     }, 2600)
+  }
+
+  // Кошелёк из ответа гильдии (30.10.2026): казна, склад, котёл и библиотека
+  // меняют золото, элитные трофеи, RP, зелья, расходники и предметы класса —
+  // числа абсолютные, из базы. null у складов — сервер не назвал: прежние.
+  function handleGuildWallet(w: GuildWallet) {
+    setPlayer(prev => prev ? {
+      ...prev,
+      gold: w.gold,
+      eliteTrophies: w.eliteTrophies,
+      rp: w.rp,
+      potions: w.potions,
+      ...(w.consumables !== null ? { consumables: w.consumables } : {}),
+      ...(w.classItems !== null ? { classItems: w.classItems } : {}),
+    } : prev)
   }
 
   async function loadInventory() {
@@ -2855,6 +2921,7 @@ export default function App() {
                   [
                     { icon:'icon_hunter_badge.png', alt:'Значки охотника', value:p.hunterBadges },
                     { icon:'icon_rp.png', alt:'RP', value:p.rp },
+                    { icon:'icon_elite_trophy.png', alt:'Элитные трофеи', value:p.eliteTrophies },
                   ],
                 ].map((pair, i) => (
                   <div key={i} style={{ display:'flex', gap:14, flex:'1 1 auto' }}>
@@ -2867,6 +2934,9 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
+              {/* Молитвы алтаря гильдии (30.10.2026) — только активные, с таймером. */}
+              {hasActiveGuildBuff(guildMe, buffNow) && <div style={{ margin:'-8px 8px 12px' }}><GuildBuffChips me={guildMe} now={buffNow} /></div>}
 
               {/* Снаряжение */}
               <div style={{ margin:'0 8px 16px' }}>
@@ -4432,6 +4502,36 @@ export default function App() {
             return (
             <div style={{ padding: '0 4px' }}>
 
+              {/* «Сообщество» (30.10.2026): переключатель «Гильдия | Друзья».
+                  Друзья — прежняя заглушка как есть. */}
+              <div data-community-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 10px' }}>
+                {([['guild', 'Гильдия'], ['friends', 'Друзья']] as const).map(([id, label]) => (
+                  <button key={id} onClick={() => setCommunityTab(id)} style={{
+                    minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:13,
+                    border:`1px solid ${communityTab === id ? C.glowEdge : C.stoneDark}`,
+                    background: communityTab === id ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
+                    color: communityTab === id ? C.glowCore : C.textMain,
+                  }}>{label}</button>
+                ))}
+              </div>
+
+              {communityTab === 'guild' && (
+                <GuildPanel
+                  token={isTelegramSession ? localStorage.getItem('jwt') : null}
+                  me={guildMe}
+                  onMe={setGuildMe}
+                  onWallet={handleGuildWallet}
+                  onInventoryChanged={() => { void loadInventory() }}
+                  inventory={inventory}
+                  inviteCode={guildInviteCode}
+                  onInviteHandled={() => setGuildInviteCode(null)}
+                  sideMenu={sideMenu}
+                  overlayPad={sideOverlayPad}
+                  overlayCard={sideOverlayCard}
+                />
+              )}
+
+              {communityTab === 'friends' && (<>
               {/* Шапка */}
               {/* sideMenu (28.10.2026): заголовок одной строкой — название слева,
                   подпись справа. */}
@@ -4552,6 +4652,7 @@ export default function App() {
               </div>
 
               </div>
+              </>)}
             </div>
             )
           })()}
@@ -4767,6 +4868,8 @@ export default function App() {
           {/* 4. Подготовка */}
           <div style={{ position:'relative', zIndex:3, marginBottom: sideMenu ? 6 : 12 }}>
             <div style={{ fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY }}>ПОДГОТОВКА</div>
+            {/* Молитвы алтаря гильдии, что поедут в забег (30.10.2026). */}
+            {hasActiveGuildBuff(guildMe, buffNow) && <div style={{ marginBottom:6 }}><GuildBuffChips me={guildMe} now={buffNow} /></div>}
             {/* Пять ОДИНАКОВЫХ гнёзд, без разделителя: прежние 3+2 обещали
                 деление на «зелья» и «прочее», которого нет — зелья в гнёзда не
                 кладут вовсе, они набираются автоматически (docs/items.md).
@@ -5030,7 +5133,7 @@ export default function App() {
           // переименование идентификатора задело бы тип activeTab,
           // gearSelectedItem и все setActiveTab('gear') — шум без пользы.
           {id:'gear', label:'Инвентарь', icon:'nav_gear.png'},
-          {id:'friends', label:'Друзья', icon:'nav_friends.png'},
+          {id:'friends', label:'Сообщество', icon:'nav_friends.png'},
         ] as const).map(tab => {
           const active = activeTab === tab.id
           return (

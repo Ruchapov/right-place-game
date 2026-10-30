@@ -1523,6 +1523,16 @@ export const ELITE_GLOW_ALPHA_MAX = 0.75
 export const ELITE_GLOW_PERIOD_MS = 1400
 export const ELITE_GLOW_FADE_MS = 300
 
+// Голубое свечение героя, пока действует зелье отражения (30.10.2026, гильдии;
+// explore/entities/reflectGlow.ts) — тот же приём, что у элиты, мягче и
+// холоднее. Вспышка при срабатывании — REFLECT_FLASH_MS.
+export const REFLECT_GLOW_TINT = 0x7fd4ff
+export const REFLECT_GLOW_SCALE = 1.1
+export const REFLECT_GLOW_ALPHA_MIN = 0.25
+export const REFLECT_GLOW_ALPHA_MAX = 0.55
+export const REFLECT_GLOW_PERIOD_MS = 1600
+export const REFLECT_FLASH_MS = 350
+
 // НИЗКИЙ ГОРИЗОНТАЛЬНЫЙ ЭКРАН — телефон, повёрнутый набок (12.10.2026).
 // Экран шире своей высоты И не выше этого числа px. Высоты телефонов набок —
 // 320…430 px; планшет набок и окно браузера на компьютере выше и сюда НЕ

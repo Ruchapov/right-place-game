@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 import { AnimatedSprite, Graphics, Sprite } from 'pixi.js'
 import type { Container } from 'pixi.js'
-import type { Grid, PlayerPhysics, Boss, AbbotAnimKind, AbbotState, BossAnimKind, Enemy } from '../types'
+import type { DamageSource, Grid, PlayerPhysics, Boss, AbbotAnimKind, AbbotState, BossAnimKind, Enemy } from '../types'
 import type { AbbotAssets } from '../assets'
 import type { ZvonarFrames } from './zvonar'
 import * as C from '../constants'
@@ -51,7 +51,7 @@ export type AbbotDeps = {
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
   dropMana: (worldX: number, worldY: number) => void
   /** Парируемый урон; true — герой отбил (см. BossDeps.takeDamage). */
-  takeDamage: (amount: number) => boolean
+  takeDamage: (amount: number, source?: DamageSource) => boolean
   /** Волна удара в пол не парируется — как волна топота Твари. */
   takeDamageUnblockable: (amount: number) => void
   /** Рывок проходит сквозь волну, и она катится дальше (как у Звонаря). */
@@ -283,7 +283,7 @@ export function createAbbotSystem(deps: AbbotDeps) {
       pb.x + pb.w > zoneX &&
       pb.y < boss.y + C.BOSS_HEIGHT &&
       pb.y + pb.h > boss.y
-    if (overlap && deps.takeDamage(damage)) {
+    if (overlap && deps.takeDamage(damage, 'boss')) {
       endAction(boss)
       boss.parryStunTimer = C.PARRY_STUN_MS
       showParryStunFrame(boss)
