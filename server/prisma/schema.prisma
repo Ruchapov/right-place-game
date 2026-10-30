@@ -185,11 +185,33 @@ model Character {
   skillUsesHeal       Int      @default(0)
   skillUsesDash       Int      @default(0)
   equippedSkills      String[] @default([])
+  // Гильдии (docs/guilds.md, миграция 20261030120000_guilds_add).
+  // eliteTrophies — элитные трофеи, личная валюта: +1 за каждое закрытое событие
+  // с элитным врагом на живом финише; тратятся только взносом в казну гильдии.
+  // guildLeftAt — когда вышел или исключён: вступить снова можно через 24 ч.
+  // reflectPotions — запас зелья отражения (расходник reflect_potion, только из
+  // котла гильдии). buffAttack*/buffArmor* — молитвы алтаря: процент и момент
+  // конца; действуют, только пока герой в гильдии. cauldronAt / libraryAt —
+  // когда последний раз черпал из котла и брал книгу (кулдаун 16 ч).
+  // lastSeenAt — последний вход (для «глава неактивен 14 дней»).
+  eliteTrophies       Int      @default(0)
+  guildLeftAt         DateTime?
+  reflectPotions      Int      @default(0)
+  buffAttackPct       Int      @default(0)
+  buffAttackUntil     DateTime?
+  buffArmorPct        Int      @default(0)
+  buffArmorUntil      DateTime?
+  cauldronAt          DateTime?
+  libraryAt           DateTime?
+  lastSeenAt          DateTime?
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   inventoryItems      InventoryItem[]
   idempotencyKeys     IdempotencyKey[]
+  guildMember         GuildMember?
+  guildRequests       GuildRequest[]
+  guildMessages       GuildMessage[]
 }
 
 model Item {
@@ -250,4 +272,89 @@ model IdempotencyKey {
 
   @@unique([characterId, key])
   @@index([characterId, createdAt])
+}
+
+// --- Гильдии (docs/guilds.md, миграция 20261030120000_guilds_add) ---
+//
+// Строки, а не enum Postgres (joinMode, role, kind): значения сверяют парсеры
+// общего каталога guild.ts, как id книг и классов.
+model Guild {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  // Название в нижнем регистре (guildNameKey, guild.ts) — уникальность «без
+  // учёта регистра» держит индекс: ILIKE / lower() Postgres с локалью C
+  // кириллицу не складывают, «Стражи» и «стражи» прошли бы оба. По нему же поиск.
+  nameKey       String   @unique
+  tag           String   @unique
+  joinMode      String   // 'open' | 'request' | 'closed'
+  inviteCode    String   @unique
+  emblemSymbol  Int
+  emblemFrame   Int
+  emblemBg      Int
+  emblemColor   Int
+  level         Int      @default(1)
+  storageLevel  Int      @default(1)
+  cauldronLevel Int      @default(0)
+  libraryLevel  Int      @default(0)
+  altarLevel    Int      @default(0)
+  // Казна: золото и элитные трофеи. Только растут взносами и убывают
+  // улучшениями (глава) и котлом/библиотекой. Int: 30 млн влезают с запасом.
+  gold          Int      @default(0)
+  eliteTrophies Int      @default(0)
+  createdAt     DateTime @default(now())
+  members       GuildMember[]
+  requests      GuildRequest[]
+  storage       GuildStorage[]
+  messages      GuildMessage[]
+}
+
+model GuildMember {
+  id          Int       @id @default(autoincrement())
+  // @unique — один герой в одной гильдии: второе вступление упрётся в индекс.
+  characterId Int       @unique
+  character   Character @relation(fields: [characterId], references: [id])
+  guildId     Int
+  guild       Guild     @relation(fields: [guildId], references: [id])
+  role        String    // 'leader' | 'deputy' | 'member'
+  joinedAt    DateTime  @default(now())
+
+  @@index([guildId])
+}
+
+model GuildRequest {
+  id          Int       @id @default(autoincrement())
+  guildId     Int
+  guild       Guild     @relation(fields: [guildId], references: [id])
+  characterId Int
+  character   Character @relation(fields: [characterId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@unique([guildId, characterId])
+  @@index([characterId])
+}
+
+// Склад: стопка по (kind, ref). Снаряжение — kind 'item', ref = Item.id
+// (строка InventoryItem при сдаче удаляется, при взятии создаётся новая).
+model GuildStorage {
+  id      Int    @id @default(autoincrement())
+  guildId Int
+  guild   Guild  @relation(fields: [guildId], references: [id])
+  kind    String // 'item' | 'consumable' | 'classItem' | 'scroll'
+  ref     String
+  count   Int
+
+  @@unique([guildId, kind, ref])
+}
+
+model GuildMessage {
+  id          Int        @id @default(autoincrement())
+  guildId     Int
+  guild       Guild      @relation(fields: [guildId], references: [id])
+  // null — системная строка (вступил, сдал, улучшил…).
+  characterId Int?
+  character   Character? @relation(fields: [characterId], references: [id])
+  text        String
+  createdAt   DateTime   @default(now())
+
+  @@index([guildId, id])
 }

@@ -126,6 +126,15 @@ export async function authRoutes(server: FastifyInstance) {
     const char = user.character
     if (!char) return reply.status(500).send({ error: 'No character' })
 
+    // Последний вход (30.10.2026, docs/guilds.md): по нему гильдия передаёт
+    // главенство неактивному 14 дней главе. Отдельной записью и лучшим
+    // усилием: вход обязан открываться, даже если она не прошла.
+    try {
+      await prisma.character.update({ where: { id: char.id }, data: { lastSeenAt: new Date() } })
+    } catch (e) {
+      request.log.error({ userId: user.id, err: e }, 'login: lastSeenAt write failed')
+    }
+
     // A map-based Explore run (mode: 'explore', see routes/run.ts) left open
     // when the player closed the app is abandoned on the next login — there
     // is no way to know what they were doing, so it's closed as a death,
@@ -348,6 +357,8 @@ export async function authRoutes(server: FastifyInstance) {
         died: true,
         trophiesEarned: 0,
         trophiesLost,
+        // Элитные трофеи забег, закрытый входом, не даёт — как и трофеи событий.
+        eliteTrophiesEarned: 0,
         eventsClosed: 0, // сервер не знает прогресс брошенного забега — осознанно всегда 0
         eventsTotal,
         // Добычи у забега, закрытого входом, НЕ БЫВАЕТ. Это не заглушка «пока
@@ -407,6 +418,7 @@ export async function authRoutes(server: FastifyInstance) {
         gold: char.gold,
         hunterBadges: char.hunterBadges,
         rp: char.rp,
+        eliteTrophies: char.eliteTrophies,
         questCompleted: null,
         // Состояние заданий вход не отдаёт — у него своя ручка
         // (GET /character/quests). null — «не названо здесь».
@@ -503,6 +515,9 @@ export async function authRoutes(server: FastifyInstance) {
         // в char не нужно.
         hunterBadges: char.hunterBadges,
         rp: char.rp,
+        // Элитные трофеи (30.10.2026, docs/guilds.md) — личная валюта гильдий.
+        // Ветка закрытия забега их не пишет.
+        eliteTrophies: char.eliteTrophies,
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,

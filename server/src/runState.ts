@@ -89,7 +89,7 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
 // он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
 // (читать через readRunConfirmedAt).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[] }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[]; guildBuffs?: { attackPct: number; armorPct: number } }
 
 /**
  * Снаряжение Мастера на ЭТОТ забег (docs/crafter.md, 29.10.2026) — снимок на
@@ -996,6 +996,7 @@ export function subtractPotionStock(stock: number[], spent: number[]): number[] 
 export type ConsumableColumns = {
   whetstones: number
   charms: number
+  reflectPotions: number
   bookFire: number
   bookIce: number
   bookBleed: number
@@ -1016,6 +1017,7 @@ export function consumableStockOf(character: ConsumableColumns): Record<Consumab
   return {
     whetstone: character.whetstones,
     charm_death: character.charms,
+    reflect_potion: character.reflectPotions,
     book_fire: character.bookFire,
     book_ice: character.bookIce,
     book_bleed: character.bookBleed,

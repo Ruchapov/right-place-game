@@ -5,6 +5,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
+import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
@@ -78,7 +79,7 @@ const RUN_COST = 3 // DEV: снижено с 10 для тестов (верну�
  * обычный ответ. Так отказ («не хватило золота») ключ не тратит: повтор с тем же
  * ключом после пополнения золота применится, а не ответит чужим «уже сделано».
  */
-class RouteRejection extends Error {
+export class RouteRejection extends Error {
   constructor(readonly status: number, readonly body: Record<string, unknown>) {
     super(`route rejection ${status}`)
   }
@@ -103,7 +104,7 @@ const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000
  * это сломанный клиент, отказ 400, а не тихое «без ключа» — иначе повтор,
  * от которого ключ и заведён, прошёл бы молча.
  */
-function readOptionalRequestId(raw: unknown): string | null | 'invalid' {
+export function readOptionalRequestId(raw: unknown): string | null | 'invalid' {
   if (raw === undefined) return null
   return parseRequestId(raw) ?? 'invalid'
 }
@@ -125,7 +126,7 @@ type AppliedOnce<T> = { replayed: false; value: T } | { replayed: true; response
  * если тем же ключом уже воспользовалась ДРУГАЯ ручка (ошибка клиента: ответить
  * ей чужим «уже сделано» значило бы соврать).
  */
-async function applyOnce<T>(
+export async function applyOnce<T>(
   characterId: number,
   key: string | null,
   endpoint: string,
@@ -203,7 +204,7 @@ function runIdRejection(verdict: 'invalid' | 'mismatch'): { status: number; body
  * «30 / 30». Работает только между теми, кто блокирует: сейчас это сборка
  * книги и финиш забега (добыча).
  */
-async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): Promise<void> {
+export async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Character" WHERE "userId" = ${userId} FOR UPDATE`
 }
 
@@ -229,7 +230,7 @@ async function lockCharacterRow(tx: Prisma.TransactionClient, userId: number): P
  * `classStock` обязательным параметром, а не «по умолчанию пусто»: забытая
  * Печать у одного из четырёх вызывающих дала бы 31 / 30 молча.
  */
-async function bagCellsUsed(
+export async function bagCellsUsed(
   db: Prisma.TransactionClient,
   characterId: number,
   stock: Record<ConsumableId, number>,
@@ -261,15 +262,15 @@ const CLASS_ITEM_COLUMN: Record<ClassItemId, keyof ClassItemColumns> = {
   ring_return: 'ringReturn',
 }
 
-function classItemStockIncrement(id: ClassItemId, count: number): Prisma.CharacterUpdateManyMutationInput {
+export function classItemStockIncrement(id: ClassItemId, count: number): Prisma.CharacterUpdateManyMutationInput {
   return { [CLASS_ITEM_COLUMN[id]]: { increment: count } }
 }
 
-function classItemStockFilter(id: ClassItemId, min = 1): Prisma.CharacterWhereInput {
+export function classItemStockFilter(id: ClassItemId, min = 1): Prisma.CharacterWhereInput {
   return { [CLASS_ITEM_COLUMN[id]]: { gte: min } }
 }
 
-function classItemStockDecrement(id: ClassItemId, count = 1): Prisma.CharacterUpdateManyMutationInput {
+export function classItemStockDecrement(id: ClassItemId, count = 1): Prisma.CharacterUpdateManyMutationInput {
   return { [CLASS_ITEM_COLUMN[id]]: { decrement: count } }
 }
 
@@ -328,6 +329,9 @@ function consumableRunSpend(specs: Consumable[]): {
       case 'charm_death':
         where.charms = { gte: 1 }
         break
+      case 'reflect_potion':
+        where.reflectPotions = { gte: 1 }
+        break
     }
     // Списывает старт ТОЛЬКО spendAt: 'start'. У 'effect' (оберег) запас
     // проверяется фильтром выше — взять оберег без оберега нельзя, — но
@@ -341,6 +345,9 @@ function consumableRunSpend(specs: Consumable[]): {
       case 'charm_death':
         data.charms = { decrement: 1 }
         break
+      case 'reflect_potion':
+        data.reflectPotions = { decrement: 1 }
+        break
     }
   }
   return { where, data }
@@ -353,12 +360,15 @@ function consumableRunSpend(specs: Consumable[]): {
 // бы мимо проверки типов, проявившись только в рантайме. Здесь же добавление
 // нового расходника в ConsumableId РАЗВАЛИТ СБОРКУ, пока сюда не допишут ветку —
 // именно то, что нужно: молча забыть колонку невозможно.
-function consumableStockIncrement(id: ConsumableId, count: number): Prisma.CharacterUpdateManyMutationInput {
+export function consumableStockIncrement(id: ConsumableId, count: number): Prisma.CharacterUpdateManyMutationInput {
   switch (id) {
     case 'whetstone':
       return { whetstones: { increment: count } }
     case 'charm_death':
       return { charms: { increment: count } }
+    // Зелье отражения — только из котла гильдии (routes/guild.ts) и со склада.
+    case 'reflect_potion':
+      return { reflectPotions: { increment: count } }
     // Книги: только increment при покупке. Списания нет ни у одной ветки —
     // применение книги к скиллу не реализовано (spendAt: 'apply'), а в забег
     // книга не едет вовсе (runSlot: false), поэтому в consumableRunSpend выше её
@@ -1129,6 +1139,11 @@ export type RunResultSummary = {
   died: boolean
   trophiesEarned: number
   trophiesLost: number
+  /**
+   * Элитные трофеи, полученные этим забегом (30.10.2026): +1 за событие с
+   * элитным врагом; смерть — 0. Рядом в кошельке — eliteTrophies, запас после.
+   */
+  eliteTrophiesEarned: number
   eventsClosed: number
   eventsTotal: number
   /**
@@ -1205,6 +1220,8 @@ export type RunResultSummary = {
   gold: number
   hunterBadges: number
   rp: number
+  /** Запас элитных трофеев после забега (30.10.2026). */
+  eliteTrophies: number
   /**
    * Задание, выполненное этой вылазкой, и что за него дали; null — не выполнено
    * ни одно (самый частый исход). У забега, закрытого входом, всегда null:
@@ -1396,10 +1413,24 @@ export async function runRoutes(server: FastifyInstance) {
     const healSkill = character.equippedSkills.includes('heal')
       ? { level: skillLevelsOf(character).heal, endurance: character.endurance }
       : null
+    // Молитвы алтаря гильдии (30.10.2026, docs/guilds.md): бафф, действующий в
+    // момент старта, действует ВЕСЬ забег. Только пока герой в гильдии — вышел,
+    // и выход баффы уже обнулил (routes/guild.ts), но проверяем и здесь: строка
+    // могла остаться от гонки «молитва ↔ исключение». Потолков роста статов они
+    // не касаются: урон по врагам ограничен их HP, а броня только уменьшает
+    // полученный урон.
+    const guildMembership = await prisma.guildMember.findUnique({ where: { characterId: character.id } })
+    const buffNow = Date.now()
+    const guildBuffs = guildMembership === null
+      ? { attackPct: 0, armorPct: 0 }
+      : {
+          attackPct: guildBuffPctAt(character.buffAttackPct, character.buffAttackUntil?.getTime() ?? null, buffNow),
+          armorPct: guildBuffPctAt(character.buffArmorPct, character.buffArmorUntil?.getTime() ?? null, buffNow),
+        }
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
-      gear: runGear, starbloom, patrols,
+      gear: runGear, starbloom, patrols, guildBuffs,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1498,6 +1529,9 @@ export async function runRoutes(server: FastifyInstance) {
       heroClass: runHeroClass,
       // Мастер: где растёт Звёздоцвет ([x, y] в клетках карты) или null.
       starbloom,
+      // Молитвы алтаря на этот забег (30.10.2026): проценты к атаке без силы и к
+      // броне; 0 — баффа нет. Старый клиент поле не читает.
+      guildBuffs,
       // Патрульные (30.10.2026): [{x, y, enemyKind, trophyReward}]. Старый клиент
       // поле не читает — патрульных у него просто нет.
       patrols,
@@ -1988,6 +2022,13 @@ export async function runRoutes(server: FastifyInstance) {
     // (non-death) finish nothing was lost, so 0.
     // Не меняется этой правкой: смерть по-прежнему жжёт ВЕСЬ предрановый банк.
     const trophiesLost = died ? bank : 0
+    // Элитные трофеи (30.10.2026, docs/guilds.md): +1 за каждое закрытое событие
+    // с элитным врагом. По правилу трофеев ЭТОГО забега: смерть (и штрафной путь
+    // неподтверждённого) их не даёт. Личный запас eliteTrophies смерть не
+    // трогает — это не банк трофеев.
+    const eliteTrophiesEarned = died
+      ? 0
+      : closedEvents.filter((i) => run.events[i].eliteIndex !== undefined).length * ELITE_TROPHIES_PER_ELITE_EVENT
 
     // --- Stat growth (see game.ts applyStatGrowth) — applies regardless of
     // died: the player still dealt/took damage over the run either way. ---
@@ -2268,6 +2309,7 @@ export async function runRoutes(server: FastifyInstance) {
           // не происходят вовсе.
           ...(charmUsed ? { charms: { decrement: 1 } } : {}),
           trophies: died ? 0 : newTrophies,
+          ...(eliteTrophiesEarned > 0 ? { eliteTrophies: { increment: eliteTrophiesEarned } } : {}),
           strength: growth.strength,
           strengthProgress: growth.strengthProgress,
           endurance: growth.endurance,
@@ -2351,6 +2393,7 @@ export async function runRoutes(server: FastifyInstance) {
     // Золото, значки и RP — тоже перечитанные: награда задания легла
     // increment'ом поверх того, что успело случиться между чтением и записью.
     let walletAfterFinish = {
+      eliteTrophies: character.eliteTrophies + eliteTrophiesEarned,
       gold: character.gold + (questCompleted?.reward.gold ?? 0),
       hunterBadges: character.hunterBadges + (questCompleted?.reward.hunterBadges ?? 0),
       rp: character.rp + (questCompleted?.reward.rp ?? 0),
@@ -2362,7 +2405,7 @@ export async function runRoutes(server: FastifyInstance) {
         scrollsAfterFinish = scrollStockOf(reread)
         classItemsAfterFinish = classItemStockOf(reread)
         potionsAfterFinish = potionStockOf(reread)
-        walletAfterFinish = { gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
+        walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
@@ -2380,6 +2423,7 @@ export async function runRoutes(server: FastifyInstance) {
       died,
       trophiesEarned: earned,
       trophiesLost,
+      eliteTrophiesEarned,
       eventsClosed: closedEvents.length,
       eventsTotal: run.events.length,
       drops: resolvedDrops.gained,
@@ -3132,6 +3176,11 @@ export async function runRoutes(server: FastifyInstance) {
     if (spec === null) {
       return reply.status(400).send({ error: 'Unknown consumable' })
     }
+    // В магазине не продаётся (shopTab: null — зелье отражения, только из котла
+    // гильдии). Тот же отказ, что у неизвестного id: купить его нельзя никак.
+    if (spec.shopTab === null) {
+      return reply.status(400).send({ error: 'Not for sale' })
+    }
 
     // count обязателен и проверяется чистой функцией из каталога (там же
     // потолок). Отсутствующее поле — отказ, а не «одна штука»: у этого эндпоинта
@@ -3394,6 +3443,7 @@ export async function runRoutes(server: FastifyInstance) {
       // и та может писать (новый набор), а профиль — только чтение.
       hunterBadges: character.hunterBadges,
       rp: character.rp,
+      eliteTrophies: character.eliteTrophies,
       // Статы и уровень (27.10.2026, Ловчий): покупка стата за значки меняет их
       // вне забега, и сверка после 409 или потерянного ответа обязана их
       // показать. Уровень — по серверной формуле, колонка level только снимок.

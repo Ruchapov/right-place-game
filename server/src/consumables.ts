@@ -41,6 +41,7 @@ export type SkillBookId = typeof SKILL_BOOK_IDS[number]
 export type ConsumableId =
   | 'whetstone'
   | 'charm_death'
+  | 'reflect_potion'
   | SkillBookId
 
 /**
@@ -92,6 +93,12 @@ export type ConsumableEffect =
    * третий экземпляр чисел, которые правятся при каждом балансе.
    */
   | { kind: 'skillBook'; skillId: SkillBookSkillId }
+  /**
+   * Зелье отражения (30.10.2026, docs/guilds.md): ПЕРВЫЙ удар врага за забег
+   * гасится целиком, а его урон до брони уходит ударившему. Шипы и ловушки не
+   * отражаются. Чисел нет — эффект «всё или ничего».
+   */
+  | { kind: 'reflectFirstHit' }
 
 /**
  * КОГДА расходник списывается со склада.
@@ -139,8 +146,12 @@ export type Consumable = {
    * новый расходник не мог его забыть. Сейчас у всех расходников true.
    */
   takesCell: boolean
-  /** В какой вкладке магазина показывать (см. ConsumableShopTab). */
-  shopTab: ConsumableShopTab
+  /**
+   * В какой вкладке магазина показывать (см. ConsumableShopTab). null — в
+   * магазине НЕ продаётся вовсе (зелье отражения: только из котла гильдии);
+   * покупку такого id сервер отклоняет.
+   */
+  shopTab: ConsumableShopTab | null
   spendAt: ConsumableSpendAt
   effect: ConsumableEffect
   desc: string
@@ -176,6 +187,23 @@ export const CONSUMABLES: Consumable[] = [
     spendAt: 'effect',
     effect: { kind: 'deathSave', reviveFrac: 0.5 },
     desc: 'Смерть не любит, когда её обманывают. Но один раз простит.',
+  },
+  {
+    id: 'reflect_potion',
+    nameRu: 'Зелье отражения',
+    icon: 'potion_reflect.png',
+    // Цена — только база продажи скупщику (consumableSellPrice = цена / 10): в
+    // магазине зелья нет (shopTab: null), оно бывает только из котла гильдии.
+    price: 500,
+    levelRequired: 1,
+    runSlot: true,
+    takesCell: true,
+    shopTab: null,
+    // Списывается на старте, как камень: взял в забег — потратил, сработало
+    // отражение или нет. Не больше одного в забег — повторы в гнёздах запрещены.
+    spendAt: 'start',
+    effect: { kind: 'reflectFirstHit' },
+    desc: 'Холодное стекло с голубым отблеском. Первый удар вернётся к тому, кто его нанёс.',
   },
   // --- Книги скиллов ---
   //
@@ -279,7 +307,14 @@ export function consumableEffectLine(spec: Consumable): string | null {
       return `Спасает от смерти — поднимает с ${Math.round(spec.effect.reviveFrac * 100)}% здоровья. Тратится, только если спас`
     case 'skillBook':
       return null
+    case 'reflectFirstHit':
+      return 'Первый удар врага за забег гасится целиком и возвращается ударившему. Шипы и ловушки не отражает'
   }
+}
+
+/** Отражает ли предмет первый удар врага (зелье отражения). */
+export function consumableReflectsFirstHit(spec: Consumable): boolean {
+  return spec.effect.kind === 'reflectFirstHit'
 }
 
 /**
