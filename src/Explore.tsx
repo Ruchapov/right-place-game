@@ -2799,6 +2799,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Камыш и осока (у прочих карт список пуст) — тоже часть вида карты: их
         // нет в слое, и без них болото было бы с голыми тенями. Промах — ошибка.
         loadSwayTextures(mapArt.sway.map((v) => v.src)),
+        // Глухая стена за краем карты (31.10.2026) — часть вида карты: промах — ошибка.
+        Assets.load(mapArt.wall) as Promise<Texture>,
       ])
       backdropLoad.catch(() => {})
 
@@ -3284,7 +3286,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // только стала известна карта (backdropLoad) — здесь её только дожидаемся.
       // null у слоя фона — его нет; промах готового слоя карты — ошибка, и она
       // поднимается этим await.
-      const [farTexture, midTexture, artTextures, loadedSway] = await backdropLoad
+      const [farTexture, midTexture, artTextures, loadedSway, wallTexture] = await backdropLoad
       swayTextures = loadedSway
       artTextures.forEach((t, i) => {
         const s = mapArt.slices[i]
@@ -3395,10 +3397,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         artSprite.y = 0
         worldContainer.addChild(artSprite)
       })
-      // Продолжение карты за левым и правым краем (30.10.2026) — видно только в
+      // Глухая стена за левым и правым краем карты (31.10.2026) — видна только в
       // боковых полях камеры низкого горизонтального экрана (см. updateCamera).
       mapEdges = createMapEdges({
-        worldContainer, slices: mapArt.slices, textures: artTextures, mapWidth: mapArt.width, mapHeight: mapArt.height,
+        worldContainer, wall: wallTexture, mapWidth: mapArt.width, mapHeight: mapArt.height,
       })
       // Камыш и осока — поверх слоя (как лежали в нём) и под шипами. Качаются
       // только вместе с атмосферой: без WebGL и при «уменьшении движения» стоят
@@ -4777,7 +4779,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       //     поднять его некуда — высоты мало. Были с 12.10.2026, убраны 28.10.2026
       //     (в поле была пустая полоса), ВОЗВРАЩЕНЫ 30.10.2026 (решение Андрея: без
       //     них у края карты герой стоял под кнопками); пустоты больше нет — в
-      //     поле продолжение карты (entities/mapEdges.ts);
+      //     поле глухая стена (entities/mapEdges.ts);
       //   узкий экран (телефон в вертикали) — НИЖНЯЯ ГРАНИЦА (13.10.2026): ноги
       //     героя не опускаются ниже верха блока кнопок (cameraFloorY). Блок
       //     дугой шире прежнего, и на узком экране герой, глядящий влево, стоит
@@ -4870,7 +4872,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const focusX = player.x + player.width / 2 + lookaheadPx
         // Края: в обычном экране карта упирается в края экрана (поля нулевые), в
         // низком горизонтальном — останавливается раньше, на ширину блоков кнопок
-        // (в поле — продолжение карты, entities/mapEdges.ts). Карта уже экрана с
+        // (в поле — глухая стена, entities/mapEdges.ts). Карта уже экрана с
         // полями — clamp отдаёт левое поле, карта прижата к нему, без дёрганья.
         const targetX = clamp(
           app!.screen.width / 2 - focusX * s,

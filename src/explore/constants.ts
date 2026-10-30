@@ -1568,20 +1568,22 @@ export const CAMERA_V_ANCHOR_LOW = 0.72
 // раньше края экрана, на ширину блоков кнопок плюс GAP и HERO_PAD, — у края карты
 // герой стоит в стороне от кнопок. Были с 12.10.2026, убраны 28.10.2026 (в поле
 // была видна пустая полоса, только фон), ВОЗВРАЩЕНЫ 30.10.2026 (решение Андрея:
-// без них у края карты герой стоял под кнопками) — теперь в поле продолжение
-// карты (MAP_EDGE_* ниже, entities/mapEdges.ts).
+// без них у края карты герой стоял под кнопками) — в поле глухая стена из
+// камня карты (с 31.10.2026; MAP_EDGE_* ниже, entities/mapEdges.ts).
 export const CAMERA_FIELD_GAP = 8
 export const CAMERA_FIELD_HERO_PAD = 40
 
-// ПРОДОЛЖЕНИЕ КАРТЫ ЗА КРАЕМ (30.10.2026, entities/mapEdges.ts): в боковых полях
-// камеры низкого горизонтального экрана — крайняя полоса готового слоя карты
-// шириной MAP_EDGE_EXTEND_PX (px мира), отражённая у края, и затемнение цветом
-// MAP_EDGE_SHADE_COLOR от NEAR (у края карты) до FAR (у дальнего края полосы).
-// 768 px мира при масштабе 0.42 — 322 px экрана, шире любого поля (≈ 280 px).
+// ГЛУХАЯ СТЕНА ЗА КРАЕМ (31.10.2026, entities/mapEdges.ts): в боковых полях
+// камеры низкого горизонтального экрана — плитка камня карты
+// (tools/build_map_walls.py) шириной MAP_EDGE_EXTEND_PX (px мира), окрашенная
+// MAP_EDGE_WALL_TINT (чуть темнее карты), и тень шва цветом
+// MAP_EDGE_SHADE_COLOR: NEAR у края карты, к MAP_EDGE_SEAM_PX от него — ноль.
+// 768 px мира при масштабе 0.42 — 322 px экрана, шире любого поля (≈ 310 px).
 export const MAP_EDGE_EXTEND_PX = 768
-export const MAP_EDGE_SHADE_COLOR: [number, number, number] = [11, 10, 14]
-export const MAP_EDGE_SHADE_NEAR = 0.15
-export const MAP_EDGE_SHADE_FAR = 0.92
+export const MAP_EDGE_WALL_TINT = 0x9a9a9a
+export const MAP_EDGE_SEAM_PX = 128
+export const MAP_EDGE_SHADE_COLOR: [number, number, number] = [8, 7, 10]
+export const MAP_EDGE_SHADE_NEAR = 0.88
 
 // Look-ahead камеры (только по X, см. updateCamera): целимся не в игрока,
 // а в точку на LOOKAHEAD_TILES тайлов ВПЕРЕДИ по факту движения — видно
