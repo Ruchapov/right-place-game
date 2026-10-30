@@ -1574,16 +1574,11 @@ export const CAMERA_FIELD_GAP = 8
 export const CAMERA_FIELD_HERO_PAD = 40
 
 // ГЛУХАЯ СТЕНА ЗА КРАЕМ (31.10.2026, entities/mapEdges.ts): в боковых полях
-// камеры низкого горизонтального экрана — плитка камня карты
-// (tools/build_map_walls.py) шириной MAP_EDGE_EXTEND_PX (px мира), окрашенная
-// MAP_EDGE_WALL_TINT (чуть темнее карты), и тень шва цветом
-// MAP_EDGE_SHADE_COLOR: NEAR у края карты, к MAP_EDGE_SEAM_PX от него — ноль.
-// 768 px мира при масштабе 0.42 — 322 px экрана, шире любого поля (≈ 310 px).
-export const MAP_EDGE_EXTEND_PX = 768
-export const MAP_EDGE_WALL_TINT = 0x9a9a9a
-export const MAP_EDGE_SEAM_PX = 128
-export const MAP_EDGE_SHADE_COLOR: [number, number, number] = [8, 7, 10]
-export const MAP_EDGE_SHADE_NEAR = 0.88
+// камеры низкого горизонтального экрана — готовые картинки стены слева и справа
+// (tools/build_map_walls.py), ширина 12 клеток. 768 px мира при масштабе 0.42 —
+// 322 px экрана, шире любого поля (≈ 310 px). Число — то же, что COLS × TILE в
+// сборщике: игра сверяет с ним размер картинки.
+export const MAP_EDGE_WALL_W = 768
 
 // Look-ahead камеры (только по X, см. updateCamera): целимся не в игрока,
 // а в точку на LOOKAHEAD_TILES тайлов ВПЕРЕДИ по факту движения — видно

@@ -2800,7 +2800,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // нет в слое, и без них болото было бы с голыми тенями. Промах — ошибка.
         loadSwayTextures(mapArt.sway.map((v) => v.src)),
         // Глухая стена за краем карты (31.10.2026) — часть вида карты: промах — ошибка.
-        Assets.load(mapArt.wall) as Promise<Texture>,
+        Promise.all([Assets.load(mapArt.walls.left), Assets.load(mapArt.walls.right)]) as Promise<[Texture, Texture]>,
       ])
       backdropLoad.catch(() => {})
 
@@ -3286,7 +3286,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // только стала известна карта (backdropLoad) — здесь её только дожидаемся.
       // null у слоя фона — его нет; промах готового слоя карты — ошибка, и она
       // поднимается этим await.
-      const [farTexture, midTexture, artTextures, loadedSway, wallTexture] = await backdropLoad
+      const [farTexture, midTexture, artTextures, loadedSway, wallTextures] = await backdropLoad
+      wallTextures.forEach((t, i) => {
+        if (t.width !== C.MAP_EDGE_WALL_W || t.height !== mapArt.height) {
+          throw new Error(
+            `Стена ${i === 0 ? 'слева' : 'справа'} от карты ${resolvedMapFile} не того размера: ${t.width}×${t.height}, ` +
+            `ожидался ${C.MAP_EDGE_WALL_W}×${mapArt.height}. Пересобрать: tools/build_map_walls.py`,
+          )
+        }
+      })
       swayTextures = loadedSway
       artTextures.forEach((t, i) => {
         const s = mapArt.slices[i]
@@ -3400,7 +3408,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Глухая стена за левым и правым краем карты (31.10.2026) — видна только в
       // боковых полях камеры низкого горизонтального экрана (см. updateCamera).
       mapEdges = createMapEdges({
-        worldContainer, wall: wallTexture, mapWidth: mapArt.width, mapHeight: mapArt.height,
+        worldContainer, wallLeft: wallTextures[0], wallRight: wallTextures[1], mapWidth: mapArt.width,
       })
       // Камыш и осока — поверх слоя (как лежали в нём) и под шипами. Качаются
       // только вместе с атмосферой: без WebGL и при «уменьшении движения» стоят

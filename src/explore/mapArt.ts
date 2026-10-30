@@ -19,7 +19,7 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
  * кодом.
  */
 export type MapArtSwayItem = { src: string; x: number; y: number; w: number; h: number; phase: number }
-export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number; sway: MapArtSwayItem[]; wall: string }
+export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number; sway: MapArtSwayItem[]; walls: { left: string; right: string } }
 
 /**
  * Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега).
@@ -45,9 +45,13 @@ export function mapArtFor(mapFile: string): MapArt | null {
     height: entry.height,
     gridChecksum: entry.gridChecksum,
     sway: (entry.sway ?? []).map((v) => ({ src: src(`sway/${v.sprite}.png`), x: v.x, y: v.y, w: v.w, h: v.h, phase: v.phase })),
-    // Плитка глухой стены за краем карты (31.10.2026, entities/mapEdges.ts):
-    // собирает tools/build_map_walls.py, имя — по имени карты (.txt → .webp).
-    wall: src(`walls/${mapFile.replace(/\.txt$/, '')}.webp`),
+    // Глухая стена слева и справа от карты (31.10.2026, entities/mapEdges.ts):
+    // собирает tools/build_map_walls.py из частей кладки самой карты, 12 клеток
+    // шириной и во всю высоту карты; имя — по имени карты (.txt → _L/_R.webp).
+    walls: {
+      left: src(`walls/${mapFile.replace(/\.txt$/, '')}_L.webp`),
+      right: src(`walls/${mapFile.replace(/\.txt$/, '')}_R.webp`),
+    },
   }
 }
 
