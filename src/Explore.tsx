@@ -60,7 +60,7 @@ import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
 import { createCritFlashSystem } from './explore/entities/critFlash'
 import { createEliteGlowSystem } from './explore/entities/eliteGlow'
 import { createMapEdges } from './explore/entities/mapEdges'
-import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, PATROLS_PER_RUN, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies } from './runExtras'
+import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { loadSheetFrames } from './explore/spriteLoader'
@@ -645,26 +645,29 @@ function devEnemyKind(): EnemyKind {
   return 'beast'
 }
 
+// Рассеянные группы офлайн-заглушки (30.10.2026) — то же правило, что
+// scatterEnemyGroups на сервере (runEvents.ts): точки всех enemyClusters — один
+// пул, каждая группа берёт GROUP_SIZE точек вразброс, вторая — из оставшихся.
+// Возвращает события и пул, оставшийся после групп (для патрульных).
+function devScatterGroups(slots: unknown, chosen: EventCandidate[]): { events: EventCandidate[]; rest: [number, number][] } {
+  const clusters = (slots as { enemyClusters?: { points?: unknown }[] } | null)?.enemyClusters ?? []
+  let pool: [number, number][] = clusters.flatMap((c) => Array.isArray(c?.points) ? c.points.filter(isPointXY) : [])
+  const events = chosen.map((ev) => {
+    if (ev.kind !== 'enemy') return ev
+    const points = scatterGroupPoints(pool, GROUP_SIZE)
+    pool = remainingPoints(pool, points)
+    const first = points[0]
+    return first ? { ...ev, x: first[0], y: first[1], clusterPoints: points } : { ...ev, clusterPoints: [] }
+  })
+  return { events, rest: pool }
+}
+
 // Патрульные офлайн-заглушки (30.10.2026) — то же правило, что rollRunPatrols
-// на сервере (runEvents.ts): группы, не выпавшие событием, враг в средней точке
-// (или ближайшей к ней не ближе PATROL_EVENT_CLEARANCE клеток к точкам событий
-// на том же ряду), до PATROLS_PER_RUN штук. Вид — devEnemyKind, трофеи — свой
-// бросок заглушки.
-function devRollPatrols(pool: EventCandidate[], chosen: EventCandidate[]): StartExplorePatrol[] {
-  const key = (x: number, y: number) => `${x},${y}`
-  const taken = new Set(chosen.filter((ev) => ev.kind === 'enemy').map((ev) => key(ev.x, ev.y)))
+// на сервере: из точек, оставшихся после групп (pickPatrolSpots). Вид —
+// devEnemyKind, трофеи — свой бросок заглушки.
+function devRollPatrols(rest: [number, number][], chosen: EventCandidate[]): StartExplorePatrol[] {
   const eventPoints: [number, number][] = chosen.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
-  const clear = (p: [number, number]) =>
-    eventPoints.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
-  const spots: [number, number][] = []
-  for (const ev of pool) {
-    if (ev.kind !== 'enemy' || !ev.clusterPoints || ev.clusterPoints.length === 0 || taken.has(key(ev.x, ev.y))) continue
-    const sorted = [...ev.clusterPoints].sort((a, b) => a[0] - b[0])
-    const mid = sorted[Math.floor((sorted.length - 1) / 2)]
-    const spot = [...sorted].sort((a, b) => Math.abs(a[0] - mid[0]) - Math.abs(b[0] - mid[0])).find(clear)
-    if (spot) spots.push(spot)
-  }
-  return pickRandom(spots, PATROLS_PER_RUN).map(([x, y]) => ({
+  return pickPatrolSpots(rest, eventPoints).map(([x, y]) => ({
     x, y, enemyKind: devEnemyKind(), trophyReward: rollTrophies(TROPHY_MULT_PATROL, C.PLAYER_LEVEL_FALLBACK),
   }))
 }
@@ -3082,6 +3085,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           chosenEvents = pickRandom(poolWithoutBoss, C.EVENTS_PER_RUN)
         }
         bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
+        const scattered = devScatterGroups(slots, chosenEvents)
+        chosenEvents = scattered.events
         // Вид врагов офлайн бросает сам клиент — сервера, который назвал бы его,
         // здесь нет (см. devEnemyKind и плашку «ЗАГЛУШКА»).
         // Ловушку у сундука — тоже, и КАК СЕРВЕР: здесь, на старте забега, один
@@ -3097,7 +3102,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             : ev.kind === 'chest' ? { ...ev, isMimic: Math.random() < C.CHEST_MIMIC_CHANCE }
               : ev,
         )
-        devPatrols = devRollPatrols(eventPool, chosenEvents)
+        devPatrols = devRollPatrols(scattered.rest, chosenEvents)
       }
       // Вид врагов КАЖДОГО события, разобранный один раз здесь — ровно как
       // награды ниже: дальше по коду оба пути (сервер и заглушка) дают одну
