@@ -144,7 +144,7 @@ export function rollEnemyKind(): RunEnemyKind {
 // --- Типы ---
 
 import type { EventDrop } from './runDrops.js'
-import { ELITE_CHANCE, PATROLS_PER_RUN, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies } from './runExtras.js'
+import { ELITE_CHANCE, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
 
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
@@ -291,6 +291,9 @@ function readSlots(mapFile: string): SlotsFile {
 function buildEventCandidates(slots: SlotsFile): EventCandidate[] {
   const candidates: EventCandidate[] = []
 
+  // Кластер — «билет» группы в розыгрыше (их число — шанс выпасть группе), а
+  // её точки не его: группе их раздаёт scatterEnemyGroups из общего пула
+  // (30.10.2026). Здесь clusterPoints — заглушка до раздачи.
   for (const cluster of slots.enemyClusters ?? []) {
     const points = Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : []
     const first = points[0]
@@ -364,10 +367,29 @@ const TROPHY_MULT_BY_KIND: Partial<Record<RunEventKind, number>> = {
 // тем же правилам и гарантиям, что клиент, и разыгрывает награду для
 // каждого. characterLevel идёт в rollTrophies вместо клиентской заглушки
 // PLAYER_LEVEL_FALLBACK.
+// Общий пул точек врагов карты: точки ВСЕХ enemyClusters (30.10.2026).
+function enemyPointPool(slots: SlotsFile): [number, number][] {
+  return (slots.enemyClusters ?? []).flatMap((cluster) =>
+    Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : [])
+}
+
+// Раздаёт группам-событиям точки из общего пула вразброс (scatterGroupPoints):
+// вторая группа — из оставшихся после первой. x, y группы — первая её точка.
+function scatterEnemyGroups(slots: SlotsFile, chosen: EventCandidate[]): EventCandidate[] {
+  let pool = enemyPointPool(slots)
+  return chosen.map((ev) => {
+    if (ev.kind !== 'enemy') return ev
+    const points = scatterGroupPoints(pool, GROUP_SIZE)
+    pool = remainingPoints(pool, points)
+    const first = points[0]
+    return first ? { ...ev, x: first[0], y: first[1], clusterPoints: points } : { ...ev, clusterPoints: [] }
+  })
+}
+
 export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent[] {
   const slots = readSlots(mapFile)
   const eventPool = buildEventCandidates(slots)
-  const chosenEvents = pickChosenEvents(mapFile, eventPool)
+  const chosenEvents = scatterEnemyGroups(slots, pickChosenEvents(mapFile, eventPool))
 
   return chosenEvents.map((ev) => {
     const multiplier = TROPHY_MULT_BY_KIND[ev.kind]
@@ -426,29 +448,16 @@ export type RunPatrol = {
 }
 
 /**
- * До PATROLS_PER_RUN патрульных: по одному на группу enemyClusters, не
- * выпавшую событием. Стоит в средней точке группы; если она ближе
- * PATROL_EVENT_CLEARANCE клеток (на том же ряду) к точке любого выпавшего
- * события, берётся ближайшая к середине точка группы, которая дальше; такой
- * нет — этой группе патруля нет. Свободных групп меньше — патрульных меньше.
+ * До PATROLS_PER_RUN патрульных (30.10.2026): из точек общего пула, которые не
+ * достались группам-событиям, не ближе PATROL_EVENT_CLEARANCE клеток (на том же
+ * ряду) к точке любого выпавшего события и не ближе GROUP_MIN_GAP друг к другу
+ * (pickPatrolSpots, runExtras.ts). Мест меньше — патрульных меньше.
  */
 export function rollRunPatrols(mapFile: string, events: RunEvent[], characterLevel: number): RunPatrol[] {
   const slots = readSlots(mapFile)
-  const key = (p: [number, number]) => `${p[0]},${p[1]}`
-  const taken = new Set(events.filter((ev) => ev.kind === 'enemy').map((ev) => key([ev.x, ev.y])))
+  const groupPoints = events.flatMap((ev) => ev.kind === 'enemy' ? ev.clusterPoints ?? [] : [])
   const eventPoints: [number, number][] = events.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
-  const clear = (p: [number, number]) =>
-    eventPoints.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
-  const spots: [number, number][] = []
-  for (const cluster of slots.enemyClusters ?? []) {
-    const points = Array.isArray(cluster?.points) ? cluster.points.filter(isPointXY) : []
-    if (points.length === 0 || taken.has(key(points[0]))) continue
-    const sorted = [...points].sort((a, b) => a[0] - b[0])
-    const mid = sorted[Math.floor((sorted.length - 1) / 2)]
-    const spot = [...sorted].sort((a, b) => Math.abs(a[0] - mid[0]) - Math.abs(b[0] - mid[0])).find(clear)
-    if (spot) spots.push(spot)
-  }
-  return pickRandom(spots, PATROLS_PER_RUN).map(([x, y]) => ({
+  return pickPatrolSpots(remainingPoints(enemyPointPool(slots), groupPoints), eventPoints).map(([x, y]) => ({
     x,
     y,
     enemyKind: rollEnemyKind(),
