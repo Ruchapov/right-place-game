@@ -15,9 +15,9 @@ type Run = (path: string, body: Record<string, unknown>, signature: string, afte
 /** Уровни делениями, если их немного; у Ратуши (25) — сплошной полосой. */
 const SEGMENTS_MAX = 15
 
-export function BuildingSheet({ building, me, now, pending, run, setNote, onClose, onDonate, onOpenStorage }: {
+export function BuildingSheet({ building, me, now, pending, run, setNote, onClose, onOpenStorage }: {
   building: GuildBuilding; me: GuildMemberState; now: number; pending: boolean; run: Run
-  setNote: (s: string | null) => void; onClose: () => void; onDonate: () => void; onOpenStorage: () => void
+  setNote: (s: string | null) => void; onClose: () => void; onOpenStorage: () => void
 }) {
   const g = me.guild
   const lvl = g.buildings[building]
@@ -118,15 +118,15 @@ export function BuildingSheet({ building, me, now, pending, run, setNote, onClos
           Наивысший уровень
         </div>
       ) : (
-        <UpgradeBlock building={building} lvl={lvl} cost={cost} me={me} pending={pending} isLeader={isLeader} run={run} onDonate={onDonate} />
+        <UpgradeBlock building={building} lvl={lvl} cost={cost} me={me} pending={pending} isLeader={isLeader} run={run} />
       )}
     </BottomSheet>
   )
 }
 
-function UpgradeBlock({ building, lvl, cost, me, pending, isLeader, run, onDonate }: {
+function UpgradeBlock({ building, lvl, cost, me, pending, isLeader, run }: {
   building: GuildBuilding; lvl: number; cost: { gold: number; eliteTrophies: number }; me: GuildMemberState
-  pending: boolean; isLeader: boolean; run: Run; onDonate: () => void
+  pending: boolean; isLeader: boolean; run: Run
 }) {
   const g = me.guild
   const next = lvl + 1
@@ -168,15 +168,12 @@ function UpgradeBlock({ building, lvl, cost, me, pending, isLeader, run, onDonat
       {cost.gold > 0 && costRow('icon_gold.png', 'Золото', g.gold, cost.gold)}
       {cost.eliteTrophies > 0 && costRow('icon_elite_trophy.png', 'Элитные трофеи', g.eliteTrophies, cost.eliteTrophies)}
       {shortLine && <div style={{ fontSize:12, lineHeight:1.4, color:G.pink }}>{shortLine}</div>}
-      <div style={{ display:'flex', gap:8 }}>
-        <button onClick={onDonate} style={{ ...darkBtn(true), flex:1 }}>Пополнить казну</button>
-        {isLeader && (
-          <button disabled={!canUpgrade} onClick={() => run('/guild/upgrade', { building }, `upgrade:${building}:${lvl}`)}
-            style={{ ...(canUpgrade ? goldBtn(true) : darkBtn(false)), flex:1, fontSize:13 }}>
-            {lvl === 0 ? 'Открыть' : 'Улучшить'}
-          </button>
-        )}
-      </div>
+      {isLeader && (
+        <button disabled={!canUpgrade} onClick={() => run('/guild/upgrade', { building }, `upgrade:${building}:${lvl}`)}
+          style={{ ...(canUpgrade ? goldBtn(true) : darkBtn(false)), width:'100%', fontSize:13 }}>
+          {lvl === 0 ? 'Открыть' : 'Улучшить'}
+        </button>
+      )}
       {!isLeader && <div style={{ fontSize:12, color:G.textSoft, textAlign:'center' }}>Улучшать здания может только глава гильдии</div>}
     </div>
   )

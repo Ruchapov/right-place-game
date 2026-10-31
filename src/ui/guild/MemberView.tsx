@@ -127,7 +127,7 @@ export function MemberView(props: {
 
       {sheet !== null && (
         <BuildingSheet building={sheet} me={me} now={now} pending={pending} run={run} setNote={props.setNote}
-          onClose={() => setSheet(null)} onDonate={() => setDonating(true)}
+          onClose={() => setSheet(null)}
           onOpenStorage={() => { setSheet(null); selectTab('storage') }} />
       )}
       {donating && (
