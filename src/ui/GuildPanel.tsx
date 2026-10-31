@@ -48,66 +48,117 @@ function btn(primary: boolean, enabled: boolean): CSSProperties {
 
 // --- Герб ---
 
+/** Подписи частей герба в выборе — по номеру картинки emblem_<часть>_N.png. */
+const EMBLEM_BG_LABEL = ['Щит', 'Круг', 'Знамя', 'Ромб']
+const EMBLEM_FRAME_LABEL = ['Терновая', 'Лавровая', 'Каменная', 'Костяная']
+const EMBLEM_SYMBOL_LABEL = ['Волк', 'Мечи', 'Череп', 'Свеча', 'Корона', 'Ворон']
+if (EMBLEM_BG_LABEL.length !== GUILD_EMBLEM_BG_COUNT || EMBLEM_FRAME_LABEL.length !== GUILD_EMBLEM_FRAME_COUNT
+  || EMBLEM_SYMBOL_LABEL.length !== GUILD_EMBLEM_SYMBOL_COUNT) {
+  console.error('GuildPanel: подписей частей герба не столько, сколько картинок в каталоге guild.ts')
+}
+const PRAYER_ICON: Record<GuildPrayer, string> = { attack: 'buff_attack.png', armor: 'buff_armor.png' }
+const BUILDING_ICON: Record<GuildBuilding, string> = {
+  level: 'building_hall.png', storage: 'building_storage.png', cauldron: 'building_cauldron.png',
+  library: 'building_library.png', altar: 'building_altar.png',
+}
+
 /**
- * Герб из трёх слоёв: фон (цвет палитры), рамка, символ. Арт будет позже
- * (public/assets/guild/emblem_*.png); пока файла нет — картинка прячется по
- * onError, и остаётся заглушка кодом: круг цвета фона, рамка и буква тега.
+ * Фон герба: картинка серая и красится в цвет палитры — div цвета под маской
+ * этой картинки, а поверх она же с multiply, чтобы осталась фактура.
+ * onError — с верхней картинки: маска об ошибке не сообщает.
+ */
+function EmblemBg({ bg, color, onError }: { bg: number; color: string; onError?: () => void }) {
+  const src = GUILD_ART(`emblem_bg_${bg}.png`)
+  const mask = `url("${src}") center / contain no-repeat`
+  return (
+    <div style={{ position:'absolute', inset:0, isolation:'isolate' }}>
+      <div style={{ position:'absolute', inset:0, background:color, mask, WebkitMask:mask }} />
+      <img src={src} alt="" onError={onError}
+        style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain', mixBlendMode:'multiply' }} />
+    </div>
+  )
+}
+
+/**
+ * Герб из трёх картинок (public/assets/guild/emblem_*.png): рамка на весь
+ * размер, фон цвета палитры ~66% по центру, символ ~40% поверх. Не загрузилась
+ * хоть одна — заглушка кодом: круг цвета фона и буква тега.
  */
 export function GuildEmblem({ emblem, tag, size }: { emblem: GuildEmblemView; tag: string; size: number }) {
   const color = GUILD_EMBLEM_COLORS[emblem.color] ?? GUILD_EMBLEM_COLORS[0]
-  const frameStyles: CSSProperties[] = [
-    { border:`2px solid ${C.bone}` },
-    { border:`3px double ${C.glowMid}` },
-    { border:`2px dashed ${C.stoneLight}` },
-    { border:`3px solid ${C.outline}`, boxShadow:`0 0 0 2px ${C.glowEdge}` },
-  ]
-  const hide = (e: { currentTarget: HTMLImageElement }) => { e.currentTarget.style.display = 'none' }
-  const layer: CSSProperties = { position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain' }
+  // Сбой помнится для этого набора картинок: в выборе герба набор меняется.
+  const key = `${emblem.bg}:${emblem.frame}:${emblem.symbol}`
+  const [brokenKey, setBrokenKey] = useState<string | null>(null)
+  const broken = () => setBrokenKey(key)
+  const centered = (frac: number): CSSProperties => {
+    const s = Math.round(size * frac)
+    return { position:'absolute', left:(size - s) / 2, top:(size - s) / 2, width:s, height:s }
+  }
+  if (brokenKey === key) {
+    return (
+      <div data-guild-emblem="" style={{ position:'relative', width:size, height:size, flexShrink:0 }}>
+        <div style={{
+          position:'absolute', inset:0, borderRadius:'50%', background:color, border:`2px solid ${C.bone}`,
+          boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <span style={{ fontFamily:FONT_DISPLAY, fontSize:Math.round(size * 0.42), color:C.textMain, textShadow:'0 1px 2px #000' }}>
+            {tag.slice(0, 1)}
+          </span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div data-guild-emblem="" style={{ position:'relative', width:size, height:size, flexShrink:0 }}>
-      <div style={{
-        position:'absolute', inset:0, borderRadius: emblem.bg === 0 ? '50%' : '22%', background:color,
-        boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'center',
-        ...frameStyles[emblem.frame % frameStyles.length],
-      }}>
-        <span style={{ fontFamily:FONT_DISPLAY, fontSize:Math.round(size * 0.42), color:C.textMain, textShadow:'0 1px 2px #000' }}>
-          {tag.slice(0, 1)}
-        </span>
-      </div>
-      <img src={GUILD_ART(`emblem_bg_${emblem.bg}.png`)} alt="" onError={hide} style={layer} />
-      <img src={GUILD_ART(`emblem_frame_${emblem.frame}.png`)} alt="" onError={hide} style={layer} />
-      <img src={GUILD_ART(`emblem_symbol_${emblem.symbol}.png`)} alt="" onError={hide} style={layer} />
+      <div style={centered(0.66)}><EmblemBg bg={emblem.bg} color={color} onError={broken} /></div>
+      <img src={GUILD_ART(`emblem_symbol_${emblem.symbol}.png`)} alt="" onError={broken} style={{ ...centered(0.4), objectFit:'contain' }} />
+      <img src={GUILD_ART(`emblem_frame_${emblem.frame}.png`)} alt="" onError={broken}
+        style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain' }} />
     </div>
   )
 }
 
 function EmblemPicker({ value, onChange, tag }: { value: GuildEmblemView; onChange: (e: GuildEmblemView) => void; tag: string }) {
-  const row = (label: string, count: number, key: keyof GuildEmblemView) => (
-    <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
-      <span style={{ fontSize:11, color:C.textDim, width:58, flexShrink:0 }}>{label}</span>
-      <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
-        {Array.from({ length: count }, (_, i) => (
-          <button key={i} onClick={() => onChange({ ...value, [key]: i })}
-            style={{
-              minWidth:32, minHeight:32, borderRadius:6, cursor:'pointer', fontSize:11,
-              border:`1px solid ${value[key] === i ? C.glowCore : C.stoneDark}`,
-              background: key === 'color' ? GUILD_EMBLEM_COLORS[i] : C.niche, color:C.textMain,
-            }}>
-            {key === 'color' ? '' : i + 1}
-          </button>
-        ))}
-      </div>
+  const color = GUILD_EMBLEM_COLORS[value.color] ?? GUILD_EMBLEM_COLORS[0]
+  const title = (label: string) => <div style={{ fontSize:11, color:C.textDim, margin:'8px 0 4px' }}>{label}</div>
+  const pick = (selected: boolean): CSSProperties => ({
+    minHeight:52, padding:'4px 2px', borderRadius:6, cursor:'pointer', minWidth:0,
+    border:`1px solid ${selected ? C.glowCore : C.stoneDark}`,
+    background: selected ? C.niche : C.nicheDeep,
+    display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+  })
+  const caption = (text: string, selected: boolean) => (
+    <span style={{ fontSize:9, color: selected ? C.glowCore : C.textDim, maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{text}</span>
+  )
+  const grid = (labels: string[], key: 'bg' | 'frame' | 'symbol', preview: (i: number) => ReactNode) => (
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(6, minmax(0, 1fr))', gap:4 }}>
+      {labels.map((label, i) => (
+        <button key={i} onClick={() => onChange({ ...value, [key]: i })} style={pick(value[key] === i)}>
+          <div style={{ position:'relative', width:30, height:30 }}>{preview(i)}</div>
+          {caption(label, value[key] === i)}
+        </button>
+      ))}
     </div>
   )
+  const img = (file: string) => <img src={GUILD_ART(file)} alt="" style={{ width:30, height:30, objectFit:'contain' }} />
   return (
     <div>
       <div style={{ display:'flex', justifyContent:'center', margin:'4px 0' }}>
         <GuildEmblem emblem={value} tag={tag || '?'} size={64} />
       </div>
-      {row('Фон', GUILD_EMBLEM_BG_COUNT, 'bg')}
-      {row('Цвет', GUILD_EMBLEM_COLORS.length, 'color')}
-      {row('Рамка', GUILD_EMBLEM_FRAME_COUNT, 'frame')}
-      {row('Символ', GUILD_EMBLEM_SYMBOL_COUNT, 'symbol')}
+      {title('Фон')}
+      {grid(EMBLEM_BG_LABEL.slice(0, GUILD_EMBLEM_BG_COUNT), 'bg', (i) => <EmblemBg bg={i} color={color} />)}
+      {title('Цвет')}
+      <div style={{ display:'grid', gridTemplateColumns:`repeat(${GUILD_EMBLEM_COLORS.length}, minmax(0, 1fr))`, gap:4 }}>
+        {GUILD_EMBLEM_COLORS.map((c, i) => (
+          <button key={i} aria-label={`Цвет ${i + 1}`} onClick={() => onChange({ ...value, color: i })}
+            style={{ minHeight:36, minWidth:0, borderRadius:6, cursor:'pointer', background:c, border:`2px solid ${value.color === i ? C.glowCore : C.stoneDark}` }} />
+        ))}
+      </div>
+      {title('Рамка')}
+      {grid(EMBLEM_FRAME_LABEL.slice(0, GUILD_EMBLEM_FRAME_COUNT), 'frame', (i) => img(`emblem_frame_${i}.png`))}
+      {title('Символ')}
+      {grid(EMBLEM_SYMBOL_LABEL.slice(0, GUILD_EMBLEM_SYMBOL_COUNT), 'symbol', (i) => img(`emblem_symbol_${i}.png`))}
     </div>
   )
 }
@@ -151,7 +202,7 @@ export function GuildBuffChips({ me, now }: { me: GuildMe | null; now: number })
       {chips.map((c) => (
         <div key={c.k} title={c.k === 'attack' ? 'Молитва силы' : 'Молитва брони'}
           style={{ display:'flex', alignItems:'center', gap:4, background:C.nicheDeep, border:`1px solid ${c.pct >= GUILD_PRAYER_CRIT_PCT ? C.glowCore : C.stoneDark}`, borderRadius:12, padding:'2px 8px' }}>
-          <span style={{ fontSize:12 }}>{c.k === 'attack' ? '⚔' : '🛡'}</span>
+          <img src={ICON(PRAYER_ICON[c.k])} alt="" width={18} height={18} />
           <span style={{ fontSize:11, color:C.glowCore }}>+{c.pct}%</span>
           <span style={{ fontSize:10, color:C.textDim }}>{fmtWait(c.left)}</span>
         </div>
@@ -802,11 +853,16 @@ function BuildingsTab({ me, pending, run, now, setNote }: { me: GuildMemberState
         const canUpgrade = isLeader && affordable && !pending
         return (
           <div key={k} data-guild-building={k} style={{ ...panel, marginBottom:6 }}>
-            <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
-              <span style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.textMain, flex:1 }}>{GUILD_BUILDING_LABEL[k]}</span>
-              <span style={{ fontSize:11, color: lvl > 0 ? C.glowCore : C.textDim }}>{lvl > 0 ? `ур. ${lvl} / ${GUILD_BUILDING_MAX[k]}` : 'закрыто'}</span>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:6 }}>
+              <img src={GUILD_ART(BUILDING_ICON[k])} alt="" width={44} height={44} style={{ flexShrink:0, opacity: lvl > 0 ? 1 : 0.55 }} />
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
+                  <span style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.textMain, flex:1 }}>{GUILD_BUILDING_LABEL[k]}</span>
+                  <span style={{ fontSize:11, color: lvl > 0 ? C.glowCore : C.textDim }}>{lvl > 0 ? `ур. ${lvl} / ${GUILD_BUILDING_MAX[k]}` : 'закрыто'}</span>
+                </div>
+                <div style={{ fontSize:11, color:C.textDim, marginTop:3, lineHeight:1.4 }}>{gives(k, lvl)}</div>
+              </div>
             </div>
-            <div style={{ fontSize:11, color:C.textDim, margin:'3px 0 6px', lineHeight:1.4 }}>{gives(k, lvl)}</div>
             {cost !== null && (
               <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                 <span style={{ fontSize:11, color: affordable ? C.bone : C.textDim, flex:1, display:'flex', alignItems:'center', gap:4 }}>
@@ -861,10 +917,11 @@ function BuildingsTab({ me, pending, run, now, setNote }: { me: GuildMemberState
                   const active = guildBuffPctAt(buff.pct, buff.untilMs, now) > 0
                   const can = !pending && !active
                   return (
-                    <button key={p} disabled={!can} style={{ ...btn(true, can), fontSize:11 }}
+                    <button key={p} disabled={!can} style={{ ...btn(true, can), fontSize:11, display:'flex', flexDirection:'column', alignItems:'center', gap:2, minWidth:0 }}
                       onClick={() => run('/guild/pray', { prayer: p }, `pray:${p}:${buff.untilMs ?? 0}`, (r) => {
                         if (r.prayer) setNote(r.prayer.crit ? `Критическая молитва! +${r.prayer.pct}%` : `${r.prayer.label}: +${r.prayer.pct}% на 2 ч.`)
                       })}>
+                      <img src={ICON(PRAYER_ICON[p])} alt="" width={28} height={28} />
                       {p === 'attack' ? 'Молитва силы' : 'Молитва брони'}
                       <div style={{ fontSize:10, color:C.textDim, fontFamily:'inherit' }}>
                         {active ? `+${buff.pct}% · ${fmtWait(left)}` : 'помолиться'}

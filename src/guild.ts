@@ -256,7 +256,7 @@ export const GUILD_CHAT_POLL_MS = 4500
 
 // --- Герб ---
 
-export const GUILD_EMBLEM_BG_COUNT = 2
+export const GUILD_EMBLEM_BG_COUNT = 4
 export const GUILD_EMBLEM_FRAME_COUNT = 4
 export const GUILD_EMBLEM_SYMBOL_COUNT = 6
 /** Палитра цвета фона герба — 8 цветов, номер цвета хранится в emblemColor. */
