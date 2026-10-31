@@ -1147,13 +1147,35 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // eventClosed — состояние ТОЛЬКО для HUD-иконок сверху (закрытий мало, до 3
   // за забег, — в отличие от HP лишний ререндер тут не проблема).
   const eventsRef = useRef<MapEvent[]>([])
+  // Все задачи забега выполнены и это уже объявлено (31.10.2026): надпись
+  // «Все задачи выполнены» и кнопка «Завершить вылазку» показаны ОДИН раз за
+  // забег. До 31.10.2026 этот же флаг означал «финиш уже отправлен из конца
+  // тика» — теперь финиш уходит только по кнопке (после отсчёта) или выходом.
   const runCompleteFiredRef = useRef(false)
+  // Кнопка «Завершить вылазку» (31.10.2026): 'none' — её нет (задачи не
+  // выполнены, или герой мёртв); 'ready' — кнопка на экране; 'countdown' — она
+  // нажата, идёт отсчёт 3 → 2 → 1, после него финиш пройденным.
+  const [finishPhase, setFinishPhase] = useState<'none' | 'ready' | 'countdown'>('none')
+  // Цифра отсчёта на экране (3, 2, 1) — меняется трижды за отсчёт, ререндер не
+  // каждый кадр.
+  const [finishCountdown, setFinishCountdown] = useState(0)
+  // Сколько мс отсчёта осталось; 0 — отсчёта нет. Тикает в тикере по
+  // ticker.deltaMS (игра идёт, пока он идёт): свёрнутое приложение ставит на
+  // паузу и отсчёт, а новый setup() обнуляет его вместе с остальным забегом.
+  const finishCountdownMsRef = useRef(0)
+  // Бессмертие на время отсчёта: весь входящий урон игнорируется (applyDamage).
+  // ОТДЕЛЬНЫЙ признак, а не тестовый invincible: тот — тумблер отладки, этот —
+  // правило игры, и смешивать их нельзя (сняли тумблер — пропало бы и это).
+  const finishImmortalRef = useRef(false)
+  // Надпись «Все задачи выполнены» (гаснет сама, CSS-анимацией).
+  const [allTasksNotice, setAllTasksNotice] = useState(false)
   const onRunCompleteRef = useRef<(result: RunResultSummary) => void>(() => {})
   // /run/finish-explore уходит РОВНО ОДИН раз за забег — есть 3 триггера
-  // (смерть, выход через шестерёнку, все 3 события закрыты, см.
-  // sendFinishExplore ниже), но сработавший первым выставляет этот флаг, и
-  // остальные становятся no-op, даже если сработали подряд (напр. закрылось
-  // 3-е событие и следом игрок сразу нажал выход).
+  // (смерть, выход через шестерёнку, конец отсчёта кнопки «Завершить
+  // вылазку», см. sendFinishExplore ниже; до 31.10.2026 третьим был сам факт
+  // «все события закрыты»), но сработавший первым выставляет этот флаг, и
+  // остальные становятся no-op, даже если сработали подряд (напр. отсчёт
+  // кончился, а игрок в тот же миг нажал выход).
   const finishExploreSentRef = useRef(false)
   // Снимок данных финиша на момент первой отправки — "Повторить сохранение"
   // шлёт РОВНО его, а не пересобирает из рефов забега.
@@ -1394,9 +1416,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   }
 
   // Единая точка завершения забега — из трёх мест (смерть, выход через
-  // шестерёнку, все 3 события закрыты, см. вызовы ниже/в JSX). Дедуп —
+  // шестерёнку, конец отсчёта кнопки «Завершить вылазку», см. вызовы ниже и в
+  // JSX). С 31.10.2026 закрытие всех событий забег НЕ завершает: игрок может
+  // дособрать патрульных и элиту и завершает сам, кнопкой. Дедуп —
   // finishExploreSentRef, первый вызов "выигрывает", остальные no-op (напр.
-  // если 3-е событие закрылось и следом сразу нажали выход).
+  // если отсчёт кончился и в тот же миг нажали выход).
   //
   // Экран итогов (ResultsScreen, см. runResult выше) показывается СРАЗУ
   // клиентскими числами (buildClientResult) — не ждём сеть, чтобы не
@@ -1407,10 +1431,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Telegram) на сервер не ходим вообще — saveStatus='offline'.
   //
   // ⚠️ Смерть всегда важнее (12.10.2026): забег уходит пройденным, только если
-  // герой ЖИВ в момент завершения. Держит это вызывающий — конец тика зовёт
-  // sendFinishExplore(false) только при живом герое (см. allEventsClosed в
-  // setup). Проверка ниже — вторая линия на случай нового вызывающего: мёртвого
-  // героя она завершает смертью и ГРОМКО, а не молча.
+  // герой ЖИВ в момент завершения. Держит это вызывающий — конец отсчёта в
+  // конце тика и выход шестерёнкой зовут sendFinishExplore(false) только при
+  // живом герое (см. allEventsClosed в setup). Проверка ниже — вторая линия на
+  // случай нового вызывающего: мёртвого героя она завершает смертью и ГРОМКО,
+  // а не молча.
   function sendFinishExplore(diedArg: boolean) {
     if (finishExploreSentRef.current) return
     finishExploreSentRef.current = true
@@ -2205,6 +2230,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   function triggerDeath() {
     if (deathRef.current) return // уже идёт — не перезапускаем повторно
     deathRef.current = true
+    // Смерть важнее (31.10.2026): кнопка «Завершить вылазку» и отсчёт пропадают,
+    // забег уйдёт смертью, как раньше. Обнуление отсчёта — чтобы конец тика не
+    // отправил финиш пройденным (sendFinishExplore и так превратил бы его в
+    // смерть, но громко).
+    finishCountdownMsRef.current = 0
+    finishImmortalRef.current = false
+    setFinishPhase('none')
     deathHoldRef.current = 0
     attackingRef.current = false
     dashingRef.current = false // обрываем dash (смерть главнее)
@@ -2265,7 +2297,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // тратит. Не тратится и там, где урона всё равно не было бы (рывок, окно
     // оберега, мёртвый герой, тестовое бессмертие). Шипы и ловушки сюда не
     // приходят — у них takeDamageUnblockable и нет источника.
-    if (source !== undefined && reflectReadyRef.current && !invincible && !deathRef.current && !dashingRef.current && !(charmIframeRef.current > 0)) {
+    if (source !== undefined && reflectReadyRef.current && !invincible && !finishImmortalRef.current && !deathRef.current && !dashingRef.current && !(charmIframeRef.current > 0)) {
       reflectReadyRef.current = false
       reflectHitRef.current(source, Math.ceil(amount))
       return false
@@ -2334,6 +2366,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // который всё равно мёртв: надпись «Оберег спас», charmUsed: true в финише,
     // оберег списан зря.
     if (deathRef.current) return
+    // Отсчёт «Завершить вылазку» (31.10.2026): забег уже завершается, герой
+    // бессмертен — урон игнорируется целиком, как у тестового тумблера выше, но
+    // признак свой (finishImmortalRef), а не invincible.
+    if (finishImmortalRef.current) return
     // Неуязвимость на время рывка — та же точка перехвата, что у
     // debug-бессмертия выше, но ОТДЕЛЬНЫЙ признак: invincible это тестовый
     // тумблер (см. SettingsPanel), смешивать его с боевой механикой нельзя —
@@ -4130,6 +4166,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       finishPayloadRef.current = null // сброс на случай повторного запуска setup()
       finishInFlightRef.current = false // сброс на случай повторного запуска setup()
       finishSendCountRef.current = 0 // сброс на случай повторного запуска setup()
+      // Кнопка «Завершить вылазку» и её отсчёт (31.10.2026) — тоже на каждый setup().
+      runCompleteFiredRef.current = false
+      finishCountdownMsRef.current = 0
+      finishImmortalRef.current = false
+      setFinishPhase('none')
+      setAllTasksNotice(false)
       // Сброс на случай повторного запуска setup() (React 19 Strict Mode
       // монтирует эффект дважды).
       // ⚠️ Оберега здесь НЕТ намеренно: его состояние включается ВЫШЕ, из ответа
@@ -5021,9 +5063,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Контрабандист (у него своя всплывашка с итогом сделки) и события,
       // закрытые касанием, у которых награды нет по построению.
       //
-      // allEventsClosed — «закрыто последнее событие, забег можно завершать
-      // пройденным». Ставит closeEvent, читает ОДНО место: самый конец тика, и
-      // завершает забег, только если герой к этому концу жив (12.10.2026).
+      // allEventsClosed — «закрыто последнее событие, все задачи выполнены».
+      // Ставит closeEvent, читает ОДНО место: самый конец тика. С 31.10.2026
+      // там забег НЕ завершается: показываются надпись «Все задачи выполнены» и
+      // кнопка «Завершить вылазку», а финиш уходит по её отсчёту. Как и раньше
+      // — только если герой к концу тика жив (12.10.2026).
       // Отложено до конца тика намеренно: событие и смертельный удар бывают в
       // ОДНОМ тике, причём закрытие идёт первым — доиграла смерть босса, а
       // следом, в том же bossSystem.update, прилетел его шип; исчез последний
@@ -5079,11 +5123,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           return next
         })
         if (eventsRef.current.every((e) => e.closed)) {
-          // Все события закрыты — но «забег пройден» решает НЕ это место, а
+          // Все события закрыты — но что дальше, решает НЕ это место, а
           // конец тика, и только для живого героя (см. allEventsClosed у
           // объявления и проверку в самом конце тикера). До 12.10.2026 финиш
           // уходил прямо отсюда и про героя не спрашивал: последнее событие,
           // закрывшееся, пока герой падал замертво, завершало забег пройденным.
+          // С 31.10.2026 и конец тика забег не завершает — только показывает
+          // кнопку «Завершить вылазку».
           //
           // onRunCompleteRef (App.tsx) отсюда не зовётся: итоги показывает сам
           // Explore (ResultsScreen, см. sendFinishExplore/runResult выше), а
@@ -5091,16 +5137,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // экран. Он вызывается позже — внутри sendFinishExplore, когда придёт
           // настоящий ответ сервера (обновляет player в App.tsx).
           allEventsClosed = true
-        } else {
-          // Забег продолжается — снимаем срез счётчиков (см. sendProgress):
-          // событие это самый крупный шаг забега, и именно после него обиднее
-          // всего потерять рост статов, закрыв приложение.
-          // ИМЕННО в else: на последнем событии срез не нужен (финиш выше везёт
-          // те же четыре числа и закрывает забег), а уйди он — два запроса
-          // гонялись бы за одну и ту же запись currentRun, и срез получил бы
-          // 409 просто потому, что финиш успел раньше.
-          sendProgress()
         }
+        // Снимаем срез счётчиков (см. sendProgress): событие это самый крупный
+        // шаг забега, и именно после него обиднее всего потерять рост статов,
+        // закрыв приложение. С 31.10.2026 — и на ПОСЛЕДНЕМ событии тоже: финиш
+        // теперь уходит не сразу, а когда игрок нажмёт «Завершить вылазку», и
+        // до этого он может дособирать патрульных сколько угодно. Если срез
+        // ещё в пути, когда уйдёт финиш, — это штатная гонка: sendProgress
+        // не шлёт после финиша, а отказ 409/400 после него молча пишет в log
+        // (см. там же); финиш свой 409 повторяет сам.
+        sendProgress()
       }
 
       // Урон-чек атаки — раньше проверялся каждый кадр, пока attackActiveRef
@@ -6892,16 +6938,32 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           swayDecorSystem.update(ticker.deltaMS)
         }
 
-        // «Забег пройден» — ЕДИНСТВЕННОЕ место, и стоит оно последним в тике:
-        // после всех источников урона этого кадра. Герой мёртв — не завершаем
-        // вовсе: его смерть доиграет и сама отправит финиш смертью (ветка
-        // deathRef в приоритете анимаций выше). Флаг при этом не сбрасываем —
-        // мёртвый не оживает, и условие больше не выполнится никогда.
+        // «Все задачи выполнены» — ЕДИНСТВЕННОЕ место, и стоит оно последним в
+        // тике: после всех источников урона этого кадра. Герой мёртв — не
+        // объявляем вовсе: его смерть доиграет и сама отправит финиш смертью
+        // (ветка deathRef в приоритете анимаций выше). Флаг при этом не
+        // сбрасываем — мёртвый не оживает, и условие больше не выполнится никогда.
         // Закрытие вне тика (кнопки и ответы Контрабандиста) попадает сюда же,
         // на ближайшем тике.
+        // С 31.10.2026 забег здесь НЕ завершается: надпись и кнопка «Завершить
+        // вылазку», тикер идёт дальше — игрок дособирает патрульных и элиту.
         if (allEventsClosed && !runCompleteFiredRef.current && !deathRef.current) {
           runCompleteFiredRef.current = true
-          sendFinishExplore(false)
+          setAllTasksNotice(true)
+          setFinishPhase('ready')
+        }
+        // Отсчёт кнопки «Завершить вылазку»: по игровому времени тика, 3 → 2 →
+        // 1, после «1» — финиш пройденным. Смерть отсчёт обнуляет
+        // (triggerDeath), сюда тогда не заходим; дедуп финиша — внутри
+        // sendFinishExplore (finishExploreSentRef).
+        if (finishCountdownMsRef.current > 0) {
+          finishCountdownMsRef.current -= ticker.deltaMS
+          if (finishCountdownMsRef.current <= 0) {
+            finishCountdownMsRef.current = 0
+            if (!deathRef.current) sendFinishExplore(false)
+          } else {
+            setFinishCountdown(Math.ceil(finishCountdownMsRef.current / 1000))
+          }
         }
       })
 
@@ -7088,8 +7150,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     )
   }
 
-  // Забег кончился (смерть/выход/все 3 события закрыты, см. sendFinishExplore
-  // выше) — экран итогов вместо игры. Канвас/HudPlate/SettingsPanel/TouchControls
+  // Забег кончился (смерть/выход/отсчёт кнопки «Завершить вылазку», см.
+  // sendFinishExplore выше) — экран итогов вместо игры. Канвас/HudPlate/SettingsPanel/TouchControls
   // ниже больше не рендерятся; onClose уходит только по кнопке "В меню" внутри.
   if (runResult) {
     return (
@@ -7212,7 +7274,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           Здесь же — строка о запасном рендерере без WebGL (см. canvasFallback):
           она для игрока, поэтому стоит там же, где остальные предупреждения
           забега, и держится весь забег. */}
-      {(sipSync || progressStalled || canvasFallback) && (() => {
+      {/* Под HP-плитой — колонка по центру: предупреждения забега и под ними
+          кнопка «Завершить вылазку» (31.10.2026). Одна колонка, чтобы кнопка
+          вставала ПОД плашкой, а не на неё. Ниже плиты и шестерёнки, выше
+          боевых кнопок (они от низа экрана) — в обоих положениях телефона. */}
+      {(sipSync || progressStalled || canvasFallback || (ready && finishPhase === 'ready')) && (() => {
         const desync = sipSync !== null && (sipSync.limitRejected || sipSync.mismatched > 0)
         const color = desync ? '#E0353B' : '#F08A24'
         return (
@@ -7220,15 +7286,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             style={{
               position: 'fixed',
               top: `calc(var(--rp-safe-top, 0px) + 6px + ${C.HP_FRAME_H} + 6px)`,
-              left: 0,
-              right: 0,
+              left: 'var(--rp-safe-left, 0px)',
+              right: 'var(--rp-safe-right, 0px)',
               zIndex: 1002,
               display: 'flex',
-              justifyContent: 'center',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 8,
               pointerEvents: 'none',
             }}
           >
-            <div
+            {(sipSync || progressStalled || canvasFallback) && <div
               style={{
                 maxWidth: 'calc(100vw - 16px)',
                 boxSizing: 'border-box',
@@ -7255,10 +7323,101 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
                   срез дойдёт, — успешный срез несёт ВЕСЬ прогресс забега, и
                   прежние неудачи перестают что-либо значить. */}
               {progressStalled && <div>⚠ Прогресс забега не уходит на сервер — выход сейчас потеряет рост статов</div>}
-            </div>
+            </div>}
+            {ready && finishPhase === 'ready' && (
+              <button
+                data-finish-run=""
+                onClick={() => {
+                  // Одно нажатие: кнопка сразу пропадает (finishPhase), повторное
+                  // невозможно. Мёртвый герой или уже ушедший финиш — ничего.
+                  if (finishExploreSentRef.current || deathRef.current || finishCountdownMsRef.current > 0) return
+                  finishImmortalRef.current = true
+                  finishCountdownMsRef.current = 3000
+                  setFinishCountdown(3)
+                  setFinishPhase('countdown')
+                }}
+                style={{
+                  pointerEvents: 'auto',
+                  minHeight: 44,
+                  padding: '10px 22px',
+                  borderRadius: 10,
+                  border: `2px solid ${Theme.glowEdge}`,
+                  background: Theme.nicheDeep,
+                  color: Theme.glowCore,
+                  fontFamily: C.FONT_DISPLAY,
+                  fontWeight: 700,
+                  fontSize: 'clamp(13px, 4vmin, 15px)',
+                  letterSpacing: '0.06em',
+                  whiteSpace: 'nowrap',
+                  cursor: 'pointer',
+                  animation: 'eventRingPulse 1.6s ease-in-out infinite',
+                  touchAction: 'manipulation',
+                }}
+              >
+                ЗАВЕРШИТЬ ВЫЛАЗКУ
+              </button>
+            )}
           </div>
         )
       })()}
+
+      {/* «Все задачи выполнены» (31.10.2026) — на 2.8 с, гаснет сама. Выше
+          центра экрана, чтобы не ложиться на героя; тапы не ловит. */}
+      {ready && allTasksNotice && finishPhase !== 'none' && (
+        <div
+          onAnimationEnd={() => setAllTasksNotice(false)}
+          style={{
+            position: 'fixed',
+            top: '30%',
+            left: 0,
+            right: 0,
+            zIndex: 1002,
+            textAlign: 'center',
+            pointerEvents: 'none',
+            fontFamily: C.FONT_DISPLAY,
+            fontWeight: 700,
+            fontSize: 'clamp(18px, 6vmin, 28px)',
+            letterSpacing: '0.04em',
+            color: Theme.glowCore,
+            textShadow: '0 2px 4px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)',
+            animation: 'allTasksNotice 2.8s ease-out forwards',
+          }}
+        >
+          Все задачи выполнены
+        </div>
+      )}
+
+      {/* Отсчёт «Завершить вылазку» (31.10.2026): 3 → 2 → 1 по центру экрана,
+          тень как у таймера обелисков; key — чтобы каждая цифра заново
+          проигрывала появление. Тапы не ловит — игра идёт под ним. */}
+      {ready && finishPhase === 'countdown' && finishCountdown > 0 && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1002,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            key={finishCountdown}
+            style={{
+              fontFamily: C.FONT_DISPLAY,
+              fontSize: 'clamp(64px, 22vmin, 120px)',
+              fontWeight: 900,
+              lineHeight: 1,
+              color: Theme.textMain,
+              textShadow: '0 2px 4px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)',
+              animation: 'finishCountIn 0.45s ease-out both',
+            }}
+          >
+            {finishCountdown}
+          </div>
+        </div>
+      )}
 
       {!ready && <StoneFrameScreen title="ПОДГОТОВКА" lines={['Забег готовится...']} pulse />}
 
@@ -7275,6 +7434,17 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             @keyframes obeliskTimerPulse {
               0%, 100% { opacity: 1; }
               50% { opacity: 0.55; }
+            }
+            @keyframes allTasksNotice {
+              0% { opacity: 0; transform: translateY(6px); }
+              12% { opacity: 1; transform: translateY(0); }
+              70% { opacity: 1; }
+              100% { opacity: 0; }
+            }
+            @keyframes finishCountIn {
+              0% { opacity: 0; transform: scale(1.6); }
+              35% { opacity: 1; transform: scale(1); }
+              100% { opacity: 1; transform: scale(1); }
             }
           `}</style>
 
@@ -7353,8 +7523,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           onClose родителя уходит только по кнопке "В меню" на нём, не
           отсюда напрямую (тот же приём, что и в ветке смерти выше). Дедуп
           (finishExploreSentRef) общий на все 3 триггера — если забег уже
-          закрылся по другому пути, здесь просто no-op. */}
-      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible} onClose={() => sendFinishExplore(true)} trophies={trophies} runTrophies={() => trophiesEarnedRef.current} />
+          закрылся по другому пути, здесь просто no-op.
+          С 31.10.2026: если все события уже закрыты и герой жив, выход —
+          это пройденный забег, как кнопка «Завершить вылазку» (задачи
+          выполнены, дособирание не отнимает заработанного). */}
+      <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible}
+        onClose={() => {
+          const tasksDone = eventsRef.current.length > 0 && eventsRef.current.every((e) => e.closed)
+          sendFinishExplore(!(tasksDone && !deathRef.current))
+        }}
+        trophies={trophies} runTrophies={() => trophiesEarnedRef.current} tasksDone={finishPhase !== 'none'} />
 
           <TouchControls
             dirRef={dirRef}

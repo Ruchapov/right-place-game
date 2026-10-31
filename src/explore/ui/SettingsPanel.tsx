@@ -36,9 +36,12 @@ interface SettingsPanelProps {
   // перерисовку не вызывает, а показывать устаревшее число хуже, чем не
   // показывать.
   runTrophies: () => number
+  // Все задачи забега выполнены и герой жив (31.10.2026): выход тогда — пройденный
+  // забег, как кнопка «Завершить вылазку», и ничего не сгорает.
+  tasksDone?: boolean
 }
 
-export default function SettingsPanel({ mapFile, onSelectMap, invincible, onToggleInvincible, onClose, trophies, runTrophies }: SettingsPanelProps) {
+export default function SettingsPanel({ mapFile, onSelectMap, invincible, onToggleInvincible, onClose, trophies, runTrophies, tasksDone }: SettingsPanelProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false)
   // Снимок добытого за забег на момент ОТКРЫТИЯ окна: дальше оно может расти
@@ -263,10 +266,12 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
                 забеге не начисляется вовсе. Поэтому строк две, и вторая
                 появляется, только если есть чему не начислиться. */}
             <div style={{ color: '#EDE7F2', fontSize: 15, marginBottom: 18, lineHeight: 1.4 }}>
-              {trophies === undefined
-                ? 'Выйти из забега? Весь накопленный банк трофеев сгорит.'
-                : `Выйти из забега? Весь банк трофеев сгорит: ${Math.max(0, Math.round(trophies))}.`}
-              {runTrophiesAtOpen > 0 && (
+              {tasksDone
+                ? 'Завершить вылазку? Все задачи выполнены — трофеи сохранятся.'
+                : trophies === undefined
+                  ? 'Выйти из забега? Весь накопленный банк трофеев сгорит.'
+                  : `Выйти из забега? Весь банк трофеев сгорит: ${Math.max(0, Math.round(trophies))}.`}
+              {!tasksDone && runTrophiesAtOpen > 0 && (
                 <div style={{ fontSize: 13, color: '#B9AFC7', marginTop: 8 }}>
                   Добытое в этом забеге ({runTrophiesAtOpen}) не начислится.
                 </div>
