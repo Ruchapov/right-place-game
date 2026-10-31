@@ -716,22 +716,19 @@ export async function guildRoutes(server: FastifyInstance) {
     }),
   )
 
-  // Тип вступления и герб — глава.
+  // Тип вступления — глава. Герб не меняется.
   server.post<GuildBody>('/guild/settings', (request, reply) =>
     guildAction(request, reply, 'settings', async (tx, characterId, now) => {
       const body = request.body ?? {}
+      // Герб выбирается один раз при создании (правило игры, 01.11.2026).
+      if (body.emblem !== undefined) throw new RouteRejection(400, { error: 'Emblem cannot be changed' })
       const joinMode = body.joinMode === undefined ? undefined : parseGuildJoinMode(body.joinMode)
       if (joinMode === null) throw new RouteRejection(400, { error: 'Invalid joinMode' })
-      const emblem = body.emblem === undefined ? undefined : parseGuildEmblem(body.emblem)
-      if (emblem === null) throw new RouteRejection(400, { error: 'Invalid emblem' })
       await withMyGuild(tx, characterId, now, async (m) => {
         requireRole(m, ['leader'])
         await tx.guild.update({
           where: { id: m.guildId },
-          data: {
-            ...(joinMode !== undefined ? { joinMode } : {}),
-            ...(emblem !== undefined ? { emblemSymbol: emblem.symbol, emblemFrame: emblem.frame, emblemBg: emblem.bg, emblemColor: emblem.color } : {}),
-          },
+          data: joinMode !== undefined ? { joinMode } : {},
         })
         // Открыли или закрыли — висящие заявки больше не нужны.
         if (joinMode !== undefined && joinMode !== 'request') await tx.guildRequest.deleteMany({ where: { guildId: m.guildId } })
