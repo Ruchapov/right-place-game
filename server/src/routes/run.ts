@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
-import { PrismaClient, Prisma } from '@prisma/client'
+import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
 import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
@@ -61,6 +61,7 @@ import {
   settleQuestState,
   applyRunToQuests,
   parseQuestRunCounters,
+  QUEST_RUN_COUNTER_FIELDS,
   collectQuestRunFacts,
   questView,
   type QuestState,
@@ -1137,6 +1138,13 @@ type SipBody = { tier?: number; sipId?: unknown; runId?: unknown }
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
+  /**
+   * Брошенный забег засчитан как пройденный (31.10.2026): все задачи были
+   * выполнены, и вход закрыл его по снимку финиша (settleExploreRun). Только
+   * вместе с interrupted: true; у финиша кнопкой и у смерти поля нет.
+   * ⚠️ КОПИЯ — в src/api.ts.
+   */
+  completed?: boolean
   trophiesEarned: number
   trophiesLost: number
   /**
@@ -1822,10 +1830,30 @@ export async function runRoutes(server: FastifyInstance) {
     // глоток выше, и подтверждает забег тем же способом и с тем же строгим
     // `=== false` (забег без поля остаётся байт в байт прежним) — и тоже
     // только в окне подтверждения (см. /run/sip).
-    const nextRun: ActiveExploreRun = {
+    const confirmedRun: ActiveExploreRun = {
       ...run,
       progress,
       ...(run.confirmed === false && readyWindowOpen(run, Date.now()) ? { confirmed: true } : {}),
+    }
+
+    // Снимок финиша (31.10.2026, см. parseRunCompletion): поля нет — снимок
+    // не трогаем (старый клиент, или задачи ещё не выполнены); null — смерть,
+    // снимок стирается; годный — сохраняется, только если все события
+    // закрыты и забег подтверждён. Мусор — громкий warn, срез пишется без
+    // снимка (и прежний снимок остаётся как был).
+    const completionRead = parseRunCompletion((request.body as { completion?: unknown } | null)?.completion, run)
+    let nextRun: ActiveExploreRun = confirmedRun
+    if (completionRead.kind === 'clear') {
+      nextRun = { ...confirmedRun }
+      delete nextRun.completion
+    } else if (completionRead.kind === 'malformed') {
+      request.log.warn({ userId, reason: completionRead.reason }, 'progress: completion snapshot rejected, ignored')
+    } else if (completionRead.kind === 'ok') {
+      if (readRunConfirmed(confirmedRun) === true) {
+        nextRun = { ...confirmedRun, completion: completionRead.completion }
+      } else {
+        request.log.warn({ userId }, 'progress: completion snapshot on an unconfirmed run, ignored')
+      }
     }
 
     // Условная запись — ровно та же, что у /run/sip выше, и по той же причине:
@@ -1923,541 +1951,24 @@ export async function runRoutes(server: FastifyInstance) {
       )
     }
 
-    const died = request.body.died === true || unconfirmedPenalty
-    // Индексы закрытых событий — общая валидация (parseClosedEventIndices):
-    // та же, что у обеих ручек Контрабандиста, иначе ставка и финиш посчитали бы
-    // разные суммы на одних и тех же данных.
-    const closedEvents = unconfirmedPenalty ? [] : parseClosedEventIndices(request.body.closedEvents, run)
-
-    // --- Трофеи за забег ---
-    //
-    // Банк ДО забега. Он же банк на СТАРТЕ: за время открытого забега трофеи в
-    // БД не меняет ничего (сверено по всем записям в server/src — обмен на
-    // золото фильтром требует пустой currentRun, покупка зелий трофеи не
-    // трогает, а /auth/login меняет их только ВМЕСТЕ с закрытием забега, после
-    // которого этот обработчик получит 400/409).
-    // --- Оберег от смерти ---
-    //
-    // Списывается ТОЛЬКО если сработал (spendAt: 'effect'), поэтому единственное
-    // место, где он уходит со склада, — эта условная запись финиша.
-    //
-    // Доверие клиенту здесь ровно такое же, как у `died`: спасение происходит в
-    // бою, а бой целиком на клиенте. Что сервер ПРОВЕРЯЕТ — что оберег реально
-    // был взят в забег (свой список в currentRun.consumablesUsed, не слово
-    // клиента). Соврать «спас» без взятого оберега нельзя.
-    const charmUsed = !unconfirmedPenalty && request.body.charmUsed === true
-    const usedRead = readConsumablesUsed(run)
-    if (usedRead.kind === 'malformed') {
-      // Список взятого испорчен — проверить право на списание нечем. Молча
-      // пропустить значило бы или отобрать оберег даром, или отдать спасение
-      // бесплатно.
-      request.log.error({ userId, consumablesUsed: run.consumablesUsed }, 'finish-explore: currentRun.consumablesUsed is malformed')
-      return reply.status(500).send({ error: 'Corrupt run state' })
-    }
-    const takenInRun = usedRead.kind === 'used' ? usedRead.ids : []
-    if (charmUsed && !takenInRun.includes('charm_death')) {
-      request.log.warn({ userId, takenInRun }, 'finish-explore: charmUsed without a charm taken into the run')
-      return reply.status(400).send({ error: 'Charm was not taken into this run' })
-    }
-
-    const bank = character.trophies
-    const dealRead = readSmugglerDeal(run)
-    if (dealRead.kind === 'malformed') {
-      // Итог посчитать нечем: сделка была, но её числа испорчены. Молча
-      // посчитать «как будто сделки не было» нельзя — это тихо отменило бы
-      // кражу или отняло выигрыш.
-      request.log.error({ userId, smugglerDeal: run.smugglerDeal }, 'finish-explore: currentRun.smugglerDeal is malformed')
-      return reply.status(500).send({ error: 'Corrupt run state' })
-    }
-
-    // Итоговый банк ПОСЛЕ забега (при смерти обнуляется ниже).
-    //   Сделка была: множитель уже применён к ставке в момент сделки
-    //     (deal.after), и к результату прибавляется ТОЛЬКО добыча событий,
-    //     закрытых ПОСЛЕ неё. Закрытое до сделки второй раз не считается — оно
-    //     уже внутри deal.stake.
-    //   Сделки не было: банк плюс вся добыча, без множителя — прежнее поведение.
-    let total: number
-    if (dealRead.kind === 'deal') {
-      const deal = dealRead.deal
-      const before = new Set(deal.closedBefore)
-      const afterDealIndices = closedEvents.filter((i) => !before.has(i))
-      total = deal.after + trophySumOf(run, afterDealIndices)
-    } else {
-      total = bank + trophySumOf(run, closedEvents)
-    }
-    // Убитые патрульные (30.10.2026) — поверх, без множителя сделки: они не
-    // события, и ставка у Контрабандиста их не включает. Штрафной путь
-    // неподтверждённого забега — ничего, как и событий. Испорченный список —
-    // без них и громкий лог.
-    const patrolsRead = readRunPatrols(run)
-    if (patrolsRead === 'malformed') {
-      request.log.error({ userId, patrols: run.patrols }, 'finish-explore: currentRun.patrols is malformed — patrol trophies not counted')
-    }
-    const runPatrols = patrolsRead === 'malformed' ? [] : patrolsRead
-    const killedPatrols = unconfirmedPenalty ? [] : parseKilledPatrolIndices(request.body.killedPatrols, runPatrols)
-    total += killedPatrols.reduce((sum, i) => sum + runPatrols[i].trophyReward, 0)
-
-    // ⚠️ Поле smugglerOutcome из тела запроса НЕ ЧИТАЕТСЯ вообще — исход бросает
-    // сервер в /run/smuggler-deal и хранит в currentRun.smugglerDeal. Старый
-    // клиент поле ещё присылает; оно игнорируется намеренно, а не по забывчивости
-    // (прежняя схема позволяла всегда присылать 'gain').
-    // Убийство босса — bonusLevels += 1 (см. задачу). "Закрыт" здесь значит
-    // ТО ЖЕ самое, что уже решает выплату трофеев выше (closedEvents,
-    // провалидированные индексы в run.events ИЗ currentRun, не из тела
-    // запроса) — тот же уровень доверия клиенту, что и у trophySum, отдельный
-    // сырой флаг "bossKilled" от клиента не заводим и не читаем. run.events[i]
-    // само по себе доказывает, что босс в ЭТОМ забеге был (currentRun —
-    // серверные данные), а не то, что клиент придумал.
-    const bossClosed = closedEvents.some((i) => run.events[i].kind === 'boss')
-
-    const newTrophies = total
-    // Насколько банк изменился за забег. ⚠️ МОЖЕТ БЫТЬ ОТРИЦАТЕЛЬНЫМ и нулём не
-    // обрезается: при краже у Контрабандиста итог законно меньше банка на
-    // старте, и это ровно то, что игрок должен увидеть. Math.max(0, …) здесь
-    // превратил бы потерю в правдоподобный ноль (см. CLAUDE.md, запрет тихих
-    // фолбэков).
-    const earned = newTrophies - bank
-    // trophiesLost — the balance actually wiped by death (the character's
-    // PRE-update total, not just this run's earned amount): on a normal
-    // (non-death) finish nothing was lost, so 0.
-    // Не меняется этой правкой: смерть по-прежнему жжёт ВЕСЬ предрановый банк.
-    const trophiesLost = died ? bank : 0
-    // Элитные трофеи (30.10.2026, docs/guilds.md): +1 за каждое закрытое событие
-    // с элитным врагом. По правилу трофеев ЭТОГО забега: смерть (и штрафной путь
-    // неподтверждённого) их не даёт. Личный запас eliteTrophies смерть не
-    // трогает — это не банк трофеев.
-    const eliteTrophiesEarned = died
-      ? 0
-      : closedEvents.filter((i) => run.events[i].eliteIndex !== undefined).length * ELITE_TROPHIES_PER_ELITE_EVENT
-
-    // --- Stat growth (see game.ts applyStatGrowth) — applies regardless of
-    // died: the player still dealt/took damage over the run either way. ---
-    // level больше не колонка в БД — вычисляется на месте (тот же приём, что
-    // в остальных эндпоинтах этого файла), нужен ДО роста статов — и для
-    // потолка урона (масштаб врага на текущем уровне), и для сравнения
-    // "levelUp?" после.
-    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-
-    // Четыре сырых счётчика из тела — МЯГКИЙ разбор (кривое поле становится
-    // нулём, остальные живут): у старого клиента их может не быть вовсе, а
-    // отказывать всему финишу из-за одного числа нельзя, забег уже сыгран.
-    // Штрафной путь неподтверждённого забега — по записанному сервером срезу,
-    // как у входа: телу такого клиента верить не в чем.
-    const reportedProgress = unconfirmedPenalty
-      ? (readRunProgress(run) ?? emptyRunProgress())
-      : coerceRunProgress(request.body)
-
-    // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
-    // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
-    // логи: что именно срезано и в каком забеге.
-    const capped = clampRunProgress(reportedProgress, run, characterLevel)
-    if (capped.dealtScale < 1) {
-      request.log.warn(
-        {
-          userId,
-          combinedAttackSkill: reportedProgress.attackDamageDealt + reportedProgress.skillDamageDealt,
-          maxDamageDealt: capped.maxDamageDealt,
-          enemyCount: capped.enemyCount,
-          bossCount: capped.bossCount,
-          characterLevel,
-        },
-        'finish-explore: attackDamageDealt+skillDamageDealt exceeded cap, clamped',
-      )
-    }
-    if (reportedProgress.damageTaken > capped.maxDamageTaken) {
-      request.log.warn(
-        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, charmHealMax: capped.charmHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
-        'finish-explore: damageTaken exceeded cap, clamped',
-      )
-    }
-    if (capped.runHeroClass === 'malformed') {
-      request.log.error({ userId, heroClass: run.heroClass }, 'finish-explore: corrupt heroClass in currentRun — damage cap counted without class')
-    }
-    if (capped.runHealSkill === 'malformed') {
-      request.log.error({ userId, healSkill: run.healSkill }, 'finish-explore: corrupt healSkill in currentRun — caps counted without the heal skill')
-    }
-    if (reportedProgress.healedAmount > capped.maxHealed) {
-      request.log.warn(
-        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, runMaxHp: run.maxHp },
-        'finish-explore: healedAmount exceeded cap, clamped',
-      )
-    }
-
-    // --- Рост УРОВНЕЙ НАВЫКОВ (02.10.2026) ---
-    // Тот же источник, что у роста статов (сырьё из тела финиша, прошедшее
-    // те же мягкий разбор и потолки), и та же функция, что у /auth/login на
-    // брошенном забеге (applySkillUsesGrowth, game.ts). Смерть рост НЕ отменяет —
-    // ровно как у статов выше: навыки были применены по-настоящему, и сгорают
-    // только трофеи.
-    const skillLevelsBefore = skillLevelsOf(character)
-    const skillGrowth = applySkillUsesGrowth(skillLevelsBefore, skillUsesOf(character), capped.progress.skillUses)
-
-    // bonusLevels инкрементируется здесь, ДО applyStatGrowth — level (снимок)
-    // обязан пересчитаться уже с новым bonusLevels в той же формуле
-    // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
-    const newBonusLevels = character.bonusLevels + (bossClosed ? 1 : 0)
-
-    // --- Списание выпитых зелий, по тирам ---
-    // Ступень 1: разбор поля. Мусор (нет поля, не массив, не целое, отрицательное,
-    // NaN) обнуляется поэлементно — тем же приёмом, что кривые индексы
-    // closedEvents выше: не 400, но и не молчаливая догадка. Ноль значит
-    // «списывать нечего», он же достаётся старому клиенту, который поля не шлёт.
-    const rawDrunk = request.body.potionsDrunkByTier
-    const reportedDrunk: number[] = new Array(POTION_TIER_COUNT).fill(0)
-    if (Array.isArray(rawDrunk)) {
-      for (let i = 0; i < POTION_TIER_COUNT; i++) {
-        const v = rawDrunk[i]
-        if (Number.isInteger(v) && (v as number) >= 0) reportedDrunk[i] = v as number
-      }
-    }
-
-    // Сверка с тем, что накопил /run/sip в currentRun. Только ПРЕДУПРЕЖДЕНИЕ:
-    // списание по-прежнему идёт от числа клиента (ступени 2–3 ниже), расхождение
-    // здесь — сигнал о рассинхроне клиента и сервера, а не повод отказать.
-    const recordedDrunk = readRunPotionsDrunk(run)
-    if (recordedDrunk === null || reportedDrunk.some((n, i) => n !== recordedDrunk[i])) {
-      request.log.warn(
-        { userId, reportedDrunk, rawReported: rawDrunk, recordedDrunk, rawRecorded: run.potionsDrunk },
-        'finish-explore: potionsDrunkByTier differs from /run/sip record in currentRun',
-      )
-    }
-
-    // Ступень 2: оба потолка — по каждому тиру (против снимка run.potions из
-    // currentRun, а не из тела запроса) и по сумме глотков. Арифметика и
-    // порядок среза живут в clampPotionsSpent (runState.ts): /auth/login
-    // списывает зелья брошенного забега теми же потолками, и разойтись им
-    // нельзя. Тот же уровень доверия клиенту, что у потолка урона выше.
-    const runStock = runPotionStock(run)
-    const sipsAllowed = runSipsAllowed(run)
-    // Штрафной путь — выпитое по записи /run/sip, как у входа.
-    const drunkToSpend = unconfirmedPenalty ? (recordedDrunk ?? emptyPotionStock()) : reportedDrunk
-    const potionsSpent = clampPotionsSpent(drunkToSpend, runStock, sipsAllowed)
-    if (drunkToSpend.some((n, i) => n !== potionsSpent[i])) {
-      request.log.warn(
-        { userId, reportedDrunk, potionsSpent, runStock, sipsAllowed },
-        'finish-explore: potionsDrunkByTier exceeded per-tier or sip cap, clamped',
-      )
-    }
-
-    // --- Добыча забега ---
-    //
-    // ⚠️ КОСТИ ЗДЕСЬ БОЛЬШЕ НЕ БРОСАЮТСЯ (30.09.2026). Добыча каждого события
-    // разыграна на СТАРТЕ и лежит в currentRun.events[i].drop — игрок уже видел
-    // её всплывашкой в момент закрытия события. Бросить второй раз значило бы
-    // выдать НЕ ТО, что показали.
-    //
-    // Набор событий — ТОТ ЖЕ closedEvents, по которому выше посчитаны трофеи:
-    // два разных набора дали бы добычу с события, за которое трофеев не
-    // начислено.
-    //
-    // ЗАПАСНОЙ ПУТЬ: забег, начатый СТАРЫМ сервером, добычи в событиях не имеет
-    // (поля `drop` нет вовсе) — для него кости бросаются здесь, как и раньше.
-    // Отличить его от «нового забега, где ничего не выпало» можно только по
-    // наличию ключа, поэтому storedEventDrops и возвращает null, а не пустой
-    // список (см. его комментарий).
-    //
-    // died в этот расчёт НЕ передаётся вовсе: добыча начисляется и при смерти
-    // (решение дизайнера — сгорают только трофеи, см. docs/items.md). Отсутствие
-    // параметра и есть гарантия, что смерть сюда не просочится.
-    const runGearRead = readRunGear(run)
-    if (runGearRead.malformed) {
-      request.log.error({ userId, gear: run.gear }, 'finish-explore: corrupt gear in currentRun — counted without gear')
-    }
-    const runRings = runGearRead.effects.rings
-    const storedDrops = storedEventDrops(run, closedEvents, request.log)
-    const eventDrops = storedDrops ?? await (async () => {
-      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck, { skillSearch: runRings.includes('ring_skill_search') })
-      const resolved: EventDrop[] = []
-      for (const intent of intents) {
-        const drop = await resolveDropIntent(intent, characterLevel, request.log)
-        if (drop !== null) resolved.push(drop)
-      }
-      return resolved
-    })()
-    // Звёздоцвет (docs/crafter.md): срубленный цветок даёт Звёздную пыльцу —
-    // той же добычей, что события, с тем же правилом места в сумке.
-    const starbloomCut = !unconfirmedPenalty && request.body.starbloomCut === true
-    if (starbloomCut) {
-      if (Array.isArray(run.starbloom)) {
-        eventDrops.push({ category: 'crafter', id: 'star_pollen' })
-      } else {
-        request.log.warn({ userId, starbloom: run.starbloom }, 'finish-explore: starbloomCut without a starbloom in this run')
-      }
-    }
-    // Вместимость (applyDrops) и склад зелий считаются ВНУТРИ транзакции ниже,
-    // под блокировкой строки персонажа, — см. там.
-
-    const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
-      character.endurance, character.enduranceProgress, capped.progress.damageTaken,
-      character.agility, character.agilityProgress, capped.progress.skillDamageDealt + capped.progress.healedAmount,
-      run.maxHp,
-      run.hp,
-      newBonusLevels,
+    // Ядро финиша — общая функция settleExploreRun (31.10.2026): тем же кодом
+    // вход закрывает брошенный забег, в котором все задачи выполнены (см.
+    // routes/auth.ts). Разойтись два пути не могут — путь один.
+    const settled = await settleExploreRun(
+      character,
+      run,
+      request.body as unknown as Record<string, unknown>,
+      { died: request.body.died === true || unconfirmedPenalty, unconfirmedPenalty, interrupted: false },
+      request.log,
     )
-
-    // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
-    //
-    // Засчитывается ТОЛЬКО живая вылазка: смерть, выход шестерёнкой (клиент
-    // шлёт его смертью) и штрафной путь неподтверждённого забега (died выше)
-    // не дают заданиям ничего. Факты — из СВОЕГО currentRun (виды групп,
-    // мимики, выпитое по записи /run/sip, момент подтверждения) и из счётчиков
-    // тела; применения навыков — те же, что растят уровни (после потолков).
-    // Само задание двигается внутри транзакции ниже, под блокировкой строки:
-    // questState читается там свежим.
-    const finishedAt = Date.now()
-    const questCounters = parseQuestRunCounters(request.body)
-    if (questCounters.invalid.length > 0) {
-      request.log.warn({ userId, invalid: questCounters.invalid }, 'finish-explore: quest counters malformed, treated as unknown')
-    }
-    const questFactsRead = died ? null : collectQuestRunFacts(run, closedEvents, capped.progress.skillUses, questCounters.counters, finishedAt)
-    if (questFactsRead !== null && questFactsRead.clamped.length > 0) {
-      request.log.warn({ userId, clamped: questFactsRead.clamped, counters: questCounters.counters }, 'finish-explore: quest mana counters exceeded what the run could give, clamped')
-    }
-    const questFacts = questFactsRead?.facts ?? null
-
-    // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
-    // применяется, только если currentRun в базе всё ещё РОВНО тот, что
-    // прочитан в начале обработчика (jsonb-сравнение, порядок ключей не
-    // важен). Между чтением и этой строкой забег мог закрыть /auth/login —
-    // игрок убил приложение, не дождавшись "Сохраняем итоги...", и зашёл
-    // заново. Без фильтра финиш писал бы поверх результата входа от своего,
-    // уже устаревшего снимка статов и трофеев.
-    // До неё нет ни записей в БД, ни ответа клиенту — только warn'ы, описывающие
-    // расчёт. Поэтому отказ здесь не может оставить забег закрытым наполовину.
-    //
-    // ⚠️ ТРАНЗАКЦИЯ, а не одиночный updateMany, как было до 30.09.2026. Причина
-    // ровно одна и та же, что у POST /character/sell-item (второе и последнее
-    // место с транзакцией в server/src): записей стало ДВЕ — колонки персонажа
-    // и строки инвентаря под выпавшее снаряжение, — а порознь они дают либо
-    // предмет, выданный за незакрытый забег, либо закрытый забег без обещанной
-    // добычи. Везде, где записей одна, проект по-прежнему обходится условным
-    // updateMany: транзакция дороже и блокирует строки.
-    //
-    // Транзакция берётся ВСЕГДА, даже когда снаряжение не выпало и запись опять
-    // одна. Развилка «есть предмет — транзакция, нет — просто update» дала бы
-    // два пути закрытия забега, которые обязаны совпадать во всём остальном, и
-    // разъехались бы при первой же правке одного из них.
-    //
-    // ⚠️ С 15.10.2026 транзакция начинается с БЛОКИРОВКИ строки персонажа
-    // (lockCharacterRow) и перечитывает его под ней. Под блокировкой считаются
-    // две вещи, которые фильтром условной записи не выражаются:
-    //   • вместимость сумки (applyDrops) — COUNT по InventoryItem; без
-    //     блокировки сборка книги со второго устройства занимала ту же последнюю
-    //     ячейку;
-    //   • склад зелий — пишется РАЗНИЦЕЙ (increment), а не абсолютным
-    //     значением от снимка начала обработчика: абсолютное затирало покупку
-    //     зелья, сделанную между чтением и записью.
-    const txResult = await prisma.$transaction(async (tx) => {
-      await lockCharacterRow(tx, userId)
-      const fresh = await tx.character.findUnique({ where: { userId } })
-      if (!fresh) return null
-      // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
-      // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
-      const resolvedDrops = await applyDrops(tx, eventDrops, fresh, request.log, runRings.includes('ring_prospector'))
-      // Склад после забега: свежий склад минус выпитое (никогда не в минус — см.
-      // subtractPotionStock) плюс выпавшее. Пишется разницей со свежим складом.
-      const freshPotions = potionStockOf(fresh)
-      const newPotionStock = subtractPotionStock(freshPotions, potionsSpent)
-        .map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
-      const potionChange = potionStockDelta(newPotionStock.map((n, i) => n - freshPotions[i]))
-
-      // Задания — от свежего questState под блокировкой. Сначала время (истёк
-      // таймер — новый набор, активное становится переходящим; уровень только
-      // что дорос до порога — первый набор), потом вылазка. Награда — на уровне
-      // ДО этого забега (characterLevel): ровно та, что доска показывала на
-      // задании, а не больше из-за уровня, набранного этой же вылазкой.
-      // Испорченный questState финиш НЕ роняет: забег уже сыгран. Громкий лог,
-      // задания не трогаются, в ответе quests: null.
-      const questRead = readQuestState(fresh.questState)
-      let questState: QuestState | null = null
-      let questChanged = false
-      let questCompleted: QuestCompletion | null = null
-      if (questRead.kind === 'malformed') {
-        request.log.error({ userId, questState: fresh.questState }, 'finish-explore: corrupt questState — quests skipped')
-      } else {
-        const settled = settleQuestState(questRead.kind === 'state' ? questRead.state : null, growth.level, fresh.equippedSkills, finishedAt)
-        questState = settled.state
-        questChanged = settled.changed
-        if (questState !== null && questFacts !== null) {
-          const applied = applyRunToQuests(questState, questFacts, characterLevel)
-          questState = applied.state
-          questChanged = questChanged || applied.changed
-          questCompleted = applied.completed
-        }
-      }
-
-      const result = await tx.character.updateMany({
-        where: {
-          userId,
-          currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
-          // questState тот же, что прочитан под блокировкой, — правило всех
-          // записей заданий (условные, гонка — 409). Под блокировкой его никто
-          // не сдвинет, но гарантирует это фильтр, а не надежда.
-          ...(questChanged ? { questState: questStateFilter(fresh.questState) } : {}),
-          // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
-          // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
-          // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
-          ...(charmUsed ? { charms: { gte: 1 } } : {}),
-          // Склад зелий не уйдёт в минус (под блокировкой не сдвинется, но
-          // гарантирует это фильтр, а не надежда).
-          ...potionChange.where,
-        },
-        data: {
-          // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
-          // зелья и закрытие забега — списание и закрытие происходят вместе либо
-          // не происходят вовсе.
-          ...(charmUsed ? { charms: { decrement: 1 } } : {}),
-          trophies: died ? 0 : newTrophies,
-          ...(eliteTrophiesEarned > 0 ? { eliteTrophies: { increment: eliteTrophiesEarned } } : {}),
-          strength: growth.strength,
-          strengthProgress: growth.strengthProgress,
-          endurance: growth.endurance,
-          enduranceProgress: growth.enduranceProgress,
-          agility: growth.agility,
-          agilityProgress: growth.agilityProgress,
-          bonusLevels: newBonusLevels,
-          level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
-          // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
-          // не должна становиться способом сэкономить склад (та же логика, что у
-          // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
-          // разные колонки, один атомарный update. РАЗНИЦЕЙ, не абсолютом — см.
-          // potionStockDelta.
-          ...potionChange.data,
-          // Выпавшие страницы и книги — increment'ами В ЭТОЙ ЖЕ записи. Поэтому
-          // повтор финиша не может выдать добычу дважды: второй запрос либо
-          // упрётся в пустой currentRun (400 выше), либо не найдёт строку по
-          // фильтру и получит 409, ничего не записав.
-          ...resolvedDrops.stockData,
-          // Уровни навыков — increment'ами на прирост (skillLevelGrowthColumns), остатки
-          // применений — абсолютными значениями (остаток приращением не
-          // выражается). В ТОЙ ЖЕ записи, что трофеи и закрытие забега:
-          // повтор финиша не начислит применения дважды по той же причине, что
-          // не выдаст дважды добычу.
-          ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
-          ...skillUsesToColumns(skillGrowth.uses),
-          // Задания: новое состояние и награда — increment'ами В ЭТОЙ ЖЕ записи,
-          // поэтому повтор финиша не начислит награду дважды (та же причина,
-          // что у добычи выше).
-          ...(questChanged && questState !== null ? { questState: questState as unknown as Prisma.InputJsonValue } : {}),
-          ...(questCompleted !== null
-            ? {
-                gold: { increment: questCompleted.reward.gold },
-                hunterBadges: { increment: questCompleted.reward.hunterBadges },
-                rp: { increment: questCompleted.reward.rp },
-              }
-            : {}),
-          currentRun: Prisma.DbNull,
-        },
-      })
-      // 0 строк — забег закрыли между чтением и записью. Возвращаемся ДО
-      // создания предметов: иначе снаряжение легло бы в сумку за забег, который
-      // закрыл кто-то другой.
-      if (result.count === 0) return null
-      for (const itemId of resolvedDrops.itemIds) {
-        await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
-      }
-      return { count: result.count, resolvedDrops, newPotionStock, questRead, questState, questCompleted }
-    }, { maxWait: 10000, timeout: 15000 })
-    if (txResult === null) {
+    if (settled.kind === 'rejected') return reply.status(settled.status).send(settled.body)
+    if (settled.kind === 'conflict') {
       // Тот же код и текст, что у /run/sip и /run/progress: клиент уже умеет
       // повторять финиш на 409 теми же данными (api.ts, finishRunExplore).
       // Повтор безопасен именно потому, что здесь НИЧЕГО не записано.
       return reply.status(409).send({ error: 'Run state changed, retry' })
     }
-    const { count: written, resolvedDrops, newPotionStock, questRead, questState, questCompleted } = txResult
-    if (questCompleted !== null) {
-      request.log.info({ userId, questId: questCompleted.questId, reward: questCompleted.reward }, 'finish-explore: daily quest completed')
-    }
-    if (written !== 1) {
-      // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
-      // фильтр по нему может дать только 0 или 1 строку. Если это всё же
-      // случилось, откатить уже нечего: запись применена к нескольким
-      // персонажам. Поэтому громко в лог и дальше обычный ответ — тихо
-      // проглотить такое нельзя, но и врать клиенту, что забег не сохранён,
-      // тоже: его собственная строка записана верно.
-      request.log.error(
-        { userId, count: written },
-        'finish-explore: conditional write matched an unexpected number of characters',
-      )
-    }
-
-    // Склад расходников, страниц и зелий после забега — ПЕРЕЧИТАННЫЙ из БД,
-    // всегда (с 15.10.2026; раньше только когда менялись расходники или
-    // страницы): склад зелий теперь пишется разницей, и итог посчитала база,
-    // включая покупку со второго устройства между чтением и записью.
-    let consumablesAfterFinish = consumableStockOf(character)
-    let scrollsAfterFinish = scrollStockOf(character)
-    let classItemsAfterFinish = classItemStockOf(character)
-    let potionsAfterFinish = newPotionStock
-    // Золото, значки и RP — тоже перечитанные: награда задания легла
-    // increment'ом поверх того, что успело случиться между чтением и записью.
-    let walletAfterFinish = {
-      eliteTrophies: character.eliteTrophies + eliteTrophiesEarned,
-      gold: character.gold + (questCompleted?.reward.gold ?? 0),
-      hunterBadges: character.hunterBadges + (questCompleted?.reward.hunterBadges ?? 0),
-      rp: character.rp + (questCompleted?.reward.rp ?? 0),
-    }
-    {
-      const reread = await prisma.character.findUnique({ where: { userId } })
-      if (reread) {
-        consumablesAfterFinish = consumableStockOf(reread)
-        scrollsAfterFinish = scrollStockOf(reread)
-        classItemsAfterFinish = classItemStockOf(reread)
-        potionsAfterFinish = potionStockOf(reread)
-        walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
-      } else {
-        // Строка исчезла между записью и чтением — практически невозможно
-        // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
-        // неточного числа: забег УЖЕ закрыт, и клиент потерял бы весь экран
-        // итогов. Поэтому громкий лог и арифметика от снимка, а не тишина.
-        request.log.error({ userId }, 'finish-explore: character vanished before consumable read-back')
-        if (charmUsed) {
-          consumablesAfterFinish = { ...consumablesAfterFinish, charm_death: Math.max(0, consumablesAfterFinish.charm_death - 1) }
-        }
-      }
-    }
-
-    const result: RunResultSummary = {
-      interrupted: false,
-      died,
-      trophiesEarned: earned,
-      trophiesLost,
-      eliteTrophiesEarned,
-      eventsClosed: closedEvents.length,
-      eventsTotal: run.events.length,
-      drops: resolvedDrops.gained,
-      dropsLost: resolvedDrops.lost,
-      bonuses: [],
-      strengthGained: growth.strength - character.strength,
-      enduranceGained: growth.endurance - character.endurance,
-      agilityGained: growth.agility - character.agility,
-      leveledUp: growth.level > characterLevel,
-      trophies: died ? 0 : newTrophies,
-      strength: growth.strength,
-      endurance: growth.endurance,
-      agility: growth.agility,
-      level: growth.level,
-      potions: potionsAfterFinish,
-      bonusLevels: newBonusLevels,
-      consumables: consumablesAfterFinish,
-      scrolls: scrollsAfterFinish,
-      classItems: classItemsAfterFinish,
-      // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
-      // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
-      // собран skillLevelUps), а не всё, что успело случиться с колонкой после:
-      // перечитанный уровень с чужим +1 от книги рассказал бы про забег неправду.
-      // Расхождение с БД возможно только при покупке книги со второго
-      // устройства ровно в окне финиша, и лечится «Обновить баланс».
-      skillLevelUps: skillGrowth.levelUps,
-      skillLevels: skillGrowth.levels,
-      skillUses: skillGrowth.uses,
-      ...walletAfterFinish,
-      questCompleted: questCompleted === null ? null : { questId: questCompleted.questId, ...questCompleted.reward },
-      // Вид — на уровне ПОСЛЕ забега: награды на доске теперь такие. Повтор
-      // финиша отдаст этот же вид, снятый в момент первого финиша.
-      quests: questRead.kind === 'malformed' ? null : questView(questState, growth.level, finishedAt),
-    }
+    const result = settled.result
 
     // Итог — под ключом `finish:<runId>`, чтобы повтор этого финиша (ответ
     // потерялся, «Повторить сохранение») получил те же числа. Отдельной
@@ -2465,22 +1976,7 @@ export async function runRoutes(server: FastifyInstance) {
     // двойного применения защищает не эта строка, а фильтр по currentRun
     // выше; здесь — только удобство повтора, поэтому сбой — громкий лог, а не
     // отказ уже сохранённому забегу.
-    const finishedRunId = readRunId(run)
-    if (finishedRunId !== null) {
-      try {
-        await prisma.idempotencyKey.create({
-          data: {
-            characterId: character.id,
-            key: finishKey(finishedRunId),
-            endpoint: FINISH_ENDPOINT,
-            response: result as unknown as Prisma.InputJsonValue,
-          },
-        })
-        await pruneIdempotencyKeys(character.id, request.log)
-      } catch (e) {
-        request.log.error({ userId, runId: finishedRunId, err: e }, 'finish-explore: run closed, but the result could not be stored for replay')
-      }
-    }
+    await storeFinishResult(character.id, run, result, request.log)
     return reply.send(result)
   })
 
@@ -3970,4 +3466,673 @@ export async function runRoutes(server: FastifyInstance) {
       unequippedItemId: outcome.unequippedItemId,
     })
   })
+}
+
+// --- Ядро финиша забега (31.10.2026) ---
+//
+// Всё, что /run/finish-explore делает с персонажем: трофеи и сделка
+// Контрабандиста, патрульные, элитные трофеи, уровень за босса, рост статов и
+// уровней навыков, списание зелий и оберега, добыча, Звёздоцвет, ежедневные
+// задания — одной условной записью под блокировкой, плюс итог для экрана.
+// Вынесено из обработчика, чтобы вход (routes/auth.ts) закрывал брошенный
+// забег, в котором ВСЕ задачи выполнены, ТЕМ ЖЕ кодом, что кнопка «Завершить
+// вылазку»: копия формул разошлась бы с финишем при первой же правке, и
+// закрытие приложения снова стало бы отдельной дорогой.
+//
+// body — тело финиша: от клиента (обработчик) или снимок финиша, сохранённый
+// срезом /run/progress (вход). Читается так же, как раньше читался
+// request.body: мягкие разборы, мусор отбрасывается.
+// Ничего не пишет, кроме одной транзакции; ответ и сохранение итога для
+// повтора — у вызывающего.
+export type SettleExploreOutcome =
+  | { kind: 'ok'; result: RunResultSummary }
+  | { kind: 'conflict' }
+  | { kind: 'rejected'; status: number; body: { error: string } }
+
+export async function settleExploreRun(
+  character: Character,
+  run: ActiveExploreRun,
+  body: Record<string, unknown>,
+  opts: { died: boolean; unconfirmedPenalty: boolean; interrupted: boolean },
+  log: FastifyRequest['log'],
+): Promise<SettleExploreOutcome> {
+  const userId = character.userId
+  const { died, unconfirmedPenalty } = opts
+    // Индексы закрытых событий — общая валидация (parseClosedEventIndices):
+    // та же, что у обеих ручек Контрабандиста, иначе ставка и финиш посчитали бы
+    // разные суммы на одних и тех же данных.
+    const closedEvents = unconfirmedPenalty ? [] : parseClosedEventIndices(body.closedEvents, run)
+
+    // --- Трофеи за забег ---
+    //
+    // Банк ДО забега. Он же банк на СТАРТЕ: за время открытого забега трофеи в
+    // БД не меняет ничего (сверено по всем записям в server/src — обмен на
+    // золото фильтром требует пустой currentRun, покупка зелий трофеи не
+    // трогает, а /auth/login меняет их только ВМЕСТЕ с закрытием забега, после
+    // которого этот обработчик получит 400/409).
+    // --- Оберег от смерти ---
+    //
+    // Списывается ТОЛЬКО если сработал (spendAt: 'effect'), поэтому единственное
+    // место, где он уходит со склада, — эта условная запись финиша.
+    //
+    // Доверие клиенту здесь ровно такое же, как у `died`: спасение происходит в
+    // бою, а бой целиком на клиенте. Что сервер ПРОВЕРЯЕТ — что оберег реально
+    // был взят в забег (свой список в currentRun.consumablesUsed, не слово
+    // клиента). Соврать «спас» без взятого оберега нельзя.
+    const charmUsed = !unconfirmedPenalty && body.charmUsed === true
+    const usedRead = readConsumablesUsed(run)
+    if (usedRead.kind === 'malformed') {
+      // Список взятого испорчен — проверить право на списание нечем. Молча
+      // пропустить значило бы или отобрать оберег даром, или отдать спасение
+      // бесплатно.
+      log.error({ userId, consumablesUsed: run.consumablesUsed }, 'finish-explore: currentRun.consumablesUsed is malformed')
+      return { kind: 'rejected', status: 500, body: { error: 'Corrupt run state' } }
+    }
+    const takenInRun = usedRead.kind === 'used' ? usedRead.ids : []
+    if (charmUsed && !takenInRun.includes('charm_death')) {
+      log.warn({ userId, takenInRun }, 'finish-explore: charmUsed without a charm taken into the run')
+      return { kind: 'rejected', status: 400, body: { error: 'Charm was not taken into this run' } }
+    }
+
+    const bank = character.trophies
+    const dealRead = readSmugglerDeal(run)
+    if (dealRead.kind === 'malformed') {
+      // Итог посчитать нечем: сделка была, но её числа испорчены. Молча
+      // посчитать «как будто сделки не было» нельзя — это тихо отменило бы
+      // кражу или отняло выигрыш.
+      log.error({ userId, smugglerDeal: run.smugglerDeal }, 'finish-explore: currentRun.smugglerDeal is malformed')
+      return { kind: 'rejected', status: 500, body: { error: 'Corrupt run state' } }
+    }
+
+    // Итоговый банк ПОСЛЕ забега (при смерти обнуляется ниже).
+    //   Сделка была: множитель уже применён к ставке в момент сделки
+    //     (deal.after), и к результату прибавляется ТОЛЬКО добыча событий,
+    //     закрытых ПОСЛЕ неё. Закрытое до сделки второй раз не считается — оно
+    //     уже внутри deal.stake.
+    //   Сделки не было: банк плюс вся добыча, без множителя — прежнее поведение.
+    let total: number
+    if (dealRead.kind === 'deal') {
+      const deal = dealRead.deal
+      const before = new Set(deal.closedBefore)
+      const afterDealIndices = closedEvents.filter((i) => !before.has(i))
+      total = deal.after + trophySumOf(run, afterDealIndices)
+    } else {
+      total = bank + trophySumOf(run, closedEvents)
+    }
+    // Убитые патрульные (30.10.2026) — поверх, без множителя сделки: они не
+    // события, и ставка у Контрабандиста их не включает. Штрафной путь
+    // неподтверждённого забега — ничего, как и событий. Испорченный список —
+    // без них и громкий лог.
+    const patrolsRead = readRunPatrols(run)
+    if (patrolsRead === 'malformed') {
+      log.error({ userId, patrols: run.patrols }, 'finish-explore: currentRun.patrols is malformed — patrol trophies not counted')
+    }
+    const runPatrols = patrolsRead === 'malformed' ? [] : patrolsRead
+    const killedPatrols = unconfirmedPenalty ? [] : parseKilledPatrolIndices(body.killedPatrols, runPatrols)
+    total += killedPatrols.reduce((sum, i) => sum + runPatrols[i].trophyReward, 0)
+
+    // ⚠️ Поле smugglerOutcome из тела запроса НЕ ЧИТАЕТСЯ вообще — исход бросает
+    // сервер в /run/smuggler-deal и хранит в currentRun.smugglerDeal. Старый
+    // клиент поле ещё присылает; оно игнорируется намеренно, а не по забывчивости
+    // (прежняя схема позволяла всегда присылать 'gain').
+    // Убийство босса — bonusLevels += 1 (см. задачу). "Закрыт" здесь значит
+    // ТО ЖЕ самое, что уже решает выплату трофеев выше (closedEvents,
+    // провалидированные индексы в run.events ИЗ currentRun, не из тела
+    // запроса) — тот же уровень доверия клиенту, что и у trophySum, отдельный
+    // сырой флаг "bossKilled" от клиента не заводим и не читаем. run.events[i]
+    // само по себе доказывает, что босс в ЭТОМ забеге был (currentRun —
+    // серверные данные), а не то, что клиент придумал.
+    const bossClosed = closedEvents.some((i) => run.events[i].kind === 'boss')
+
+    const newTrophies = total
+    // Насколько банк изменился за забег. ⚠️ МОЖЕТ БЫТЬ ОТРИЦАТЕЛЬНЫМ и нулём не
+    // обрезается: при краже у Контрабандиста итог законно меньше банка на
+    // старте, и это ровно то, что игрок должен увидеть. Math.max(0, …) здесь
+    // превратил бы потерю в правдоподобный ноль (см. CLAUDE.md, запрет тихих
+    // фолбэков).
+    const earned = newTrophies - bank
+    // trophiesLost — the balance actually wiped by death (the character's
+    // PRE-update total, not just this run's earned amount): on a normal
+    // (non-death) finish nothing was lost, so 0.
+    // Не меняется этой правкой: смерть по-прежнему жжёт ВЕСЬ предрановый банк.
+    const trophiesLost = died ? bank : 0
+    // Элитные трофеи (30.10.2026, docs/guilds.md): +1 за каждое закрытое событие
+    // с элитным врагом. По правилу трофеев ЭТОГО забега: смерть (и штрафной путь
+    // неподтверждённого) их не даёт. Личный запас eliteTrophies смерть не
+    // трогает — это не банк трофеев.
+    const eliteTrophiesEarned = died
+      ? 0
+      : closedEvents.filter((i) => run.events[i].eliteIndex !== undefined).length * ELITE_TROPHIES_PER_ELITE_EVENT
+
+    // --- Stat growth (see game.ts applyStatGrowth) — applies regardless of
+    // died: the player still dealt/took damage over the run either way. ---
+    // level больше не колонка в БД — вычисляется на месте (тот же приём, что
+    // в остальных эндпоинтах этого файла), нужен ДО роста статов — и для
+    // потолка урона (масштаб врага на текущем уровне), и для сравнения
+    // "levelUp?" после.
+    const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
+
+    // Четыре сырых счётчика из тела — МЯГКИЙ разбор (кривое поле становится
+    // нулём, остальные живут): у старого клиента их может не быть вовсе, а
+    // отказывать всему финишу из-за одного числа нельзя, забег уже сыгран.
+    // Штрафной путь неподтверждённого забега — по записанному сервером срезу,
+    // как у входа: телу такого клиента верить не в чем.
+    const reportedProgress = unconfirmedPenalty
+      ? (readRunProgress(run) ?? emptyRunProgress())
+      : coerceRunProgress(body)
+
+    // Потолки — общий расчёт (clampRunProgress, runState.ts): ТОТ ЖЕ, которым
+    // /auth/login обрабатывает срез брошенного забега. Здесь остаются только
+    // логи: что именно срезано и в каком забеге.
+    const capped = clampRunProgress(reportedProgress, run, characterLevel)
+    if (capped.dealtScale < 1) {
+      log.warn(
+        {
+          userId,
+          combinedAttackSkill: reportedProgress.attackDamageDealt + reportedProgress.skillDamageDealt,
+          maxDamageDealt: capped.maxDamageDealt,
+          enemyCount: capped.enemyCount,
+          bossCount: capped.bossCount,
+          characterLevel,
+        },
+        'finish-explore: attackDamageDealt+skillDamageDealt exceeded cap, clamped',
+      )
+    }
+    if (reportedProgress.damageTaken > capped.maxDamageTaken) {
+      log.warn(
+        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, charmHealMax: capped.charmHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
+        'finish-explore: damageTaken exceeded cap, clamped',
+      )
+    }
+    if (capped.runHeroClass === 'malformed') {
+      log.error({ userId, heroClass: run.heroClass }, 'finish-explore: corrupt heroClass in currentRun — damage cap counted without class')
+    }
+    if (capped.runHealSkill === 'malformed') {
+      log.error({ userId, healSkill: run.healSkill }, 'finish-explore: corrupt healSkill in currentRun — caps counted without the heal skill')
+    }
+    if (reportedProgress.healedAmount > capped.maxHealed) {
+      log.warn(
+        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, runMaxHp: run.maxHp },
+        'finish-explore: healedAmount exceeded cap, clamped',
+      )
+    }
+
+    // --- Рост УРОВНЕЙ НАВЫКОВ (02.10.2026) ---
+    // Тот же источник, что у роста статов (сырьё из тела финиша, прошедшее
+    // те же мягкий разбор и потолки), и та же функция, что у /auth/login на
+    // брошенном забеге (applySkillUsesGrowth, game.ts). Смерть рост НЕ отменяет —
+    // ровно как у статов выше: навыки были применены по-настоящему, и сгорают
+    // только трофеи.
+    const skillLevelsBefore = skillLevelsOf(character)
+    const skillGrowth = applySkillUsesGrowth(skillLevelsBefore, skillUsesOf(character), capped.progress.skillUses)
+
+    // bonusLevels инкрементируется здесь, ДО applyStatGrowth — level (снимок)
+    // обязан пересчитаться уже с новым bonusLevels в той же формуле
+    // (calculateLevel внутри applyStatGrowth), а не отдельно поверх.
+    const newBonusLevels = character.bonusLevels + (bossClosed ? 1 : 0)
+
+    // --- Списание выпитых зелий, по тирам ---
+    // Ступень 1: разбор поля. Мусор (нет поля, не массив, не целое, отрицательное,
+    // NaN) обнуляется поэлементно — тем же приёмом, что кривые индексы
+    // closedEvents выше: не 400, но и не молчаливая догадка. Ноль значит
+    // «списывать нечего», он же достаётся старому клиенту, который поля не шлёт.
+    const rawDrunk = body.potionsDrunkByTier
+    const reportedDrunk: number[] = new Array(POTION_TIER_COUNT).fill(0)
+    if (Array.isArray(rawDrunk)) {
+      for (let i = 0; i < POTION_TIER_COUNT; i++) {
+        const v = rawDrunk[i]
+        if (Number.isInteger(v) && (v as number) >= 0) reportedDrunk[i] = v as number
+      }
+    }
+
+    // Сверка с тем, что накопил /run/sip в currentRun. Только ПРЕДУПРЕЖДЕНИЕ:
+    // списание по-прежнему идёт от числа клиента (ступени 2–3 ниже), расхождение
+    // здесь — сигнал о рассинхроне клиента и сервера, а не повод отказать.
+    const recordedDrunk = readRunPotionsDrunk(run)
+    if (recordedDrunk === null || reportedDrunk.some((n, i) => n !== recordedDrunk[i])) {
+      log.warn(
+        { userId, reportedDrunk, rawReported: rawDrunk, recordedDrunk, rawRecorded: run.potionsDrunk },
+        'finish-explore: potionsDrunkByTier differs from /run/sip record in currentRun',
+      )
+    }
+
+    // Ступень 2: оба потолка — по каждому тиру (против снимка run.potions из
+    // currentRun, а не из тела запроса) и по сумме глотков. Арифметика и
+    // порядок среза живут в clampPotionsSpent (runState.ts): /auth/login
+    // списывает зелья брошенного забега теми же потолками, и разойтись им
+    // нельзя. Тот же уровень доверия клиенту, что у потолка урона выше.
+    const runStock = runPotionStock(run)
+    const sipsAllowed = runSipsAllowed(run)
+    // Штрафной путь — выпитое по записи /run/sip, как у входа.
+    const drunkToSpend = unconfirmedPenalty ? (recordedDrunk ?? emptyPotionStock()) : reportedDrunk
+    const potionsSpent = clampPotionsSpent(drunkToSpend, runStock, sipsAllowed)
+    if (drunkToSpend.some((n, i) => n !== potionsSpent[i])) {
+      log.warn(
+        { userId, reportedDrunk, potionsSpent, runStock, sipsAllowed },
+        'finish-explore: potionsDrunkByTier exceeded per-tier or sip cap, clamped',
+      )
+    }
+
+    // --- Добыча забега ---
+    //
+    // ⚠️ КОСТИ ЗДЕСЬ БОЛЬШЕ НЕ БРОСАЮТСЯ (30.09.2026). Добыча каждого события
+    // разыграна на СТАРТЕ и лежит в currentRun.events[i].drop — игрок уже видел
+    // её всплывашкой в момент закрытия события. Бросить второй раз значило бы
+    // выдать НЕ ТО, что показали.
+    //
+    // Набор событий — ТОТ ЖЕ closedEvents, по которому выше посчитаны трофеи:
+    // два разных набора дали бы добычу с события, за которое трофеев не
+    // начислено.
+    //
+    // ЗАПАСНОЙ ПУТЬ: забег, начатый СТАРЫМ сервером, добычи в событиях не имеет
+    // (поля `drop` нет вовсе) — для него кости бросаются здесь, как и раньше.
+    // Отличить его от «нового забега, где ничего не выпало» можно только по
+    // наличию ключа, поэтому storedEventDrops и возвращает null, а не пустой
+    // список (см. его комментарий).
+    //
+    // died в этот расчёт НЕ передаётся вовсе: добыча начисляется и при смерти
+    // (решение дизайнера — сгорают только трофеи, см. docs/items.md). Отсутствие
+    // параметра и есть гарантия, что смерть сюда не просочится.
+    const runGearRead = readRunGear(run)
+    if (runGearRead.malformed) {
+      log.error({ userId, gear: run.gear }, 'finish-explore: corrupt gear in currentRun — counted without gear')
+    }
+    const runRings = runGearRead.effects.rings
+    const storedDrops = storedEventDrops(run, closedEvents, log)
+    const eventDrops = storedDrops ?? await (async () => {
+      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck, { skillSearch: runRings.includes('ring_skill_search') })
+      const resolved: EventDrop[] = []
+      for (const intent of intents) {
+        const drop = await resolveDropIntent(intent, characterLevel, log)
+        if (drop !== null) resolved.push(drop)
+      }
+      return resolved
+    })()
+    // Звёздоцвет (docs/crafter.md): срубленный цветок даёт Звёздную пыльцу —
+    // той же добычей, что события, с тем же правилом места в сумке.
+    const starbloomCut = !unconfirmedPenalty && body.starbloomCut === true
+    if (starbloomCut) {
+      if (Array.isArray(run.starbloom)) {
+        eventDrops.push({ category: 'crafter', id: 'star_pollen' })
+      } else {
+        log.warn({ userId, starbloom: run.starbloom }, 'finish-explore: starbloomCut without a starbloom in this run')
+      }
+    }
+    // Вместимость (applyDrops) и склад зелий считаются ВНУТРИ транзакции ниже,
+    // под блокировкой строки персонажа, — см. там.
+
+    const growth = applyStatGrowth(
+      character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
+      character.endurance, character.enduranceProgress, capped.progress.damageTaken,
+      character.agility, character.agilityProgress, capped.progress.skillDamageDealt + capped.progress.healedAmount,
+      run.maxHp,
+      run.hp,
+      newBonusLevels,
+    )
+
+    // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
+    //
+    // Засчитывается ТОЛЬКО живая вылазка: смерть, выход шестерёнкой (клиент
+    // шлёт его смертью) и штрафной путь неподтверждённого забега (died выше)
+    // не дают заданиям ничего. Факты — из СВОЕГО currentRun (виды групп,
+    // мимики, выпитое по записи /run/sip, момент подтверждения) и из счётчиков
+    // тела; применения навыков — те же, что растят уровни (после потолков).
+    // Само задание двигается внутри транзакции ниже, под блокировкой строки:
+    // questState читается там свежим.
+    const finishedAt = Date.now()
+    const questCounters = parseQuestRunCounters(body)
+    if (questCounters.invalid.length > 0) {
+      log.warn({ userId, invalid: questCounters.invalid }, 'finish-explore: quest counters malformed, treated as unknown')
+    }
+    const questFactsRead = died ? null : collectQuestRunFacts(run, closedEvents, capped.progress.skillUses, questCounters.counters, finishedAt)
+    if (questFactsRead !== null && questFactsRead.clamped.length > 0) {
+      log.warn({ userId, clamped: questFactsRead.clamped, counters: questCounters.counters }, 'finish-explore: quest mana counters exceeded what the run could give, clamped')
+    }
+    const questFacts = questFactsRead?.facts ?? null
+
+    // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
+    // применяется, только если currentRun в базе всё ещё РОВНО тот, что
+    // прочитан в начале обработчика (jsonb-сравнение, порядок ключей не
+    // важен). Между чтением и этой строкой забег мог закрыть /auth/login —
+    // игрок убил приложение, не дождавшись "Сохраняем итоги...", и зашёл
+    // заново. Без фильтра финиш писал бы поверх результата входа от своего,
+    // уже устаревшего снимка статов и трофеев.
+    // До неё нет ни записей в БД, ни ответа клиенту — только warn'ы, описывающие
+    // расчёт. Поэтому отказ здесь не может оставить забег закрытым наполовину.
+    //
+    // ⚠️ ТРАНЗАКЦИЯ, а не одиночный updateMany, как было до 30.09.2026. Причина
+    // ровно одна и та же, что у POST /character/sell-item (второе и последнее
+    // место с транзакцией в server/src): записей стало ДВЕ — колонки персонажа
+    // и строки инвентаря под выпавшее снаряжение, — а порознь они дают либо
+    // предмет, выданный за незакрытый забег, либо закрытый забег без обещанной
+    // добычи. Везде, где записей одна, проект по-прежнему обходится условным
+    // updateMany: транзакция дороже и блокирует строки.
+    //
+    // Транзакция берётся ВСЕГДА, даже когда снаряжение не выпало и запись опять
+    // одна. Развилка «есть предмет — транзакция, нет — просто update» дала бы
+    // два пути закрытия забега, которые обязаны совпадать во всём остальном, и
+    // разъехались бы при первой же правке одного из них.
+    //
+    // ⚠️ С 15.10.2026 транзакция начинается с БЛОКИРОВКИ строки персонажа
+    // (lockCharacterRow) и перечитывает его под ней. Под блокировкой считаются
+    // две вещи, которые фильтром условной записи не выражаются:
+    //   • вместимость сумки (applyDrops) — COUNT по InventoryItem; без
+    //     блокировки сборка книги со второго устройства занимала ту же последнюю
+    //     ячейку;
+    //   • склад зелий — пишется РАЗНИЦЕЙ (increment), а не абсолютным
+    //     значением от снимка начала обработчика: абсолютное затирало покупку
+    //     зелья, сделанную между чтением и записью.
+    const txResult = await prisma.$transaction(async (tx) => {
+      await lockCharacterRow(tx, userId)
+      const fresh = await tx.character.findUnique({ where: { userId } })
+      if (!fresh) return null
+      // Вместимость считается ЗДЕСЬ, а не на старте вместе с броском: за забег
+      // сумка меняется, и «не влезло» должно решаться по её состоянию на конец.
+      const resolvedDrops = await applyDrops(tx, eventDrops, fresh, log, runRings.includes('ring_prospector'))
+      // Склад после забега: свежий склад минус выпитое (никогда не в минус — см.
+      // subtractPotionStock) плюс выпавшее. Пишется разницей со свежим складом.
+      const freshPotions = potionStockOf(fresh)
+      const newPotionStock = subtractPotionStock(freshPotions, potionsSpent)
+        .map((n, i) => n + (resolvedDrops.potionGain[i] ?? 0))
+      const potionChange = potionStockDelta(newPotionStock.map((n, i) => n - freshPotions[i]))
+
+      // Задания — от свежего questState под блокировкой. Сначала время (истёк
+      // таймер — новый набор, активное становится переходящим; уровень только
+      // что дорос до порога — первый набор), потом вылазка. Награда — на уровне
+      // ДО этого забега (characterLevel): ровно та, что доска показывала на
+      // задании, а не больше из-за уровня, набранного этой же вылазкой.
+      // Испорченный questState финиш НЕ роняет: забег уже сыгран. Громкий лог,
+      // задания не трогаются, в ответе quests: null.
+      const questRead = readQuestState(fresh.questState)
+      let questState: QuestState | null = null
+      let questChanged = false
+      let questCompleted: QuestCompletion | null = null
+      if (questRead.kind === 'malformed') {
+        log.error({ userId, questState: fresh.questState }, 'finish-explore: corrupt questState — quests skipped')
+      } else {
+        const settled = settleQuestState(questRead.kind === 'state' ? questRead.state : null, growth.level, fresh.equippedSkills, finishedAt)
+        questState = settled.state
+        questChanged = settled.changed
+        if (questState !== null && questFacts !== null) {
+          const applied = applyRunToQuests(questState, questFacts, characterLevel)
+          questState = applied.state
+          questChanged = questChanged || applied.changed
+          questCompleted = applied.completed
+        }
+      }
+
+      const result = await tx.character.updateMany({
+        where: {
+          userId,
+          currentRun: { equals: character.currentRun as unknown as Prisma.InputJsonValue },
+          // questState тот же, что прочитан под блокировкой, — правило всех
+          // записей заданий (условные, гонка — 409). Под блокировкой его никто
+          // не сдвинет, но гарантирует это фильтр, а не надежда.
+          ...(questChanged ? { questState: questStateFilter(fresh.questState) } : {}),
+          // Оберег списывается только если он ещё на складе. Фильтр, а не проверка
+          // выше: в схеме нет ограничения «не меньше нуля», и уйти в минус нельзя
+          // дать никаким стечением обстоятельств. Не сработал — условия нет вовсе.
+          ...(charmUsed ? { charms: { gte: 1 } } : {}),
+          // Склад зелий не уйдёт в минус (под блокировкой не сдвинется, но
+          // гарантирует это фильтр, а не надежда).
+          ...potionChange.where,
+        },
+        data: {
+          // decrement, а не вычисленное значение: в ТОЙ ЖЕ записи, что трофеи,
+          // зелья и закрытие забега — списание и закрытие происходят вместе либо
+          // не происходят вовсе.
+          ...(charmUsed ? { charms: { decrement: 1 } } : {}),
+          trophies: died ? 0 : newTrophies,
+          ...(eliteTrophiesEarned > 0 ? { eliteTrophies: { increment: eliteTrophiesEarned } } : {}),
+          strength: growth.strength,
+          strengthProgress: growth.strengthProgress,
+          endurance: growth.endurance,
+          enduranceProgress: growth.enduranceProgress,
+          agility: growth.agility,
+          agilityProgress: growth.agilityProgress,
+          bonusLevels: newBonusLevels,
+          level: growth.level, // денормализованный снимок — см. комментарий к полю в schema.prisma
+          // Списывается НЕЗАВИСИМО от died: зелья выпиты по-настоящему, и смерть
+          // не должна становиться способом сэкономить склад (та же логика, что у
+          // роста статов выше). Обнуление трофеев рядом на эти поля не влияет —
+          // разные колонки, один атомарный update. РАЗНИЦЕЙ, не абсолютом — см.
+          // potionStockDelta.
+          ...potionChange.data,
+          // Выпавшие страницы и книги — increment'ами В ЭТОЙ ЖЕ записи. Поэтому
+          // повтор финиша не может выдать добычу дважды: второй запрос либо
+          // упрётся в пустой currentRun (400 выше), либо не найдёт строку по
+          // фильтру и получит 409, ничего не записав.
+          ...resolvedDrops.stockData,
+          // Уровни навыков — increment'ами на прирост (skillLevelGrowthColumns), остатки
+          // применений — абсолютными значениями (остаток приращением не
+          // выражается). В ТОЙ ЖЕ записи, что трофеи и закрытие забега:
+          // повтор финиша не начислит применения дважды по той же причине, что
+          // не выдаст дважды добычу.
+          ...skillLevelGrowthColumns(skillLevelsBefore, skillGrowth.levels),
+          ...skillUsesToColumns(skillGrowth.uses),
+          // Задания: новое состояние и награда — increment'ами В ЭТОЙ ЖЕ записи,
+          // поэтому повтор финиша не начислит награду дважды (та же причина,
+          // что у добычи выше).
+          ...(questChanged && questState !== null ? { questState: questState as unknown as Prisma.InputJsonValue } : {}),
+          ...(questCompleted !== null
+            ? {
+                gold: { increment: questCompleted.reward.gold },
+                hunterBadges: { increment: questCompleted.reward.hunterBadges },
+                rp: { increment: questCompleted.reward.rp },
+              }
+            : {}),
+          currentRun: Prisma.DbNull,
+        },
+      })
+      // 0 строк — забег закрыли между чтением и записью. Возвращаемся ДО
+      // создания предметов: иначе снаряжение легло бы в сумку за забег, который
+      // закрыл кто-то другой.
+      if (result.count === 0) return null
+      for (const itemId of resolvedDrops.itemIds) {
+        await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
+      }
+      return { count: result.count, resolvedDrops, newPotionStock, questRead, questState, questCompleted }
+    }, { maxWait: 10000, timeout: 15000 })
+    if (txResult === null) {
+      // Забег закрыли или изменили между чтением и записью — НИЧЕГО не
+      // записано. Финиш отвечает 409 (клиент повторит), вход перечитывает.
+      return { kind: 'conflict' }
+    }
+    const { count: written, resolvedDrops, newPotionStock, questRead, questState, questCompleted } = txResult
+    if (questCompleted !== null) {
+      log.info({ userId, questId: questCompleted.questId, reward: questCompleted.reward }, 'finish-explore: daily quest completed')
+    }
+    if (written !== 1) {
+      // Недостижимо, пока Character.userId объявлен @unique (schema.prisma) —
+      // фильтр по нему может дать только 0 или 1 строку. Если это всё же
+      // случилось, откатить уже нечего: запись применена к нескольким
+      // персонажам. Поэтому громко в лог и дальше обычный ответ — тихо
+      // проглотить такое нельзя, но и врать клиенту, что забег не сохранён,
+      // тоже: его собственная строка записана верно.
+      log.error(
+        { userId, count: written },
+        'finish-explore: conditional write matched an unexpected number of characters',
+      )
+    }
+
+    // Склад расходников, страниц и зелий после забега — ПЕРЕЧИТАННЫЙ из БД,
+    // всегда (с 15.10.2026; раньше только когда менялись расходники или
+    // страницы): склад зелий теперь пишется разницей, и итог посчитала база,
+    // включая покупку со второго устройства между чтением и записью.
+    let consumablesAfterFinish = consumableStockOf(character)
+    let scrollsAfterFinish = scrollStockOf(character)
+    let classItemsAfterFinish = classItemStockOf(character)
+    let potionsAfterFinish = newPotionStock
+    // Золото, значки и RP — тоже перечитанные: награда задания легла
+    // increment'ом поверх того, что успело случиться между чтением и записью.
+    let walletAfterFinish = {
+      eliteTrophies: character.eliteTrophies + eliteTrophiesEarned,
+      gold: character.gold + (questCompleted?.reward.gold ?? 0),
+      hunterBadges: character.hunterBadges + (questCompleted?.reward.hunterBadges ?? 0),
+      rp: character.rp + (questCompleted?.reward.rp ?? 0),
+    }
+    {
+      const reread = await prisma.character.findUnique({ where: { userId } })
+      if (reread) {
+        consumablesAfterFinish = consumableStockOf(reread)
+        scrollsAfterFinish = scrollStockOf(reread)
+        classItemsAfterFinish = classItemStockOf(reread)
+        potionsAfterFinish = potionStockOf(reread)
+        walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
+      } else {
+        // Строка исчезла между записью и чтением — практически невозможно
+        // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
+        // неточного числа: забег УЖЕ закрыт, и клиент потерял бы весь экран
+        // итогов. Поэтому громкий лог и арифметика от снимка, а не тишина.
+        log.error({ userId }, 'finish-explore: character vanished before consumable read-back')
+        if (charmUsed) {
+          consumablesAfterFinish = { ...consumablesAfterFinish, charm_death: Math.max(0, consumablesAfterFinish.charm_death - 1) }
+        }
+      }
+    }
+
+    const result: RunResultSummary = {
+      interrupted: opts.interrupted,
+      ...(opts.interrupted && !died ? { completed: true } : {}),
+      died,
+      trophiesEarned: earned,
+      trophiesLost,
+      eliteTrophiesEarned,
+      eventsClosed: closedEvents.length,
+      eventsTotal: run.events.length,
+      drops: resolvedDrops.gained,
+      dropsLost: resolvedDrops.lost,
+      bonuses: [],
+      strengthGained: growth.strength - character.strength,
+      enduranceGained: growth.endurance - character.endurance,
+      agilityGained: growth.agility - character.agility,
+      leveledUp: growth.level > characterLevel,
+      trophies: died ? 0 : newTrophies,
+      strength: growth.strength,
+      endurance: growth.endurance,
+      agility: growth.agility,
+      level: growth.level,
+      potions: potionsAfterFinish,
+      bonusLevels: newBonusLevels,
+      consumables: consumablesAfterFinish,
+      scrolls: scrollsAfterFinish,
+      classItems: classItemsAfterFinish,
+      // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
+      // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
+      // собран skillLevelUps), а не всё, что успело случиться с колонкой после:
+      // перечитанный уровень с чужим +1 от книги рассказал бы про забег неправду.
+      // Расхождение с БД возможно только при покупке книги со второго
+      // устройства ровно в окне финиша, и лечится «Обновить баланс».
+      skillLevelUps: skillGrowth.levelUps,
+      skillLevels: skillGrowth.levels,
+      skillUses: skillGrowth.uses,
+      ...walletAfterFinish,
+      questCompleted: questCompleted === null ? null : { questId: questCompleted.questId, ...questCompleted.reward },
+      // Вид — на уровне ПОСЛЕ забега: награды на доске теперь такие. Повтор
+      // финиша отдаст этот же вид, снятый в момент первого финиша.
+      quests: questRead.kind === 'malformed' ? null : questView(questState, growth.level, finishedAt),
+    }
+    return { kind: 'ok', result }
+}
+
+/**
+ * Итог закрытого забега — под ключом `finish:<runId>`, чтобы повтор финиша
+ * (ответ потерялся, «Повторить сохранение», или финиш, доползший после того,
+ * как забег закрыл вход) получил те же числа. Отдельной записью ПОСЛЕ
+ * транзакции: от двойного применения защищает не она, а фильтр по currentRun
+ * в settleExploreRun; здесь — только удобство повтора, поэтому сбой — громкий
+ * лог, а не отказ уже сохранённому забегу.
+ */
+export async function storeFinishResult(characterId: number, run: ActiveExploreRun, result: RunResultSummary, log: FastifyRequest['log']): Promise<void> {
+  const finishedRunId = readRunId(run)
+  if (finishedRunId === null) return
+  try {
+    await prisma.idempotencyKey.create({
+      data: {
+        characterId,
+        key: finishKey(finishedRunId),
+        endpoint: FINISH_ENDPOINT,
+        response: result as unknown as Prisma.InputJsonValue,
+      },
+    })
+    await pruneIdempotencyKeys(characterId, log)
+  } catch (e) {
+    log.error({ characterId, runId: finishedRunId, err: e }, 'finish-explore: run closed, but the result could not be stored for replay')
+  }
+}
+
+// --- Снимок финиша в срезе прогресса (31.10.2026) ---
+//
+// Когда все события закрыты, клиент кладёт в каждый срез /run/progress поле
+// `completion` — ровно то тело, что ушло бы в /run/finish-explore с died:false.
+// Если игрок закроет приложение, не нажав «Завершить вылазку», вход закроет
+// забег ЭТИМ телом как пройденный (settleExploreRun), а не смертью. Смерть
+// клиент сообщает срезом с `completion: null` — снимок стирается.
+//
+// Проверка СТРОГАЯ (в отличие от мягкого разбора финиша): снимок — наш
+// собственный формат, и частично годному верить нельзя. Но и не 400 для
+// всего среза: срез ценен ростом статов сам по себе, а снимок тогда просто
+// не сохраняется (громкий warn у вызывающего).
+export type RunCompletionRead =
+  | { kind: 'absent' }
+  | { kind: 'clear' }
+  | { kind: 'ok'; completion: Record<string, unknown> }
+  | { kind: 'malformed'; reason: string }
+
+export function parseRunCompletion(raw: unknown, run: ActiveExploreRun): RunCompletionRead {
+  if (raw === undefined) return { kind: 'absent' }
+  if (raw === null) return { kind: 'clear' }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { kind: 'malformed', reason: 'not an object' }
+  const r = raw as Record<string, unknown>
+  // Все события — и ровно они: тот же разбор, что у финиша, плюс требование,
+  // чтобы ни одного индекса не отбросилось и ни одного события не осталось.
+  if (!Array.isArray(r.closedEvents)) return { kind: 'malformed', reason: 'closedEvents' }
+  const closed = parseClosedEventIndices(r.closedEvents, run)
+  if (closed.length !== r.closedEvents.length) return { kind: 'malformed', reason: 'closedEvents' }
+  if (closed.length !== run.events.length) return { kind: 'malformed', reason: 'not all events closed' }
+  const patrolsRead = readRunPatrols(run)
+  const patrols = patrolsRead === 'malformed' ? [] : patrolsRead
+  if (!Array.isArray(r.killedPatrols)) return { kind: 'malformed', reason: 'killedPatrols' }
+  const killed = parseKilledPatrolIndices(r.killedPatrols, patrols)
+  if (killed.length !== r.killedPatrols.length) return { kind: 'malformed', reason: 'killedPatrols' }
+  if (typeof r.charmUsed !== 'boolean') return { kind: 'malformed', reason: 'charmUsed' }
+  if (typeof r.starbloomCut !== 'boolean') return { kind: 'malformed', reason: 'starbloomCut' }
+  const drunk = r.potionsDrunkByTier
+  if (!Array.isArray(drunk) || drunk.length !== POTION_TIER_COUNT || !drunk.every((n) => Number.isInteger(n) && (n as number) >= 0)) {
+    return { kind: 'malformed', reason: 'potionsDrunkByTier' }
+  }
+  const progress = parseRunProgress(r)
+  if (progress === null) return { kind: 'malformed', reason: 'progress' }
+  const quest = parseQuestRunCounters(r)
+  if (quest.invalid.length > 0) return { kind: 'malformed', reason: `quest counters: ${quest.invalid.join(',')}` }
+  // Нормализованная копия: только известные поля, ничего лишнего в currentRun.
+  const completion: Record<string, unknown> = {
+    closedEvents: closed,
+    killedPatrols: killed,
+    charmUsed: r.charmUsed,
+    starbloomCut: r.starbloomCut,
+    potionsDrunkByTier: [...drunk],
+    attackDamageDealt: progress.attackDamageDealt,
+    skillDamageDealt: progress.skillDamageDealt,
+    healedAmount: progress.healedAmount,
+    damageTaken: progress.damageTaken,
+    skillUses: { ...progress.skillUses },
+  }
+  for (const key of QUEST_RUN_COUNTER_FIELDS) {
+    if (quest.counters[key] !== null) completion[key] = quest.counters[key]
+  }
+  return { kind: 'ok', completion }
+}
+
+/**
+ * Снимок финиша брошенного забега для входа: годный, все события закрыты,
+ * забег подтверждён. Иначе null — забег закрывается как раньше (смертью или
+ * без штрафа, если не начинался). `problem` — для громкого лога.
+ */
+export function readRunCompletion(run: ActiveExploreRun): { completion: Record<string, unknown> | null; problem: string | null } {
+  const read = parseRunCompletion(run.completion, run)
+  if (read.kind === 'absent' || read.kind === 'clear') return { completion: null, problem: null }
+  if (read.kind === 'malformed') return { completion: null, problem: `stored completion is malformed: ${read.reason}` }
+  if (readRunConfirmed(run) !== true) return { completion: null, problem: 'stored completion on an unconfirmed run' }
+  return { completion: read.completion, problem: null }
 }

@@ -19,7 +19,8 @@ import {
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
 import { consumableStockOf, scrollStockOf, classItemStockOf, ringSlotsOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
-import type { RunResultSummary } from './run.js'
+import { settleExploreRun, storeFinishResult, readRunCompletion, type RunResultSummary } from './run.js'
+import type { FastifyBaseLogger } from 'fastify'
 import { readQuestState } from '../questState.js'
 
 const prisma = new PrismaClient()
@@ -54,6 +55,49 @@ async function closeRunIfStillOpen(
     if (!fresh || fresh.currentRun === null) return null
     return tx.character.update({ where: { id: characterId }, data: build(fresh) })
   })
+}
+
+/**
+ * Брошенный забег, в котором ВСЕ задачи выполнены (31.10.2026): игрок закрыл
+ * приложение, не нажав «Завершить вылазку». Срез /run/progress после закрытия
+ * последнего события нёс снимок финиша (currentRun.completion, см.
+ * parseRunCompletion в run.ts), и забег закрывается ИМ — тем же кодом, что
+ * финиш кнопкой (settleExploreRun): трофеи, добыча, задания, элитные трофеи,
+ * уровень за босса, статы, уровни навыков, зелья, оберег. Выгоднее смерти это
+ * не делает и выгоднее кнопки тоже: исход ровно тот, что дала бы кнопка.
+ *
+ * null — путь не подходит (снимка нет, он кривой, забег не подтверждён,
+ * финиш отказал по существу): вызывающий закрывает забег как раньше.
+ * { summary: null } — забег закрыли между чтением и записью (финиш успел):
+ * писать нечего, окна о прошлом забеге нет.
+ * Гонка с запоздавшим глотком или срезом (currentRun изменился, но не закрыт)
+ * — до трёх попыток со свежим персонажем, как closeRunIfStillOpen.
+ * char обновляется на месте — из него собирается ответ входа.
+ */
+async function closeCompletedRun(char: Character, log: FastifyBaseLogger): Promise<{ summary: RunResultSummary | null } | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const run = char.currentRun as unknown as ActiveExploreRun | null
+    if (!run || typeof run !== 'object' || run.mode !== 'explore') return attempt === 0 ? null : { summary: null }
+    const read = readRunCompletion(run)
+    if (read.problem !== null) log.error({ characterId: char.id, problem: read.problem }, `login: ${read.problem} — closing the run the old way`)
+    if (read.completion === null) return null
+    const outcome = await settleExploreRun(char, run, read.completion, { died: false, unconfirmedPenalty: false, interrupted: true }, log)
+    if (outcome.kind === 'rejected') {
+      log.error({ characterId: char.id, status: outcome.status, error: outcome.body.error }, 'login: completed run refused by the finish path — closing it the old way')
+      return null
+    }
+    const fresh = await prisma.character.findUnique({ where: { id: char.id } })
+    if (fresh) Object.assign(char, fresh)
+    if (outcome.kind === 'ok') {
+      log.info({ characterId: char.id }, 'login: abandoned run with all tasks done closed as completed')
+      await storeFinishResult(char.id, run, outcome.result, log)
+      return { summary: outcome.result }
+    }
+    // conflict — перечитали выше; закрыт — писать нечего, иначе ещё попытка.
+    if (char.currentRun === null) return { summary: null }
+  }
+  log.warn({ characterId: char.id }, 'login: completed run kept changing under the finish path — closing it the old way')
+  return null
 }
 
 // Итог забега, закрытого БЕЗ штрафа: игрок его не увидел (клиент не дошёл до
@@ -136,9 +180,14 @@ export async function authRoutes(server: FastifyInstance) {
     }
 
     // A map-based Explore run (mode: 'explore', see routes/run.ts) left open
-    // when the player closed the app is abandoned on the next login — there
-    // is no way to know what they were doing, so it's closed as a death,
-    // same treatment POST /run/finish-explore gives an explicit died:true.
+    // when the player closed the app is abandoned on the next login. Как он
+    // закрывается (31.10.2026):
+    //   • все задачи были выполнены (снимок финиша в currentRun.completion,
+    //     забег подтверждён) — как ПРОЙДЕННЫЙ, тем же кодом, что кнопка
+    //     «Завершить вылазку» (closeCompletedRun выше → settleExploreRun);
+    //   • не начинался (не подтверждён, ни удара, ни глотка) — без штрафа;
+    //   • иначе — as a death, same treatment POST /run/finish-explore gives an
+    //     explicit died:true: there is no way to know what the player was doing.
     // Trophies and currentRun are wiped in the SAME update (not two separate
     // calls) — split them and a crash between the two would leave the run
     // closed but the trophies intact, making closing the app strictly better
@@ -150,7 +199,14 @@ export async function authRoutes(server: FastifyInstance) {
     let interruptedRun: RunResultSummary | undefined
     let abandonedRun: AbandonedRunSummary | undefined
 
-    if (rawRun && typeof rawRun === 'object' && (rawRun as { mode?: unknown }).mode === 'explore') {
+    const isExploreRun = Boolean(rawRun && typeof rawRun === 'object' && (rawRun as { mode?: unknown }).mode === 'explore')
+    const completedClose = isExploreRun ? await closeCompletedRun(char, request.log) : null
+    if (completedClose !== null) {
+      // Засчитан пройденным (или закрыт кем-то ещё — тогда окна нет). char уже
+      // перечитан из базы целиком: правило «две строки на поле» здесь
+      // выполняется перечитыванием, а не отражением по полю.
+      if (completedClose.summary !== null) interruptedRun = completedClose.summary
+    } else if (isExploreRun) {
       const run = rawRun as ActiveExploreRun
       const trophiesLost = char.trophies
       const eventsTotal = Array.isArray(run.events) ? run.events.length : 0
