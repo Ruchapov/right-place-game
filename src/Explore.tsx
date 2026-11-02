@@ -74,16 +74,14 @@ import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError,
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
+import { dropView } from './ui/dropView'
 import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ui/ResultsFrame'
 import { consumableById, consumableReviveFrac, consumableReflectsFirstHit, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
-import { scrollById } from './scrolls'
-import { classItemById } from './classItems'
 import * as CR from './crafter'
 import type { GearEffects } from './crafter'
-import { itemIconSrc } from './itemIcons'
 import { playerAttackDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
@@ -125,6 +123,11 @@ async function startRunOrExplain(token: string, mapFile?: string, consumables?: 
 // Потеря прогресса при закрытии приложения ограничена этим интервалом — а цена
 // интервала всего одна запись в БД, и только если числа изменились.
 const PROGRESS_INTERVAL_MS = 20_000
+// После выполнения всех задач (31.10.2026) срез несёт снимок финиша и
+// проверяется чаще: брось игрок приложение, дособирая патрульных, вход
+// засчитает ровно то, что ушло последним срезом. sendProgress шлёт, только
+// если что-то изменилось, так что частый таймер запросов не плодит.
+const PROGRESS_INTERVAL_DONE_MS = 5_000
 // Сколько срезов подряд должно не дойти, чтобы зажечь плашку. Один-два —
 // обычная потеря связи, которую перезапишет следующий срез; три подряд значат,
 // что на сервер не уходит ничего.
@@ -501,69 +504,6 @@ type FinishPayload = {
   // Срублен ли Звёздоцвет (docs/crafter.md) — тем же снимком.
   starbloomCut: boolean
   killedPatrols: number[]
-}
-
-/**
- * Как показать одну единицу добычи: название и путь к иконке.
- *
- * Имя и иконку берём из СВОИХ каталогов по id, а не из ответа сервера — иначе
- * те же строки жили бы в четвёртом экземпляре (каталоги страниц, зелий и
- * расходников и так байт-в-байт копии). Снаряжение — исключение и единственное,
- * что приезжает текстом: его названия лежат только в БД, клиентского каталога
- * предметов нет вовсе.
- *
- * Неизвестный id — НЕ повод спрятать строку: сервер уже начислил предмет, и
- * пропажа его со списка выглядела бы как потеря. Показываем сам id и пустую
- * иконку — видно, что это сбой каталога, а не невезение.
- */
-function dropView(drop: RunDrop): { key: string; name: string; iconSrc: string | null } {
-  switch (drop.category) {
-    case 'equipment':
-      return { key: `${drop.slot}-${drop.tier}`, name: drop.nameRu, iconSrc: itemIconSrc(drop.slot, drop.tier) }
-    case 'scroll': {
-      const spec = scrollById(drop.id)
-      return {
-        key: drop.id,
-        name: spec?.nameRu ?? drop.id,
-        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-      }
-    }
-    case 'book': {
-      const spec = consumableById(drop.id)
-      return {
-        key: drop.id,
-        name: spec?.nameRu ?? drop.id,
-        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-      }
-    }
-    case 'potion': {
-      const spec = POTION_TIERS[drop.tier - 1]
-      return {
-        key: `potion-${drop.tier}`,
-        name: spec?.nameRu ?? `Зелье ${drop.tier} тира`,
-        iconSrc: spec === undefined ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-      }
-    }
-    // Предметы классов (18.10.2026): у категории один вид, id каталога — она сама.
-    case 'soul_shard':
-    case 'renounce_seal': {
-      const spec = classItemById(drop.category)
-      return {
-        key: drop.category,
-        name: spec?.nameRu ?? drop.category,
-        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-      }
-    }
-    // Мастер (29.10.2026): сырьё и кольца — тот же каталог, id внутри.
-    case 'crafter': {
-      const spec = classItemById(drop.id)
-      return {
-        key: drop.id,
-        name: spec?.nameRu ?? drop.id,
-        iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
-      }
-    }
-  }
 }
 
 /**
@@ -2116,6 +2056,30 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // на момент отправки (progressSentRef сравнивается с ним потом).
       skillUses: { ...skillUsesRef.current },
     }
+    // Снимок финиша (31.10.2026): все события закрыты — срез везёт то, что ушло
+    // бы финишем с died:false, и брошенный забег вход засчитает пройденным.
+    // Герой мёртв — null: снимок на сервере стирается, и смерть не станет
+    // победой, даже если финиш смертью не дойдёт. Задачи не выполнены — поля
+    // нет вовсе (как у старого клиента).
+    const eventsNow = eventsRef.current
+    const tasksDone = eventsNow.length > 0 && eventsNow.every((e) => e.closed)
+    if (tasksDone && deathRef.current) {
+      snapshot.completion = null
+    } else if (tasksDone) {
+      snapshot.completion = {
+        closedEvents: collectClosedEventIndices(),
+        killedPatrols: [...killedPatrolsRef.current],
+        charmUsed: charmUsedRef.current,
+        starbloomCut: starbloomCutRef.current,
+        potionsDrunkByTier: [...potionsDrunkByTierRef.current],
+        attackDamageDealt: snapshot.attackDamageDealt,
+        skillDamageDealt: snapshot.skillDamageDealt,
+        healedAmount: snapshot.healedAmount,
+        damageTaken: snapshot.damageTaken,
+        skillUses: { ...snapshot.skillUses },
+        ...questCountersRef.current,
+      }
+    }
     // Ничего не изменилось с прошлой УДАЧНОЙ отправки — на сервере уже лежит
     // ровно это. Сравнение с последним успехом, а не с последней попыткой:
     // после сбоя срез обязан уйти снова.
@@ -2133,7 +2097,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // изменились ТОЛЬКО они, реально — кровотечение наложено (применение
       // засчитано), а урон первого тика придёт только через секунду. Без этой
       // строки такой срез не ушёл бы вовсе.
-      sameSkillUses(sent.skillUses, snapshot.skillUses)
+      sameSkillUses(sent.skillUses, snapshot.skillUses) &&
+      // Снимок финиша — тоже: после задач меняются патрульные, глотки,
+      // счётчики заданий, и без этой строки такой срез не ушёл бы.
+      JSON.stringify(sent.completion) === JSON.stringify(snapshot.completion)
     ) return
 
     const gen = runWriteGenRef.current
@@ -2198,7 +2165,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   useEffect(() => {
     if (!token) return
     const id = setInterval(() => sendProgress(), PROGRESS_INTERVAL_MS)
-    return () => clearInterval(id)
+    // После всех задач — чаще (PROGRESS_INTERVAL_DONE_MS): тот же sendProgress,
+    // гейт — флаг «задачи выполнены» (runCompleteFiredRef).
+    const doneId = setInterval(() => { if (runCompleteFiredRef.current) sendProgress() }, PROGRESS_INTERVAL_DONE_MS)
+    return () => { clearInterval(id); clearInterval(doneId) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
@@ -2237,6 +2207,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     finishCountdownMsRef.current = 0
     finishImmortalRef.current = false
     setFinishPhase('none')
+    // Задачи уже выполнены — сразу срез без снимка финиша (completion: null),
+    // чтобы брошенный после смерти забег вход не засчитал пройденным. Не по
+    // runCompleteFiredRef: последнее событие и смерть бывают в одном тике, а
+    // снимок уже ушёл срезом из closeEvent.
+    if (eventsRef.current.length > 0 && eventsRef.current.every((e) => e.closed)) sendProgress()
     deathHoldRef.current = 0
     attackingRef.current = false
     dashingRef.current = false // обрываем dash (смерть главнее)
@@ -5090,6 +5065,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function onPatrolKilled(patrolIndex: number, worldX: number, worldY: number) {
         if (killedPatrolsRef.current.includes(patrolIndex)) return
         killedPatrolsRef.current.push(patrolIndex)
+        // После всех задач — срез со снимком финиша (31.10.2026): патрульный —
+        // ровно то, что игрок остался дособирать.
+        if (runCompleteFiredRef.current) sendProgress()
         const p = runPatrols[patrolIndex]
         if (p && p.trophyReward > 0) spawnRewardFloat(worldX, worldY, [{ kind: 'trophy', amount: p.trophyReward }])
       }

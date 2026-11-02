@@ -3,6 +3,9 @@ import * as C from '../explore/constants'
 import { C as Theme } from './theme'
 import { skillSealSrc } from '../skillBooks'
 import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ResultsFrame'
+import { dropView } from './dropView'
+import { questById } from '../quests'
+import { QuestRewardRow } from './QuestBoard'
 
 // Окно о ПРОШЛОМ забеге, который сервер закрыл сам при входе (/auth/login
 // отдаёт либо interruptedRun, либо abandonedRun — поля взаимоисключающие, см.
@@ -14,7 +17,10 @@ import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from '
 //
 // Две ветки:
 //   interrupted — подтверждённый забег, закрытый как смерть (трофеи сгорели,
-//                 статы и зелья применены). Выглядит как экран смерти;
+//                 статы и зелья применены). Выглядит как экран смерти.
+//                 С 31.10.2026 он же бывает ПРОЙДЕННЫМ (result.completed): все
+//                 задачи были выполнены, вход закрыл забег по снимку финиша, —
+//                 тогда это экран «ЖИВ» с итогами: трофеи, добыча, задание;
 //   abandoned   — забег, которого игрок не видел: штрафа нет, энергия
 //                 возвращена.
 export type PastRunNoticeData =
@@ -60,8 +66,11 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
   // разойдутся они молча.
   const trophyLossView = died || (notice.kind === 'interrupted' && notice.result.trophiesEarned < 0)
   const title = notice.kind === 'abandoned' ? 'ЗАБЕГ НЕ НАЧАЛСЯ' : died ? 'НЕ В ЭТОТ РАЗ' : 'ЖИВ'
+  const completed = notice.kind === 'interrupted' && notice.result.completed === true && !died
   const subtitle =
-    notice.kind === 'abandoned' ? 'Штрафа нет' : 'Забег не завершён — приложение было закрыто'
+    notice.kind === 'abandoned' ? 'Штрафа нет'
+      : completed ? 'Прошлая вылазка засчитана: все задачи были выполнены'
+        : 'Забег не завершён — приложение было закрыто'
 
   const interrupted = notice.kind === 'interrupted' ? notice.result : null
   const hasProgress =
@@ -72,6 +81,11 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
       interrupted.leveledUp ||
       interrupted.skillLevelUps.length > 0)
   const energyLine = notice.kind === 'abandoned' && notice.summary.energyRefunded > 0 ? notice.summary.energyRefunded : null
+  // Добыча и задание — только у засчитанного пройденным (31.10.2026): у забега,
+  // закрытого смертью, их нет (сервер присылает пустые списки и null).
+  const eliteEarned = completed && interrupted !== null ? (interrupted.eliteTrophiesEarned ?? 0) : 0
+  const hasDrops = completed && interrupted !== null && (interrupted.drops.length > 0 || interrupted.dropsLost.length > 0 || eliteEarned > 0)
+  const questDone = completed && interrupted !== null ? (interrupted.questCompleted ?? null) : null
 
   return (
     <ResultsFrame
@@ -119,7 +133,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
         )
       }
       right={
-        !hasProgress && energyLine === null ? null : (
+        !hasProgress && energyLine === null && !hasDrops && questDone === null ? null : (
           <>
             {/* 3. Прокачка — ТОЛЬКО прибавка, только у interrupted. Те же строки,
                 что в ResultsScreen (Explore.tsx), менять вместе. Нули с сервера
@@ -169,6 +183,54 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                     Уровень {up.level}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Добыча и задание засчитанного пройденным — те же строки, что в
+                ResultsScreen (Explore.tsx), менять вместе. */}
+            {hasDrops && interrupted !== null && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+                <ResultsSectionTitle>ДОБЫЧА</ResultsSectionTitle>
+                {eliteEarned > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+                    <img
+                      src={`${import.meta.env.BASE_URL}assets/icons/icon_elite_trophy.png`}
+                      alt=""
+                      draggable={false}
+                      style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }}
+                    />
+                    <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore, minWidth: 0 }}>
+                      +{eliteEarned} {eliteEarned === 1 ? 'элитный трофей' : eliteEarned < 5 ? 'элитных трофея' : 'элитных трофеев'}
+                    </div>
+                  </div>
+                )}
+                {interrupted.drops.map((drop, i) => {
+                  const view = dropView(drop)
+                  return (
+                    <div key={`${view.key}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+                      {view.iconSrc === null ? (
+                        <div style={{ width: 24, height: 24, flexShrink: 0 }} />
+                      ) : (
+                        <img src={view.iconSrc} alt="" draggable={false} style={{ width: 24, height: 24, objectFit: 'contain', flexShrink: 0 }} />
+                      )}
+                      <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, minWidth: 0 }}>{view.name}</div>
+                    </div>
+                  )
+                })}
+                {interrupted.dropsLost.length > 0 && (
+                  <div style={{ fontSize: 'clamp(10px, 2.9vmin, 12px)', color: Theme.danger, textAlign: 'center', lineHeight: 1.45 }}>
+                    Сумка полна, пропало: {interrupted.dropsLost.map((d) => dropView(d).name).join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+            {questDone !== null && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', flexShrink: 0 }}>
+                <ResultsSectionTitle>ЗАДАНИЕ</ResultsSectionTitle>
+                <div style={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.textMain, textAlign: 'center', lineHeight: 1.4 }}>
+                  Задание выполнено: {questById(questDone.questId)?.nameRu ?? questDone.questId}
+                </div>
+                <QuestRewardRow reward={questDone} numberStyle={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore }} iconSize={20} gap={12} />
               </div>
             )}
 

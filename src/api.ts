@@ -702,6 +702,12 @@ export type RunDrop =
 export type RunResultSummary = {
   interrupted: boolean
   died: boolean
+  /**
+   * Брошенный забег засчитан как пройденный (31.10.2026): все задачи были
+   * выполнены, вход закрыл его по снимку финиша. Только у interruptedRun
+   * логина; у финиша и у смерти поля нет. ⚠️ КОПИЯ серверного поля.
+   */
+  completed?: boolean
   trophiesEarned: number
   trophiesLost: number
   eventsClosed: number
@@ -1299,7 +1305,30 @@ export type RunProgressSnapshot = {
    * половина объекта означала бы для него испорченный срез (400).
    */
   skillUses: Record<SkillBookSkillId, number>
+  /**
+   * Снимок финиша (31.10.2026): когда все события закрыты и герой жив — ровно
+   * то тело, что ушло бы в /run/finish-explore с died:false. Брось игрок
+   * приложение, не нажав «Завершить вылазку», — вход засчитает забег ЭТИМ
+   * телом как пройденный. null — герой умер: снимок на сервере стирается.
+   * Поля нет — задачи не выполнены, снимок не трогается (так шлёт и старый
+   * клиент). Старый сервер лишнее поле молча пропускает.
+   */
+  completion?: RunCompletionSnapshot | null
 }
+
+/** Тело финиша с died:false — для снимка в срезе (см. completion выше). */
+export type RunCompletionSnapshot = {
+  closedEvents: number[]
+  killedPatrols: number[]
+  charmUsed: boolean
+  starbloomCut: boolean
+  potionsDrunkByTier: number[]
+  attackDamageDealt: number
+  skillDamageDealt: number
+  healedAmount: number
+  damageTaken: number
+  skillUses: Record<SkillBookSkillId, number>
+} & QuestRunCounters
 
 export class ProgressError extends Error {
   /** HTTP-код попытки; null — ответа не было (таймаут или сеть). */
