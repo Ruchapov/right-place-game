@@ -1,4 +1,4 @@
-import type { Graphics, AnimatedSprite, Container, Sprite } from 'pixi.js'
+import type { Graphics, AnimatedSprite, Container, Sprite, Text } from 'pixi.js'
 import type { RunDrop } from '../api'
 
 export type Grid = string[][]
@@ -319,6 +319,25 @@ export type Enemy = {
   // вниз. Декремент — БЕЗУСЛОВНЫЙ, до гейтов hurtTimer/windingUp (иначе
   // память не истекала бы в хитстане и в замахе, см. enemy.ts).
   aggroMemoryTimer: number
+  // Погоня вниз (04.11.2026, enemy.ts): к какому краю платформы зверь идёт,
+  // чтобы спрыгнуть к герою, стоящему прямо под ним. null/нет — не идёт.
+  dropDir?: 1 | -1 | null
+  // Зрение зверя (05.11.2026, enemy.ts + vision.ts). Необязательные — другие
+  // виды их не заводят.
+  // noticeMs — идёт реакция «заметил» (стоит с «!»), мс;
+  // lastSeenX/lastSeenFeetY — где героя видели в последний раз (центр по X и
+  // ноги) — туда идёт поиск; investigateFeetY — высота точки поиска: ниже
+  // зверя — с края можно спрыгнуть; lookTurnMs — до следующего разворота в
+  // фазе «оглядывается»; markMs — сколько ещё держать «!» в начале погони;
+  // mark — сам значок над головой.
+  noticeMs?: number
+  noticePending?: boolean
+  lastSeenX?: number
+  lastSeenFeetY?: number
+  investigateFeetY?: number | null
+  lookTurnMs?: number
+  markMs?: number
+  mark?: Text
   // Расследование (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS): X источника
   // последнего урона в МИРОВЫХ координатах и два таймера — ходьбы к точке и
   // паузы "осмотреться" после неё.

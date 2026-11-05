@@ -1268,6 +1268,44 @@ export const INVESTIGATE_LOOK_MS = 2000
 // отличие от погони — в патруле с края НЕ падают, см. ниже в ticker'е).
 export const PATROL_RANGE_TILES = 3.5
 
+// ПОГОНЯ ПО ВЫСОТЕ (04.11.2026, entities/enemy.ts). Прыжков у врагов нет.
+// • герой ниже хотя бы на ENEMY_DROP_MIN_PX — зверь спрыгивает к нему с края
+//   (если герой прямо под ним — идёт к ближайшему краю, ищет его в пределах
+//   ENEMY_EDGE_SCAN_TILES);
+// • герой выше и не достать — держится на ENEMY_GUARD_DIST_PX (центр-центр:
+//   полтела зверя + полтела героя + удар героя + запас) и ждёт лицом к нему;
+// • на той же высоте в яму не шагает.
+export const ENEMY_DROP_MIN_PX = 0.5 * TILE_SIZE
+export const ENEMY_EDGE_SCAN_TILES = 10
+export const ENEMY_GUARD_DIST_PX = 170
+
+// ЗРЕНИЕ ЗВЕРЯ (05.11.2026, explore/vision.ts + entities/enemy.ts). Заменяет
+// прежнее агро «в радиусе и на том же этаже», которое видело сквозь
+// платформы и затылком.
+// VIEW_RANGE — дальность взгляда в патруле, CHASE_VIEW_RANGE — в погоне.
+// VIEW_UP/DOWN — окно по высоте (в клетках, по ногам). Сквозь '#' и '='
+// не видит (луч). Спиной не видит; SENSE_RANGE — «чует» вплотную сзади.
+export const ENEMY_VIEW_RANGE_TILES = 7
+export const ENEMY_CHASE_VIEW_RANGE_TILES = 10
+export const ENEMY_VIEW_UP_TILES = 3.5
+export const ENEMY_VIEW_DOWN_TILES = 6
+export const ENEMY_SENSE_RANGE_PX = 1.5 * TILE_SIZE
+// Заметил — секунду реакции стоит лицом к герою с «!» и только потом бежит.
+export const ENEMY_NOTICE_MS = 400
+// Потерял из виду — ещё столько бежит за героем «по памяти» (герой
+// перепрыгнул через голову, мелькнул за уступом), потом — поиск.
+export const ENEMY_CHASE_GRACE_MS = 700
+// ПОИСК: идёт туда, где видел героя в последний раз (может спрыгнуть вниз),
+// не дольше ENEMY_SEARCH_MS, затем оглядывается INVESTIGATE_LOOK_MS,
+// разворачиваясь каждые ENEMY_LOOK_TURN_MS, и возвращается в патруль.
+export const ENEMY_SEARCH_MS = 6000
+export const ENEMY_LOOK_TURN_MS = 650
+// Значок над головой: «!» — заметил, «?» — ищет.
+export const ENEMY_MARK_OFFSET_Y = 18
+// Стая: заметив героя, зверь зовёт соседей по своей группе в этом радиусе
+// туда, где герой, — они прибегают и дальше смотрят своими глазами.
+export const PACK_ALERT_RANGE_TILES = 9
+
 // --- Кнопка 🔄: ПАРИРОВАНИЕ (блок мечом) ---
 //
 // ⚠️ УКЛОНЕНИЕ С I-FRAMES УДАЛЕНО ЦЕЛИКОМ (01.10.2026). Прежняя механика была

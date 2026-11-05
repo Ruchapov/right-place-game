@@ -1,10 +1,11 @@
 import type { MutableRefObject } from 'react'
-import { AnimatedSprite, Graphics } from 'pixi.js'
+import { AnimatedSprite, Graphics, Text } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
+import { canSeePlayer } from '../vision'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
 
 // Кадры зверя (Шаг "спрайт зверя") — загружаются ОДИН раз в setup(), общие
@@ -260,6 +261,34 @@ export function createEnemySystem(deps: EnemyDeps) {
     )
   }
 
+  // Куда ближе край платформы, на которой стоит зверь (для «спрыгнуть к
+  // герою, стоящему прямо под ним»). Идём шагами по полклетки в обе стороны
+  // до ENEMY_EDGE_SCAN_TILES; стена обрывает поиск в эту сторону. Края не
+  // нашлось — prefer (сторона героя).
+  function nearestEdgeDir(enemy: Enemy, prefer: 1 | -1): 1 | -1 {
+    const T = C.TILE_SIZE
+    const feetY = enemy.y + C.ENEMY_HEIGHT
+    const footCy = Math.floor(feetY / T)
+    const maxSteps = C.ENEMY_EDGE_SCAN_TILES * 2
+    let bestDir: 1 | -1 = prefer
+    let bestK = Infinity
+    for (const d of [prefer, prefer > 0 ? -1 : 1] as const) {
+      for (let k = 1; k <= maxSteps; k++) {
+        const lead = d > 0 ? enemy.x + C.ENEMY_WIDTH + (k * T) / 2 : enemy.x - (k * T) / 2
+        if (lead < 0 || lead >= worldWidthPx) break
+        if (isSolid(deps.grid, T, lead, enemy.y + C.ENEMY_HEIGHT / 2)) break
+        if (cellFootBlockTop(deps.grid, T, Math.floor(lead / T), footCy) === null) {
+          if (k < bestK) {
+            bestK = k
+            bestDir = d
+          }
+          break
+        }
+      }
+    }
+    return bestDir
+  }
+
   function update(dt: number, deltaMS: number): void {
     // Враги (Шаг 2-3: СПИСОК — кластер из 3, может быть несколько
     // enemy-событий за забег). Каждый враг обрабатывается НЕЗАВИСИМО:
@@ -288,6 +317,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       // та же очистка/декремент remainingEnemies/closeEvent, что раньше
       // срабатывала СРАЗУ на смертельном ударе.
       if (enemy.dead) {
+        if (enemy.mark) enemy.mark.visible = false
         const beastFrames = deps.beastFrames.current
         const deathDone =
           beastFrames && (enemy.sprite.currentFrame >= beastFrames.death.length - 1 || !enemy.sprite.playing)
@@ -309,6 +339,11 @@ export function createEnemySystem(deps: EnemyDeps) {
             enemy.sprite.destroy()
             enemy.hpBarBg.destroy()
             enemy.hpBarFill.destroy()
+            if (enemy.mark) {
+              deps.worldContainer.removeChild(enemy.mark)
+              enemy.mark.destroy()
+              enemy.mark = undefined
+            }
             deps.enemies.current.splice(i, 1)
             i--
             const ownerEvent = deps.events.current[enemy.eventIndex]
@@ -406,7 +441,8 @@ export function createEnemySystem(deps: EnemyDeps) {
       // Врагу не нужна версия с проверкой головы (sweepHeadBlock) — у него
       // нет прыжка, vy никогда не становится отрицательной. Если под ним
       // нет пола (сошёл с края, преследуя игрока) — просто падает дальше,
-      // разворот у края намеренно не делаем (агрессивная физика).
+      // разворот у края в погоне решает AI ниже (к герою вниз — спрыгивает,
+      // в яму на той же высоте — не шагает).
       enemy.vy = Math.min(enemy.vy + C.GRAVITY * dt, C.MAX_FALL)
       const prevEnemyFootY = enemy.y + C.ENEMY_HEIGHT
       enemy.y += enemy.vy * dt
@@ -458,30 +494,91 @@ export function createEnemySystem(deps: EnemyDeps) {
       // гейт логически не пересекается с уже существующей проверкой удара.
       const enemyFeetY = enemy.y + C.ENEMY_HEIGHT
       const playerFeetY = deps.phys.y + C.PLAYER_HEIGHT
-      const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-      // Условие агро ПРЯМО СЕЙЧАС — по-прежнему пересчитывается каждый кадр и
-      // остаётся строгим (SAME_FLOOR_TOLERANCE_TILES не трогали: он держит
-      // "другой этаж", см. константу).
-      const aggroConditionNow = dist <= C.AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
-      // Память о цели (см. AGGRO_MEMORY_MS): условие выполняется — таймер
-      // взводится в полное значение, перестало — тикает вниз.
+      // --- ЗРЕНИЕ (05.11.2026, см. explore/vision.ts) ---
+      // Прежнее агро «в радиусе и на том же этаже» видело сквозь платформы и
+      // затылком. Теперь зверь замечает героя, только если ВИДИТ: перед собой,
+      // при чистом луче (стены и платформы его режут); спиной — только вплотную.
       //
-      // ⚠️ Декремент стоит ЗДЕСЬ, ДО гейтов hurtTimer/windingUp ниже, и это
-      // не стилистика: остальные таймеры зверя (attackTimer/windupTimer)
-      // тикают ВНУТРИ этих гейтов, и память, поставленная туда же, замирала
-      // бы в хитстане и в замахе — то есть ровно тогда, когда игрок
-      // отрывается, она бы не истекала. Единственное, что выше по коду
-      // прерывает путь сюда, — мёртвый враг (continue), у него памяти о цели
-      // нет по смыслу.
-      if (aggroConditionNow) {
-        enemy.aggroMemoryTimer = C.AGGRO_MEMORY_MS
-      } else {
-        enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
+      // Цепочка состояний:
+      //   патруль → видит → «!» (ENEMY_NOTICE_MS, стоит лицом к герою) →
+      //   погоня (пока видит; потерял — ещё ENEMY_CHASE_GRACE_MS по памяти) →
+      //   поиск: идёт туда, где видел в последний раз (lastSeen), «?» →
+      //   оглядывается в обе стороны → патруль.
+      // Увидел снова на любом этапе поиска — сразу в погоню, без «!».
+      //
+      // aggroMemoryTimer по-прежнему значит «в погоне» — его читает остальной
+      // код (сброс расследования, ветка погони ниже).
+      const sees = canSeePlayer({
+        grid: deps.grid,
+        ex: enemy.x,
+        ey: enemy.y,
+        ew: C.ENEMY_WIDTH,
+        eh: C.ENEMY_HEIGHT,
+        facing: enemy.facing,
+        px: playerCombatBox.x,
+        py: deps.phys.y,
+        pw: playerCombatBox.w,
+        ph: C.PLAYER_HEIGHT,
+        chasing: enemy.aggroMemoryTimer > 0,
+      })
+      const wasChasing = enemy.aggroMemoryTimer > 0
+      const searching = enemy.investigateTimer > 0 || enemy.investigateLookTimer > 0
+      if (sees) {
+        enemy.lastSeenX = playerCombatBox.x + playerCombatBox.w / 2
+        enemy.lastSeenFeetY = playerFeetY
       }
-      // Дальше по AI слово "агрён" означает ИМЕННО память: сюда попадает и
-      // кадр, где условие уже не выполняется (герой в прыжке над врагом), но
-      // цель ещё не забыта. Ветка потери цели (патруль) не менялась — она
-      // просто наступает на AGGRO_MEMORY_MS позже.
+      enemy.noticeMs = Math.max(0, (enemy.noticeMs ?? 0) - deltaMS)
+      let startedChase = false
+      if (sees && !wasChasing) {
+        if (searching || enemy.hurtTimer > 0) {
+          // Уже настороже (ищет или его только что ударили) — без паузы.
+          enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
+          startedChase = true
+        } else if ((enemy.noticeMs ?? 0) === 0 && !enemy.noticePending) {
+          enemy.noticeMs = C.ENEMY_NOTICE_MS
+          enemy.noticePending = true
+        }
+      }
+      if (enemy.noticePending && (enemy.noticeMs ?? 0) === 0) {
+        // Реакция кончилась — в погоню, даже если герой за это время
+        // спрятался: он же его УЖЕ заметил (тогда погоня быстро сменится
+        // поиском по lastSeen).
+        enemy.noticePending = false
+        enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
+        startedChase = true
+      }
+      if (wasChasing) {
+        if (sees) {
+          enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
+        } else {
+          enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
+          if (enemy.aggroMemoryTimer === 0 && enemy.lastSeenX !== undefined) {
+            // Потерял — ПОИСК там, где видел в последний раз.
+            enemy.investigateX = enemy.lastSeenX
+            enemy.investigateFeetY = enemy.lastSeenFeetY ?? null
+            enemy.investigateTimer = C.ENEMY_SEARCH_MS
+            enemy.investigateLookTimer = 0
+          }
+        }
+      }
+      if (startedChase) {
+        enemy.markMs = C.ENEMY_NOTICE_MS
+        // СТАЯ (PACK_ALERT_RANGE_TILES): зовёт соседей по группе туда, где
+        // герой. Прибежав, они смотрят своими глазами.
+        if (enemy.eventIndex >= 0) {
+          const myCx = enemy.x + C.ENEMY_WIDTH / 2
+          for (const mate of deps.enemies.current) {
+            if (mate === enemy || mate.kind !== 'beast' || mate.dead) continue
+            if (mate.eventIndex !== enemy.eventIndex || mate.aggroMemoryTimer > 0) continue
+            if (Math.abs(mate.x + mate.width / 2 - myCx) > C.PACK_ALERT_RANGE_TILES * C.TILE_SIZE) continue
+            mate.investigateX = playerCombatBox.x + playerCombatBox.w / 2
+            mate.investigateFeetY = playerFeetY
+            mate.investigateTimer = C.ENEMY_SEARCH_MS
+            mate.investigateLookTimer = 0
+          }
+        }
+      }
+      enemy.markMs = Math.max(0, (enemy.markMs ?? 0) - deltaMS)
       const aggroed = enemy.aggroMemoryTimer > 0
 
       // Таймеры расследования (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS) — тут
@@ -505,7 +602,10 @@ export function createEnemySystem(deps: EnemyDeps) {
       } else if (enemy.investigateLookTimer > 0) {
         enemy.investigateLookTimer = Math.max(0, enemy.investigateLookTimer - deltaMS)
         // Осмотрелся — точка больше не нужна, дальше обычный патруль.
-        if (enemy.investigateLookTimer === 0) enemy.investigateX = null
+        if (enemy.investigateLookTimer === 0) {
+          enemy.investigateX = null
+          enemy.investigateFeetY = null
+        }
       }
 
       // Хитстан (hurt) полностью замораживает эту AI-ветку — не двигается,
@@ -514,32 +614,89 @@ export function createEnemySystem(deps: EnemyDeps) {
       // не затрагиваются — застывает только решение "двигаться/бить".
       if (enemy.hurtTimer <= 0) {
         if (!enemy.windingUp) {
-          if (aggroed) {
-            // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля, падение с
-            // края разрешено (см. физику выше — leadingX тут не проверяет
-            // пол под ногами вообще, это делает общий gravity-блок).
+          if (enemy.noticePending) {
+            // «!» — заметил: стоит и смотрит на героя, пока идёт реакция.
+            const d = Math.sign(dx)
+            if (d !== 0) enemy.facing = d as 1 | -1
+          } else if (aggroed) {
+            // ПОГОНЯ (Шаг B, скорость — Шаг C): быстрее патруля.
             // !bodiesTouchingX — не долезать в игрока в паузах между
             // ударами (attackTimer>0, windup ещё не начался): без этого
             // враг продолжал лезть вплотную, а боковой упор постоянно
             // выталкивал игрока обратно ("толкание").
-            if (!reachedStopDist && !bodiesTouchingX) {
-              const dir = Math.sign(dx)
-              const nextX = enemy.x + dir * C.ENEMY_CHASE_SPEED * dt
-              const leadingX = dir > 0 ? nextX + C.ENEMY_WIDTH : nextX
+            //
+            // 04.11.2026 — погоня по высоте (прыжков у врагов НЕТ и не будет):
+            // • герой НИЖЕ — зверь не встаёт на краю «я дошёл», а идёт к краю
+            //   своей платформы и спрыгивает к нему (ENEMY_DROP_*);
+            // • герой ВЫШЕ и достать нельзя — зверь отходит из-под него на
+            //   ENEMY_GUARD_DIST_PX, чтобы его не били сверху бесплатно, и ждёт;
+            // • герой на той же высоте — в яму зверь не шагает (край = стоп).
+            const towardDir: 1 | -1 = dx > 0 ? 1 : dx < 0 ? -1 : enemy.facing
+            const below = playerFeetY - enemyFeetY // >0 — герой ниже
+            const playerBelow = deps.phys.onGround && below >= C.ENEMY_DROP_MIN_PX && !verticalReach
+            const playerAbove = deps.phys.onGround && -below >= C.ENEMY_DROP_MIN_PX && !verticalReach
+
+            // Один шаг по X в сторону d. allowDrop — можно ли сойти с края.
+            // Возвращает false, если шаг не сделан (стена или край).
+            const stepX = (d: 1 | -1, allowDrop: boolean): boolean => {
+              const nextX = enemy.x + d * C.ENEMY_CHASE_SPEED * dt
+              const leadingX = d > 0 ? nextX + C.ENEMY_WIDTH : nextX
               const hitWall =
                 isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
                 isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT / 2) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1)
-              if (!hitWall) {
-                enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
+                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1) ||
+                // В полёте — ещё и точка чуть ниже ног (куда они попадут за этот
+                // кадр): иначе, сходя с края и тут же разворачиваясь к герою,
+                // зверь задевал угол платформы и «садился» в её бок.
+                (enemy.vy !== 0 &&
+                  isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT + Math.max(0, enemy.vy) * dt + 1))
+              if (hitWall) return false
+              if (!allowDrop && enemy.vy === 0) {
+                const footCx = Math.floor(leadingX / C.TILE_SIZE)
+                const footCy = Math.floor(enemyFeetY / C.TILE_SIZE)
+                if (cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null) return false
               }
-              if (dir !== 0) enemy.facing = dir as 1 | -1
-            } else if (bodiesTouchingX) {
-              // стоит вплотную, не лезет вперёд, но поворачивается лицом к
-              // игроку, чтобы следующий замах шёл в правильную сторону
-              // (в т.ч. если игрок забежал за спину) — enemy.x не трогаем.
-              const dir = Math.sign(dx)
-              if (dir !== 0) enemy.facing = dir as 1 | -1
+              enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
+              return true
+            }
+
+            if (enemy.vy !== 0) {
+              // В падении (спрыгнул к герою) — продолжает идти к нему.
+              enemy.dropDir = null
+              stepX(towardDir, true)
+              enemy.facing = towardDir
+            } else if (playerBelow) {
+              // СПРЫГНУТЬ К ГЕРОЮ. Если герой не прямо под ним — просто идёт к
+              // нему, край не останавливает. Если прямо под ним (идти «к нему»
+              // некуда) — выбирает ближайший край своей платформы и идёт туда.
+              // Выбранный край держится до самого прыжка вниз (сброс — в полёте
+              // или когда герой уже не ниже): иначе на границе «прямо под ним»
+              // зверь дёргался бы туда-обратно между краем и героем.
+              const underneath = Math.abs(dx) < C.ENEMY_WIDTH / 2 + C.TILE_SIZE / 2
+              if (underneath && enemy.dropDir == null) enemy.dropDir = nearestEdgeDir(enemy, towardDir)
+              const d = enemy.dropDir ?? towardDir
+              if (!stepX(d, true)) enemy.dropDir = d > 0 ? -1 : 1 // стена — к другому краю
+              enemy.facing = d
+            } else if (playerAbove) {
+              // ГЕРОЙ ВЫШЕ — отойти из-под удара и ждать лицом к нему.
+              enemy.dropDir = null
+              if (dist < C.ENEMY_GUARD_DIST_PX) {
+                const away: 1 | -1 = towardDir > 0 ? -1 : 1
+                stepX(away, false)
+              }
+              enemy.facing = towardDir
+            } else {
+              enemy.dropDir = null
+              if (!reachedStopDist && !bodiesTouchingX) {
+                // Обычная погоня; в яму на той же высоте не шагает.
+                stepX(towardDir, false)
+                if (dx !== 0) enemy.facing = towardDir
+              } else if (bodiesTouchingX) {
+                // стоит вплотную, не лезет вперёд, но поворачивается лицом к
+                // игроку, чтобы следующий замах шёл в правильную сторону
+                // (в т.ч. если игрок забежал за спину) — enemy.x не трогаем.
+                if (dx !== 0) enemy.facing = towardDir
+              }
             }
           } else if (enemy.investigateTimer > 0 && enemy.investigateX !== null) {
             // РАССЛЕДОВАНИЕ, фаза ходьбы (см. INVESTIGATE_MS): идём к точке,
@@ -572,7 +729,13 @@ export function createEnemySystem(deps: EnemyDeps) {
               const footCx = Math.floor(leadingX / C.TILE_SIZE)
               const footCy = Math.floor((enemy.y + C.ENEMY_HEIGHT) / C.TILE_SIZE)
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
-              if (hitWall || noFloorAhead) {
+              // Поиск героя (05.11.2026): точка НИЖЕ — с края спрыгивает, а в
+              // полёте просто продолжает идти к ней.
+              const targetBelow =
+                enemy.investigateFeetY != null &&
+                enemy.investigateFeetY - (enemy.y + C.ENEMY_HEIGHT) >= C.ENEMY_DROP_MIN_PX
+              const canDrop = targetBelow || enemy.vy !== 0
+              if (hitWall || (noFloorAhead && !canDrop)) {
                 // Дальше хода нет — точка недостижима (стреляли с другого
                 // этажа/через пропасть). Не топчемся у препятствия: тот же
                 // переход в паузу, что и по приходу.
@@ -586,8 +749,14 @@ export function createEnemySystem(deps: EnemyDeps) {
             // РАССЛЕДОВАНИЕ, фаза паузы (см. INVESTIGATE_LOOK_MS): стоит на
             // месте лицом к точке. enemy.x не трогаем вообще — время тикает
             // в безусловном блоке выше, отсюда только разворот.
-            const dir = Math.sign(enemy.investigateX - (enemy.x + C.ENEMY_WIDTH / 2))
-            if (dir !== 0) enemy.facing = dir as 1 | -1
+            // 05.11.2026: не стоит столбом лицом к точке, а ОГЛЯДЫВАЕТСЯ —
+            // разворачивается каждые ENEMY_LOOK_TURN_MS. Зрение направленное,
+            // так что героя за спиной он может так и заметить.
+            enemy.lookTurnMs = (enemy.lookTurnMs ?? C.ENEMY_LOOK_TURN_MS) - deltaMS
+            if (enemy.lookTurnMs <= 0) {
+              enemy.lookTurnMs = C.ENEMY_LOOK_TURN_MS
+              enemy.facing = enemy.facing === 1 ? -1 : 1
+            }
           } else {
             // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
             // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
@@ -610,6 +779,12 @@ export function createEnemySystem(deps: EnemyDeps) {
             const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
 
             if (reachedBound || hitWall || noFloorAhead) {
+              // Погоня увела зверя со своего участка (спрыгнул вниз — обратно
+              // ему не подняться), и путь к дому закрыт стеной или краем:
+              // дом переезжает сюда. Иначе он дёргался бы на месте между
+              // границей патруля и препятствием.
+              const headingHome = (dir < 0 && enemy.x > patrolRightBound) || (dir > 0 && enemy.x < patrolLeftBound)
+              if (headingHome && (hitWall || noFloorAhead)) enemy.spawnX = enemy.x
               enemy.patrolDir = dir > 0 ? -1 : 1
             } else {
               enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
@@ -793,6 +968,24 @@ export function createEnemySystem(deps: EnemyDeps) {
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x
       enemy.hpBarFill.y = enemy.hpBarBg.y
+
+      // Значок над головой: «!» — заметил (реакция и начало погони), «?» —
+      // ищет. Создаётся при первом показе, убирается вместе с врагом.
+      const markText = enemy.noticePending || (enemy.markMs ?? 0) > 0 ? '!' : !aggroed && enemy.investigateX !== null ? '?' : ''
+      if (markText && !enemy.mark) {
+        enemy.mark = new Text({
+          text: markText,
+          style: { fontSize: 30, fontWeight: 'bold', fill: 0xffd23f, stroke: { color: 0x000000, width: 5 } },
+        })
+        enemy.mark.anchor.set(0.5, 1)
+        deps.worldContainer.addChild(enemy.mark)
+      }
+      if (enemy.mark) {
+        enemy.mark.visible = markText !== ''
+        if (markText && enemy.mark.text !== markText) enemy.mark.text = markText
+        enemy.mark.x = enemy.x + C.ENEMY_WIDTH / 2
+        enemy.mark.y = enemy.hpBarBg.y - C.ENEMY_MARK_OFFSET_Y + 14
+      }
 
       // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
       // спрайта — краснеет (danger), пока windingUp истинно.
