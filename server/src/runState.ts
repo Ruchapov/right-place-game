@@ -16,7 +16,7 @@
 // двух видах — снимок ПО ТИРАМ внутри currentRun и пять колонок Character, —
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
-import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock } from './potions.js'
+import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock, potionHealAmount } from './potions.js'
 import { bossMaxHpForMap, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
 import type { RunEvent, RunPatrol } from './runEvents.js'
 import { ELITE_HP_MULT } from './runExtras.js'
@@ -775,7 +775,11 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   const dealtScale = combinedDealt > maxDamageDealt && combinedDealt > 0 ? maxDamageDealt / combinedDealt : 1
 
   const runMaxHp = isRunProgressValue(run.maxHp) ? run.maxHp : 0
-  const maxHealFrac = Math.max(...POTION_TIERS.map((t) => t.healFrac))
+  // Самое большое лечение ОДНОГО глотка при maxHp забега (08.11.2026): глоток
+  // лечит фикс + процент (potionHealAmount), и сильнейший тир по процентам —
+  // не обязательно сильнейший по сумме, поэтому максимум по всем тирам.
+  const maxSipHeal = Math.max(...POTION_TIERS.map((t) => potionHealAmount(t, runMaxHp)))
+  const sipHealMax = runSipsAllowed(run) * maxSipHeal
   // Испорченный класс забега — как без класса: запас меньше, то есть трактовка
   // против игрока, как у всех потолков. Вызывающий видит это по runHeroClass.
   const runHeroClass = readRunHeroClass(run)
@@ -784,11 +788,13 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     Math.max(blood.bleedHealFrac, blood.bladeHealFrac) * hpPool
     + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
   const runHealSkill = readRunHealSkill(run)
-  const gear = gearReserve(readRunGear(run).effects, runMaxHp, maxDamageDealt, enemyCount, bossCount, runSipsAllowed(run), maxHealFrac)
+  const gear = gearReserve(readRunGear(run).effects, runMaxHp, maxDamageDealt, enemyCount, bossCount, runSipsAllowed(run), maxSipHeal)
   const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, gear.extraMana)
   const charmHealMax = charmReserve(run, runMaxHp)
-  const maxDamageTaken = runMaxHp * (1 + runSipsAllowed(run) * maxHealFrac) * 1.5 + classHealMax + heal.hp + charmHealMax + gear.healMax + gear.potionHealMax
-  const maxHealed = runMaxHp + heal.hp + gear.potionHealMax
+  const maxDamageTaken = (runMaxHp + sipHealMax) * 1.5 + classHealMax + heal.hp + charmHealMax + gear.healMax + gear.potionHealMax
+  // С фиксированной частью три глотка на малом maxHp лечат больше самого maxHp
+  // (25 + 10% × 80 = 33 за глоток): база потолка лечения — большее из двух.
+  const maxHealed = Math.max(runMaxHp, sipHealMax) + heal.hp + gear.potionHealMax
 
   return {
     progress: {
@@ -891,14 +897,14 @@ function gearReserve(
   enemyCount: number,
   bossCount: number,
   sips: number,
-  maxHealFrac: number,
+  maxSipHeal: number,
 ): { healMax: number; potionHealMax: number; extraMana: number } {
   const kills = enemyCount + bossCount
   const hits = GEAR_HITS_PER_ENEMY * enemyCount + GEAR_HITS_PER_BOSS * bossCount
   const overflow = gear.rings.includes('ring_overflow') ? RING_OVERFLOW_HEAL_FRAC * runMaxHp * RUN_MANA_DROP_MAX * kills : 0
   const healMax = gear.lifestealFrac * maxDamageDealt + gear.parryHealFrac * runMaxHp * hits + overflow
   const freeSips = gear.rings.includes('ring_saving') ? freeUsesBound(sips, RING_SAVING_CHANCE) : 0
-  const potionHealMax = (gear.extraSips + freeSips) * maxHealFrac * runMaxHp
+  const potionHealMax = (gear.extraSips + freeSips) * maxSipHeal
   const extraMana = (gear.hitManaChance > 0 ? hits : 0) + (gear.rings.includes('ring_return') ? GEAR_MAX_SKILL_COST * kills : 0)
   return { healMax, potionHealMax, extraMana }
 }

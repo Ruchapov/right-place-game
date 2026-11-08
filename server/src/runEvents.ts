@@ -69,9 +69,10 @@ export function pickRunMapFile(): MapFile {
 export const EVENTS_PER_RUN = 3 // constants.ts:763
 export const BOSS_SPAWN_CHANCE = 0.3 // constants.ts:767
 export const CHEST_MIMIC_CHANCE = 0.2 // constants.ts:371
-// 1 → 1.5 (30.10.2026, «забег насыщеннее»): в группе 5 врагов вместо 3. Пара
+// 1 → 1.5 (30.10.2026, «забег насыщеннее»): в группе 5 врагов вместо 3;
+// 1.5 → 1.25 (08.11.2026): в группе 4 врага (GROUP_SIZE, runExtras.ts). Пара
 // на клиенте — TROPHY_MULT_ENEMY в constants.ts (её читает только офлайн-заглушка).
-export const TROPHY_MULT_ENEMY = 1.5 // constants.ts:457
+export const TROPHY_MULT_ENEMY = 1.25 // constants.ts:457
 export const TROPHY_MULT_CHEST = 3 // constants.ts:458
 export const TROPHY_MULT_OBELISK = 2 // constants.ts:459
 export const TROPHY_MULT_BOSS = 4 // constants.ts:460
@@ -129,13 +130,18 @@ export const ENEMY_GROUP_WEIGHTS: Record<RunEnemyKind, number> = {
  *
  * Последний вид возвращается и «на остаток»: при roll, равном сумме весов из-за
  * округления чисел с плавающей точкой, цикл иначе не вернул бы ничего.
+ *
+ * Привратник — только с GATEKEEPER_MIN_LEVEL (08.11.2026, общий runExtras.ts):
+ * ниже его вес 0, звери и Звонари делятся по своим весам (45 : 30).
  */
-export function rollEnemyKind(): RunEnemyKind {
-  const kinds = Object.keys(ENEMY_GROUP_WEIGHTS) as RunEnemyKind[]
-  const total = kinds.reduce((sum, k) => sum + ENEMY_GROUP_WEIGHTS[k], 0)
+export function rollEnemyKind(characterLevel: number): RunEnemyKind {
+  const weight = (k: RunEnemyKind): number =>
+    k === 'gatekeeper' && !(characterLevel >= GATEKEEPER_MIN_LEVEL) ? 0 : ENEMY_GROUP_WEIGHTS[k]
+  const kinds = (Object.keys(ENEMY_GROUP_WEIGHTS) as RunEnemyKind[]).filter((k) => weight(k) > 0)
+  const total = kinds.reduce((sum, k) => sum + weight(k), 0)
   let roll = Math.random() * total
   for (const kind of kinds) {
-    roll -= ENEMY_GROUP_WEIGHTS[kind]
+    roll -= weight(kind)
     if (roll < 0) return kind
   }
   return kinds[kinds.length - 1]
@@ -144,7 +150,7 @@ export function rollEnemyKind(): RunEnemyKind {
 // --- Типы ---
 
 import type { EventDrop } from './runDrops.js'
-import { ELITE_CHANCE, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
+import { ELITE_CHANCE, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
 
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
 
@@ -421,7 +427,7 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       return {
         ...ev,
         trophyReward: elite ? eliteGroupTrophies(base, size) : base,
-        enemyKind: rollEnemyKind(),
+        enemyKind: rollEnemyKind(characterLevel),
         ...(elite ? { eliteIndex: Math.floor(Math.random() * size) } : {}),
       }
     }
@@ -460,7 +466,7 @@ export function rollRunPatrols(mapFile: string, events: RunEvent[], characterLev
   return pickPatrolSpots(remainingPoints(enemyPointPool(slots), groupPoints), eventPoints).map(([x, y]) => ({
     x,
     y,
-    enemyKind: rollEnemyKind(),
+    enemyKind: rollEnemyKind(characterLevel),
     trophyReward: rollTrophies(TROPHY_MULT_PATROL, characterLevel),
   }))
 }

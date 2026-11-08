@@ -4,6 +4,8 @@ import { renderSpikeTile, spikeGlintAlpha, backdropPaths, backdropLook } from '.
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
+import TutorialCard from './ui/TutorialCard'
+import { RUN_TIPS, hasSeen, markSeen, tutorialReady, type RunTipId, type TutorialTip } from './tutorial'
 import TouchControls, { CONTROLS_BLOCK_H, LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
@@ -38,7 +40,7 @@ import {
   sweepFootBlock,
 } from './explore/collision'
 import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from './explore/mapEvents'
-import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier } from './potions'
+import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier, potionHealAmount } from './potions'
 import { clamp, isLowLandscape, pickRandom, worldScaleFor } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
@@ -62,7 +64,7 @@ import { createCritFlashSystem } from './explore/entities/critFlash'
 import { createEliteGlowSystem } from './explore/entities/eliteGlow'
 import { createReflectGlowSystem } from './explore/entities/reflectGlow'
 import { createMapEdges } from './explore/entities/mapEdges'
-import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
+import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { loadSheetFrames } from './explore/spriteLoader'
@@ -579,7 +581,11 @@ function devEnemyKind(): EnemyKind {
   if (TEMP_DEV_GATEKEEPER_GROUPS === 'always') return 'gatekeeper'
   if (TEMP_DEV_ZVONAR_GROUPS === 'always') return 'zvonar'
   // Один бросок на оба вида: у кого стоит 'never', у того доля нулевая.
-  const gatekeeperShare = TEMP_DEV_GATEKEEPER_GROUPS === 'roll' ? TEMP_DEV_GATEKEEPER_CHANCE : 0
+  // Привратник — с GATEKEEPER_MIN_LEVEL, как на сервере (rollEnemyKind); уровень
+  // заглушки — C.PLAYER_LEVEL_FALLBACK. 'always' выше — явный выбор отладки, он
+  // порог обходит.
+  const gatekeeperShare =
+    TEMP_DEV_GATEKEEPER_GROUPS === 'roll' && C.PLAYER_LEVEL_FALLBACK >= GATEKEEPER_MIN_LEVEL ? TEMP_DEV_GATEKEEPER_CHANCE : 0
   const zvonarShare = TEMP_DEV_ZVONAR_GROUPS === 'roll' ? TEMP_DEV_ZVONAR_CHANCE : 0
   const roll = Math.random()
   if (roll < gatekeeperShare) return 'gatekeeper'
@@ -1692,6 +1698,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // 3 суммарно. Каждый обрабатывается независимо в тикере (движение,
   // преследование, windup, удар по игроку, приём урона, смерть).
   const enemiesRef = useRef<Enemy[]>([])
+  // ОБУЧЕНИЕ (08.11.2026, src/tutorial.ts): подсказка при первом появлении в
+  // кадре. Пока она открыта, игра стоит — тикер выходит в самом начале, как в
+  // хитстопе, анимации спрайтов (общий Ticker.shared) — на speed 0.
+  const [runTip, setRunTip] = useState<TutorialTip | null>(null)
+  const tutorialPausedRef = useRef(false)
 
   // Сундуки (reward-события) — по объекту Chest на событие. hitbox считается
   // ОДИН раз при создании (см. setup), читается каждый кадр в ticker'е для
@@ -4951,6 +4962,37 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // dt — deltaTime тика (как везде в файле); при первом вызове (до старта
       // ticker'а) передаём Infinity, чтобы camera-lerp ниже сразу СНАПНУЛ в
       // стартовую позицию, а не полз туда от (0,0) первые несколько кадров.
+      // ОБУЧЕНИЕ: первое появление в кадре (src/tutorial.ts, RUN_TIPS). Кадр —
+      // видимая часть мира с запасом в полклетки; порядок проверок — порядок
+      // важности, за раз — одна подсказка, следующая — после «Понятно».
+      const TUTORIAL_SCAN_MS = 250
+      let tutorialScanMs = 0
+      const findRunTip = (): RunTipId | null => {
+        const s = viewScale
+        const pad = C.TILE_SIZE / 2
+        const left = -worldContainer.x / s - pad
+        const top = -worldContainer.y / s - pad
+        const right = left + app!.screen.width / s + 2 * pad
+        const bottom = top + app!.screen.height / s + 2 * pad
+        const inView = (x: number, y: number) => x >= left && x <= right && y >= top && y <= bottom
+        const want = (id: RunTipId) => !hasSeen(id)
+        const boss = bossRef.current
+        if (boss && !boss.dead && want('run_boss') && inView(boss.x + C.BOSS_WIDTH / 2, boss.y + C.BOSS_HEIGHT / 2)) return 'run_boss'
+        for (const e of enemiesRef.current) {
+          if (e.dead || !inView(e.x + e.width / 2, e.y + e.height / 2)) continue
+          if (e.elite && want('run_elite')) return 'run_elite'
+          if (e.kind === 'gatekeeper' && want('run_gatekeeper')) return 'run_gatekeeper'
+          if (e.kind === 'zvonar' && want('run_zvonar')) return 'run_zvonar'
+          if (e.patrolIndex !== undefined && want('run_patrol')) return 'run_patrol'
+        }
+        if (want('run_chest') && chestsRef.current.some((c) => !c.opened && inView(c.sprite.x, c.sprite.y))) return 'run_chest'
+        if (want('run_obelisk') && obelisksRef.current.some((o) => inView(o.sprite.x, o.sprite.y))) return 'run_obelisk'
+        if (want('run_smuggler') && smugglersRef.current.some((m) => inView(m.sprite.x, m.sprite.y))) return 'run_smuggler'
+        if (want('run_starbloom') && starbloomSystem !== null && starbloomTile !== null && !starbloomCutRef.current
+          && inView((starbloomTile[0] + 0.5) * C.TILE_SIZE, (starbloomTile[1] + 0.5) * C.TILE_SIZE)) return 'run_starbloom'
+        return null
+      }
+
       const updateCamera = (dt: number) => {
         // player.x/y и player.width/height — координаты МИРА (локальные для
         // worldContainer), а worldContainer.x/y — координаты ЭКРАНА. При
@@ -5837,6 +5879,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           hitstopMsLeft = 0
           Ticker.shared.speed = 1
         }
+        // Подсказка обучения открыта — игра на паузе (кнопка «Понятно» снимает).
+        if (tutorialPausedRef.current) return
         const dt = ticker.deltaTime
         const startX = phys.x
         const startY = phys.y
@@ -6709,7 +6753,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // Через healPlayer — ОБЩАЯ точка лечения со скиллом heal (см.
               // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
               // долитого в healedAmountRef живут там, здесь не дублируются.
-              healPlayer(maxHp * POTION_TIERS[tier - 1].healFrac)
+              // С 08.11.2026 — фикс + процент (potionHealAmount, общая с сервером).
+              healPlayer(potionHealAmount(POTION_TIERS[tier - 1], maxHp))
               // Кольцо бережливости: с шансом глоток не тратит ни зелье, ни
               // глоток забега — и сервер о нём не узнаёт (запас на такие
               // глотки он держит сам, gearReserve в runState.ts).
@@ -6897,6 +6942,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         cameraFieldsAgeMs += ticker.deltaMS
         if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
+        // ОБУЧЕНИЕ: раз в TUTORIAL_SCAN_MS — что впервые попало в кадр. После
+        // камеры: кадр — тот, что будет нарисован. Мёртвому герою и после
+        // финиша подсказки не нужны.
+        tutorialScanMs += ticker.deltaMS
+        if (tutorialScanMs >= TUTORIAL_SCAN_MS && tutorialReady() && !deathRef.current && !finishExploreSentRef.current) {
+          tutorialScanMs = 0
+          const tipId = findRunTip()
+          if (tipId !== null) {
+            tutorialPausedRef.current = true
+            Ticker.shared.speed = 0
+            setRunTip(RUN_TIPS[tipId])
+          }
+        }
         // Блик шипов: одна фаза на все шипы карты, по игровому времени.
         if (spikeGlintLayer !== null) {
           spikeGlintTimeS += ticker.deltaMS / 1000
@@ -7511,6 +7569,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           sendFinishExplore(!(tasksDone && !deathRef.current))
         }}
         trophies={trophies} runTrophies={() => trophiesEarnedRef.current} tasksDone={finishPhase !== 'none'} />
+
+      {/* Подсказка обучения (08.11.2026): игра стоит, пока не нажато «Понятно». */}
+      {runTip && (
+        <TutorialCard tip={runTip} onNext={() => {
+          markSeen(runTip.id)
+          setRunTip(null)
+          tutorialPausedRef.current = false
+          Ticker.shared.speed = 1
+        }} />
+      )}
 
           <TouchControls
             dirRef={dirRef}

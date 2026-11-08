@@ -879,9 +879,10 @@ export const TROPHY_LEVEL_POWER = 0.446
 export const TROPHY_SPREAD = 0.4 // разброс +-20%
 export const PLAYER_LEVEL_FALLBACK = 1 // ВРЕМЕННО: уровень в Explore пока
 
-// 1 → 1.5 (30.10.2026): в группе 5 врагов вместо 3. Пара — TROPHY_MULT_ENEMY в
-// server/src/runEvents.ts; здесь её читает только офлайн-заглушка.
-export const TROPHY_MULT_ENEMY = 1.5
+// 1 → 1.5 (30.10.2026): в группе 5 врагов вместо 3; 1.5 → 1.25 (08.11.2026):
+// в группе 4 врага. Пара — TROPHY_MULT_ENEMY в server/src/runEvents.ts; здесь её
+// читает только офлайн-заглушка.
+export const TROPHY_MULT_ENEMY = 1.25
 export const TROPHY_MULT_CHEST = 3
 export const TROPHY_MULT_OBELISK = 2
 export const TROPHY_MULT_BOSS = 4

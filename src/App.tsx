@@ -7,7 +7,7 @@ import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat,
 import { QUESTS, questById, questReward, type QuestId } from './quests'
 import { QuestBoard, QuestBoardSideFit, QuestWallBoard, QuestBoardThumb, type RefugeSceneGeometry } from './ui/QuestBoard'
 import { boardNotes, questCountdownLabel } from './ui/questBoardModel'
-import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount } from './potions'
+import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchaseCount, potionHealLine } from './potions'
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
@@ -45,6 +45,8 @@ import { playerAttackDamage } from './playerDamage'
 import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
+import TutorialCard from './ui/TutorialCard'
+import { INTRO_CARDS, INTRO_ID, ITEM_TIPS, hasSeen, loadTutorial, markSeen, lastSeenLevel, setLastSeenLevel, pendingLevelTips, resetTutorial, type TutorialTip } from './tutorial'
 import SkillLevelNote from './ui/SkillLevelNote'
 import { BagCellBadge } from './ui/BagCellBadge'
 import { HeroClassLine, HeroClassTiles, HeroClassCard, HeroClassCelebration, type ClassActionKind } from './ui/HeroClassViews'
@@ -1040,6 +1042,17 @@ export default function App() {
   // shopBuyError в магазине). Сбрасывается новой попыткой и закрытием карточки.
   const [gearEquipError, setGearEquipError] = useState<string | null>(null)
   const [showExploreTest, setShowExploreTest] = useState(false)
+  // ОБУЧЕНИЕ (08.11.2026, src/tutorial.ts). tutorialLoaded — id игрока, чьи
+  // флаги загружены (null — ещё нет или хранилища нет: подсказок не будет).
+  // introPage — открыто интро, номер карточки; tutQueue — одиночные подсказки
+  // меню по очереди (по уровню и о первых предметах). tutOldPlayerRef — у
+  // игрока фича запустилась впервые не на 1–2 уровне: подсказки о предметах,
+  // которые у него уже есть, помечаются показанными молча.
+  const [tutorialLoaded, setTutorialLoaded] = useState<number | null>(null)
+  const [introPage, setIntroPage] = useState<number | null>(null)
+  const [tutQueue, setTutQueue] = useState<TutorialTip[]>([])
+  const [howToOpen, setHowToOpen] = useState(false)
+  const tutOldPlayerRef = useRef(false)
   // undefined — обычный запуск ("Начать забег"): Explore получает mapFile
   // не заданным и просит карту у сервера сам. Debug-панель карт A-F (и
   // кнопка "D Тайник (50/50)") ставят сюда конкретный файл явно.
@@ -1063,6 +1076,69 @@ export default function App() {
   // то же (навигация переезжает влево CSS-свойством order, а не местом в JSX),
   // вкладки, подвкладки и открытые окна живут в состоянии App.
   const sideMenu = useMediaQuery(LOW_LANDSCAPE_QUERY)
+
+  // --- Обучение: загрузка флагов и очередь подсказок меню ---
+  const tutPlayerId = player?.id ?? null
+  const tutPlayerLevel = player?.level ?? null
+  useEffect(() => {
+    if (tutPlayerId === null || tutPlayerLevel === null) return
+    let cancelled = false
+    void loadTutorial(tutPlayerId).then((ok) => {
+      if (cancelled || !ok) return
+      if (lastSeenLevel() === null) {
+        // Первый запуск фичи у этого игрока: старые подсказки по уровню не
+        // показываем, отсчёт — с текущего уровня.
+        setLastSeenLevel(tutPlayerLevel)
+        tutOldPlayerRef.current = tutPlayerLevel > 2
+      }
+      if (tutPlayerLevel <= 2 && !hasSeen(INTRO_ID)) setIntroPage(0)
+      setTutorialLoaded(tutPlayerId)
+    })
+    return () => { cancelled = true }
+    // Уровень читается один раз, на загрузке; рост уровня ловит эффект ниже.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tutPlayerId])
+
+  const enqueueTips = (tips: TutorialTip[]) => {
+    if (tips.length === 0) return
+    setTutQueue((q) => [...q, ...tips.filter((t) => !q.some((x) => x.id === t.id))])
+  }
+
+  // Подсказки по уровню: уровень дорос — по очереди всё, что открылось.
+  useEffect(() => {
+    if (tutorialLoaded === null || tutPlayerLevel === null) return
+    const tips = pendingLevelTips(tutPlayerLevel)
+    if (tips.length === 0) setLastSeenLevel(Math.max(lastSeenLevel() ?? 0, tutPlayerLevel))
+    else enqueueTips(tips)
+  }, [tutorialLoaded, tutPlayerLevel])
+
+  // Первые предметы в сумке: книга навыка, кольцо, снаряжение.
+  const tutHasBook = player?.consumables != null && Object.entries(player.consumables).some(([id, n]) => id.startsWith('book_') && n > 0)
+  const tutHasRing = player?.classItems != null && Object.entries(player.classItems).some(([id, n]) => id.startsWith('ring_') && n > 0)
+  const tutHasEquipment = inventory.some((i) => !i.equipped)
+  useEffect(() => {
+    if (tutorialLoaded === null) return
+    const owned: TutorialTip[] = [
+      ...(tutHasBook ? [ITEM_TIPS.item_book] : []),
+      ...(tutHasRing ? [ITEM_TIPS.item_ring] : []),
+      ...(tutHasEquipment ? [ITEM_TIPS.item_equipment] : []),
+    ].filter((t) => !hasSeen(t.id))
+    if (owned.length === 0) return
+    if (tutOldPlayerRef.current) markSeen(...owned.map((t) => t.id))
+    else enqueueTips(owned)
+  }, [tutorialLoaded, tutHasBook, tutHasRing, tutHasEquipment])
+
+  const closeTutorialTip = (tip: TutorialTip) => {
+    markSeen(tip.id)
+    setTutQueue((q) => q.filter((t) => t.id !== tip.id))
+    if (tutPlayerLevel !== null && pendingLevelTips(tutPlayerLevel).length === 0) {
+      setLastSeenLevel(Math.max(lastSeenLevel() ?? 0, tutPlayerLevel))
+    }
+  }
+  const finishIntro = () => {
+    markSeen(INTRO_ID)
+    setIntroPage(null)
+  }
   // Окно поверх меню: подложка отступает на безопасные зоны, окно по центру не
   // выше оставшегося и прокручивается внутри — кнопки достижимы всегда. С
   // 28.10.2026 — во всех положениях (полный экран и в вертикали: сверху кнопки
@@ -1585,7 +1661,7 @@ export default function App() {
       kind: 'potion' as const,
       name: potion.nameRu,
       desc: potion.desc as string | null,
-      stat: `Восстанавливает ${Math.round(potion.healFrac * 100)}% от здоровья`,
+      stat: `Восстанавливает ${potionHealLine(potion)}`,
       qty: potionStock?.[potionTier - 1] ?? 0,
       iconSrc: `${import.meta.env.BASE_URL}assets/icons/${potion.icon}` as string | null,
       // Поля ниже осмысленны только у предметов — у зелья заполнены
@@ -2902,6 +2978,11 @@ export default function App() {
                 <div style={{ background:C.nicheDeep, borderRadius:6, padding:'5px 10px' }}>
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.glowCore }}>ур. {p.level}</div>
                 </div>
+                {/* «Как играть» (обучение, 08.11.2026): интро заново и сброс
+                    подсказок. Кнопка 44 px — под палец. */}
+                <button type="button" aria-label="Как играть" onClick={() => setHowToOpen(true)}
+                  style={{ width:44, height:44, flexShrink:0, borderRadius:'50%', border:`1px solid ${C.stoneDark}`,
+                    background:C.nicheDeep, color:C.glowCore, fontFamily:FONT_DISPLAY, fontSize:18, cursor:'pointer' }}>?</button>
               </div>
 
               {/* Строка валют: золото, трофеи, значки охотника, RP (последние две —
@@ -3434,7 +3515,7 @@ export default function App() {
                   desc: p.desc,
                   price: p.price,
                   levelRequired: p.levelRequired,
-                  mechanic: { label: 'Восстанавливает', value: `${Math.round(p.healFrac * 100)}% от здоровья` },
+                  mechanic: { label: 'Восстанавливает', value: potionHealLine(p) },
                   // Зелье — не книга, уровня навыка у него нет.
                   skillId: null,
                   owned: player === null ? null : (player.potions[p.tier - 1] ?? 0),
@@ -5890,6 +5971,50 @@ export default function App() {
           любого экрана, включая уже открытый Explore (1000) и его экран
           итогов. */}
       {pastRunNotice && <PastRunNotice notice={pastRunNotice} onClose={() => { clearPastRunNotice(); setPastRunNotice(null) }} />}
+
+      {/* Обучение (08.11.2026): только в меню — в забеге свои подсказки
+          (Explore.tsx), и после окна о прошлом забеге, а не поверх него. */}
+      {!showExploreTest && !pastRunNotice && (introPage !== null ? (
+        <TutorialCard
+          tip={INTRO_CARDS[introPage]}
+          page={{ index: introPage, count: INTRO_CARDS.length }}
+          onNext={() => (introPage >= INTRO_CARDS.length - 1 ? finishIntro() : setIntroPage(introPage + 1))}
+          onSkip={finishIntro}
+        />
+      ) : tutQueue.length > 0 ? (
+        <TutorialCard tip={tutQueue[0]} onNext={() => closeTutorialTip(tutQueue[0])} />
+      ) : null)}
+
+      {/* «Как играть» — маленькое окно с двумя действиями. */}
+      {howToOpen && (
+        <div data-howto="" onClick={() => setHowToOpen(false)}
+          style={{ position:'fixed', inset:0, zIndex:2500, background:'rgba(10, 8, 12, 0.72)', display:'flex',
+            padding:'calc(8px + var(--rp-safe-top, 0px)) calc(8px + var(--rp-safe-right, 0px)) calc(8px + var(--rp-safe-bottom, 0px)) calc(8px + var(--rp-safe-left, 0px))', boxSizing:'border-box' }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ margin:'auto', width:'min(300px, 100%)', background:C.niche, border:`2px solid ${C.stoneDark}`, borderRadius:12,
+              padding:16, boxSizing:'border-box', display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain, textAlign:'center' }}>Как играть</div>
+            {tutorialLoaded === null ? (
+              <div style={{ fontSize:13, color:C.textDim, textAlign:'center' }}>Подсказки недоступны: не удалось открыть хранилище.</div>
+            ) : (
+              <>
+                <button type="button" onClick={() => { setHowToOpen(false); setIntroPage(0) }}
+                  style={{ minHeight:44, borderRadius:8, border:`1px solid ${C.glowEdge}`, background:C.nicheDeep, color:C.glowCore, fontFamily:FONT_DISPLAY, fontSize:14, cursor:'pointer' }}>
+                  Показать обучение
+                </button>
+                <button type="button" onClick={() => { resetTutorial(); setHowToOpen(false) }}
+                  style={{ minHeight:44, borderRadius:8, border:`1px solid ${C.stoneDark}`, background:C.nicheDeep, color:C.textMain, fontFamily:FONT_DISPLAY, fontSize:14, cursor:'pointer' }}>
+                  Сбросить подсказки
+                </button>
+              </>
+            )}
+            <button type="button" onClick={() => setHowToOpen(false)}
+              style={{ minHeight:44, borderRadius:8, border:'none', background:'none', color:C.textDim, fontSize:13, cursor:'pointer' }}>
+              Закрыть
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Тост об удачном обмене. Показывает goldGained ИЗ ОТВЕТА СЕРВЕРА: в
           карточке обмена после него остаётся «Нечего обменивать», и без тоста

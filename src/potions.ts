@@ -20,7 +20,14 @@
 export type PotionTier = {
   /** 1..5, он же индекс+1 в POTION_TIERS и номер колонки potionT<N> в Character. */
   tier: number
-  /** Доля maxHp, которую лечит один глоток. Заменил заглушку POTION_HEAL_FRAC=0.25. */
+  /**
+   * Фиксированная часть лечения одного глотка, HP (08.11.2026). Глоток лечит
+   * healFlat + healFrac × maxHp — см. potionHealAmount. Числа подобраны так,
+   * чтобы на уровне открытия тира (maxHp = 8 × выносливость) глоток давал
+   * около 30% здоровья: процент один на малом maxHp почти ничего не лечил.
+   */
+  healFlat: number
+  /** Доля maxHp, которую лечит один глоток (поверх healFlat). Заменил заглушку POTION_HEAL_FRAC=0.25. */
   healFrac: number
   /** Минимальный уровень персонажа для ПОКУПКИ. Проверяется и на сервере. */
   levelRequired: number
@@ -42,6 +49,7 @@ export type PotionTier = {
 export const POTION_TIERS: PotionTier[] = [
   {
     tier: 1,
+    healFlat: 25,
     healFrac: 0.10,
     levelRequired: 1,
     price: 20,
@@ -52,6 +60,7 @@ export const POTION_TIERS: PotionTier[] = [
   },
   {
     tier: 2,
+    healFlat: 35,
     healFrac: 0.15,
     levelRequired: 5,
     price: 45,
@@ -62,6 +71,7 @@ export const POTION_TIERS: PotionTier[] = [
   },
   {
     tier: 3,
+    healFlat: 40,
     healFrac: 0.20,
     levelRequired: 10,
     price: 90,
@@ -72,6 +82,7 @@ export const POTION_TIERS: PotionTier[] = [
   },
   {
     tier: 4,
+    healFlat: 30,
     healFrac: 0.25,
     levelRequired: 20,
     price: 160,
@@ -82,6 +93,7 @@ export const POTION_TIERS: PotionTier[] = [
   },
   {
     tier: 5,
+    healFlat: 20,
     healFrac: 0.30,
     levelRequired: 30,
     price: 280,
@@ -91,6 +103,21 @@ export const POTION_TIERS: PotionTier[] = [
     takesCell: false,
   },
 ]
+
+/**
+ * Сколько HP лечит один глоток этого тира при данном maxHp: healFlat +
+ * healFrac × maxHp. Одна формула на клиент (лечение в бою, текст витрины) и
+ * сервер (потолки роста статов в runState.ts) — без округления: его делает
+ * healPlayer, а потолкам нужна верхняя граница.
+ */
+export function potionHealAmount(tier: PotionTier, maxHp: number): number {
+  return tier.healFlat + tier.healFrac * maxHp
+}
+
+/** Строка для карточки и витрины: «25 HP + 10% здоровья». */
+export function potionHealLine(tier: PotionTier): string {
+  return `${tier.healFlat} HP + ${Math.round(tier.healFrac * 100)}% здоровья`
+}
 
 /** Сколько раз ВСЕГО можно выпить за один забег, независимо от тиров. */
 export const MAX_SIPS_PER_RUN = 3
