@@ -889,3 +889,24 @@ X заметно смещён от центра (0.593, не ~0.5) — фигу�
 
 ---
 
+## Новые враги и боссы (09.11.2026)
+
+Из архива `RightPlace_new_enemies_bosses.zip` (Загрузки), без перерисовки:
+
+| папка `public/assets/sprites/` | листы | снаряды |
+|---|---|---|
+| `fencer/` | `Fencer_Idle/Walk/Attack/Parry/Hurt/Death.webp` | — |
+| `gravedigger/` | `Gravedigger_Idle/Walk/Throw/Swing/Hurt/Death.webp` | `clod_game.png` |
+| `crossbowman/` | `Crossbowman_Idle/Walk/Shoot/Reload/Hurt/Death.webp` | `bolt_game.png` |
+| `stoker/` | `Stoker_Idle/Walk/Attack/Hurt/Death.webp` | — |
+| `beetle/` | `Beetle_Idle/Walk/Throw/Dash/Hurt/Death.webp` | `mudball_game.png` |
+| `serpent/` | `Serpent_Idle/Bite/Spit/Slam/Submerge/Emerge/Roar/Hurt/Death.webp` | `bones3_game.png`, `eye_glow.png` |
+| `crowking/` | `CrowKing_Idle/Walk/Strike/Scatter/Hurt/Death.webp` | — |
+
+Клетки, якоря, fps, кадры событий — `src/explore/ncSheets.ts` (генерируется из
+`sheets.json`). Все листы и снаряды смотрят ВЛЕВО; снаряды рисуются масштабом
+хозяина. Листы врагов уже уменьшены до 0.8, боссов — нет. На диске ≈40 МБ, в
+видеопамяти ≈720 МБ на всё — поэтому загрузка строго по виду (см.
+`docs/explore-engine.md`, «Новые враги и боссы из sheets.json»). Папка
+`reference/` архива (прототипы шейдеров и видео) в игру не кладётся.
+

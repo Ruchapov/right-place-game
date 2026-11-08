@@ -70,3 +70,16 @@ export function scaledBossSpikeDamage(level: number): number {
 export function scaledBossWaveDamage(level: number): number {
   return Math.ceil(C.BOSS_WAVE_DMG_MULT * scaledEnemyAttackDamage(level))
 }
+
+// Враги из листов sheets.json (09.11.2026) — тоже множители поверх зверя ТОГО
+// ЖЕ уровня (NC_HP_MULT в ncConstants.ts). HP — ручная копия на сервере
+// (NC_ENEMY_HP_MULT в server/src/game.ts) для потолка нанесённого урона.
+export function scaledNcEnemyMaxHp(mult: number, level: number): number {
+  return Math.round(mult * scaledEnemyMaxHp(level))
+}
+
+// Урон удара по множителю поверх уже посчитанного урона зверя этого врага
+// (enemy.attackDamage — у элиты он уже ×ELITE_DMG_MULT). Вверх, как весь урон.
+export function ncHitDamage(mult: number, baseDamage: number): number {
+  return Math.ceil(mult * baseDamage)
+}

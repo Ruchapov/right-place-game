@@ -12,6 +12,17 @@ import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledB
 // explore/entities/enemy.ts). Экспортируется отдельно (не только через
 // createBossSystem) — вызывается и из applyAttackHit() в Explore.tsx (на
 // попадании/смерти), которая с этим переносом не трогалась.
+/**
+ * Бокс босса в мире (09.11.2026): у Змея и Короля свой (boss.nc.w/h), у Твари
+ * и Настоятеля — BOSS_WIDTH × BOSS_HEIGHT. Попадания меча, навыков и следа
+ * пепла считать ТОЛЬКО по нему.
+ */
+export function bossBox(boss: Boss): { x: number; y: number; w: number; h: number } {
+  return boss.nc
+    ? { x: boss.x, y: boss.y, w: boss.nc.w, h: boss.nc.h }
+    : { x: boss.x, y: boss.y, w: C.BOSS_WIDTH, h: C.BOSS_HEIGHT }
+}
+
 export function redrawBossHpBar(boss: Boss) {
   const pct = Math.max(0, Math.min(1, boss.hp / boss.maxHp))
   boss.hpBarFill.clear()

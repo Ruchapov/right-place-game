@@ -2,6 +2,10 @@ import { Assets, Rectangle, Texture } from 'pixi.js'
 import * as C from './constants'
 import type { BossAnimKind, RewardKind } from './types'
 import { loadSheetFrames } from './spriteLoader'
+import { NC_SHEETS } from './ncSheets'
+import { ncSheetNames } from './ncConstants'
+import type { NcKind } from './ncConstants'
+import type { NcAssets } from './entities/ncEnemy'
 
 // ЗАГРУЗКА ЛИСТОВ ЗАБЕГА — ДВА ПРАВИЛА (09.10.2026).
 //
@@ -134,6 +138,8 @@ export type RunAssetNeeds = {
   obelisk: boolean
   boss: boolean
   abbot: boolean
+  /** Враги и боссы из листов sheets.json (09.11.2026) — по виду. */
+  nc: Record<NcKind, boolean>
 }
 
 /**
@@ -151,6 +157,9 @@ export type EventAssets = {
   obelisk: ObeliskAssets | null
   boss: BossAssets | null
   abbot: AbbotAssets | null
+  nc: Record<NcKind, NcAssets | null>
+  /** Волна удара Змея головой — лист волны топота Твари (null — Змея нет). */
+  serpentWave: { left: Texture[]; right: Texture[] } | null
 }
 
 // Сверка нарезанного листа с ожидаемым размером — ГРОМКАЯ. loadSheetFrames
@@ -588,7 +597,95 @@ async function loadBossAssets(): Promise<BossAssets> {
  * Сбой любого запрошенного листа отклоняет общий промис — setup() уходит в экран
  * ошибки, как и раньше (кроме трёх эффектов босса, см. BossAssets).
  */
+// --- Враги и боссы из листов sheets.json (09.11.2026) ---
+//
+// ⚠️ ПАМЯТЬ ТЕЛЕФОНА: в распакованном виде на видеокарте все новые листы вместе
+// ≈ 720 МБ (вид врага 45–75 МБ, Змей ≈ 245, Король ≈ 137). Поэтому — строго
+// только виды этого забега (группы и патрульные — по enemyKind из ответа
+// старта, босс — по bossKind), и после забега текстуры уничтожаются
+// (releaseNcAssets из cleanup Explore.tsx).
+
+// Одиночные картинки вида: снаряды и свечение глаз. Ключ — имя в NcAssets.extra.
+const NC_EXTRA: Partial<Record<NcKind, Record<string, string>>> = {
+  gravedigger: { clod: 'gravedigger/clod_game.png' },
+  crossbowman: { bolt: 'crossbowman/bolt_game.png' },
+  beetle: { mud: 'beetle/mudball_game.png' },
+  serpent: { bones: 'serpent/bones3_game.png', eye: 'serpent/eye_glow.png' },
+}
+const extraSrc = (rel: string) => `${import.meta.env.BASE_URL}assets/sprites/${rel}`
+
+/** Все файлы вида — по ним грузится и выгружается. */
+export function ncKindSources(kind: NcKind): string[] {
+  return [
+    ...ncSheetNames(kind).map((name) => NC_SHEETS[name].src),
+    ...Object.values(NC_EXTRA[kind] ?? {}).map(extraSrc),
+  ]
+}
+
+async function loadNcAssets(kind: NcKind): Promise<NcAssets> {
+  const names = ncSheetNames(kind)
+  const extraEntries = Object.entries(NC_EXTRA[kind] ?? {})
+  const [frames, extras] = await Promise.all([
+    Promise.all(names.map((name) => {
+      const spec = NC_SHEETS[name]
+      return loadCheckedSheet(
+        spec.src.split('/').pop() ?? spec.src,
+        spec.src,
+        spec.cellW,
+        spec.cellH,
+        spec.count,
+        spec.cols,
+        Math.ceil(spec.count / spec.cols),
+      )
+    })),
+    Promise.all(extraEntries.map(([, rel]) => Assets.load(extraSrc(rel)) as Promise<Texture>)),
+  ])
+  const raw: Record<string, Texture[]> = {}
+  const play: Record<string, Texture[]> = {}
+  names.forEach((name, i) => {
+    const spec = NC_SHEETS[name] as { playOrder?: readonly number[] }
+    raw[name] = frames[i]
+    play[name] = spec.playOrder ? spec.playOrder.map((f) => frames[i][f]) : frames[i]
+  })
+  // Сборка Короля из стаи — тот же лист задом наперёд.
+  if (raw.CrowKing_Scatter) play['CrowKing_Scatter#rev'] = [...raw.CrowKing_Scatter].reverse()
+  const extra: Record<string, Texture> = {}
+  extraEntries.forEach(([key], i) => { extra[key] = extras[i] })
+  return { raw, play, extra }
+}
+
+// Счётчик забегов, держащих файл: StrictMode и смена карты монтируют setup()
+// заново, и выгрузка прошлого забега не должна снять лист, уже взятый новым.
+const ncRetain = new Map<string, number>()
+
+export function retainNcAssets(kinds: NcKind[]): string[] {
+  const srcs = kinds.flatMap(ncKindSources)
+  for (const src of srcs) ncRetain.set(src, (ncRetain.get(src) ?? 0) + 1)
+  return srcs
+}
+
+/**
+ * Забег кончился — отпустить его листы. Файл, который больше никто не держит,
+ * уничтожается на видеокарте (Assets.unload) через секунду — если за это время
+ * новый забег его не взял.
+ */
+export function releaseNcAssets(srcs: string[]): void {
+  for (const src of srcs) ncRetain.set(src, Math.max(0, (ncRetain.get(src) ?? 0) - 1))
+  window.setTimeout(() => {
+    const free = srcs.filter((src) => (ncRetain.get(src) ?? 0) === 0)
+    if (free.length === 0) return
+    for (const src of free) ncRetain.delete(src)
+    Assets.unload(free).catch((err) => console.error('Explore: не выгрузились листы', err))
+  }, 1000)
+}
+
 export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets> {
+  const ncKinds = (Object.keys(needs.nc) as NcKind[]).filter((k) => needs.nc[k])
+  const ncLoad = Promise.all(ncKinds.map(loadNcAssets))
+  const waveLoad = needs.nc.serpent ? loadBossWave() : Promise.resolve(null)
+  // Ошибку отдаст await ниже; здесь — только чтобы она не считалась необработанной
+  // пока ждём остальные листы.
+  ncLoad.catch(() => {})
   const [beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot] = await Promise.all([
     needs.beast ? loadBeastAssets() : null,
     needs.zvonar ? loadZvonarAssets() : null,
@@ -599,5 +696,9 @@ export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets
     needs.boss ? loadBossAssets() : null,
     needs.abbot ? loadAbbotAssets() : null,
   ])
-  return { beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot }
+  const ncLoaded = await ncLoad
+  const nc: Record<NcKind, NcAssets | null> = { fencer: null, gravedigger: null, crossbowman: null, stoker: null, beetle: null, serpent: null, crowking: null }
+  ncKinds.forEach((k, i) => { nc[k] = ncLoaded[i] })
+  const serpentWave = await waveLoad
+  return { beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot, nc, serpentWave }
 }

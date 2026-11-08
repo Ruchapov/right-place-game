@@ -16,7 +16,54 @@ export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'ob
  * нет: он получает готовый ответ. Разбирать ТОЛЬКО через readEnemyKind
  * (src/api.ts) — поля может не быть вовсе (старый сервер), и это значит «звери».
  */
-export type EnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
+export type EnemyKind = 'beast' | 'zvonar' | 'gatekeeper' | SheetEnemyKind | 'shadow'
+
+/**
+ * Пять врагов из листов sheets.json (09.11.2026): у каждого свой модуль в
+ * entities/, общий ход — entities/ncEnemy.ts. 'shadow' (Тень из сундука) в
+ * EnemyKind есть, а здесь нет: её не бросает сервер, она приходит из сундука
+ * (entities/shadow.ts).
+ */
+export type SheetEnemyKind = 'fencer' | 'gravedigger' | 'crossbowman' | 'stoker' | 'beetle'
+
+/** Боссы из листов sheets.json (09.11.2026): entities/serpent.ts, entities/crowKing.ts. */
+export type SheetBossKind = 'serpent' | 'crowking'
+
+/** Какой босс в забеге (09.11.2026). Бросает сервер (поле bossKind события boss). */
+export type RunBossKind = 'werewolf' | 'abbot' | SheetBossKind
+
+/**
+ * Состояние врага из листов sheets.json — сверх общего Enemy, одним полем
+ * (как GatekeeperState). anim — имя листа на спрайте (якорь меняется только
+ * при его смене); action — что он сейчас делает своим листом атаки.
+ */
+export type NcEnemyState = {
+  anim: string | null
+  action: string | null
+  /** Ключевое событие действия (вылет снаряда, удар, сдвиг рывка) уже было. */
+  keyDone: boolean
+  /** Урон этого удара уже нанесён (окно hit — один раз). */
+  hitDone: boolean
+  /** До следующего действия, мс. */
+  cooldownMs: number
+  /** Сколько мс идёт действие (рывок жука ведётся по нему). */
+  actionMs: number
+  /** Фехтовальщик: момент прошлого попадания по нему (мс забега) и серия. */
+  lastHitAt: number
+  hitStreak: number
+  /** Фехтовальщик: серия набрана — в следующий тик встать в блок. */
+  parryRequest: boolean
+  /** Фехтовальщик: последнее попадание мечом пришлось в блок (урона нет). */
+  blockedHit: boolean
+  /** Арбалетчик: выстрел был — до перезарядки не стреляет. */
+  needReload: boolean
+  /** Жук: сколько px рывка уже пройдено. */
+  dashMoved: number
+  /** Тень: сколько мс горят глаза перед ударом (0 — не горят). */
+  eyesMs: number
+  /** Тень: появление из сундука идёт (0..1), 1 — встала. */
+  reveal: number
+}
 
 export type EventCandidate = {
   kind: EventKind
@@ -36,6 +83,13 @@ export type EventCandidate = {
   // через readChestMimic (src/api.ts): сундук без решения — ошибка, а не
   // «обычный».
   isMimic?: boolean
+  /**
+   * Тень из сундука (09.11.2026) — только у kind === 'chest'. Решает СЕРВЕР
+   * (как isMimic); читать через readChestShadow (src/api.ts). Нет поля — Тени нет.
+   */
+  isShadow?: boolean
+  /** Какой босс (09.11.2026) — только у kind === 'boss'; читать через readBossKind. */
+  bossKind?: RunBossKind
 }
 
 // Тело босса стоит в клетке НЕ по центру и по-разному в каждом листе (см.
@@ -277,6 +331,8 @@ export type Enemy = {
    * признак «двери у него не бывает», а не забытая инициализация.
    */
   gatekeeper?: GatekeeperState
+  /** Только у врагов из листов sheets.json и у Тени (см. NcEnemyState). */
+  nc?: NcEnemyState
   /**
    * Звонарь, вызванный Настоятелем (29.10.2026, entities/abbot.ts). События у
    * него нет (eventIndex = -1), и с трупа он не роняет ману: награды за него
@@ -428,6 +484,10 @@ export type Chest = {
   opened: boolean
   eventIndex: number
   isMimic: boolean
+  /** Тень (09.11.2026): сундук открывается фиолетовым и выпускает Тень; событие закрывает её смерть. */
+  isShadow: boolean
+  /** Тень уже выпущена — сундук гаснет и больше не стена. */
+  shadowReleased: boolean
   trapDamaged: boolean
   trapKilled: boolean
   floorY: number
@@ -597,6 +657,46 @@ export type Boss = {
   waveDamage: number
   /** Только у Настоятеля (29.10.2026); у Твари поля нет. */
   abbot?: AbbotState
+  /** Только у Костяного Змея и Вороньего Короля (09.11.2026). */
+  nc?: NcBossState
+}
+
+/**
+ * Боссы из листов sheets.json (09.11.2026). Хитбокс свой (w/h) — не
+ * BOSS_WIDTH/BOSS_HEIGHT; boss.x/y — его левый верх. Читать бокс через
+ * bossBox (entities/boss.ts).
+ */
+export type NcBossState = {
+  kind: SheetBossKind
+  w: number
+  h: number
+  anim: string | null
+  /** Атака / нырок / рёв / стая, которая сейчас играет (null — нет). */
+  action: string | null
+  keyDone: boolean
+  hitDone: boolean
+  actionMs: number
+  /** Неуязвим (нырок, рёв, стая): урон не проходит, реакции нет. */
+  invulnerable: boolean
+  /** Скрыт (под землёй / разлетелся стаей). */
+  hidden: boolean
+  slamCooldownMs: number
+  diveCooldownMs: number
+  scatterCooldownMs: number
+  /** Змей: ярость (≤ 50% HP) уже включилась. */
+  enraged: boolean
+  /** Змей: сколько нырков осталось в серии (в ярости — два подряд). */
+  divesLeft: number
+  /** Змей: куда вынырнуть (X центра, Y пола), тряска пола, мс. */
+  diveX: number
+  diveFloorY: number
+  quakeMs: number
+  /** Король: недосягаем дольше … мс; попадания подряд без его удара. */
+  unreachableMs: number
+  hitsInRow: number
+  /** Король: куда собраться (X центра бокса, Y низа бокса). */
+  targetX: number
+  targetFloorY: number
 }
 
 // HUD события обелисков (таймер + счётчик над экраном, см. задачу) — ЭТО

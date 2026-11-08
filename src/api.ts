@@ -437,7 +437,16 @@ export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 
  * 06.10.2026). Бросает СЕРВЕР (веса ENEMY_GROUP_WEIGHTS живут только там),
  * клиент получает готовый ответ.
  */
-export type StartExploreEnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
+export type StartExploreEnemyKind = 'beast' | 'zvonar' | 'gatekeeper' | 'fencer' | 'gravedigger' | 'crossbowman' | 'stoker' | 'beetle'
+
+/** Все виды групп, которые может назвать сервер (09.11.2026 — ещё пять). */
+export const START_EXPLORE_ENEMY_KINDS: readonly StartExploreEnemyKind[] = ['beast', 'zvonar', 'gatekeeper', 'fencer', 'gravedigger', 'crossbowman', 'stoker', 'beetle']
+function isStartEnemyKind(v: unknown): v is StartExploreEnemyKind {
+  return typeof v === 'string' && (START_EXPLORE_ENEMY_KINDS as readonly string[]).includes(v)
+}
+
+/** Какой босс (09.11.2026): бросает сервер на старте, поле bossKind события boss. */
+export type StartExploreBossKind = 'werewolf' | 'abbot' | 'serpent' | 'crowking'
 
 export type StartExploreEvent = {
   kind: StartExploreEventKind
@@ -462,6 +471,10 @@ export type StartExploreEvent = {
    * сундука без решения забег не показывается вовсе.
    */
   isMimic?: boolean
+  /** Тень из сундука (09.11.2026) — только у chest; нет поля — Тени нет. Через readChestShadow. */
+  isShadow?: boolean
+  /** Какой босс (09.11.2026) — только у boss; нет поля — по карте, как раньше. Через readBossKind. */
+  bossKind?: StartExploreBossKind
   /**
    * Сколько трофеев даст это событие. Разыграно СЕРВЕРОМ на старте — именно это
    * число всплывает в момент закрытия события и именно оно начислится на финише.
@@ -589,7 +602,7 @@ export function readPatrols(raw: unknown): (StartExplorePatrol | null)[] {
   return raw.map((p) => {
     const r = p as Record<string, unknown> | null
     if (r && Number.isInteger(r.x) && Number.isInteger(r.y)
-      && (r.enemyKind === 'beast' || r.enemyKind === 'zvonar' || r.enemyKind === 'gatekeeper')
+      && isStartEnemyKind(r.enemyKind)
       && typeof r.trophyReward === 'number' && Number.isInteger(r.trophyReward) && r.trophyReward >= 0) {
       return { x: r.x as number, y: r.y as number, enemyKind: r.enemyKind, trophyReward: r.trophyReward }
     }
@@ -2030,7 +2043,7 @@ export function readRunDrops(raw: unknown): RunDrop[] {
  */
 export function readEnemyKind(raw: unknown): StartExploreEnemyKind {
   if (raw === undefined || raw === null) return 'beast'
-  if (raw === 'beast' || raw === 'zvonar' || raw === 'gatekeeper') return raw
+  if (isStartEnemyKind(raw)) return raw
   console.error('api: неизвестный вид врагов в событии', raw, '— считаем зверями')
   return 'beast'
 }
@@ -2049,6 +2062,30 @@ export function readChestMimic(raw: unknown): boolean | null {
   if (typeof raw !== 'object' || raw === null) return null
   const m = (raw as Record<string, unknown>).isMimic
   return typeof m === 'boolean' ? m : null
+}
+
+/**
+ * Тень у сундука (09.11.2026): true — из сундука выйдет Тень. Нет поля —
+ * Тени нет (сервер старше или обычный сундук); не boolean — громко и «нет».
+ */
+export function readChestShadow(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const v = (raw as Record<string, unknown>).isShadow
+  if (v === undefined) return false
+  if (typeof v === 'boolean') return v
+  console.error('api: isShadow у сундука не boolean', v)
+  return false
+}
+
+/**
+ * Какой босс (09.11.2026). null — поля нет (сервер старше): босс по карте,
+ * как раньше (Настоятель на своих картах, иначе Тварь). Мусор — громко и null.
+ */
+export function readBossKind(raw: unknown): StartExploreBossKind | null {
+  if (raw === undefined || raw === null) return null
+  if (raw === 'werewolf' || raw === 'abbot' || raw === 'serpent' || raw === 'crowking') return raw
+  console.error('api: неизвестный bossKind', raw)
+  return null
 }
 
 // drops — вся добыча события, в порядке показа: сначала обычная (drop), потом

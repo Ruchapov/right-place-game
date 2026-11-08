@@ -18,8 +18,9 @@
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
 import type { RuneCounts, RuneKind } from './runes.js'
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock, potionHealAmount } from './potions.js'
-import { bossMaxHpForMap, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
-import type { RunEvent, RunPatrol } from './runEvents.js'
+import { bossMaxHpFor, enemyMaxHpByKind, SHADOW_HP_MULT, scaledEnemyMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
+import type { RunEvent, RunPatrol, RunEnemyKind } from './runEvents.js'
+import { RUN_ENEMY_KINDS } from './runEvents.js'
 import { ELITE_HP_MULT } from './runExtras.js'
 import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
@@ -752,7 +753,9 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   // Любое другое значение, включая отсутствие поля, считается звериным: у
   // Звонаря HP меньше, и такой счёт потолок только завышает.
   const enemyGroups = events.filter((ev) => ev.kind === 'enemy')
-  const perEnemyHp = (kind: unknown) => kind === 'gatekeeper' ? scaledGatekeeperMaxHp(characterLevel) : scaledEnemyMaxHp(characterLevel)
+  // С 09.11.2026 — по таблице видов (enemyMaxHpByKind, game.ts): у Кочегара и
+  // Навозника HP больше звериного, и посчитанные как звери они съели бы запас.
+  const perEnemyHp = (kind: unknown) => enemyMaxHpByKind(kind, characterLevel)
   // Патрульные (30.10.2026) — такие же враги: их HP в пул, их число — в
   // enemyCount (по нему считаются мана, Пир и запасы снаряжения). Испорченный
   // список — без них, против игрока.
@@ -767,9 +770,14 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     const eliteExtra = ev.eliteIndex !== undefined ? ELITE_HP_MULT - 1 : 0
     return sum + ((ev.clusterPoints?.length ?? 0) + eliteExtra) * perEnemyHp(ev.enemyKind)
   }, 0) + patrols.reduce((sum, p) => sum + perEnemyHp(p.enemyKind), 0)
-  const bossCount = events.filter((ev) => ev.kind === 'boss').length
-  // HP босса — по карте забега: на картах Настоятеля он живучее Твари.
-  const hpPool = enemyHpTotal + bossCount * bossMaxHpForMap(typeof run.mapFile === 'string' ? run.mapFile : '', characterLevel)
+  const bossEvents = events.filter((ev) => ev.kind === 'boss')
+  const bossCount = bossEvents.length
+  // HP босса — по его виду (bossKind, 09.11.2026); у забегов раньше — по карте.
+  const mapName = typeof run.mapFile === 'string' ? run.mapFile : ''
+  const bossHpTotal = bossEvents.reduce((sum, ev) => sum + bossMaxHpFor(ev.bossKind, mapName, characterLevel), 0)
+  // Тень из сундука (09.11.2026) — враг с HP 3 × зверь.
+  const shadowHpTotal = events.filter((ev) => ev.kind === 'chest' && ev.isShadow === true).length * Math.round(SHADOW_HP_MULT * scaledEnemyMaxHp(characterLevel))
+  const hpPool = enemyHpTotal + bossHpTotal + shadowHpTotal
   const maxDamageDealt = hpPool * 1.5
 
   const combinedDealt = raw.attackDamageDealt + raw.skillDamageDealt
@@ -1195,9 +1203,9 @@ export function readRunPatrols(run: ActiveExploreRun): RunPatrol[] | 'malformed'
     if (typeof p !== 'object' || p === null || Array.isArray(p)) return 'malformed'
     const { x, y, enemyKind, trophyReward } = p as Record<string, unknown>
     if (!Number.isInteger(x) || !Number.isInteger(y)) return 'malformed'
-    if (enemyKind !== 'beast' && enemyKind !== 'zvonar' && enemyKind !== 'gatekeeper') return 'malformed'
+    if (typeof enemyKind !== 'string' || !(RUN_ENEMY_KINDS as readonly string[]).includes(enemyKind)) return 'malformed'
     if (typeof trophyReward !== 'number' || !Number.isInteger(trophyReward) || trophyReward < 0) return 'malformed'
-    out.push({ x: x as number, y: y as number, enemyKind, trophyReward })
+    out.push({ x: x as number, y: y as number, enemyKind: enemyKind as RunEnemyKind, trophyReward })
   }
   return out
 }

@@ -1,6 +1,6 @@
 // Константы верхнего уровня, вынесенные из Explore.tsx (механический перенос).
 import type { BackdropPreset } from '../mapRenderer'
-import type { BossAnimKind, RewardKind, EventKind, EnemyKind } from './types'
+import type { BossAnimKind, RewardKind, EventKind, EnemyKind, SheetBossKind } from './types'
 import { POTION_TIERS } from '../potions'
 
 export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
@@ -1436,7 +1436,7 @@ export const PARRY_STUN_STAR_FAR_ALPHA = 0.75
  * ⚠️ Макушка — НЕ верх силуэта: у зверя выше головы шипы на холке, у босса —
  * шипы на спине, и по верху силуэта звёзды встали бы над спиной.
  */
-export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss' | 'abbot' | 'abbot2', { x: number; y: number; endX: number; endY: number; size: number }> = {
+export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss' | 'abbot' | 'abbot2' | SheetBossKind, { x: number; y: number; endX: number; endY: number; size: number }> = {
   beast: { x: 172, y: 150, endX: 168, endY: 98, size: 1 },
   zvonar: { x: 62, y: 28, endX: 68, endY: 20, size: 1 },
   gatekeeper: { x: 62, y: 27, endX: 88, endY: 12, size: 1 },
@@ -1445,6 +1445,17 @@ export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss' | 'abbot' | 'abbot2', { 
   // во второй стадии — огонь над шеей, Abbot2_Hurt, кадры 12 и 24.
   abbot: { x: 105, y: 22, endX: 100, endY: 12, size: 1.35 },
   abbot2: { x: 226, y: 16, endX: 160, endY: 26, size: 1.35 },
+  // Новые враги и боссы (09.11.2026): верх силуэта листа *_Hurt — на кадре
+  // позы (самый «глубокий» кадр playOrder) и на кадре 0, которым лист
+  // кончается (замер по альфе > 40). Тень — лист hurt героя, кадры 5 и 9.
+  fencer: { x: 133, y: 11, endX: 167, endY: 17, size: 1 },
+  gravedigger: { x: 49, y: 51, endX: 93, endY: 4, size: 1 },
+  crossbowman: { x: 93, y: 41, endX: 159, endY: 5, size: 1 },
+  stoker: { x: 155, y: 50, endX: 184, endY: 47, size: 1 },
+  beetle: { x: 78, y: 5, endX: 273, endY: 16, size: 1 },
+  shadow: { x: 221, y: 34, endX: 179, endY: 14, size: 1 },
+  serpent: { x: 178, y: 7, endX: 193, endY: 16, size: 1.35 },
+  crowking: { x: 175, y: 29, endX: 199, endY: 6, size: 1.35 },
 }
 
 // Искра на клинке в момент отбива: сколько живёт спрайт и во сколько раз он

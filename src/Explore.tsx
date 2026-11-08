@@ -46,7 +46,7 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets } from './explore/assets'
+import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -56,7 +56,20 @@ import { createZvonarSystem } from './explore/entities/zvonar'
 import type { ZvonarFrames } from './explore/entities/zvonar'
 import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekeeperIsShiftingGuard } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
-import { createBossSystem, redrawBossHpBar } from './explore/entities/boss'
+import { createBossSystem, redrawBossHpBar, bossBox } from './explore/entities/boss'
+import { createFencerSystem, fencerSwordHit } from './explore/entities/fencer'
+import { createGravediggerSystem } from './explore/entities/gravedigger'
+import { createCrossbowmanSystem } from './explore/entities/crossbowman'
+import { createStokerSystem } from './explore/entities/stoker'
+import { createBeetleSystem } from './explore/entities/beetle'
+import { createSerpentSystem } from './explore/entities/serpent'
+import { createCrowKingSystem } from './explore/entities/crowKing'
+import { createShadowSystem } from './explore/entities/shadow'
+import { createNcProjectileSystem } from './explore/entities/ncProjectiles'
+import type { NcAssets, NcEnemyDeps, NcEnemySystem } from './explore/entities/ncEnemy'
+import { createBurnFilter, createChestPurpleFilter, filterUniforms, syncFigureUniforms } from './explore/entities/ncFilters'
+import * as N from './explore/ncConstants'
+import type { NcKind } from './explore/ncConstants'
 import { createAbbotSystem, abbotHurtMs } from './explore/entities/abbot'
 import { createStunStarsSystem } from './explore/entities/stunStars'
 import { createClassHealFlashSystem } from './explore/entities/classHealFlash'
@@ -72,7 +85,7 @@ import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClas
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
@@ -578,7 +591,40 @@ const TEMP_DEV_ZVONAR_CHANCE = 0.3
 const TEMP_DEV_GATEKEEPER_GROUPS: 'roll' | 'always' | 'never' = 'roll'
 const TEMP_DEV_GATEKEEPER_CHANCE = 0.25
 
-function devEnemyKind(): EnemyKind {
+/**
+ * Параметры адреса для проверки нового контента (09.11.2026) — ТОЛЬКО в
+ * офлайн-заглушке (вне Telegram): ?enemy=fencer|gravedigger|crossbowman|
+ * stoker|beetle — все группы этого вида; ?boss=serpent|crowking — босс в
+ * каждом забеге с местом босса; ?chest=shadow — каждый сундук с Тенью. В
+ * Telegram-сборке забег идёт с сервера, и эти параметры не читаются вовсе.
+ */
+function devUrlParam(name: string): string | null {
+  try { return new URLSearchParams(window.location.search).get(name) } catch { return null }
+}
+const DEV_NC_ENEMIES: readonly EnemyKind[] = ['fencer', 'gravedigger', 'crossbowman', 'stoker', 'beetle']
+/**
+ * Доли видов групп по теме карты для заглушки — та же таблица, что
+ * ENEMY_GROUP_WEIGHTS_BY_THEME на сервере (здесь — лишь чтобы офлайн-забег был
+ * похож на настоящий; сверять не надо).
+ */
+const DEV_THEME_WEIGHTS: Record<string, Partial<Record<EnemyKind, number>>> = {
+  graveyard: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, gravedigger: 20 },
+  flooded_crypt: { beast: 25, zvonar: 20, gatekeeper: 20, fencer: 20, crossbowman: 15 },
+  foundry: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, stoker: 20 },
+  swamp: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, beetle: 20 },
+}
+
+function devEnemyKind(mapFile = ''): EnemyKind {
+  const forced = devUrlParam('enemy')
+  if (forced && (DEV_NC_ENEMIES as readonly string[]).includes(forced)) return forced as EnemyKind
+  if (TEMP_DEV_GATEKEEPER_GROUPS === 'roll' && TEMP_DEV_ZVONAR_GROUPS === 'roll' && mapFile) {
+    const weights = DEV_THEME_WEIGHTS[backdropForMap(mapFile)] ?? DEV_THEME_WEIGHTS.graveyard
+    const kinds = (Object.keys(weights) as EnemyKind[]).filter((k) => k !== 'gatekeeper' || C.PLAYER_LEVEL_FALLBACK >= GATEKEEPER_MIN_LEVEL)
+    const total = kinds.reduce((sum, k) => sum + (weights[k] ?? 0), 0)
+    let roll = Math.random() * total
+    for (const k of kinds) { roll -= weights[k] ?? 0; if (roll < 0) return k }
+    return kinds[kinds.length - 1]
+  }
   if (TEMP_DEV_GATEKEEPER_GROUPS === 'always') return 'gatekeeper'
   if (TEMP_DEV_ZVONAR_GROUPS === 'always') return 'zvonar'
   // Один бросок на оба вида: у кого стоит 'never', у того доля нулевая.
@@ -614,18 +660,38 @@ function devScatterGroups(slots: unknown, chosen: EventCandidate[]): { events: E
 // Патрульные офлайн-заглушки (30.10.2026) — то же правило, что rollRunPatrols
 // на сервере: из точек, оставшихся после групп (pickPatrolSpots). Вид —
 // devEnemyKind, трофеи — свой бросок заглушки.
-function devRollPatrols(rest: [number, number][], chosen: EventCandidate[]): StartExplorePatrol[] {
+function devRollPatrols(rest: [number, number][], chosen: EventCandidate[], mapFile: string): StartExplorePatrol[] {
   const eventPoints: [number, number][] = chosen.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
   return pickPatrolSpots(rest, eventPoints).map(([x, y]) => ({
-    x, y, enemyKind: devEnemyKind(), trophyReward: rollTrophies(TROPHY_MULT_PATROL, C.PLAYER_LEVEL_FALLBACK),
+    x, y, enemyKind: devEnemyKind(mapFile) as StartExplorePatrol['enemyKind'], trophyReward: rollTrophies(TROPHY_MULT_PATROL, C.PLAYER_LEVEL_FALLBACK),
   }))
+}
+
+// Сундук заглушки (09.11.2026) — три исхода, как на сервере: Тень 10%, мимик
+// 20%, обычный. ?chest=shadow — Тень в каждом сундуке.
+function devChestRoll(ev: EventCandidate): EventCandidate {
+  if (devUrlParam('chest') === 'shadow') return { ...ev, isMimic: false, isShadow: true }
+  const roll = Math.random()
+  if (roll < C.CHEST_MIMIC_CHANCE) return { ...ev, isMimic: true, isShadow: false }
+  if (roll < C.CHEST_MIMIC_CHANCE + 0.1) return { ...ev, isMimic: false, isShadow: true }
+  return { ...ev, isMimic: false, isShadow: false }
+}
+
+// Босс заглушки (09.11.2026) — как сервер: на C — Тварь / Змей / Король, на C2 —
+// Настоятель / Змей / Король, по трети. ?boss=serpent|crowking — этот.
+function devBossKind(mapFile: string): StartExploreBossKind {
+  const forced = devUrlParam('boss')
+  if (forced === 'serpent' || forced === 'crowking') return forced
+  const first: StartExploreBossKind = C.ABBOT_MAP_PREFIXES.some((p) => mapFile.startsWith(p)) ? 'abbot' : 'werewolf'
+  const pool: StartExploreBossKind[] = [first, 'serpent', 'crowking']
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 // chestIsMimic — решение заглушки по сундуку (для остальных событий false).
 // Правило сервера: у ловушки трофеев нет, добыча та же, что у обычного сундука.
-function devEventReward(kind: EventKind, chestIsMimic: boolean): { trophies: number | null; drops: RunDrop[] } {
+function devEventReward(kind: EventKind, chestIsMimic: boolean, chestIsShadow = false): { trophies: number | null; drops: RunDrop[] } {
   const mult = kind === 'enemy' ? C.TROPHY_MULT_ENEMY
-    : kind === 'chest' ? (chestIsMimic ? 0 : C.TROPHY_MULT_CHEST)
+    : kind === 'chest' ? (chestIsMimic ? 0 : chestIsShadow ? C.TROPHY_MULT_CHEST * 1.5 : C.TROPHY_MULT_CHEST)
       : kind === 'obelisk' ? C.TROPHY_MULT_OBELISK
         : kind === 'boss' ? C.TROPHY_MULT_BOSS
           : 0
@@ -1569,6 +1635,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Непарируемый урон (волна босса, шипы карты, ловушка мимика) — отдельная
   // ссылка, чтобы на вызове было видно решение, а не забытый аргумент.
   const takeDamageUnblockableRef = useRef<(amount: number) => void>(() => {})
+  // Тик горения от кочерги Кочегара (09.11.2026): без брони и без хитстана —
+  // иначе огонь держал бы героя в хитстане все 3 с, и ударить в ответ было бы нельзя.
+  const takeBurnDamageRef = useRef<(amount: number) => void>(() => {})
   // Искра на клинке в момент отбива. Ref с замыканием, как applySpikeDamageRef
   // ниже, и по той же причине: спрайт рождается в worldContainer, который живёт
   // ВНУТРИ setup(), а зовёт её takeDamage — она объявлена на уровне компонента.
@@ -2341,7 +2410,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     applyDamage(amount)
   }
 
-  function applyDamage(amount: number) {
+  function applyDamage(amount: number, opts: { burn?: boolean } = {}) {
     // ВРЕМЕННО (см. invincible state выше и SettingsPanel) — полный ранний
     // выход, ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту
     // функцию, так что перехват здесь один на все источники. HP/hurt/death
@@ -2393,7 +2462,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     const armorNow = gear.lowHpFrac > 0 && hpRef.current < maxHp * gear.lowHpFrac
       ? Math.round(armorBase * gear.lowHpArmorMult)
       : armorBase
-    const armored = Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorNow)
+    // Горение (09.11.2026) идёт мимо брони: его сумма — доля уже прошедшего удара.
+    const armored = opts.burn ? dmg : Math.max(Math.round(dmg * C.ARMOR_MAX_REDUCTION), dmg - armorNow)
     // Фактически снятое, не запрошенное — иначе смертельный удар (напр. hp=5,
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
     // После брони, не до — иначе выносливость росла бы от урона, которого
@@ -2428,7 +2498,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         return
       }
       triggerDeath()
-    } else {
+    } else if (!opts.burn) {
       triggerHurt()
       // Бригантина иного места: пропущенный удар с шансом даёт 1 ману.
       if (gear.hitManaChance > 0 && armored > 0 && Math.random() < gear.hitManaChance) {
@@ -2519,6 +2589,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     takeDamageRef.current = takeDamage
     takeRamDamageRef.current = takeRamDamage
     takeDamageUnblockableRef.current = takeDamageUnblockable
+    takeBurnDamageRef.current = (amount: number) => applyDamage(amount, { burn: true })
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
     healPlayerByClassRef.current = healPlayerByClass
@@ -2642,6 +2713,26 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // Настоятель — второй босс (29.10.2026). В забеге одна из двух систем босса
     // или ни одной: какой босс выйдет, решает карта (ABBOT_MAP_PREFIXES).
     let abbotSystem: ReturnType<typeof createAbbotSystem> | null = null
+    // Новые враги, боссы и Тень (09.11.2026): системы — только в забеге, где
+    // этот вид есть (листы условные, см. runAssetNeeds.nc).
+    const ncEnemySystems: Partial<Record<NcKind, NcEnemySystem>> = {}
+    let serpentSystem: ReturnType<typeof createSerpentSystem> | null = null
+    let crowKingSystem: ReturnType<typeof createCrowKingSystem> | null = null
+    let shadowSystem: ReturnType<typeof createShadowSystem> | null = null
+    let ncProjectiles: ReturnType<typeof createNcProjectileSystem> | null = null
+    // Файлы новых листов, взятые этим забегом: cleanup их отпускает (releaseNcAssets).
+    let ncRetained: string[] = []
+    let useNcFilters = false
+    // Состояния героя от новых врагов (09.11.2026): замедление грязью жука,
+    // горение от кочерги, отталкивание от блока фехтовальщика. Переменные
+    // setup(), а не рефы: читают и пишут их только тикер и системы этого забега.
+    let slowMsLeft = 0
+    let burnMsLeft = 0
+    let burnTickMs = 0
+    let burnTickDamage = 0
+    let staggerMsLeft = 0
+    let staggerDir: 1 | -1 = 1
+    let igniteHero: (hitDamage: number) => void = () => {}
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
     // Мастер (docs/crafter.md): огонь кольца Пепла и Звёздоцвет — оба есть не в
@@ -3153,7 +3244,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
           : -1
         const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
-        const bossRoll = bossIndex !== -1 && Math.random() < C.BOSS_SPAWN_CHANCE
+        // ?boss=… (09.11.2026) — босс в каждом забеге, где у карты есть его место.
+        const bossRoll = bossIndex !== -1 && (devUrlParam('boss') !== null || Math.random() < C.BOSS_SPAWN_CHANCE)
         if (smugglerIndex !== -1) {
           const smugglerCandidate = eventPool[smugglerIndex]
           const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
@@ -3177,14 +3269,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         chosenEvents = chosenEvents.map((ev) =>
           ev.kind === 'enemy' ? {
             ...ev,
-            enemyKind: devEnemyKind(),
+            enemyKind: devEnemyKind(resolvedMapFile),
             ...(Math.random() < ELITE_CHANCE && ev.clusterPoints && ev.clusterPoints.length > 0
               ? { eliteIndex: Math.floor(Math.random() * ev.clusterPoints.length) } : {}),
           }
-            : ev.kind === 'chest' ? { ...ev, isMimic: Math.random() < C.CHEST_MIMIC_CHANCE }
-              : ev,
+            : ev.kind === 'chest' ? devChestRoll(ev)
+              : ev.kind === 'boss' ? { ...ev, bossKind: devBossKind(resolvedMapFile) }
+                : ev,
         )
-        devPatrols = devRollPatrols(scattered.rest, chosenEvents)
+        devPatrols = devRollPatrols(scattered.rest, chosenEvents, resolvedMapFile)
       }
       // Вид врагов КАЖДОГО события, разобранный один раз здесь — ровно как
       // награды ниже: дальше по коду оба пути (сервер и заглушка) дают одну
@@ -3221,6 +3314,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         }
         return isMimic
       })
+      // Тень у сундука (09.11.2026): решение сервера (как isMimic); нет поля — нет Тени.
+      const eventChestShadow: boolean[] = chosenEvents.map((ev) => ev.kind === 'chest' && readChestShadow(ev))
+      // Какой босс (09.11.2026): называет сервер полем bossKind; нет поля
+      // (сервер старше) — по карте, как раньше.
+      const bossEvent = chosenEvents.find((ev) => ev.kind === 'boss')
+      const bossKindNamed = bossEvent ? readBossKind(bossEvent.bossKind) : null
       // Какие листы «под событие» нужны ЭТОМУ забегу. Решается ЗДЕСЬ, как только
       // события известны, — в этом и был смысл того, что вид врагов приезжает со
       // старта забега, — и по тому же списку, по которому ниже идёт спавн: что
@@ -3234,7 +3333,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // с местом босса — Тварь. Событие у обоих одно (kind 'boss'), сервер их не
       // различает. Настоятелю нужны и листы Звонаря: он их зовёт, а его удар в
       // пол катит их волну.
-      const abbotWillSpawn = bossWillSpawn && C.ABBOT_MAP_PREFIXES.some((prefix) => resolvedMapFile.startsWith(prefix))
+      const abbotWillSpawn = bossWillSpawn && (bossKindNamed !== null
+        ? bossKindNamed === 'abbot'
+        : C.ABBOT_MAP_PREFIXES.some((prefix) => resolvedMapFile.startsWith(prefix)))
+      const ncBossKind = bossWillSpawn && (bossKindNamed === 'serpent' || bossKindNamed === 'crowking') ? bossKindNamed : null
+      const ncNeed = (k: NcKind) => eventEnemyKinds.includes(k as EnemyKind) || patrolKinds.includes(k as StartExplorePatrol['enemyKind'])
       const runAssetNeeds: RunAssetNeeds = {
         beast: eventEnemyKinds.includes('beast') || patrolKinds.includes('beast'),
         zvonar: eventEnemyKinds.includes('zvonar') || patrolKinds.includes('zvonar') || abbotWillSpawn,
@@ -3242,9 +3345,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         chest: chosenEvents.some((ev) => ev.kind === 'chest'),
         smuggler: chosenEvents.some((ev) => ev.kind === 'smuggler'),
         obelisk: chosenEvents.some((ev) => ev.kind === 'obelisk'),
-        boss: bossWillSpawn && !abbotWillSpawn,
+        boss: bossWillSpawn && !abbotWillSpawn && ncBossKind === null,
         abbot: abbotWillSpawn,
+        nc: {
+          fencer: ncNeed('fencer'),
+          gravedigger: ncNeed('gravedigger'),
+          crossbowman: ncNeed('crossbowman'),
+          stoker: ncNeed('stoker'),
+          beetle: ncNeed('beetle'),
+          serpent: ncBossKind === 'serpent',
+          crowking: ncBossKind === 'crowking',
+        },
       }
+      ncRetained = retainNcAssets((Object.keys(runAssetNeeds.nc) as NcKind[]).filter((k) => runAssetNeeds.nc[k]))
       const eventAssetsLoad = loadEventAssets(runAssetNeeds)
       eventAssetsLoad.catch(() => {})
       setEventClosed(Array(chosenEvents.length).fill(false))
@@ -3261,7 +3374,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           // настоящей сессии. Числа его никуда не уходят (финиш в этом режиме на
           // сервер не идёт вовсе), и оранжевая плашка «ЗАГЛУШКА» уже говорит
           // игроку, что забег ненастоящий.
-          : devEliteReward(devEventReward(ev.kind, eventChestMimic[eventIndex] === true), eventElite[eventIndex], ev.clusterPoints?.length ?? 0),
+          : devEliteReward(devEventReward(ev.kind, eventChestMimic[eventIndex] === true, eventChestShadow[eventIndex]), eventElite[eventIndex], ev.clusterPoints?.length ?? 0),
       )
 
       // Иконки выпавшего — ЗАРАНЕЕ, здесь, а не в момент закрытия события:
@@ -3350,6 +3463,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // забеге и строка в консоли. Ставится на каждом запуске setup(), в обе
       // стороны: смена карты пересоздаёт приложение, и рендерер мог смениться.
       const onCanvasRenderer = app.renderer.type === RendererType.CANVAS
+      // Фильтры нового контента (горение, Тень, сундук Тени) — только WebGL.
+      useNcFilters = app.renderer.type === RendererType.WEBGL
       if (onCanvasRenderer) {
         console.warn(
           'Explore: WebGL недоступен, PixiJS рисует запасным рендерером Canvas2D — ' +
@@ -3874,7 +3989,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         enemies: () => enemiesRef.current,
         boss: () => bossRef.current,
         burnEnemy: (enemy) => { damageEnemy(enemy, skillDamage.slash, skillDamageDealtRef, enemy.x + enemy.width / 2, 'tick') },
-        burnBoss: () => { const b = bossRef.current; if (b) damageBoss(skillDamage.slash, skillDamageDealtRef, b.x + C.BOSS_WIDTH / 2, 'tick') },
+        burnBoss: () => { const b = bossRef.current; if (b) damageBoss(skillDamage.slash, skillDamageDealtRef, b.x + bossBox(b).w / 2, 'tick') },
         trailMs: CR.RING_ASH_TRAIL_MS,
         burnMs: CR.RING_ASH_BURN_MS,
         tickMs: CR.RING_ASH_TICK_MS,
@@ -3940,6 +4055,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Настоятель — свои листы на каждую стадию (entities/abbot.ts).
         if (boss.abbot) {
           sheetsFor(abbotSystem, 'Настоятель').playBossKind(boss, kind)
+          return
+        }
+        // Змей и Король (09.11.2026) — свои листы.
+        if (boss.nc) {
+          if (boss.nc.kind === 'serpent') sheetsFor(serpentSystem, 'Костяной Змей').playBossKind(boss, kind)
+          else sheetsFor(crowKingSystem, 'Вороний Король').playBossKind(boss, kind)
           return
         }
         // Уже эта анимация — не рестартить (см. задачу шаг 3: hurt/idle
@@ -4050,6 +4171,81 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       hero.play()
       worldContainer.addChild(hero)
       heroSpriteRef.current = hero
+
+      // --- Горение героя от кочерги Кочегара (09.11.2026) ---
+      // Вид — шейдер огня по силуэту (ncFilters.ts, одобрено: hero_burn_shader.mp4);
+      // без WebGL — тёплый tint. Урон — тиками раз в BURN_TICK_MS, суммарно
+      // BURN_TOTAL_FRAC урона удара за BURN_MS; повторное попадание обновляет
+      // время, не складывается. Непарируемый (огонь уже на герое).
+      const burnFilter = useNcFilters ? createBurnFilter() : null
+      let burnShown = false
+      let burnCarry = 0
+      let burnTimeMs = 0
+      const embers = new Graphics()
+      worldContainer.addChild(embers)
+      const emberParts: { x: number; y: number; vx: number; vy: number; ms: number; life: number }[] = []
+      igniteHero = (hitDamage: number) => {
+        if (deathRef.current) return
+        burnMsLeft = N.BURN_MS
+        burnTickDamage = (hitDamage * N.BURN_TOTAL_FRAC) / (N.BURN_MS / N.BURN_TICK_MS)
+        if (burnTickMs <= 0) burnTickMs = N.BURN_TICK_MS
+      }
+      function updateHeroStatus(deltaMS: number) {
+        slowMsLeft = Math.max(0, slowMsLeft - deltaMS)
+        staggerMsLeft = Math.max(0, staggerMsLeft - deltaMS)
+        const burning = burnMsLeft > 0 && !deathRef.current
+        if (burning) {
+          burnMsLeft = Math.max(0, burnMsLeft - deltaMS)
+          burnTickMs -= deltaMS
+          if (burnTickMs <= 0) {
+            burnTickMs += N.BURN_TICK_MS
+            // Доли копятся: сумма за 3 с — ровно доля урона удара, а не ceil каждого тика.
+            burnCarry += burnTickDamage
+            const whole = Math.floor(burnCarry)
+            if (whole >= 1) {
+              burnCarry -= whole
+              takeBurnDamageRef.current(whole)
+            }
+          }
+        } else {
+          burnMsLeft = 0
+          burnTickMs = 0
+        }
+        if (burning !== burnShown) {
+          burnShown = burning
+          if (burnFilter) hero.filters = burning ? [burnFilter] : null
+          else hero.tint = burning ? 0xffb070 : 0xffffff
+        }
+        if (burning && burnFilter) {
+          burnTimeMs += deltaMS
+          const u = filterUniforms(burnFilter)
+          u.uTime = burnTimeMs / 1000
+          u.uWarm = 0.10 + 0.05 * Math.sin(burnTimeMs / 120)
+          syncFigureUniforms(burnFilter, hero, 272)
+          burnFilter.padding = Math.ceil(80 * (u.uS as number)) + 6
+        }
+        // Пара искр над горящим героем.
+        if (burning && Math.random() < deltaMS / 160) {
+          emberParts.push({
+            x: hero.x + (Math.random() - 0.5) * 30,
+            y: hero.y - 40 - Math.random() * 50,
+            vx: (Math.random() - 0.6) * 30,
+            vy: -40 - Math.random() * 50,
+            ms: 0,
+            life: 400 + Math.random() * 300,
+          })
+        }
+        embers.clear()
+        for (let i = emberParts.length - 1; i >= 0; i--) {
+          const p = emberParts[i]
+          p.ms += deltaMS
+          if (p.ms >= p.life) { emberParts.splice(i, 1); continue }
+          p.x += (p.vx * deltaMS) / 1000
+          p.y += (p.vy * deltaMS) / 1000
+          const k = 1 - p.ms / p.life
+          embers.circle(p.x, p.y, 0.6 + 1.2 * k).fill({ color: k > 0.5 ? 0xffd070 : 0xff8030, alpha: k })
+        }
+      }
       // deathFrames зеркалим в ref — triggerDeath() вызывается из takeDamage,
       // вне setup(), достать локальную deathFrames оттуда напрямую нельзя.
       deathFramesRef.current = deathFrames
@@ -4280,6 +4476,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           sheetsFor(abbotSystem, 'Настоятель').layout(boss)
           return
         }
+        if (boss.nc) {
+          if (boss.nc.kind === 'serpent') sheetsFor(serpentSystem, 'Костяной Змей').layout(boss)
+          else sheetsFor(crowKingSystem, 'Вороний Король').layout(boss)
+          return
+        }
         // Ranged — лист НЕ приведён к общему масштабу, в отличие от
         // остальных. Определяем "сейчас активен ranged" сравнением textures
         // (тот же приём, что playBossAnim использует для гейта "уже эта
@@ -4373,8 +4574,89 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         characterLevel: characterLevelRef,
       })
 
+      // --- Новые враги, боссы и Тень (09.11.2026) ---
+      // Снаряды — один список на всех стрелков забега (и на кости Змея).
+      ncProjectiles = createNcProjectileSystem({
+        worldContainer,
+        grid,
+        getPlayerCombatBox,
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
+        dashing: dashingRef,
+        slowHero: () => { slowMsLeft = N.SLOW_MS },
+      })
+      const ncDeps: NcEnemyDeps = {
+        phys,
+        getPlayerCombatBox,
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
+        findGroundSurfaceY,
+        closeEvent,
+        onPatrolKilled,
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
+        dashing: dashingRef,
+        igniteHero: (hitDamage: number) => igniteHero(hitDamage),
+        events: eventsRef,
+        worldContainer,
+        grid,
+        enemies: enemiesRef,
+        characterLevel: characterLevelRef,
+        projectiles: ncProjectiles,
+      }
+      const ncAssetRef = (k: NcKind) => ({ current: eventAssets.nc[k] as NcAssets | null })
+      if (eventAssets.nc.fencer) ncEnemySystems.fencer = createFencerSystem(ncDeps, ncAssetRef('fencer'))
+      if (eventAssets.nc.gravedigger) ncEnemySystems.gravedigger = createGravediggerSystem(ncDeps, ncAssetRef('gravedigger'))
+      if (eventAssets.nc.crossbowman) ncEnemySystems.crossbowman = createCrossbowmanSystem(ncDeps, ncAssetRef('crossbowman'))
+      if (eventAssets.nc.stoker) ncEnemySystems.stoker = createStokerSystem(ncDeps, ncAssetRef('stoker'))
+      if (eventAssets.nc.beetle) ncEnemySystems.beetle = createBeetleSystem(ncDeps, ncAssetRef('beetle'))
+      const ncBossDeps = (a: NcAssets) => ({
+        phys,
+        getPlayerCombatBox,
+        pushPlayerOutX: pushPlayerOutXUnlessDashing,
+        findGroundSurfaceY,
+        closeEvent,
+        dropMana: (worldX: number, worldY: number) => manaSystem!.dropFrom(worldX, worldY),
+        takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
+        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
+        dashing: dashingRef,
+        heroFacing: () => (facingRef.current >= 0 ? 1 : -1) as 1 | -1,
+        boss: bossRef,
+        bossEventIndex: bossEventIndexRef,
+        worldContainer,
+        grid,
+        assets: a,
+        characterLevel: characterLevelRef,
+      })
+      if (eventAssets.nc.serpent) {
+        serpentSystem = createSerpentSystem(ncBossDeps(eventAssets.nc.serpent), {
+          projectiles: ncProjectiles,
+          waveLeftFrames: eventAssets.serpentWave?.left ?? [],
+          waveRightFrames: eventAssets.serpentWave?.right ?? [],
+        })
+      }
+      if (eventAssets.nc.crowking) crowKingSystem = createCrowKingSystem(ncBossDeps(eventAssets.nc.crowking))
+      // Тень — только в забеге с её сундуком; кадры — листы самого героя.
+      if (eventChestShadow.some(Boolean)) {
+        shadowSystem = createShadowSystem({
+          phys,
+          getPlayerCombatBox,
+          pushPlayerOutX: pushPlayerOutXUnlessDashing,
+          findGroundSurfaceY,
+          closeEvent,
+          takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
+          events: eventsRef,
+          worldContainer,
+          grid,
+          enemies: enemiesRef,
+          characterLevel: characterLevelRef,
+          frames: { idle: idleFrames, run: runFrames, attack: attackFrames, hurt: hurtFrames, death: deathFrames },
+          useFilter: useNcFilters,
+        })
+      }
+
       // Враг нужного вида — его системой (общая на группы событий и патрульных).
       function spawnEnemyOfKind(kind: EnemyKind, tileX: number, tileY: number, eventIndex: number): Enemy {
+        const ncSys = ncEnemySystems[kind as NcKind]
+        if (ncSys) return ncSys.spawn(tileX, tileY, eventIndex)
         if (kind === 'gatekeeper') return gatekeeperSystem!.spawn(tileX, tileY, eventIndex)
         if (kind === 'zvonar') return zvonarSystem!.spawn(tileX, tileY, eventIndex)
         return enemySystem!.spawn(tileX, tileY, eventIndex)
@@ -4413,7 +4695,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           const groupKind = eventEnemyKinds[eventIndex] ?? 'beast'
           const groupSheets = groupKind === 'gatekeeper' ? gatekeeperFramesRef.current
             : groupKind === 'zvonar' ? zvonarFramesRef.current
-              : beastFramesRef.current
+              : groupKind === 'beast' ? beastFramesRef.current
+                : eventAssets.nc[groupKind as NcKind] ?? null
           sheetsFor(groupSheets, `враги (${groupKind})`)
           points.forEach(([ex, ey], pointIndex) => {
             const spawned = spawnEnemyOfKind(groupKind, ex, ey, eventIndex)
@@ -4472,6 +4755,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // Назван сервером на старте забега (офлайн — заглушкой, тем же
             // правилом). До первого удара ничего не меняет на экране.
             isMimic: chestIsMimic,
+            isShadow: eventChestShadow[eventIndex] === true,
+            shadowReleased: false,
             trapDamaged: false,
             trapKilled: false,
             eventIndex,
@@ -4546,7 +4831,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       if (bossWillSpawn && isPointXY(bossPoint)) {
         // Система босса создаётся по тому же признаку, что его листы (см. выше).
         // Босс среди событий есть, а системы нет — условия разошлись: громко.
-        if (abbotWillSpawn) sheetsFor(abbotSystem, 'Настоятель').spawn(bossPoint[0], bossPoint[1])
+        if (ncBossKind === 'serpent') sheetsFor(serpentSystem, 'Костяной Змей').spawn(bossPoint[0], bossPoint[1])
+        else if (ncBossKind === 'crowking') sheetsFor(crowKingSystem, 'Вороний Король').spawn(bossPoint[0], bossPoint[1])
+        else if (abbotWillSpawn) sheetsFor(abbotSystem, 'Настоятель').spawn(bossPoint[0], bossPoint[1])
         else sheetsFor(bossSystem, 'босс').spawn(bossPoint[0], bossPoint[1])
       } else {
         bossRef.current = null
@@ -4979,7 +5266,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const inView = (x: number, y: number) => x >= left && x <= right && y >= top && y <= bottom
         const want = (id: RunTipId) => !hasSeen(id)
         const boss = bossRef.current
-        if (boss && !boss.dead && want('run_boss') && inView(boss.x + C.BOSS_WIDTH / 2, boss.y + C.BOSS_HEIGHT / 2)) return 'run_boss'
+        if (boss && !boss.dead && want('run_boss') && inView(bossBox(boss).x + bossBox(boss).w / 2, bossBox(boss).y + bossBox(boss).h / 2)) return 'run_boss'
         for (const e of enemiesRef.current) {
           if (e.dead || !inView(e.x + e.width / 2, e.y + e.height / 2)) continue
           if (e.elite && want('run_elite')) return 'run_elite'
@@ -5194,6 +5481,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // герой не переигрывает атаку и не перебивает deathFrames текстурами.
         if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
         if (attackCooldownRef.current > 0 || attackingRef.current) return false
+        // Удар в блок фехтовальщика — герой отброшен и 0.3 с не бьёт.
+        if (staggerMsLeft > 0) return false
         // Из блока не бьют: стойка занимает того же героя и тот же спрайт.
         // Симметрии нет намеренно — замах блок НЕ прерывает, потому что в
         // обратную сторону кнопка 🔄 во время замаха и так не срабатывает (см.
@@ -5338,6 +5627,22 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // спину. Всё это — один ответ gatekeeperDoorBlocks.
         // В обоих принятых случаях Привратник вздрагивает, а хитстана не
         // получает: пометку guarded читает applyEnemyHitReaction сразу следом.
+        // Тень поднимается из сундука — урона не берёт.
+        if (enemy.kind === 'shadow' && enemy.nc && enemy.nc.reveal < 1) return false
+        // Фехтовальщик (09.11.2026): меч в кадры блока — урона нет (искра,
+        // героя отталкивает); в кадры open — ×1.5; два удара подряд — встанет в блок.
+        if (enemy.kind === 'fencer' && enemy.nc) {
+          if (via === 'sword') {
+            const r = fencerSwordHit(enemy, performance.now())
+            if (r === 'block') {
+              spawnParrySparkRef.current()
+              staggerMsLeft = N.FENCER_BLOCK_STAGGER_MS
+              staggerDir = phys.x + C.PLAYER_WIDTH / 2 >= enemy.x + enemy.width / 2 ? 1 : -1
+              return false
+            }
+            if (r === 'open') amount = Math.floor(amount * N.FENCER_OPEN_DMG_MULT)
+          } else enemy.nc.blockedHit = false
+        }
         const gatekeeper = enemy.gatekeeper
         if (gatekeeper) {
           gatekeeper.guarded = via !== 'tick' && gatekeeperDoorBlocks(enemy, sourceX)
@@ -5406,6 +5711,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               enemy.sprite.loop = false
               enemy.sprite.gotoAndPlay(0)
             }
+          } else if (enemy.kind === 'shadow') {
+            shadowSystem?.playDeath(enemy)
+          } else if (ncEnemySystems[enemy.kind as NcKind]) {
+            ncEnemySystems[enemy.kind as NcKind]!.playDeath(enemy)
           } else {
             const beastFrames = beastFramesRef.current
             if (beastFrames) {
@@ -5429,6 +5738,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         if (!boss) return false
         // Настоятель срывает колокол — пока играет превращение, урон не проходит.
         if (boss.abbot?.transforming) return false
+        // Змей под землёй и на рёве, Король стаей — неуязвимы.
+        if (boss.nc?.invulnerable) return false
+        if (boss.nc?.kind === 'crowking') crowKingSystem?.onHit(boss)
         accumulator.current += Math.min(amount, boss.hp)
         boss.hp = Math.max(0, boss.hp - amount)
         // Расследование — та же роль и та же причина, что у damageEnemy выше.
@@ -5497,6 +5809,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Периодический урон (тик кровотечения slash) их НЕ зовёт намеренно —
       // тик идёт раз в секунду пять секунд подряд и держал бы цель в стан-локе.
       function applyEnemyHitReaction(enemy: Enemy) {
+        // Меч фехтовальщика принял удар блоком — урона и реакции не было.
+        if (enemy.nc?.blockedHit) return
         // Привратник: удар, принятый дверью, хитстана не даёт (он за щитом). Пока
         // он ОТКРЫТ станом — оглушён отбитым ударом или заморожен льдом — реакции
         // на попадание тоже нет: урон уже прошёл целиком, а он и так стоит.
@@ -5552,6 +5866,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       function applyBossHitReaction(boss: Boss) {
         // Превращение Настоятеля: урона не было (см. damageBoss), реакции тоже.
         if (boss.abbot?.transforming) return
+        if (boss.nc?.invulnerable) return
         if (boss.attackAnimPlaying || boss.rangedAnimPlaying) {
           // СЛОЙ 1 (главный, см. задачу) — во время атаки ИЛИ броска
           // Hurt НЕ проигрывается ВООБЩЕ, ни на каком кадре, независимо
@@ -5595,7 +5910,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // нет — обычный запуск хитстана. stunCount НЕ растёт (как
             // у зверя в ветке !wasWindingUp) — это не "сбитое" состояние.
             // У Настоятеля хитстан — длина его листа hurt своей стадии.
-            boss.hurtTimer = boss.abbot ? abbotHurtMs(boss) : C.BOSS_HURT_MS
+            boss.hurtTimer = boss.abbot ? abbotHurtMs(boss) : boss.nc ? N.NC_BOSS_HURT_MS : C.BOSS_HURT_MS
           }
         }
       }
@@ -5729,7 +6044,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               if (attackDamageDealtRef.current > swordDealtBefore) startHitstop()
               if (swordKilled) continue
               applyEnemyHitReaction(enemy)
-              if (!doorBlocks) startKnockback(enemy, swordSourceX)
+              if (!doorBlocks && !enemy.nc?.blockedHit) startKnockback(enemy, swordSourceX)
             }
           }
         }
@@ -5748,11 +6063,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             boss.lastHitSwingId !== attackSwingIdRef.current
           ) {
             const hb = attackHitboxRef.current
+            const bb = bossBox(boss)
             const overlap =
-              hb.x < boss.x + C.BOSS_WIDTH &&
-              hb.x + hb.width > boss.x &&
-              hb.y < boss.y + C.BOSS_HEIGHT &&
-              hb.y + hb.height > boss.y
+              !boss.nc?.hidden &&
+              hb.x < bb.x + bb.w &&
+              hb.x + hb.width > bb.x &&
+              hb.y < bb.y + bb.h &&
+              hb.y + hb.height > bb.y
             if (overlap) {
               boss.lastHitSwingId = attackSwingIdRef.current
               // Урон/смерть/перерисовка полосы/переход стадии — в damageBoss
@@ -5775,7 +6092,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               }
               // Хитстоп и по боссу (30.10.2026); отдачи у босса нет.
               if (attackDamageDealtRef.current > bossDealtBefore) startHitstop()
-              if (swingCrit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, boss.x, C.BOSS_WIDTH), overlapCenter(hb.y, hb.height, boss.y, C.BOSS_HEIGHT), boss.sprite)
+              if (swingCrit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, bb.x, bb.w), overlapCenter(hb.y, hb.height, bb.y, bb.h), boss.sprite)
             }
           }
         }
@@ -5806,6 +6123,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // сервер начислит трофеи как за обычный сундук, и наоборот.
             chest.trapDamaged = false
             chest.trapKilled = false
+            // Сундук Тени — тот же лист открытия, но золото перекрашено в фиолетовый.
+            if (chest.isShadow) {
+              if (useNcFilters) chest.sprite.filters = [createChestPurpleFilter()]
+              else chest.sprite.tint = 0xb080ff
+            }
             if (chest.isMimic) {
               chest.sprite.textures = sheetsFor(chestSheets, 'сундук').trap
               applyChestLayout(chest)
@@ -5976,8 +6298,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // должна ездить по карте. Нужная скорость — НОЛЬ, а ноль heroLocked уже
         // умеет. Заодно это замораживает facing (тот же гейт ниже): развернуться
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
-        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current
-        phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED * bootsSpeedMult
+        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current || staggerMsLeft > 0
+        // Грязь жука замедляет на SLOW_MULT (09.11.2026).
+        phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED * bootsSpeedMult * (slowMsLeft > 0 ? N.SLOW_MULT : 1)
+        // Удар в блок фехтовальщика: первые FENCER_BLOCK_PUSH_MS героя относит
+        // от него, дальше он стоит до конца FENCER_BLOCK_STAGGER_MS.
+        if (staggerMsLeft > N.FENCER_BLOCK_STAGGER_MS - N.FENCER_BLOCK_PUSH_MS && !deathRef.current) phys.vx = staggerDir * N.FENCER_BLOCK_PUSH_SPEED
         // Рывок dash подменяет ГОРИЗОНТАЛЬНУЮ скорость и дальше едет по
         // ОБЩЕМУ пути: тот же `phys.x += vx*dt` ниже, та же проверка
         // столкновений, тот же clamp по краям карты. Своей геометрии у dash
@@ -6482,6 +6808,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         bossSystem?.update(dt, ticker.deltaMS)
         // Настоятель — на том же месте кадра; в забеге есть только один из двух.
         abbotSystem?.update(dt, ticker.deltaMS)
+        // Новые враги, Тень, Змей, Король и их снаряды (09.11.2026) — тот же
+        // список врагов и тот же босс; снаряды — после стрелков, в том же кадре.
+        for (const k of Object.keys(ncEnemySystems) as NcKind[]) ncEnemySystems[k]!.update(dt, ticker.deltaMS)
+        shadowSystem?.update(dt, ticker.deltaMS)
+        serpentSystem?.update(dt, ticker.deltaMS)
+        crowKingSystem?.update(dt, ticker.deltaMS)
+        ncProjectiles?.update(ticker.deltaMS)
+        updateHeroStatus(ticker.deltaMS)
 
         // Шары маны — ПОСЛЕ всех трёх систем врагов: выпадение случается
         // внутри них (там, где труп снимается со сцены), и шар, родившийся в
@@ -6553,9 +6887,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             // в HUD, ни индекса в closedEvents финиша — а значит, сервер не
             // начислит за него ни трофеев, ни добычи. До правки сундук закрывался
             // через ≈0.9 с после смертельного удара, уже при мёртвом герое.
-            if (!chest.trapKilled) {
+            if (chest.isShadow) {
+              // Тень (09.11.2026): событие закроет её смерть, а не сундук.
+              chest.shadowReleased = true
+              const faceDir: 1 | -1 = phys.x + C.PLAYER_WIDTH / 2 >= chest.sprite.x ? 1 : -1
+              sheetsFor(shadowSystem, 'Тень').spawn(chest.sprite.x, chest.floorY, chest.eventIndex, faceDir)
+            } else if (!chest.trapKilled) {
               closeEvent(chest.eventIndex, chest.sprite.x, chest.sprite.y - chest.sprite.height)
             }
+          }
+          // Сундук Тени гаснет, как только она пошла вверх, — и больше не стена.
+          if (chest.shadowReleased) {
+            chest.sprite.alpha = Math.max(0, chest.sprite.alpha - ticker.deltaMS / 800)
+            continue
           }
           pushPlayerOutX(chest.hitbox, getPlayerCombatBox())
         }
@@ -7071,6 +7415,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       gatekeeperSystem?.dispose()
       bossSystem?.dispose()
       abbotSystem?.dispose()
+      for (const k of Object.keys(ncEnemySystems) as NcKind[]) ncEnemySystems[k]!.dispose()
+      serpentSystem?.dispose()
+      crowKingSystem?.dispose()
+      shadowSystem?.dispose()
+      ncProjectiles?.dispose()
       stunStarsSystem?.dispose()
       manaSystem?.dispose()
       // Атмосфера сама уничтожает свою текстуру — app.destroy ниже снимает
@@ -7099,6 +7448,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       }
       appRef.current = null
       heroSpriteRef.current = null
+      // Листы новых врагов и боссов (≈45–245 МБ на вид в видеопамяти) — после
+      // забега уничтожить, если их не взял уже следующий забег.
+      if (ncRetained.length > 0) releaseNcAssets(ncRetained)
+      ncRetained = []
       // Узлы сами уничтожаются деревом app.destroy(true, {children:true})
       // выше — здесь только сбрасываем список, чтобы не держать ссылки на
       // уже уничтоженные Container при повторном mount (StrictMode).

@@ -5,6 +5,7 @@ import type { Grid } from '../types'
 import type { PlayerPhysics, Enemy, Boss, DamageVia } from '../types'
 import * as C from '../constants'
 import { BLOOD_PRICE_EXCLUDED_SKILLS } from '../../heroClasses'
+import { bossBox as bossBoxOf } from './boss'
 
 // Скиллы игрока (heal/fireball/iceball/slash/dash) — модуль подключён к
 // игровому циклу ПУСТЫМ, до реализации самих скиллов (см. задачу).
@@ -692,13 +693,14 @@ export function createSkillsSystem(deps: SkillsDeps) {
 
     const boss = deps.boss.current
     if (boss && !boss.dead) {
+      const bb = bossBoxOf(boss)
       const overlap =
-        hx < boss.x + C.BOSS_WIDTH &&
-        hx + range > boss.x &&
-        box.y < boss.y + C.BOSS_HEIGHT &&
-        box.y + box.h > boss.y
+        hx < bb.x + bb.w &&
+        hx + range > bb.x &&
+        box.y < bb.y + bb.h &&
+        box.y + box.h > bb.y
       if (overlap) {
-        const dist = Math.abs(boss.x + C.BOSS_WIDTH / 2 - playerCx)
+        const dist = Math.abs(bb.x + bb.w / 2 - playerCx)
         if (dist < bestDist) {
           bestDist = dist
           best = { enemy: null }
@@ -892,7 +894,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     return { x: enemy.x, y: enemy.y, w: enemy.width, h: enemy.height }
   }
   function bossBox(boss: Boss) {
-    return { x: boss.x, y: boss.y, w: C.BOSS_WIDTH, h: C.BOSS_HEIGHT }
+    return bossBoxOf(boss)
   }
 
   // Глубина взаимного перекрытия двух AABB по каждой оси. Отрицательное
@@ -1184,11 +1186,12 @@ export function createSkillsSystem(deps: SkillsDeps) {
 
     const boss = deps.boss.current
     if (!boss || boss.dead || dashHitTargets.has(boss)) return
+    const bb = bossBoxOf(boss)
     const bossOverlap =
-      box.x < boss.x + C.BOSS_WIDTH &&
-      box.x + box.w > boss.x &&
-      box.y < boss.y + C.BOSS_HEIGHT &&
-      box.y + box.h > boss.y
+      box.x < bb.x + bb.w &&
+      box.x + box.w > bb.x &&
+      box.y < bb.y + bb.h &&
+      box.y + box.h > bb.y
     if (!bossOverlap) return
     dashHitTargets.add(boss)
     countDashUse()

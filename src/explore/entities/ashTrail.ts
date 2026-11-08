@@ -2,6 +2,7 @@ import { AnimatedSprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import * as C from '../constants'
 import type { Boss, Enemy } from '../types'
+import { bossBox } from './boss'
 
 // Кольцо Пепла (Мастер, docs/crafter.md, решено 25.10.2026, вариант 3): рывок
 // оставляет на земле огненный след на RING_ASH_TRAIL_MS. Враг, задевший след,
@@ -117,7 +118,10 @@ export function createAshTrailSystem(deps: AshTrailDeps) {
         if (touches(seg, enemy.x, enemy.y, enemy.width, enemy.height)) burns.set(enemy, ignite(burns.get(enemy)))
       }
       const boss = deps.boss()
-      if (boss && !boss.dead && touches(seg, boss.x, boss.y, C.BOSS_WIDTH, C.BOSS_HEIGHT)) bossBurn = ignite(bossBurn)
+      if (boss && !boss.dead) {
+        const bb = bossBox(boss)
+        if (touches(seg, bb.x, bb.y, bb.w, bb.h)) bossBurn = ignite(bossBurn)
+      }
     }
 
     for (const [enemy, burn] of burns) {

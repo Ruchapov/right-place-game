@@ -118,10 +118,59 @@ export const SMUGGLER_STEAL_CHANCE = 0.2 // constants.ts:790
  * этой таблицей: доля Звонарей осталась 30%, Привратники забрали свои 25% у
  * зверей.
  */
-export const ENEMY_GROUP_WEIGHTS: Record<RunEnemyKind, number> = {
+export const ENEMY_GROUP_WEIGHTS: Partial<Record<RunEnemyKind, number>> = {
   beast: 45,
   zvonar: 30,
   gatekeeper: 25,
+}
+
+/**
+ * Тема карты — по её id (map_<id>_…), как BACKDROP_BY_MAP на клиенте
+ * (src/explore/constants.ts): A, F — кладбище; B, D — затопленный склеп; C, E —
+ * литейная; B2, C2 — болото.
+ */
+export type MapTheme = 'graveyard' | 'flooded_crypt' | 'foundry' | 'swamp'
+export function themeForMap(mapFile: string): MapTheme | null {
+  const id = mapFile.match(/^map_([^_]+)_/)?.[1] ?? ''
+  if (id === 'A' || id === 'F') return 'graveyard'
+  if (id === 'B' || id === 'D') return 'flooded_crypt'
+  if (id === 'C' || id === 'E') return 'foundry'
+  if (id === 'B2' || id === 'C2') return 'swamp'
+  return null
+}
+
+/**
+ * Веса видов групп ПО ТЕМЕ КАРТЫ (09.11.2026, решение дизайнера): к прежним
+ * трём добавлены Безликий фехтовальщик и Арбалетчик (везде) и «свой» враг темы —
+ * Гробокопатель на кладбище, Кочегар в литейной, Навозник на болоте. Группы
+ * по-прежнему однородные. Неизвестная тема — прежняя таблица.
+ */
+export const ENEMY_GROUP_WEIGHTS_BY_THEME: Record<MapTheme, Partial<Record<RunEnemyKind, number>>> = {
+  graveyard: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, gravedigger: 20 },
+  flooded_crypt: { beast: 25, zvonar: 20, gatekeeper: 20, fencer: 20, crossbowman: 15 },
+  foundry: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, stoker: 20 },
+  swamp: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, beetle: 20 },
+}
+
+/**
+ * Сундук (09.11.2026): три исхода — обычный 70%, мимик 20% (CHEST_MIMIC_CHANCE),
+ * Тень 10%. Тень: трофеи сундука × CHEST_SHADOW_TROPHY_MULT; начисляются (вместе
+ * с добычей), только если Тень убита — клиент закрывает событие сундука её
+ * смертью, а финиш начисляет только закрытые события.
+ */
+export const CHEST_SHADOW_CHANCE = 0.1
+export const CHEST_SHADOW_TROPHY_MULT = 1.5
+
+/**
+ * Какой босс выйдет на карте с местом босса (09.11.2026): на C — Тварь / Змей /
+ * Король, на C2 — Настоятель / Змей / Король, по трети. Отдаётся клиенту полем
+ * bossKind события boss; клиент своего броска не делает.
+ */
+export type RunBossKind = 'werewolf' | 'abbot' | 'serpent' | 'crowking'
+export function rollBossKind(mapFile: string): RunBossKind {
+  const first: RunBossKind = mapFile.startsWith('map_C2') ? 'abbot' : 'werewolf'
+  const pool: RunBossKind[] = [first, 'serpent', 'crowking']
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 /**
@@ -134,10 +183,12 @@ export const ENEMY_GROUP_WEIGHTS: Record<RunEnemyKind, number> = {
  * Привратник — только с GATEKEEPER_MIN_LEVEL (08.11.2026, общий runExtras.ts):
  * ниже его вес 0, звери и Звонари делятся по своим весам (45 : 30).
  */
-export function rollEnemyKind(characterLevel: number): RunEnemyKind {
+export function rollEnemyKind(characterLevel: number, mapFile = ''): RunEnemyKind {
+  const theme = themeForMap(mapFile)
+  const table = theme ? ENEMY_GROUP_WEIGHTS_BY_THEME[theme] : ENEMY_GROUP_WEIGHTS
   const weight = (k: RunEnemyKind): number =>
-    k === 'gatekeeper' && !(characterLevel >= GATEKEEPER_MIN_LEVEL) ? 0 : ENEMY_GROUP_WEIGHTS[k]
-  const kinds = (Object.keys(ENEMY_GROUP_WEIGHTS) as RunEnemyKind[]).filter((k) => weight(k) > 0)
+    k === 'gatekeeper' && !(characterLevel >= GATEKEEPER_MIN_LEVEL) ? 0 : table[k] ?? 0
+  const kinds = (Object.keys(table) as RunEnemyKind[]).filter((k) => weight(k) > 0)
   const total = kinds.reduce((sum, k) => sum + weight(k), 0)
   let roll = Math.random() * total
   for (const kind of kinds) {
@@ -164,7 +215,8 @@ export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 
  * Группа ОДНОРОДНАЯ: смешанных нет. Трофеи и добыча у всех трёх одинаковые —
  * бросок вида идёт ПОСЛЕ них и на них не влияет (см. rollRunEvents).
  */
-export type RunEnemyKind = 'beast' | 'zvonar' | 'gatekeeper'
+export type RunEnemyKind = 'beast' | 'zvonar' | 'gatekeeper' | 'fencer' | 'gravedigger' | 'crossbowman' | 'stoker' | 'beetle'
+export const RUN_ENEMY_KINDS: readonly RunEnemyKind[] = ['beast', 'zvonar', 'gatekeeper', 'fencer', 'gravedigger', 'crossbowman', 'stoker', 'beetle']
 
 // Кандидат из пула — эквивалент EventCandidate на клиенте (src/explore/types.ts:12).
 type EventCandidate = {
@@ -194,6 +246,10 @@ export type RunEvent = {
    * взрывался, а сервер считал его обычным и начислял трофеи, — и наоборот.
    */
   isMimic?: boolean
+  /** Тень из сундука (09.11.2026) — только у chest; поля нет — Тени нет. */
+  isShadow?: boolean
+  /** Какой босс (09.11.2026) — только у boss; поля нет — по карте (забег раньше). */
+  bossKind?: RunBossKind
   /**
    * Чья группа — только для kind === 'enemy' (04.10.2026).
    *
@@ -411,13 +467,20 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       // ЕДИНСТВЕННЫЙ бросок «ловушка или нет» на весь забег (13.10.2026): его
       // получает и клиент — по нему он играет взрыв и бьёт героя, — и финиш,
       // через trophyReward ниже.
-      const isMimic = Math.random() < CHEST_MIMIC_CHANCE
+      // Один бросок на три исхода (09.11.2026): мимик, Тень, обычный.
+      const roll = Math.random()
+      const isMimic = roll < CHEST_MIMIC_CHANCE
+      const isShadow = !isMimic && roll < CHEST_MIMIC_CHANCE + CHEST_SHADOW_CHANCE
       return {
         ...ev,
         isMimic,
+        isShadow,
         // Мимик — без трофеев. Добыча у него разыгрывается как у обычного
         // сундука (attachEventDrops в routes/run.ts на isMimic не смотрит).
-        trophyReward: isMimic ? 0 : rollTrophies(multiplier!, characterLevel),
+        // Тень — трофеи ×1.5; сундук закрывается только её смертью.
+        trophyReward: isMimic ? 0
+          : isShadow ? Math.round(CHEST_SHADOW_TROPHY_MULT * rollTrophies(multiplier!, characterLevel))
+            : rollTrophies(multiplier!, characterLevel),
       }
     }
 
@@ -434,8 +497,16 @@ export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent
       return {
         ...ev,
         trophyReward: elite ? eliteGroupTrophies(base, size) : base,
-        enemyKind: rollEnemyKind(characterLevel),
+        enemyKind: rollEnemyKind(characterLevel, mapFile),
         ...(elite ? { eliteIndex: Math.floor(Math.random() * size) } : {}),
+      }
+    }
+
+    if (ev.kind === 'boss') {
+      return {
+        ...ev,
+        trophyReward: rollTrophies(multiplier!, characterLevel),
+        bossKind: rollBossKind(mapFile),
       }
     }
 
@@ -473,7 +544,7 @@ export function rollRunPatrols(mapFile: string, events: RunEvent[], characterLev
   return pickPatrolSpots(remainingPoints(enemyPointPool(slots), groupPoints), eventPoints).map(([x, y]) => ({
     x,
     y,
-    enemyKind: rollEnemyKind(characterLevel),
+    enemyKind: rollEnemyKind(characterLevel, mapFile),
     trophyReward: rollTrophies(TROPHY_MULT_PATROL, characterLevel),
   }))
 }
@@ -492,6 +563,10 @@ export type ClientRunEvent = {
   /** Элитный враг группы (30.10.2026); поля нет — элиты нет. */
   eliteIndex?: number
   isMimic?: boolean
+  /** Тень из сундука (09.11.2026). */
+  isShadow?: boolean
+  /** Какой босс (09.11.2026). */
+  bossKind?: RunBossKind
   trophyReward: number
   drop: ClientEventDrop | null
   /** Вторая добыча (Печать с босса), 18.10.2026. null — не выпало. */
@@ -540,6 +615,9 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     ...(ev.enemyKind ? { enemyKind: ev.enemyKind } : {}),
     ...(ev.eliteIndex !== undefined ? { eliteIndex: ev.eliteIndex } : {}),
     ...(ev.kind === 'chest' ? { isMimic: ev.isMimic } : {}),
+    // Тень (09.11.2026) — только если сервер её разыграл: у старого забега поля нет.
+    ...(ev.kind === 'chest' && ev.isShadow !== undefined ? { isShadow: ev.isShadow } : {}),
+    ...(ev.kind === 'boss' && ev.bossKind ? { bossKind: ev.bossKind } : {}),
     trophyReward: ev.trophyReward,
     drop: clientEventDrop(ev.drop),
     // Вторая добыча уходит ВСЕГДА, null у событий без неё: клиент старше

@@ -1,6 +1,6 @@
 import type { MutableRefObject } from 'react'
 import { Container, Graphics, GraphicsContext } from 'pixi.js'
-import type { Enemy, Boss, EnemyKind } from '../types'
+import type { Enemy, Boss, EnemyKind, SheetBossKind } from '../types'
 import * as C from '../constants'
 
 // ЗНАЧОК СТАНА — звёздочки, кружащие над головой врага, оглушённого
@@ -90,7 +90,7 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
     return free
   }
 
-  function place(owner: Enemy | Boss, kind: EnemyKind | 'boss' | 'abbot' | 'abbot2', deltaMS: number) {
+  function place(owner: Enemy | Boss, kind: EnemyKind | 'boss' | 'abbot' | 'abbot2' | SheetBossKind, deltaMS: number) {
     let halo = haloOf(owner)
     if (halo) {
       // Под льдом таймер оглушения стоит (заслон льда выше заслона оглушения) —
@@ -155,7 +155,7 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
     }
     const boss = deps.boss.current
     // Настоятель — своя точка головы на стадию (колокол на ярме / огонь над шеей).
-    if (boss && isParryStunned(boss)) place(boss, boss.abbot ? (boss.abbot.transformed ? 'abbot2' : 'abbot') : 'boss', deltaMS)
+    if (boss && isParryStunned(boss)) place(boss, boss.nc ? boss.nc.kind : boss.abbot ? (boss.abbot.transformed ? 'abbot2' : 'abbot') : 'boss', deltaMS)
   }
 
   function dispose() {

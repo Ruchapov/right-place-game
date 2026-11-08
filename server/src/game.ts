@@ -331,6 +331,31 @@ export function bossMaxHpForMap(mapFile: string, level: number): number {
   return ABBOT_MAP_PREFIXES.some((prefix) => mapFile.startsWith(prefix)) ? Math.round(base * ABBOT_HP_MULT) : base
 }
 
+/**
+ * HP босса забега по его виду (09.11.2026): Настоятель, Костяной Змей и Вороний
+ * Король — HP Твари × ABBOT_HP_MULT (mirrors scaledBossMaxHp × ABBOT_HP_MULT в
+ * src/explore/entities/ncBoss.ts и abbot.ts). Вида нет (забег раньше) — по карте.
+ */
+export function bossMaxHpFor(bossKind: unknown, mapFile: string, level: number): number {
+  if (bossKind === 'werewolf') return scaledBossMaxHp(level)
+  if (bossKind === 'abbot' || bossKind === 'serpent' || bossKind === 'crowking') return Math.round(scaledBossMaxHp(level) * ABBOT_HP_MULT)
+  return bossMaxHpForMap(mapFile, level)
+}
+
+/**
+ * Новые враги (09.11.2026) — множители HP поверх зверя (mirrors NC_HP_MULT в
+ * src/explore/ncConstants.ts, ручной синк). Тень из сундука — 3 × зверь
+ * (SHADOW_HP_MULT там же). Для потолка нанесённого урона (runState.ts).
+ */
+export const NC_ENEMY_HP_MULT: Record<string, number> = {
+  fencer: 1.0,
+  gravedigger: 1.2,
+  crossbowman: 0.7,
+  stoker: 1.5,
+  beetle: 1.3,
+}
+export const SHADOW_HP_MULT = 3
+
 // Привратник — тоже множитель поверх HP зверя (mirrors GATEKEEPER_HP_MULT в
 // src/explore/constants.ts, тот же ручной синк). Нужен потолку нанесённого
 // урона в runState.ts: группа Привратников живучее звериной в полтора раза, и
@@ -412,3 +437,10 @@ export function itemSellPrice(tier: number): number {
 }
 
 export const TROPHY_GOLD_RATE = 1
+
+/** HP одного врага группы по виду (09.11.2026) — для потолка нанесённого урона. */
+export function enemyMaxHpByKind(kind: unknown, level: number): number {
+  if (kind === 'gatekeeper') return scaledGatekeeperMaxHp(level)
+  if (typeof kind === 'string' && NC_ENEMY_HP_MULT[kind] !== undefined) return Math.round(NC_ENEMY_HP_MULT[kind] * scaledEnemyMaxHp(level))
+  return scaledEnemyMaxHp(level)
+}
