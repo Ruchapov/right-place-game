@@ -1,3 +1,4 @@
+import { RUNES, emptyRuneCounts, parseRuneKind, rollRune, runeBonus, type RuneCounts, type RuneKind } from '../runes.js'
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
@@ -55,6 +56,7 @@ import {
   readRunGear,
   readRunPatrols,
   type RunGear,
+  runesOf, runeStockColumn, runeFoundColumn, type RuneState,
 } from '../runState.js'
 import {
   readQuestState,
@@ -663,6 +665,8 @@ export type RunDrop =
   | { category: 'renounce_seal' }
   // Мастер (29.10.2026): сырьё и кольца, id — из каталога classItems.ts.
   | { category: 'crafter'; id: string }
+  // Руны (09.11.2026): вид — из общего каталога runes.ts.
+  | { category: 'rune'; kind: RuneKind }
 
 /**
  * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
@@ -734,15 +738,29 @@ async function attachEventDrops(
   characterLevel: number,
   luck: number,
   rings: DropRings,
+  runeFound: RuneCounts,
   log: FastifyRequest['log'],
 ): Promise<RunEvent[]> {
   const out: RunEvent[] = []
+  // Руны (09.11.2026): «получено» плюс то, что уже выпало в ЭТОМ забеге, —
+  // иначе два события одного забега могли бы вместе перейти лимит уровня.
+  const runeTally: RuneCounts = { ...runeFound }
   for (const event of events) {
     const intent = rollEventDrop(event.kind, characterLevel, luck, rings)
     const drop = intent === null ? null : await resolveDropIntent(intent, characterLevel, log)
     const extraIntent = rollEventExtraDrop(event.kind, characterLevel, luck)
     const extraDrop = extraIntent === null ? null : await resolveDropIntent(extraIntent, characterLevel, log)
-    out.push({ ...event, drop, extraDrop })
+    // Третий бросок, отдельный от ВСЕЙ остальной добычи: только группы врагов и
+    // боссы, раз на событие, удача героя не влияет (rollRune, runes.ts).
+    let runeDrop: EventDrop | null = null
+    if (event.kind === 'enemy' || event.kind === 'boss') {
+      const kind = rollRune(characterLevel, runeTally)
+      if (kind !== null) {
+        runeTally[kind]++
+        runeDrop = { category: 'rune', kind }
+      }
+    }
+    out.push({ ...event, drop, extraDrop, runeDrop })
   }
   return out
 }
@@ -786,6 +804,15 @@ function storedEventDrops(run: ActiveExploreRun, closed: number[], log: FastifyR
         log.error({ index, extraDrop: event.extraDrop }, 'finish-explore: currentRun.events[].extraDrop is malformed')
       } else if (extra.kind === 'drop') {
         out.push(extra.drop)
+      }
+    }
+    // Руна (09.11.2026) — та же дисциплина: поля нет — забег старше рун.
+    if (event.runeDrop !== undefined) {
+      const rune = parseEventDrop(event.runeDrop)
+      if (rune.kind === 'malformed') {
+        log.error({ index, runeDrop: event.runeDrop }, 'finish-explore: currentRun.events[].runeDrop is malformed')
+      } else if (rune.kind === 'drop') {
+        out.push(rune.drop)
       }
     }
   }
@@ -843,6 +870,7 @@ async function applyDrops(
   const scrollGain = {} as Record<ScrollId, number>
   const bookGain = {} as Record<SkillBookId, number>
   const classGain = {} as Record<ClassItemId, number>
+  const runeGain: RuneCounts = emptyRuneCounts()
   // Ничего не выпало — самый частый исход, и он не должен стоить лишнего
   // запроса к БД: подсчёт занятых ячеек ниже нужен только тогда, когда есть что
   // в них класть.
@@ -942,6 +970,13 @@ async function applyDrops(
         }
         break
       }
+      case 'rune': {
+        // Руны (09.11.2026) ячейку не занимают — вместимость не проверяется.
+        // +1 в инвентарь и +1 в «получено» — в той же условной записи.
+        runeGain[drop.kind]++
+        gained.push({ category: 'rune', kind: drop.kind })
+        break
+      }
     }
   }
 
@@ -957,6 +992,11 @@ async function applyDrops(
   }
   for (const [id, count] of Object.entries(classGain) as [ClassItemId, number][]) {
     stockData = { ...stockData, ...classItemStockIncrement(id, count) }
+  }
+  for (const [kind, count] of Object.entries(runeGain) as [RuneKind, number][]) {
+    if (count > 0) {
+      stockData = { ...stockData, [runeStockColumn(kind)]: { increment: count }, [runeFoundColumn(kind)]: { increment: count } }
+    }
   }
 
   return { gained, lost, itemIds, stockData, potionGain }
@@ -1207,6 +1247,12 @@ export type RunResultSummary = {
    */
   classItems: Record<string, number>
   /**
+   * Руны после забега (09.11.2026): в инвентаре, получено всего, использовано.
+   * Необязательное: вход, закрывающий брошенный забег смертью, рун не начисляет
+   * и поля не шлёт — клиент тогда держит прежние числа.
+   */
+  runes?: RuneState
+  /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
    * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
    * стоит 30 применений), и экран итогов тогда ничего о навыках не рисует.
@@ -1341,6 +1387,8 @@ export async function runRoutes(server: FastifyInstance) {
     // игроку на экране «Персонаж».
     const totalArmor = equippedItems.reduce((sum, inv) => sum + (inv.item.armor ?? 0), 0)
       + upgradeBonus('armor', upgradesOf(character))
+      // Руны брони (09.11.2026) — тот же общий каталог, что на клиенте (runeBonus).
+      + runeBonus('armor', character.runeArmorUsed)
 
     // Снаряжение Мастера на этот забег (docs/crafter.md): надетые вещи иного
     // места и кольца в гнёздах — снимком в currentRun.gear. Клобук поднимает
@@ -1369,6 +1417,7 @@ export async function runRoutes(server: FastifyInstance) {
       characterLevel,
       luck,
       { skillSearch: gear.rings.includes('ring_skill_search') },
+      runesOf(character).found,
       request.log,
     )
     // Звёздоцвет: бросок на забег, место — свободная точка награды этой карты.
@@ -2914,6 +2963,9 @@ export async function runRoutes(server: FastifyInstance) {
       // страницы выше. Отдельным полем: свой каталог, в витрине их нет.
       classItems: classItemStockOf(character),
       ringSlots: ringSlotsOf(character).slots,
+      // Руны (09.11.2026) и своя удача героя (её растит руна удачи).
+      runes: runesOf(character),
+      luck: character.luck,
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -3213,6 +3265,77 @@ export async function runRoutes(server: FastifyInstance) {
     const updated = await prisma.character.findUnique({ where: { userId } })
     if (!updated) return reply.status(500).send({ error: 'Ring changed but state could not be read' })
     return reply.send({ classItems: classItemStockOf(updated), ringSlots: ringSlotsOf(updated).slots })
+  })
+
+  // РУНЫ (09.11.2026, docs/items.md, «РУНЫ»): использовать одну руну за значки
+  // охотника. Цена и прибавка — общий каталог runes.ts; из тела читается только
+  // вид. Атака и броня — +1 к счётчику «использовано» (прибавку считает
+  // runeBonus, как закалки — upgradeBonus), удача — +1 прямо к luck. Счётчик
+  // «получено» не трогается.
+  //
+  // ⚠️ Во время вылазки — 400 Run in progress, как у Ловчего: финиш и вход
+  // пишут колонки персонажа со снимка начала обработчика, а броня забега уже
+  // посчитана на старте. Пустой currentRun — и в фильтре записи.
+  // Запись одна и условная: руна >= 1 и значков >= цены (gte), списание
+  // decrement'ами. requestId — ключ идемпотентности (applyOnce).
+  server.post<{ Body: { kind?: unknown; requestId?: unknown } }>('/character/use-rune', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const kind = parseRuneKind(request.body?.kind)
+    if (kind === null) return reply.status(400).send({ error: 'Unknown rune' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    const price = RUNES[kind].price
+    const stockCol = runeStockColumn(kind)
+    const effect: Prisma.CharacterUpdateManyMutationInput =
+      kind === 'attack' ? { runeAttackUsed: { increment: 1 } }
+        : kind === 'armor' ? { runeArmorUsed: { increment: 1 } }
+          : { luck: { increment: RUNES.luck.step } }
+
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'use-rune', request.log, async (db) => {
+        if (character.currentRun !== null) throw new RouteRejection(400, { error: 'Run in progress' })
+        if (character[stockCol] < 1) throw new RouteRejection(400, { error: 'No rune' })
+        if (character.hunterBadges < price) {
+          throw new RouteRejection(400, { error: 'Not enough badges', price, hunterBadges: character.hunterBadges })
+        }
+        const written = await db.character.updateMany({
+          where: {
+            userId,
+            currentRun: { equals: Prisma.DbNull },
+            hunterBadges: { gte: price },
+            [stockCol]: { gte: 1 },
+          },
+          data: {
+            hunterBadges: { decrement: price },
+            [stockCol]: { decrement: 1 },
+            ...effect,
+          },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry', price })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'use-rune: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Rune used but state could not be read' })
+    }
+    return reply.send({
+      runes: runesOf(updated),
+      hunterBadges: updated.hunterBadges,
+      luck: updated.luck,
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
   })
 
   // Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): +1 к силе, ловкости или
@@ -3962,6 +4085,7 @@ export async function settleExploreRun(
     let consumablesAfterFinish = consumableStockOf(character)
     let scrollsAfterFinish = scrollStockOf(character)
     let classItemsAfterFinish = classItemStockOf(character)
+    let runesAfterFinish = runesOf(character)
     let potionsAfterFinish = newPotionStock
     // Золото, значки и RP — тоже перечитанные: награда задания легла
     // increment'ом поверх того, что успело случиться между чтением и записью.
@@ -3977,6 +4101,7 @@ export async function settleExploreRun(
         consumablesAfterFinish = consumableStockOf(reread)
         scrollsAfterFinish = scrollStockOf(reread)
         classItemsAfterFinish = classItemStockOf(reread)
+        runesAfterFinish = runesOf(reread)
         potionsAfterFinish = potionStockOf(reread)
         walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
       } else {
@@ -4017,6 +4142,7 @@ export async function settleExploreRun(
       consumables: consumablesAfterFinish,
       scrolls: scrollsAfterFinish,
       classItems: classItemsAfterFinish,
+      runes: runesAfterFinish,
       // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
       // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
       // собран skillLevelUps), а не всё, что успело случиться с колонкой после:

@@ -236,6 +236,13 @@ export type RunEvent = {
    * Печати тогда в игре не существовало.
    */
   extraDrop?: EventDrop | null
+  /**
+   * Руна (09.11.2026, docs/items.md, «РУНЫ») — третий, отдельный бросок поверх
+   * всей добычи, только у групп врагов и боссов (rollRune, runes.ts). null — не
+   * выпало (или событие не того вида). Поля нет — забег начат сервером старше
+   * 09.11.2026: рун тогда не было, бросать за него нечего.
+   */
+  runeDrop?: EventDrop | null
 }
 
 type SlotsFile = {
@@ -489,6 +496,8 @@ export type ClientRunEvent = {
   drop: ClientEventDrop | null
   /** Вторая добыча (Печать с босса), 18.10.2026. null — не выпало. */
   extraDrop: ClientEventDrop | null
+  /** Руна (09.11.2026). null — не выпало. */
+  runeDrop: ClientEventDrop | null
 }
 
 /** Добыча в том виде, в каком её видит клиент: снаряжение — без itemId. */
@@ -537,6 +546,8 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     // 18.10.2026 незнакомое поле не читает, а новому так не нужно отличать
     // «не выпало» от «сервер не умел» — Печать он показывает только присланной.
     extraDrop: clientEventDrop(ev.extraDrop),
+    // Руна (09.11.2026) — тоже всегда, null без неё; клиент старше её не читает.
+    runeDrop: clientEventDrop(ev.runeDrop),
   }))
 }
 

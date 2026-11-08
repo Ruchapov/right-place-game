@@ -15,6 +15,7 @@
     src/crafter.ts      → server/src/crafter.ts
     src/runExtras.ts    → server/src/runExtras.ts
     src/guild.ts        → server/src/guild.ts
+    src/runes.ts        → server/src/runes.ts
 
 Общего пакета в проекте нет (tsconfig.app.json включает только "src", у
 сервера rootDir "./src"), поэтому каталоги живут байт-в-байт копиями.
@@ -60,6 +61,7 @@ PAIRS = [
     ("каталог Мастера", Path("src/crafter.ts"), Path("server/src/crafter.ts")),
     ("патрули и элита", Path("src/runExtras.ts"), Path("server/src/runExtras.ts")),
     ("каталог гильдий", Path("src/guild.ts"), Path("server/src/guild.ts")),
+    ("каталог рун", Path("src/runes.ts"), Path("server/src/runes.ts")),
 ]
 
 

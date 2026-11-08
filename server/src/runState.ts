@@ -16,6 +16,7 @@
 // двух видах — снимок ПО ТИРАМ внутри currentRun и пять колонок Character, —
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
+import type { RuneCounts, RuneKind } from './runes.js'
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock, potionHealAmount } from './potions.js'
 import { bossMaxHpForMap, scaledEnemyMaxHp, scaledGatekeeperMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
 import type { RunEvent, RunPatrol } from './runEvents.js'
@@ -1359,6 +1360,38 @@ export function skillUsesToColumns(uses: Record<SkillBookSkillId, number>): Skil
 //
 // Рядом с раскладкой расходников и уровней навыков, по той же причине: имена
 // колонок клиенту не нужны, а форма ответа — объект по виду улучшения.
+// Руны (09.11.2026, общий runes.ts): три колонки на вид — лежат в инвентаре,
+// получено всего, использовано (у удачи своего «использовано» нет — она
+// прибавляется к luck). Раскладка колонок — здесь, одним местом.
+export type RuneColumns = {
+  runeAttack: number; runeArmor: number; runeLuck: number
+  runeAttackFound: number; runeArmorFound: number; runeLuckFound: number
+  runeAttackUsed: number; runeArmorUsed: number
+}
+export type RuneState = { stock: RuneCounts; found: RuneCounts; used: { attack: number; armor: number } }
+export function runesOf(c: RuneColumns): RuneState {
+  return {
+    stock: { attack: c.runeAttack, armor: c.runeArmor, luck: c.runeLuck },
+    found: { attack: c.runeAttackFound, armor: c.runeArmorFound, luck: c.runeLuckFound },
+    used: { attack: c.runeAttackUsed, armor: c.runeArmorUsed },
+  }
+}
+/** Колонка запаса и колонка «получено» вида — для increment/decrement. */
+export function runeStockColumn(kind: RuneKind): 'runeAttack' | 'runeArmor' | 'runeLuck' {
+  switch (kind) {
+    case 'attack': return 'runeAttack'
+    case 'armor': return 'runeArmor'
+    case 'luck': return 'runeLuck'
+  }
+}
+export function runeFoundColumn(kind: RuneKind): 'runeAttackFound' | 'runeArmorFound' | 'runeLuckFound' {
+  switch (kind) {
+    case 'attack': return 'runeAttackFound'
+    case 'armor': return 'runeArmorFound'
+    case 'luck': return 'runeLuckFound'
+  }
+}
+
 export type UpgradeColumns = { attackUpgrades: number; armorUpgrades: number }
 
 /** Счётчики улучшений в форме каталога — ответы клиенту и расчёт прибавок. */

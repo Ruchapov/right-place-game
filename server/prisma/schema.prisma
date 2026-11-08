@@ -204,6 +204,20 @@ model Character {
   cauldronAt          DateTime?
   libraryAt           DateTime?
   lastSeenAt          DateTime?
+  // Руны (docs/items.md, «РУНЫ», миграция 20261109120000_runes_add).
+  // runeAttack/runeArmor/runeLuck — лежат в инвентаре (ячейку не занимают);
+  // runeXFound — получено всего (против лимита уровня — шанс следующей, общий
+  // каталог runes.ts), использование его НЕ уменьшает; runeAttackUsed /
+  // runeArmorUsed — применено, от них постоянная прибавка (runeBonus), удача
+  // прибавляется прямо к luck.
+  runeAttack          Int      @default(0)
+  runeArmor           Int      @default(0)
+  runeLuck            Int      @default(0)
+  runeAttackFound     Int      @default(0)
+  runeArmorFound      Int      @default(0)
+  runeLuckFound       Int      @default(0)
+  runeAttackUsed      Int      @default(0)
+  runeArmorUsed       Int      @default(0)
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

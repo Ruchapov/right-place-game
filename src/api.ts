@@ -1,3 +1,4 @@
+import { RUNE_KINDS, parseRuneKind, type RuneCounts, type RuneKind } from './runes'
 import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, type ClassItemId } from './classItems'
@@ -207,6 +208,8 @@ export type LoginResponse = {
     // объектом по id каталога classItems.ts. Опциональное по той же причине, что
     // scrolls выше. Разбирать ТОЛЬКО через readClassItems.
     classItems?: Record<string, number>
+    // Руны (09.11.2026): { stock, found, used }. Разбирать ТОЛЬКО через readRunes.
+    runes?: unknown
     // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
     // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
     ringSlots?: unknown
@@ -483,6 +486,8 @@ export type StartExploreEvent = {
    * readEventReward.
    */
   extraDrop?: RunDrop | null
+  /** Руна (09.11.2026) — третий отдельный бросок; null — не выпало. Через readEventReward. */
+  runeDrop?: RunDrop | null
 }
 
 // Response shape of POST /run/start-explore (server/src/routes/run.ts; форму
@@ -698,6 +703,8 @@ export type RunDrop =
   | { category: 'renounce_seal' }
   // Мастер (29.10.2026): сырьё и кольца, id из каталога classItems.ts.
   | { category: 'crafter'; id: string }
+  // Руны (09.11.2026): вид — из общего каталога runes.ts.
+  | { category: 'rune'; kind: RuneKind }
 
 export type RunResultSummary = {
   interrupted: boolean
@@ -759,6 +766,8 @@ export type RunResultSummary = {
    * scrolls выше. Разбирать через readClassItems.
    */
   classItems?: Record<string, number>
+  /** Руны после забега (09.11.2026); нет поля — прежние числа. Через readRunes. */
+  runes?: unknown
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень (02.10.2026). Пустой список —
    * самый частый исход (первый уровень стоит 30 применений), и экран итогов
@@ -1569,6 +1578,10 @@ export type ProfileResult = {
   agility: number | null
   endurance: number | null
   level: number | null
+  /** Руны (09.11.2026); null — сервер старше рун. */
+  runes: RuneState | null
+  /** Своя удача героя; null — сервер не назвал. */
+  luck: number | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1606,6 +1619,8 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     agility?: unknown
     endurance?: unknown
     level?: unknown
+    runes?: unknown
+    luck?: unknown
     appliedRequestIds?: unknown
   }>(
     `${SERVER_URL}/character/profile${query}`,
@@ -1640,6 +1655,8 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     agility: readCurrencyCount(raw.agility),
     endurance: readCurrencyCount(raw.endurance),
     level: readCurrencyCount(raw.level),
+    runes: readRunes(raw.runes),
+    luck: readCurrencyCount(raw.luck),
   }
 }
 
@@ -1975,6 +1992,10 @@ export function readRunDrops(raw: unknown): RunDrop[] {
     } else if (e.category === 'crafter') {
       if (typeof e.id !== 'string') continue
       out.push({ category: 'crafter', id: e.id })
+    } else if (e.category === 'rune') {
+      const kind = parseRuneKind(e.kind)
+      if (kind === null) continue
+      out.push({ category: 'rune', kind })
     }
   }
   return out
@@ -2040,7 +2061,7 @@ export function readEventReward(raw: unknown): { trophies: number | null; drops:
   const trophies = typeof t === 'number' && Number.isInteger(t) && t >= 0 ? t : null
   // Обе добычи разбираем тем же валидатором, что список на экране итогов —
   // завернув в массив: второй разбор той же формы разошёлся бы с первым.
-  const listed = [e.drop, e.extraDrop].filter((d) => d !== undefined && d !== null)
+  const listed = [e.drop, e.extraDrop, e.runeDrop].filter((d) => d !== undefined && d !== null)
   return { trophies, drops: readRunDrops(listed) }
 }
 
@@ -2556,6 +2577,65 @@ export async function buyUpgrade(token: string, kind: UpgradeKind): Promise<BuyU
     UPGRADE_TIMEOUT_MS,
   ))
   return { gold: raw.gold, upgrades: readUpgrades(raw.upgrades), replayed: raw.replayed === true }
+}
+
+// --- РУНЫ (09.11.2026, docs/items.md, «РУНЫ») ---
+
+/** Руны героя: в инвентаре, получено всего (против лимита), использовано. */
+export type RuneState = { stock: RuneCounts; found: RuneCounts; used: { attack: number; armor: number } }
+
+function readRuneCounts(raw: unknown, kinds: readonly RuneKind[]): Record<string, number> | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const out: Record<string, number> = {}
+  for (const k of kinds) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[k] = v
+  }
+  return out
+}
+
+/** Разбор рун из ответа сервера. Не тот вид (или поля нет) — null, «неизвестно». */
+export function readRunes(raw: unknown): RuneState | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const stock = readRuneCounts(o.stock, RUNE_KINDS)
+  const found = readRuneCounts(o.found, RUNE_KINDS)
+  const used = readRuneCounts(o.used, ['attack', 'armor'])
+  if (stock === null || found === null || used === null) return null
+  return { stock: stock as RuneCounts, found: found as RuneCounts, used: { attack: used.attack, armor: used.armor } }
+}
+
+export type UseRuneResult = {
+  /** null — ответ не того вида: руна использована, числа надо сверить профилем. */
+  runes: RuneState | null
+  hunterBadges: number | null
+  luck: number | null
+  replayed: boolean
+}
+
+/**
+ * Использовать руну. В теле только вид: цену и прибавку берёт сервер из общего
+ * каталога. Ключ идемпотентности — как у Ловчего (keyedPurchase): после
+ * неизвестного исхода следующее нажатие того же вида несёт тот же ключ.
+ */
+export async function applyRune(token: string, kind: RuneKind): Promise<UseRuneResult> {
+  const raw = await keyedPurchase(`use-rune:${kind}`, (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/character/use-rune`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  return {
+    runes: readRunes(raw.runes),
+    hunterBadges: readCurrencyCount(raw.hunterBadges),
+    luck: readCurrencyCount(raw.luck),
+    replayed: raw.replayed === true,
+  }
 }
 
 // --- ЛОВЧИЙ (27.10.2026, docs/shop.md, «ЛОВЧИЙ») ---

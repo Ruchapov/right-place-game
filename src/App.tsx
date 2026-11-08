@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, RequestError, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, RequestError, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -46,6 +46,8 @@ import { MAX_ENERGY, energyAfter, msToNextEnergy } from './energy'
 import Explore from './Explore'
 import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import TutorialCard from './ui/TutorialCard'
+import { RuneInventory, RuneStats } from './ui/RunePanels'
+import { runeBonus, type RuneKind } from './runes'
 import { INTRO_CARDS, INTRO_ID, ITEM_TIPS, hasSeen, loadTutorial, markSeen, lastSeenLevel, setLastSeenLevel, pendingLevelTips, resetTutorial, type TutorialTip } from './tutorial'
 import SkillLevelNote from './ui/SkillLevelNote'
 import { BagCellBadge } from './ui/BagCellBadge'
@@ -137,7 +139,12 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   eliteTrophies: number | null
   // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): id кольца или ''.
   // null — сервер не назвал (readRingSlots): прочерк, а не пустые гнёзда.
-  ringSlots: (RingId | '')[] | null }
+  ringSlots: (RingId | '')[] | null
+  // Руны (09.11.2026, src/runes.ts): в инвентаре, получено, использовано. null —
+  // сервер не назвал (readRunes): прочерк и «неизвестно», а не нули.
+  runes: RuneState | null
+  // Своя удача героя (растит руна удачи; удача амулета — отдельно, в инвентаре).
+  luck: number | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -494,6 +501,9 @@ function devScrollStock(): Record<ScrollId, number> {
  * Record<ClassItemId, number> не соберётся, если третий предмет забудут здесь.
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
+// Руны офлайн-заглушки (09.11.2026). УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с заглушкой.
+const TEMP_DEV_RUNES: RuneState = { stock: { attack: 2, armor: 1, luck: 0 }, found: { attack: 7, armor: 3, luck: 1 }, used: { attack: 1, armor: 0 } }
+
 const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = {
   soul_shard: 12, renounce_seal: 1,
   // Мастер (29.10.2026): по штуке-две, чтобы в браузере были видны и сумка, и
@@ -862,7 +872,7 @@ export default function App() {
   //                   «Продать») не имеют смысла ни для зелья, ни для камня
   // Это НЕ прежнее трёхзначное состояние с 'skills': надетые навыки живут на
   // экране "Персонаж", здесь только книги как предметы.
-  const [gearTab, setGearTab] = useState<'equipment' | 'consumables' | 'books' | 'scrolls'>('equipment')
+  const [gearTab, setGearTab] = useState<'equipment' | 'consumables' | 'books' | 'scrolls' | 'runes'>('equipment')
   // Выбранный пункт фильтра по слоту внутри "Экипировки": null — "Всё".
   // Ставится тапом по гнезду на экране "Персонаж" (см. ниже), сбрасывается
   // пунктом "Всё" в выпадающем списке и тапом по "Инвентарь" в навбаре — иначе
@@ -886,6 +896,12 @@ export default function App() {
   // ушедшая вдогонку, получила бы 409 сама от себя. Ref — от двойного тапа в
   // один кадр, до перерисовки: состояние в обработчике ещё старое.
   const [hunterPending, setHunterPending] = useState<HunterStat | null>(null)
+  // Руны (09.11.2026): какая руна применяется сейчас и текст отказа.
+  const [runePending, setRunePending] = useState<RuneKind | null>(null)
+  const [runeError, setRuneError] = useState<string | null>(null)
+  const runePendingRef = useRef(false)
+  // Вкладка экрана героя: сам герой или «Статистика» (блок «Получено рун»).
+  const [heroTab, setHeroTab] = useState<'hero' | 'stats'>('hero')
   const hunterPendingRef = useRef(false)
   const [hunterError, setHunterError] = useState<string | null>(null)
   // Мастер у Кузнеца и гнёзда колец (29.10.2026, docs/crafter.md).
@@ -1247,7 +1263,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''] })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0 })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1298,7 +1314,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck) })
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -1449,14 +1465,19 @@ export default function App() {
   const equippedArmor = inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.armor ?? 0), 0)
   // Итоговая броня. null — «неизвестна» (инвентарь не загружен ИЛИ улучшения
   // не названы), и это НЕ ноль: экран ставит прочерк, забег не стартует.
+  // Руны (09.11.2026): использованные руны атаки и брони — постоянная прибавка,
+  // тем же приёмом, что закалки (runeBonus, общий runes.ts; сервер прибавляет
+  // броню рун на старте забега тем же каталогом). Руны неизвестны — броня и
+  // урон тоже неизвестны, как при неназванных улучшениях.
+  const runesUsed = player?.runes?.used ?? null
   const totalArmor: number | null =
-    inventoryStatus !== 'ready' || upgradeCounts === null
+    inventoryStatus !== 'ready' || upgradeCounts === null || runesUsed === null
       ? null
-      : equippedArmor + upgradeBonus('armor', upgradeCounts)
+      : equippedArmor + upgradeBonus('armor', upgradeCounts) + runeBonus('armor', runesUsed.armor)
   // Прибавка к урону от закалки клинка — тем же каталогом. null по той же
   // причине, что у брони.
   const attackUpgradeBonus: number | null =
-    upgradeCounts === null ? null : upgradeBonus('attack', upgradeCounts)
+    upgradeCounts === null || runesUsed === null ? null : upgradeBonus('attack', upgradeCounts) + runeBonus('attack', runesUsed.attack)
 
   // Урон надетого оружия — слагаемое формулы урона (src/playerDamage.ts), одно
   // и то же число для строки "Урон" на экране "Персонаж" и для пропа Explore.
@@ -1789,6 +1810,8 @@ export default function App() {
         ...(spentStock !== null ? { consumables: spentStock } : {}),
         ...(scrollStockAfter !== null ? { scrolls: scrollStockAfter } : {}),
         ...(classItemsAfter !== null ? { classItems: classItemsAfter } : {}),
+        // Руны после забега (09.11.2026): выпавшая руна — в инвентаре сразу.
+        ...(readRunes(result.runes) !== null ? { runes: readRunes(result.runes) } : {}),
         trophies: result.trophies,
         strength: result.strength,
         endurance: result.endurance,
@@ -1978,6 +2001,53 @@ export default function App() {
   // сохранённое значение). Одно нажатие — одна покупка, без вопроса и
   // степпера (решение Андрея). Ответ — абсолютные статы, уровень и значки из
   // БД: они и кладутся в player, отсюда их видят шапка и «Персонаж».
+  // Руны (09.11.2026): использовать руну за значки охотника. Тот же порядок,
+  // что у Ловчего: один запрос за раз, ключ идемпотентности (keyedPurchase),
+  // при 409 или нехватке — сверка профилем.
+  async function handleUseRune(kind: RuneKind) {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setRuneError('Руны применяются только в Telegram — здесь сервера нет.')
+      return
+    }
+    if (runePendingRef.current) return
+    runePendingRef.current = true
+    setRunePending(kind)
+    setRuneError(null)
+    try {
+      const r = await applyRune(token, kind)
+      if (r.runes === null || r.hunterBadges === null || r.luck === null) {
+        console.error('use-rune: сервер не назвал итог', r)
+        await handleRefreshBalance()
+        return
+      }
+      const { runes, hunterBadges, luck } = r
+      setPlayer(prev => prev ? { ...prev, runes, hunterBadges, luck } : prev)
+    } catch (e) {
+      console.error('use-rune failed', e)
+      const refusal = e instanceof RequestError ? e.serverError : null
+      if (refusal === 'State changed, retry' || refusal === 'Not enough badges' || refusal === 'No rune') {
+        await handleRefreshBalance()
+        setRuneError(refusal === 'Not enough badges' ? 'Не хватает значков охотника.'
+          : refusal === 'No rune' ? 'Такой руны больше нет.'
+            : 'Значения изменились — показаны актуальные.')
+        return
+      }
+      if (refusal === 'Run in progress') {
+        setRuneError('Пока идёт вылазка, руны применять нельзя.')
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        setRuneError('Ответ не пришёл. Нажми ещё раз — второй раз не спишется.')
+        return
+      }
+      setRuneError('Не вышло — попробуй позже.')
+    } finally {
+      runePendingRef.current = false
+      setRunePending(null)
+    }
+  }
+
   async function handleBuyHunterStat(stat: HunterStat) {
     const token = localStorage.getItem('jwt')
     if (!token || !player) {
@@ -2596,6 +2666,9 @@ export default function App() {
         eliteTrophies: profile.eliteTrophies,
         // Гнёзда колец (Мастер, 29.10.2026) — их меняет ручка колец.
         ringSlots: profile.ringSlots,
+        // Руны и своя удача (09.11.2026): их меняет использование руны.
+        runes: profile.runes,
+        luck: profile.luck,
         // Статы и уровень (27.10.2026): их меняет покупка у Ловчего, и после
         // 409 или потерянного ответа сверка обязана их показать. null — сервер
         // старше Ловчего: статы вне забега тогда не менял никто, прежние верны.
@@ -2924,9 +2997,34 @@ export default function App() {
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown ? inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0) : '—', label:'Удача' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown && p.luck !== null ? p.luck + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0) : '—', label:'Удача' },
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
+
+            // Вкладки экрана героя (09.11.2026): «Герой» и «Статистика».
+            const heroSwitch = (
+              <div data-hero-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 0' }}>
+                {([['hero', 'Герой'], ['stats', 'Статистика']] as const).map(([id, label]) => (
+                  <button key={id} type="button" onClick={() => setHeroTab(id)} style={{
+                    minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:13,
+                    border:`1px solid ${heroTab === id ? C.glowEdge : C.stoneDark}`,
+                    background: heroTab === id ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
+                    color: heroTab === id ? C.glowCore : C.textMain,
+                  }}>{label}</button>
+                ))}
+              </div>
+            )
+            if (heroTab === 'stats') {
+              return (
+                <div data-hero-stats="" style={sideMenu
+                  ? { height:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch', boxSizing:'border-box' }
+                  : { padding:'0 4px', paddingBottom:20 }}>
+                  {heroSwitch}
+                  <div style={{ height: sideMenu ? 0 : 12 }} />
+                  <RuneStats runes={p.runes} level={p.level} />
+                </div>
+              )
+            }
 
             return (
             // sideMenu (28.10.2026): две колонки во всю высоту области. Левая —
@@ -2937,6 +3035,7 @@ export default function App() {
               ? { display:'flex', gap:14, height:'100%', boxSizing:'border-box' }
               : { padding: '0 4px', paddingBottom: 20 }}>
               <div data-hero-col="left" style={sideMenu ? { flex:'1 1 0', minWidth:0, overflowY:'auto' } : { display:'contents' }}>
+              {heroSwitch}
 
               {/* Шапка */}
               <div style={{ display:'flex', alignItems:'center', gap:10, padding: sideMenu ? '0 8px 12px' : '20px 16px 16px' }}>
@@ -4366,6 +4465,8 @@ export default function App() {
                   // Ряд из четырёх чипов на 360px влезает: подписи короткие,
                   // а контейнер прокручивается горизонтально не хуже трёх.
                   { id: 'scrolls' as const, label: 'Страницы' },
+                  // Руны (09.11.2026) — свои карточки с кнопкой «Использовать», не сетка.
+                  { id: 'runes' as const, label: 'Руны' },
                 ]).map((t) => {
                   const active = gearTab === t.id
                   return (
@@ -4506,7 +4607,17 @@ export default function App() {
               ))}
 
               {/* Сетка ячеек */}
-              {shownCells.length === 0 ? (
+              {gearTab === 'runes' ? (
+                <RuneInventory
+                  runes={player?.runes ?? null}
+                  hunterBadges={player?.hunterBadges ?? null}
+                  runActive={showExploreTest}
+                  pending={runePending}
+                  error={runeError}
+                  wide={sideMenu}
+                  onUse={(kind) => { void handleUseRune(kind) }}
+                />
+              ) : shownCells.length === 0 ? (
                 // "Пусто" утверждаем ТОЛЬКО когда данные действительно есть и
                 // они пусты. В остальных состояниях пустоту уже объяснила
                 // плашка выше, и повторять здесь "пусто" было бы тем же тихим

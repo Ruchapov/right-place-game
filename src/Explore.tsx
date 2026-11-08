@@ -537,7 +537,8 @@ type FinishPayload = {
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
  */
 const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop[]> = {
-  enemy: [{ category: 'soul_shard' }],
+  // Руна (09.11.2026) — вторым рядом, как runeDrop у сервера.
+  enemy: [{ category: 'soul_shard' }, { category: 'rune', kind: 'attack' }],
   chest: [{ category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 }],
   obelisk: [{ category: 'potion', tier: 1 }],
   boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }],
@@ -650,6 +651,7 @@ function dropIconKey(drop: RunDrop): string {
     case 'soul_shard': return 'soul_shard'
     case 'renounce_seal': return 'renounce_seal'
     case 'crafter': return `crafter:${drop.id}`
+    case 'rune': return `rune:${drop.kind}`
   }
 }
 

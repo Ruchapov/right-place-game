@@ -7,6 +7,7 @@ import { consumableById } from '../consumables'
 import { scrollById } from '../scrolls'
 import { classItemById } from '../classItems'
 import { itemIconSrc } from '../itemIcons'
+import { RUNES } from '../runes'
 
 /**
  * Как показать одну единицу добычи: название и путь к иконке.
@@ -67,6 +68,11 @@ export function dropView(drop: RunDrop): { key: string; name: string; iconSrc: s
         name: spec?.nameRu ?? drop.id,
         iconSrc: spec === null ? null : `${import.meta.env.BASE_URL}assets/icons/${spec.icon}`,
       }
+    }
+    // Руны (09.11.2026): имя и иконка — общий каталог runes.ts.
+    case 'rune': {
+      const spec = RUNES[drop.kind]
+      return { key: `rune-${drop.kind}`, name: spec.nameRu, iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` }
     }
   }
 }

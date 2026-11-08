@@ -23,6 +23,7 @@
 // забег: только там известно, какие события закрыты, и только так повтор финиша
 // не выдаёт добычу дважды.
 
+import { parseRuneKind, type RuneKind } from './runes.js'
 import type { RunEvent, RunEventKind } from './runEvents.js'
 import { POTION_TIERS } from './potions.js'
 import { SCROLLS, type ScrollId } from './scrolls.js'
@@ -257,6 +258,9 @@ export type EventDrop =
   // Мастер (29.10.2026): Сгусток тьмы, Звёздная пыльца и кольца — предметы
   // общего каталога classItems.ts, поэтому одна категория с id.
   | { category: 'crafter'; id: ClassItemId }
+  // Руны (09.11.2026): только в поле события runeDrop, отдельным броском
+  // (rollRune, общий runes.ts) — остальная добыча их не знает.
+  | { category: 'rune'; kind: RuneKind }
 
 /** Равновероятный выбор одного элемента. Пустой список — null, не исключение. */
 function pickOne<T>(items: readonly T[]): T | null {
@@ -471,6 +475,10 @@ export function parseEventDrop(raw: unknown): { kind: 'none' } | { kind: 'drop';
       const known = typeof d.id === 'string' && (CLASS_ITEM_IDS as readonly string[]).includes(d.id)
         && (d.id === 'dark_clot' || d.id === 'star_pollen' || (RING_IDS as readonly string[]).includes(d.id))
       return known ? { kind: 'drop', drop: { category: 'crafter', id: d.id as ClassItemId } } : { kind: 'malformed' }
+    }
+    case 'rune': {
+      const kind = parseRuneKind(d.kind)
+      return kind === null ? { kind: 'malformed' } : { kind: 'drop', drop: { category: 'rune', kind } }
     }
     default:
       return { kind: 'malformed' }
