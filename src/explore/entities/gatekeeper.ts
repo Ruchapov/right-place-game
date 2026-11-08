@@ -5,6 +5,7 @@ import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, Gatekeep
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
+import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
 
@@ -386,6 +387,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
     enemy.hpBarFill.x = enemy.x
     enemy.hpBarFill.y = enemy.hpBarBg.y
+    syncMark(enemy, deps.worldContainer, enemy.x + enemy.width / 2, enemy.hpBarBg.y) // «!» / «?»
   }
 
   function update(dt: number, deltaMS: number): void {
@@ -398,6 +400,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
 
       // --- Смерть (высший приоритет) — как у зверя и Звонаря ---
       if (enemy.dead) {
+        if (enemy.mark) enemy.mark.visible = false
         const deathDone =
           frames && (enemy.sprite.currentFrame >= frames.death.length - 1 || !enemy.sprite.playing)
         if (deathDone) {
@@ -411,6 +414,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             enemy.sprite.destroy()
             enemy.hpBarBg.destroy()
             enemy.hpBarFill.destroy()
+            destroyMark(enemy, deps.worldContainer)
             deps.enemies.current.splice(i, 1)
             i--
             const ownerEvent = deps.events.current[enemy.eventIndex]
@@ -499,28 +503,21 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
         playerBox.x + playerBox.w >= enemy.x - C.TOUCH_EPS &&
         playerBox.x <= enemy.x + enemy.width + C.TOUCH_EPS
 
-      // --- Память агро и расследование (перенос от зверя) ---
+      // --- ВОСПРИЯТИЕ (08.11.2026, explore/perception.ts — общее для всех
+      // врагов): видит только вперёд и сквозь стены/платформы не видит, «!»,
+      // погоня, поиск там, где видел в последний раз. Прежнее агро «в радиусе
+      // и на том же этаже» убрано. aggroed = «в погоне».
       const enemyFeetY = enemy.y + enemy.height
       const playerFeetY = deps.phys.y + C.PLAYER_HEIGHT
-      const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-      if (dist <= C.AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor) {
-        enemy.aggroMemoryTimer = C.AGGRO_MEMORY_MS
-      } else {
-        enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
-      }
-      const aggroed = enemy.aggroMemoryTimer > 0
-
-      if (aggroed) {
-        enemy.investigateTimer = 0
-        enemy.investigateLookTimer = 0
-        enemy.investigateX = null
-      } else if (enemy.investigateTimer > 0) {
-        enemy.investigateTimer = Math.max(0, enemy.investigateTimer - deltaMS)
-        if (enemy.investigateTimer === 0) enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
-      } else if (enemy.investigateLookTimer > 0) {
-        enemy.investigateLookTimer = Math.max(0, enemy.investigateLookTimer - deltaMS)
-        if (enemy.investigateLookTimer === 0) enemy.investigateX = null
-      }
+      const { aggroed, startedChase } = perceive(
+        enemy,
+        { x: enemy.x, y: enemy.y, w: enemy.width, h: enemy.height },
+        { x: playerBox.x, y: deps.phys.y, w: playerBox.w, h: C.PLAYER_HEIGHT },
+        deps.grid,
+        deltaMS,
+        ENEMY_PERCEPTION,
+      )
+      if (startedChase) callPack(enemy, deps.enemies.current, playerBox.x + playerBox.w / 2, playerFeetY, ENEMY_PERCEPTION)
 
       // Кулдаун тикает и в хитстане, и во время самой атаки: интервал считается
       // от начала замаха до начала замаха.
@@ -659,6 +656,10 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             }
           } else if (g.guard !== 'down') {
             // Дверь поднимается или опускается — стоит на месте.
+          } else if (enemy.noticePending) {
+            // «!» — заметил: стоит лицом к герою, потом поднимет дверь.
+            const toPlayer = Math.sign(dx)
+            if (toPlayer !== 0) enemy.facing = toPlayer as 1 | -1
           } else if (enemy.investigateTimer > 0 && enemy.investigateX !== null) {
             // РАССЛЕДОВАНИЕ — перенос от зверя: идёт к точке скоростью погони.
             const toTarget = enemy.investigateX - (enemy.x + enemy.width / 2)
@@ -671,7 +672,9 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             } else {
               const nextX = enemy.x + dir * step
               const leadingX = dir > 0 ? nextX + enemy.width : nextX
-              if (wallAhead(enemy, leadingX) || noFloorAhead(enemy, leadingX)) {
+              // Поиск героя ниже (08.11.2026): с края спрыгивает, в полёте идёт дальше.
+              const canDrop = searchTargetBelow(enemy, enemyFeetY) || enemy.vy !== 0
+              if (wallAhead(enemy, leadingX) || (noFloorAhead(enemy, leadingX) && !canDrop)) {
                 enemy.investigateTimer = 0
                 enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
               } else {
@@ -679,8 +682,8 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
               }
             }
           } else if (enemy.investigateLookTimer > 0 && enemy.investigateX !== null) {
-            const dir = Math.sign(enemy.investigateX - (enemy.x + enemy.width / 2))
-            if (dir !== 0) enemy.facing = dir as 1 | -1
+            // Оглядывается — разворачивается туда-сюда (perception.ts).
+            lookAround(enemy, deltaMS)
           } else {
             // ПАТРУЛЬ — перенос от зверя один в один.
             const leftBound = enemy.spawnX - C.PATROL_RANGE_TILES * C.TILE_SIZE

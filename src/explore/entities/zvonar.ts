@@ -5,6 +5,7 @@ import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
+import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
 import { ELITE_DMG_MULT } from '../../runExtras'
@@ -241,7 +242,12 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       hpBarBg,
       hpBarFill,
     }
-    if (summoned) enemy.summoned = true
+    if (summoned) {
+      enemy.summoned = true
+      // Вызван Настоятелем посреди боя — сразу в бою, без «!» (perception.ts):
+      // если героя не видно, быстро перейдёт в поиск.
+      enemy.aggroMemoryTimer = C.BOSS_CHASE_GRACE_MS
+    }
     redrawEnemyHpBar(enemy)
     deps.enemies.current.push(enemy)
     return enemy
@@ -388,6 +394,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
 
       // --- Смерть (высший приоритет) ---
       if (enemy.dead) {
+        if (enemy.mark) enemy.mark.visible = false
         const deathDone =
           frames && (enemy.sprite.currentFrame >= frames.death.length - 1 || !enemy.sprite.playing)
         if (deathDone) {
@@ -404,6 +411,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
             enemy.sprite.destroy()
             enemy.hpBarBg.destroy()
             enemy.hpBarFill.destroy()
+            destroyMark(enemy, deps.worldContainer)
             deps.enemies.current.splice(i, 1)
             i--
             const ownerEvent = deps.events.current[enemy.eventIndex]
@@ -476,28 +484,21 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       // волна идёт строго горизонтально и всё равно пройдёт мимо.
       const sameTier = playerBox.y < enemy.y + enemy.height && playerBox.y + playerBox.h > enemy.y
 
-      // --- Память агро и расследование (перенос от зверя) ---
+      // --- ВОСПРИЯТИЕ (08.11.2026, explore/perception.ts — общее для всех
+      // врагов): видит только вперёд и сквозь стены/платформы не видит, «!»,
+      // погоня, поиск там, где видел в последний раз. Прежнее агро «в радиусе
+      // и на том же этаже» убрано. aggroed = «в погоне».
       const enemyFeetY = enemy.y + enemy.height
       const playerFeetY = deps.phys.y + C.PLAYER_HEIGHT
-      const sameFloor = Math.abs(playerFeetY - enemyFeetY) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-      if (dist <= C.AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor) {
-        enemy.aggroMemoryTimer = C.AGGRO_MEMORY_MS
-      } else {
-        enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
-      }
-      const aggroed = enemy.aggroMemoryTimer > 0
-
-      if (aggroed) {
-        enemy.investigateTimer = 0
-        enemy.investigateLookTimer = 0
-        enemy.investigateX = null
-      } else if (enemy.investigateTimer > 0) {
-        enemy.investigateTimer = Math.max(0, enemy.investigateTimer - deltaMS)
-        if (enemy.investigateTimer === 0) enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
-      } else if (enemy.investigateLookTimer > 0) {
-        enemy.investigateLookTimer = Math.max(0, enemy.investigateLookTimer - deltaMS)
-        if (enemy.investigateLookTimer === 0) enemy.investigateX = null
-      }
+      const { aggroed, startedChase } = perceive(
+        enemy,
+        { x: enemy.x, y: enemy.y, w: enemy.width, h: enemy.height },
+        { x: playerBox.x, y: deps.phys.y, w: playerBox.w, h: C.PLAYER_HEIGHT },
+        deps.grid,
+        deltaMS,
+        ENEMY_PERCEPTION,
+      )
+      if (startedChase) callPack(enemy, deps.enemies.current, playerBox.x + playerBox.w / 2, playerFeetY, ENEMY_PERCEPTION)
 
       // Кулдаун выстрела тикает ВСЕГДА — в том числе в хитстане и во время самой
       // анимации: интервал считается «от начала замаха до начала замаха», и
@@ -514,7 +515,11 @@ export function createZvonarSystem(deps: ZvonarDeps) {
         // отходить посреди него он не будет (так же, как зверь не ходит в
         // windup).
         if (!enemy.attackAnimPlaying) {
-          if (aggroed) {
+          if (enemy.noticePending) {
+            // «!» — заметил: стоит лицом к герою, пока идёт реакция.
+            const toPlayer = Math.sign(dx)
+            if (toPlayer !== 0) enemy.facing = toPlayer as 1 | -1
+          } else if (aggroed) {
             // Смотрит на героя всегда, даже когда не стреляет и не отходит.
             const toPlayer = Math.sign(dx)
             if (toPlayer !== 0) enemy.facing = toPlayer as 1 | -1
@@ -564,7 +569,9 @@ export function createZvonarSystem(deps: ZvonarDeps) {
               const footCx = Math.floor(leadingX / C.TILE_SIZE)
               const footCy = Math.floor((enemy.y + enemy.height) / C.TILE_SIZE)
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
-              if (hitWall || noFloorAhead) {
+              // Поиск героя ниже (08.11.2026): с края спрыгивает, в полёте идёт дальше.
+              const canDrop = searchTargetBelow(enemy, enemyFeetY) || enemy.vy !== 0
+              if (hitWall || (noFloorAhead && !canDrop)) {
                 enemy.investigateTimer = 0
                 enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
               } else {
@@ -572,8 +579,8 @@ export function createZvonarSystem(deps: ZvonarDeps) {
               }
             }
           } else if (enemy.investigateLookTimer > 0 && enemy.investigateX !== null) {
-            const dir = Math.sign(enemy.investigateX - (enemy.x + enemy.width / 2))
-            if (dir !== 0) enemy.facing = dir as 1 | -1
+            // Оглядывается — разворачивается туда-сюда (perception.ts).
+            lookAround(enemy, deltaMS)
           } else {
             // ПАТРУЛЬ — перенос от зверя один в один.
             const leftBound = enemy.spawnX - C.PATROL_RANGE_TILES * C.TILE_SIZE
@@ -676,6 +683,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x
       enemy.hpBarFill.y = enemy.hpBarBg.y
+    syncMark(enemy, deps.worldContainer, enemy.x + enemy.width / 2, enemy.hpBarBg.y) // «!» / «?»
     }
 
     // Волны — ПОСЛЕ врагов, в том же кадре: выпущенная сейчас волна получает

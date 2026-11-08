@@ -45,13 +45,14 @@ export type VisionInput = {
   py: number
   pw: number
   ph: number
-  // В погоне враг смотрит дальше (цель уже «ведёт»).
-  chasing: boolean
+  // Дальность взгляда вперёд (в погоне — больше) и «чутьё» сзади, px.
+  viewTiles: number
+  senseBehindPx: number
 }
 
 // Видит ли враг героя прямо сейчас.
 // • Вперёд — в пределах дальности по X и окна по высоте, при чистом луче.
-// • Спиной — НЕ видит. Исключение — вплотную (ENEMY_SENSE_RANGE_PX, почти
+// • Спиной — НЕ видит. Исключение — вплотную (senseBehindPx, почти
 //   один уровень): чует того, кто трётся о него сзади, тоже при чистом луче.
 // Луч — из глаз к голове И к поясу героя: достаточно одного (герой
 // наполовину высунулся из-за уступа — его видно).
@@ -62,9 +63,9 @@ export function canSeePlayer(v: VisionInput): boolean {
   const dx = pcx - ecx
   const dist = Math.abs(dx)
   const feetDiff = v.py + v.ph - (v.ey + v.eh) // >0 — герой ниже
-  const close = dist <= C.ENEMY_SENSE_RANGE_PX && Math.abs(feetDiff) <= T
+  const close = dist <= v.senseBehindPx && Math.abs(feetDiff) <= T
   const inFront = dx * v.facing > 0 || dist < v.ew / 2
-  const range = (v.chasing ? C.ENEMY_CHASE_VIEW_RANGE_TILES : C.ENEMY_VIEW_RANGE_TILES) * T
+  const range = v.viewTiles * T
   const inWindow =
     dist <= range && feetDiff <= C.ENEMY_VIEW_DOWN_TILES * T && -feetDiff <= C.ENEMY_VIEW_UP_TILES * T
   if (!close && !(inFront && inWindow)) return false

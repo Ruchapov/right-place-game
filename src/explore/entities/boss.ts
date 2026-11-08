@@ -5,6 +5,7 @@ import type { DamageSource, Grid, PlayerPhysics, Boss, BossSpike, BossWave, Boss
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
+import { perceive, lookAround, syncMark, BOSS_PERCEPTION } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 
 // HP-бар босса — тот же приём, что у зверя (redrawEnemyHpBar, см.
@@ -331,6 +332,7 @@ export function createBossSystem(deps: BossDeps) {
       // push-out тоже пропадает вместе с этим блоком — герой проходит
       // сквозь труп, тело не перегораживает арену. В отличие от зверя
       // (despawn через DEATH_HOLD_MS) — труп ОСТАЁТСЯ до конца забега.
+      if (boss.dead && boss.mark) boss.mark.visible = false
       if (!boss.dead) {
         // СТАН от iceball — ТОТ ЖЕ заслон, что у зверя (см. enemy.ts, там же
         // подробности): пауза всего обновления, спрайт замирает на текущем
@@ -402,53 +404,21 @@ export function createBossSystem(deps: BossDeps) {
         const dx = (playerCombatBox.x + playerCombatBox.w / 2) - bossCenterX
         const dist = Math.abs(dx)
 
-        // sameFloor — ТА ЖЕ проверка, что у зверя (по ногам, не по
-        // верхней точке — рост игрока и босса разный), включая
-        // SAME_FLOOR_TOLERANCE_TILES вместо узкой FLOOR_Y_TOLERANCE.
-        // Порог остался строгим: прыжок героя он по-прежнему не перекрывает
-        // (апекс 213px против 160px), это закрывает память ниже.
-        const bossFeetYNow = boss.y + C.BOSS_HEIGHT
-        const playerFeetYNow = deps.phys.y + C.PLAYER_HEIGHT
-        const sameFloor = Math.abs(playerFeetYNow - bossFeetYNow) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-        const aggroConditionNow = dist <= C.BOSS_AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor
-
-        // Память о цели (см. BOSS_AGGRO_MEMORY_MS), устройство как у зверя.
-        // ⚠️ И расчёт условия, и декремент вынесены ДО гейта
-        // hurtTimer/анимаций атак НАМЕРЕННО. Раньше агро вообще не
-        // пересчитывалось, пока играет любая атака; поставь память туда же —
-        // она бы не истекала всю атаку и, что хуже, не взводилась бы, пока
-        // босс бьёт стоящего перед ним героя. Здесь оба случая честные:
-        // условие проверяется каждый кадр, память течёт каждый кадр.
-        // Мёртвый босс сюда не заходит вообще (гейт !boss.dead выше) — у
-        // трупа памяти о цели нет по смыслу.
-        if (aggroConditionNow) {
-          boss.aggroMemoryTimer = C.BOSS_AGGRO_MEMORY_MS
-        } else {
-          boss.aggroMemoryTimer = Math.max(0, boss.aggroMemoryTimer - deltaMS)
-        }
-        // Дальше по AI "агрён" — ИМЕННО память: кадр, где условие уже не
-        // выполняется (герой в прыжке), но цель ещё не забыта, сюда входит.
-        // Ветка потери цели (boss.moving = false) не менялась — просто
-        // наступает на BOSS_AGGRO_MEMORY_MS позже.
-        const aggroed = boss.aggroMemoryTimer > 0
-
-        // Таймеры расследования (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS) —
-        // здесь же, ДО гейта hurtTimer/анимаций атак, ровно по той же
-        // причине, что и память агро: во время атаки и хитстана время обязано
-        // течь. Устройство один в один как у зверя (см. enemy.ts).
-        if (aggroed) {
-          // Приоритет обычного агро: цель видно (или помним) — расследовать
-          // нечего.
-          boss.investigateTimer = 0
-          boss.investigateLookTimer = 0
-          boss.investigateX = null
-        } else if (boss.investigateTimer > 0) {
-          boss.investigateTimer = Math.max(0, boss.investigateTimer - deltaMS)
-          if (boss.investigateTimer === 0) boss.investigateLookTimer = C.INVESTIGATE_LOOK_MS
-        } else if (boss.investigateLookTimer > 0) {
-          boss.investigateLookTimer = Math.max(0, boss.investigateLookTimer - deltaMS)
-          if (boss.investigateLookTimer === 0) boss.investigateX = null
-        }
+        // ВОСПРИЯТИЕ (08.11.2026, explore/perception.ts → BOSS_PERCEPTION):
+        // видит вперёд далеко, сквозь стены/платформы — нет, сзади чует в
+        // BOSS_SENSE_RANGE_PX; заметил — «!», потерял — держит дольше, потом
+        // идёт искать туда, где видел. aggroed = «в бою».
+        const { aggroed } = perceive(
+          boss,
+          { x: boss.x, y: boss.y, w: C.BOSS_WIDTH, h: C.BOSS_HEIGHT },
+          { x: playerCombatBox.x, y: deps.phys.y, w: playerCombatBox.w, h: C.PLAYER_HEIGHT },
+          deps.grid,
+          deltaMS,
+          BOSS_PERCEPTION,
+        )
+        // «!» / «?» над полоской HP (позиция с прошлого кадра движения — на
+        // глаз неотличимо, зато одна точка вызова).
+        syncMark(boss, deps.worldContainer, boss.x + C.BOSS_WIDTH / 2, boss.y - C.BOSS_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT)
 
         // Хитстан (hurt) полностью замораживает AI-ветку — та же логика,
         // что у enemy.hurtTimer<=0 гейт выше (не двигается, не
@@ -479,7 +449,12 @@ export function createBossSystem(deps: BossDeps) {
             // каждый повтор анимации.
             boss.rangedShotsLeft = Math.random() < C.BOSS_RANGED_DOUBLE_CHANCE ? 2 : 1
           } else {
-            if (aggroed) {
+            if (boss.noticePending) {
+              // «!» — заметил: стоит лицом к герою, пока идёт реакция.
+              boss.moving = false
+              const dirN = Math.sign(dx)
+              if (dirN !== 0) boss.facing = dirN as 1 | -1
+            } else if (aggroed) {
               // Разворот к герою — применяется, пока агрён, движется он
               // или уже остановился вплотную (та же логика, что у зверя
               // bodiesTouchingX-ветка — доворачивается лицом, не трогая x).
@@ -553,12 +528,13 @@ export function createBossSystem(deps: BossDeps) {
             } else if (boss.investigateLookTimer > 0 && boss.investigateX !== null) {
               // РАССЛЕДОВАНИЕ, фаза паузы — стоит лицом к точке, x не трогаем.
               boss.moving = false
-              const dirLook = Math.sign(boss.investigateX - (boss.x + C.BOSS_WIDTH / 2))
-              if (dirLook !== 0) boss.facing = dirLook as 1 | -1
+              // Оглядывается — разворачивается туда-сюда (perception.ts).
+              lookAround(boss, deltaMS)
             } else {
-              // Ни цели, ни расследования — босс просто стоит (патруля у него
-              // нет, поведение прежнее).
+              // Ни цели, ни расследования — босс стоит (патруля у него нет) и
+              // изредка оборачивается: зрение направленное (perception.ts).
               boss.moving = false
+              lookAround(boss, deltaMS, C.BOSS_IDLE_TURN_MS)
             }
 
             // Кулдаун броска (ФАЗА 3, см. задачу) — считается ВНИЗ до 0,

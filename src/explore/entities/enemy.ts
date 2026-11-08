@@ -1,11 +1,11 @@
 import type { MutableRefObject } from 'react'
-import { AnimatedSprite, Graphics, Text } from 'pixi.js'
+import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
-import { canSeePlayer } from '../vision'
+import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
 
 // Кадры зверя (Шаг "спрайт зверя") — загружаются ОДИН раз в setup(), общие
@@ -339,11 +339,7 @@ export function createEnemySystem(deps: EnemyDeps) {
             enemy.sprite.destroy()
             enemy.hpBarBg.destroy()
             enemy.hpBarFill.destroy()
-            if (enemy.mark) {
-              deps.worldContainer.removeChild(enemy.mark)
-              enemy.mark.destroy()
-              enemy.mark = undefined
-            }
+            destroyMark(enemy, deps.worldContainer)
             deps.enemies.current.splice(i, 1)
             i--
             const ownerEvent = deps.events.current[enemy.eventIndex]
@@ -494,118 +490,18 @@ export function createEnemySystem(deps: EnemyDeps) {
       // гейт логически не пересекается с уже существующей проверкой удара.
       const enemyFeetY = enemy.y + C.ENEMY_HEIGHT
       const playerFeetY = deps.phys.y + C.PLAYER_HEIGHT
-      // --- ЗРЕНИЕ (05.11.2026, см. explore/vision.ts) ---
-      // Прежнее агро «в радиусе и на том же этаже» видело сквозь платформы и
-      // затылком. Теперь зверь замечает героя, только если ВИДИТ: перед собой,
-      // при чистом луче (стены и платформы его режут); спиной — только вплотную.
-      //
-      // Цепочка состояний:
-      //   патруль → видит → «!» (ENEMY_NOTICE_MS, стоит лицом к герою) →
-      //   погоня (пока видит; потерял — ещё ENEMY_CHASE_GRACE_MS по памяти) →
-      //   поиск: идёт туда, где видел в последний раз (lastSeen), «?» →
-      //   оглядывается в обе стороны → патруль.
-      // Увидел снова на любом этапе поиска — сразу в погоню, без «!».
-      //
-      // aggroMemoryTimer по-прежнему значит «в погоне» — его читает остальной
-      // код (сброс расследования, ветка погони ниже).
-      const sees = canSeePlayer({
-        grid: deps.grid,
-        ex: enemy.x,
-        ey: enemy.y,
-        ew: C.ENEMY_WIDTH,
-        eh: C.ENEMY_HEIGHT,
-        facing: enemy.facing,
-        px: playerCombatBox.x,
-        py: deps.phys.y,
-        pw: playerCombatBox.w,
-        ph: C.PLAYER_HEIGHT,
-        chasing: enemy.aggroMemoryTimer > 0,
-      })
-      const wasChasing = enemy.aggroMemoryTimer > 0
-      const searching = enemy.investigateTimer > 0 || enemy.investigateLookTimer > 0
-      if (sees) {
-        enemy.lastSeenX = playerCombatBox.x + playerCombatBox.w / 2
-        enemy.lastSeenFeetY = playerFeetY
-      }
-      enemy.noticeMs = Math.max(0, (enemy.noticeMs ?? 0) - deltaMS)
-      let startedChase = false
-      if (sees && !wasChasing) {
-        if (searching || enemy.hurtTimer > 0) {
-          // Уже настороже (ищет или его только что ударили) — без паузы.
-          enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
-          startedChase = true
-        } else if ((enemy.noticeMs ?? 0) === 0 && !enemy.noticePending) {
-          enemy.noticeMs = C.ENEMY_NOTICE_MS
-          enemy.noticePending = true
-        }
-      }
-      if (enemy.noticePending && (enemy.noticeMs ?? 0) === 0) {
-        // Реакция кончилась — в погоню, даже если герой за это время
-        // спрятался: он же его УЖЕ заметил (тогда погоня быстро сменится
-        // поиском по lastSeen).
-        enemy.noticePending = false
-        enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
-        startedChase = true
-      }
-      if (wasChasing) {
-        if (sees) {
-          enemy.aggroMemoryTimer = C.ENEMY_CHASE_GRACE_MS
-        } else {
-          enemy.aggroMemoryTimer = Math.max(0, enemy.aggroMemoryTimer - deltaMS)
-          if (enemy.aggroMemoryTimer === 0 && enemy.lastSeenX !== undefined) {
-            // Потерял — ПОИСК там, где видел в последний раз.
-            enemy.investigateX = enemy.lastSeenX
-            enemy.investigateFeetY = enemy.lastSeenFeetY ?? null
-            enemy.investigateTimer = C.ENEMY_SEARCH_MS
-            enemy.investigateLookTimer = 0
-          }
-        }
-      }
+      // --- ВОСПРИЯТИЕ (зрение, «!», погоня, поиск) — explore/perception.ts,
+      // общее для всех врагов. aggroed = «в погоне», investigate* = «поиск».
+      const { aggroed, startedChase } = perceive(
+        enemy,
+        { x: enemy.x, y: enemy.y, w: C.ENEMY_WIDTH, h: C.ENEMY_HEIGHT },
+        { x: playerCombatBox.x, y: deps.phys.y, w: playerCombatBox.w, h: C.PLAYER_HEIGHT },
+        deps.grid,
+        deltaMS,
+        ENEMY_PERCEPTION,
+      )
       if (startedChase) {
-        enemy.markMs = C.ENEMY_NOTICE_MS
-        // СТАЯ (PACK_ALERT_RANGE_TILES): зовёт соседей по группе туда, где
-        // герой. Прибежав, они смотрят своими глазами.
-        if (enemy.eventIndex >= 0) {
-          const myCx = enemy.x + C.ENEMY_WIDTH / 2
-          for (const mate of deps.enemies.current) {
-            if (mate === enemy || mate.kind !== 'beast' || mate.dead) continue
-            if (mate.eventIndex !== enemy.eventIndex || mate.aggroMemoryTimer > 0) continue
-            if (Math.abs(mate.x + mate.width / 2 - myCx) > C.PACK_ALERT_RANGE_TILES * C.TILE_SIZE) continue
-            mate.investigateX = playerCombatBox.x + playerCombatBox.w / 2
-            mate.investigateFeetY = playerFeetY
-            mate.investigateTimer = C.ENEMY_SEARCH_MS
-            mate.investigateLookTimer = 0
-          }
-        }
-      }
-      enemy.markMs = Math.max(0, (enemy.markMs ?? 0) - deltaMS)
-      const aggroed = enemy.aggroMemoryTimer > 0
-
-      // Таймеры расследования (см. INVESTIGATE_MS/INVESTIGATE_LOOK_MS) — тут
-      // же, ДО гейтов hurtTimer/windingUp, по той же причине, что и память
-      // агро: в хитстане и в замахе они обязаны продолжать течь, иначе враг
-      // застревал бы в расследовании ровно тогда, когда его бьют.
-      // Сама ходьба к точке — ниже, в AI-ветке (её хитстан замораживает, как
-      // и любое другое движение), здесь только время.
-      if (aggroed) {
-        // Приоритет обычного агро: цель видно (или помним) — расследовать
-        // нечего, состояние сбрасывается целиком.
-        enemy.investigateTimer = 0
-        enemy.investigateLookTimer = 0
-        enemy.investigateX = null
-      } else if (enemy.investigateTimer > 0) {
-        enemy.investigateTimer = Math.max(0, enemy.investigateTimer - deltaMS)
-        // Время вышло — не дошёл, но дальше не идёт: пауза "осмотреться".
-        // Тот же переход делает и ветка ходьбы ниже, когда враг дошёл до
-        // точки/упёрся в стену/встал у края.
-        if (enemy.investigateTimer === 0) enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
-      } else if (enemy.investigateLookTimer > 0) {
-        enemy.investigateLookTimer = Math.max(0, enemy.investigateLookTimer - deltaMS)
-        // Осмотрелся — точка больше не нужна, дальше обычный патруль.
-        if (enemy.investigateLookTimer === 0) {
-          enemy.investigateX = null
-          enemy.investigateFeetY = null
-        }
+        callPack(enemy, deps.enemies.current, playerCombatBox.x + playerCombatBox.w / 2, playerFeetY, ENEMY_PERCEPTION)
       }
 
       // Хитстан (hurt) полностью замораживает эту AI-ветку — не двигается,
@@ -731,9 +627,7 @@ export function createEnemySystem(deps: EnemyDeps) {
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
               // Поиск героя (05.11.2026): точка НИЖЕ — с края спрыгивает, а в
               // полёте просто продолжает идти к ней.
-              const targetBelow =
-                enemy.investigateFeetY != null &&
-                enemy.investigateFeetY - (enemy.y + C.ENEMY_HEIGHT) >= C.ENEMY_DROP_MIN_PX
+              const targetBelow = searchTargetBelow(enemy, enemy.y + C.ENEMY_HEIGHT)
               const canDrop = targetBelow || enemy.vy !== 0
               if (hitWall || (noFloorAhead && !canDrop)) {
                 // Дальше хода нет — точка недостижима (стреляли с другого
@@ -752,11 +646,7 @@ export function createEnemySystem(deps: EnemyDeps) {
             // 05.11.2026: не стоит столбом лицом к точке, а ОГЛЯДЫВАЕТСЯ —
             // разворачивается каждые ENEMY_LOOK_TURN_MS. Зрение направленное,
             // так что героя за спиной он может так и заметить.
-            enemy.lookTurnMs = (enemy.lookTurnMs ?? C.ENEMY_LOOK_TURN_MS) - deltaMS
-            if (enemy.lookTurnMs <= 0) {
-              enemy.lookTurnMs = C.ENEMY_LOOK_TURN_MS
-              enemy.facing = enemy.facing === 1 ? -1 : 1
-            }
+            lookAround(enemy, deltaMS)
           } else {
             // ПАТРУЛЬ (Шаг C): медленно туда-сюда вокруг spawnX, не дальше
             // PATROL_RANGE_TILES. Разворот на границе патруля, у стены '#'
@@ -969,23 +859,8 @@ export function createEnemySystem(deps: EnemyDeps) {
       enemy.hpBarFill.x = enemy.x
       enemy.hpBarFill.y = enemy.hpBarBg.y
 
-      // Значок над головой: «!» — заметил (реакция и начало погони), «?» —
-      // ищет. Создаётся при первом показе, убирается вместе с врагом.
-      const markText = enemy.noticePending || (enemy.markMs ?? 0) > 0 ? '!' : !aggroed && enemy.investigateX !== null ? '?' : ''
-      if (markText && !enemy.mark) {
-        enemy.mark = new Text({
-          text: markText,
-          style: { fontSize: 30, fontWeight: 'bold', fill: 0xffd23f, stroke: { color: 0x000000, width: 5 } },
-        })
-        enemy.mark.anchor.set(0.5, 1)
-        deps.worldContainer.addChild(enemy.mark)
-      }
-      if (enemy.mark) {
-        enemy.mark.visible = markText !== ''
-        if (markText && enemy.mark.text !== markText) enemy.mark.text = markText
-        enemy.mark.x = enemy.x + C.ENEMY_WIDTH / 2
-        enemy.mark.y = enemy.hpBarBg.y - C.ENEMY_MARK_OFFSET_Y + 14
-      }
+      // Значок «!» / «?» над головой (perception.ts).
+      syncMark(enemy, deps.worldContainer, enemy.x + C.ENEMY_WIDTH / 2, enemy.hpBarBg.y)
 
       // Телеграф замаха: тонкий сигнал на плоском прямоугольнике без
       // спрайта — краснеет (danger), пока windingUp истинно.

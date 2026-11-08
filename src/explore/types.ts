@@ -508,6 +508,15 @@ export type Obelisk = {
 // нет, только console.log); rangedCooldownTimer — тикает ВНИЗ до 0,
 // выставляется ПОСЛЕ конца анимации броска, не при попадании урона.
 export type Boss = {
+  // Зрение (08.11.2026, explore/perception.ts) — те же поля, что у Enemy.
+  investigateFeetY?: number | null
+  noticeMs?: number
+  noticePending?: boolean
+  lastSeenX?: number
+  lastSeenFeetY?: number
+  lookTurnMs?: number
+  markMs?: number
+  mark?: Text
   x: number
   y: number
   vy: number

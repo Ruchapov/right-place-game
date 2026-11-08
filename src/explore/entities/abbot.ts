@@ -7,6 +7,7 @@ import type { ZvonarFrames } from './zvonar'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
 import { clamp, parryStunFrame } from '../utils'
+import { perceive, lookAround, syncMark, BOSS_PERCEPTION } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 import { redrawBossHpBar } from './boss'
 
@@ -122,6 +123,8 @@ export function createAbbotSystem(deps: AbbotDeps) {
     boss.hpBarBg.y = boss.y - C.BOSS_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
     boss.hpBarFill.x = boss.hpBarBg.x
     boss.hpBarFill.y = boss.hpBarBg.y
+    // «!» / «?» над полоской HP (perception.ts); у мёртвого — спрятан.
+    syncMark(boss, deps.worldContainer, boss.x + C.BOSS_WIDTH / 2, boss.hpBarBg.y, boss.dead)
   }
 
   function spawn(tileX: number, tileY: number): void {
@@ -433,26 +436,16 @@ export function createAbbotSystem(deps: AbbotDeps) {
     const pb = deps.getPlayerCombatBox()
     const dx = (pb.x + pb.w / 2) - (boss.x + C.BOSS_WIDTH / 2)
     const dist = Math.abs(dx)
-    const sameFloor =
-      Math.abs(deps.phys.y + C.PLAYER_HEIGHT - (boss.y + C.BOSS_HEIGHT)) <= C.SAME_FLOOR_TOLERANCE_TILES * C.TILE_SIZE
-    if (dist <= C.BOSS_AGGRO_RANGE_TILES * C.TILE_SIZE && sameFloor) {
-      boss.aggroMemoryTimer = C.BOSS_AGGRO_MEMORY_MS
-    } else {
-      boss.aggroMemoryTimer = Math.max(0, boss.aggroMemoryTimer - deltaMS)
-    }
-    const aggroed = boss.aggroMemoryTimer > 0
-
-    if (aggroed) {
-      boss.investigateTimer = 0
-      boss.investigateLookTimer = 0
-      boss.investigateX = null
-    } else if (boss.investigateTimer > 0) {
-      boss.investigateTimer = Math.max(0, boss.investigateTimer - deltaMS)
-      if (boss.investigateTimer === 0) boss.investigateLookTimer = C.INVESTIGATE_LOOK_MS
-    } else if (boss.investigateLookTimer > 0) {
-      boss.investigateLookTimer = Math.max(0, boss.investigateLookTimer - deltaMS)
-      if (boss.investigateLookTimer === 0) boss.investigateX = null
-    }
+    // ВОСПРИЯТИЕ (08.11.2026, explore/perception.ts → BOSS_PERCEPTION): то
+    // же зрение, что у всех врагов, с боссовыми числами. aggroed = «в бою».
+    const { aggroed } = perceive(
+      boss,
+      { x: boss.x, y: boss.y, w: C.BOSS_WIDTH, h: C.BOSS_HEIGHT },
+      { x: pb.x, y: deps.phys.y, w: pb.w, h: C.PLAYER_HEIGHT },
+      deps.grid,
+      deltaMS,
+      BOSS_PERCEPTION,
+    )
 
     // Кулдауны тикают всегда; взводятся в конце атаки (endAction).
     boss.attackCooldownTimer = Math.max(0, boss.attackCooldownTimer - deltaMS)
@@ -465,7 +458,12 @@ export function createAbbotSystem(deps: AbbotDeps) {
 
     // --- Решения: хитстан и идущая атака замораживают их ---
     if (boss.hurtTimer <= 0 && !boss.attackAnimPlaying) {
-      if (aggroed) {
+      if (boss.noticePending) {
+        // «!» — заметил: стоит лицом к герою, пока идёт реакция.
+        boss.moving = false
+        const dirN = Math.sign(dx)
+        if (dirN !== 0) boss.facing = dirN as 1 | -1
+      } else if (aggroed) {
         const dir = Math.sign(dx)
         if (dir !== 0) boss.facing = dir as 1 | -1
         // Приоритет второй стадии: призыв (пока живых меньше двух) → взмах
@@ -496,10 +494,12 @@ export function createAbbotSystem(deps: AbbotDeps) {
         }
       } else if (boss.investigateLookTimer > 0 && boss.investigateX !== null) {
         boss.moving = false
-        const dirLook = Math.sign(boss.investigateX - (boss.x + C.BOSS_WIDTH / 2))
-        if (dirLook !== 0) boss.facing = dirLook as 1 | -1
+        // Оглядывается — разворачивается туда-сюда (perception.ts).
+        lookAround(boss, deltaMS)
       } else {
         boss.moving = false
+        // В покое изредка оборачивается (зрение направленное).
+        lookAround(boss, deltaMS, C.BOSS_IDLE_TURN_MS)
       }
     }
 

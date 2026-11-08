@@ -338,6 +338,16 @@ export const BOSS_AGGRO_RANGE_TILES = 20
 // константа: радиус агро у босса тоже свой (20 тайлов против 7), и сводить
 // их в одно число значило бы связать два независимых баланса.
 export const BOSS_AGGRO_MEMORY_MS = 2000
+// Зрение боссов (08.11.2026, explore/perception.ts → BOSS_PERCEPTION). Видят
+// вперёд на BOSS_AGGRO_RANGE_TILES, сквозь стены/платформы — нет; сзади чуют
+// шире рядовых (BOSS_SENSE_RANGE_PX): арена, герой рядом за спиной — заметит.
+// Реакция «!» чуть дольше, а потеряв героя, держат его дольше (бой с боссом
+// не должен рваться от одного прыжка за уступ).
+export const BOSS_SENSE_RANGE_PX = 4 * TILE_SIZE
+export const BOSS_NOTICE_MS = 500
+export const BOSS_CHASE_GRACE_MS = 3000
+// Босс в покое (не в бою и не ищет) стоит и оборачивается раз в столько мс.
+export const BOSS_IDLE_TURN_MS = 2500
 // STOP_DISTANCE/MOVE_SPEED — зафиксированы после подбора живым тюнером
 // (тюнер убран, см. историю — та же судьба, что у BOSS_DRAW_H/BOSS_OFFSET_Y и
 // BOSS_WIDTH/BOSS_HEIGHT).
