@@ -12,19 +12,13 @@ export function backdropForMap(mapFile: string): BackdropPreset {
   return 'graveyard'
 }
 
-// Слот-файл называется по mapId, а не по полному имени карты: map_A_serpentine.txt
-// и map_C_boss_descent.txt (два слова после id) оба -> map_<id>_slots.json.
-// Берём именно первый токен после "map_", а не отбрасываем последний "_xxx.txt" —
-// иначе на многословных именах (boss_descent) получим не тот файл.
-//
-// Карта D — ИСКЛЮЧЕНИЕ из этого правила: у неё слоты по СОСТОЯНИЮ (OPEN/SEALED
-// заваливаемого тайника, см. CLAUDE.md), не по первому токену — файлы называются
-// map_D_OPEN_slots.json / map_D_SEALED_slots.json, а не map_D_slots.json. Для
-// map_D_* берём ВСЁ имя без ".txt" и добавляем "_slots.json".
+// Слот-файл называется по mapId, а не по полному имени карты:
+// map_C_casting-yards.txt и map_C2_swamp_boss.txt -> map_C_slots.json и
+// map_C2_slots.json. Берём именно первый токен после "map_", а не отбрасываем
+// последний "_xxx.txt" — иначе на многословных именах получим не тот файл.
+// Исключения для карты D (слоты по состоянию тайника OPEN/SEALED) нет с
+// 10.11.2026: у новой D тайника нет.
 export function slotsFileForMap(mapFile: string): string {
-  if (mapFile.startsWith('map_D_')) {
-    return `${mapFile.replace(/\.txt$/, '')}_slots.json`
-  }
   const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
   return `map_${mapId}_slots.json`
 }

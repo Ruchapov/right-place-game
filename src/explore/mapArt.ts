@@ -1,9 +1,12 @@
 import { MAP_ART } from './mapArtManifest'
 import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
+import { MAP_ART_NEW_SIX } from './mapArtManifestNewSix'
+import type { MapArtBackdrop } from './mapArtManifest'
 
 /**
- * ГОТОВЫЕ СЛОИ КАРТ: A и F (07.10.2026), B, D_OPEN, D_SEALED и E (19.10.2026),
- * C (20.10.2026), болото B2 и C2 (29.10.2026, tools/build_map_art.mjs) — у всех.
+ * ГОТОВЫЕ СЛОИ КАРТ: болото B2 и C2 (29.10.2026, tools/build_map_art.mjs) и шесть
+ * новых карт A–F (10.11.2026, tools/build_map_art_new_six.mjs) — у всех. Прежние
+ * A–F (07–20.10.2026) заменены новыми 10.11.2026.
  *
  * У этих карт платформы и декор — не плитка из атласа, а одна прозрачная
  * картинка на всю карту, собранная из одобренных исходников художественного
@@ -19,7 +22,7 @@ import { MAP_ART_CRYPT_FOUNDRY } from './mapArtManifestCryptFoundry'
  * кодом.
  */
 export type MapArtSwayItem = { src: string; x: number; y: number; w: number; h: number; phase: number }
-export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number; sway: MapArtSwayItem[]; walls: { left: string; right: string } }
+export type MapArt = { slices: { src: string; x: number; width: number }[]; width: number; height: number; gridChecksum: number; sway: MapArtSwayItem[]; walls: { left: string; right: string }; backdrop: MapArtBackdrop | null }
 
 /**
  * Готовый слой карты или null, если его нет (Explore.tsx тогда отказывает в старте забега).
@@ -29,12 +32,14 @@ export type MapArt = { slices: { src: string; x: number; width: number }[]; widt
  * px) — tools/build_map_art.mjs режет его на равные части, кратные клетке, ДО
  * сжатия, и Explore.tsx ставит их встык.
  *
+ * backdrop — вид фона по карте поверх фона темы (новые шесть карт, 10.11.2026).
+ *
  * sway — камыш и осока болота (29.10.2026): вынуты из слоя (их тени в слое
  * остались), качаются отдельными спрайтами (entities/swayDecor.ts). У прочих
  * карт список пуст.
  */
 export function mapArtFor(mapFile: string): MapArt | null {
-  const entry = MAP_ART[mapFile] ?? MAP_ART_CRYPT_FOUNDRY[mapFile]
+  const entry = MAP_ART[mapFile] ?? MAP_ART_CRYPT_FOUNDRY[mapFile] ?? MAP_ART_NEW_SIX[mapFile]
   if (!entry) return null
   const src = (file: string) => `${import.meta.env.BASE_URL}assets/maps/art/${file}`
   return {
@@ -52,6 +57,9 @@ export function mapArtFor(mapFile: string): MapArt | null {
       left: src(`walls/${mapFile.replace(/\.txt$/, '')}_L.webp`),
       right: src(`walls/${mapFile.replace(/\.txt$/, '')}_R.webp`),
     },
+    // Вид фона по карте (новые шесть, 10.11.2026, render-config.json пакета):
+    // высота фона в мире, вуаль, ближний слой. null — вид по теме (backdropLook).
+    backdrop: entry.backdrop ?? null,
   }
 }
 

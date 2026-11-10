@@ -3,18 +3,20 @@ import type { BackdropPreset } from '../mapRenderer'
 import type { BossAnimKind, RewardKind, EventKind, EnemyKind, SheetBossKind } from './types'
 import { POTION_TIERS } from '../potions'
 
-export const DEFAULT_MAP_FILE = 'map_A_serpentine.txt'
+export const DEFAULT_MAP_FILE = 'map_A_burial-quarter.txt'
 
 // Тема по карте: кладбище, затопленный склеп, умолкшая колокольная литейная.
 // Тема задаёт фон и вуаль; платформы и декор — готовый слой карты
 // (explore/mapArt.ts).
+// 10.11.2026 — шесть новых карт вместо прежних A–F (темы у букв сменились;
+// пара на сервере — themeForMap, server/src/runEvents.ts).
 export const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
-  A: 'graveyard',      // Серпантин
-  B: 'flooded_crypt',  // Разлом
-  C: 'foundry',        // Спуск к боссу
-  D: 'flooded_crypt',  // Тайник
-  E: 'foundry',        // Башни
-  F: 'graveyard',      // Святилище
+  A: 'graveyard',      // burial-quarter — Погребальный квартал
+  B: 'graveyard',      // procession — Дом длинной процессии
+  C: 'foundry',        // casting-yards — Литейные дворы (босс)
+  D: 'foundry',        // workshops — Корпус немой литейной
+  E: 'flooded_crypt',  // three-halls — Катакомбы трёх залов (Контрабандист)
+  F: 'flooded_crypt',  // eastern-stair — Восточный лестничный двор
   B2: 'swamp',         // Провал (болото, 29.10.2026)
   C2: 'swamp',         // Провал, с боссом
 }
@@ -2279,11 +2281,11 @@ export type AtmosphereThemeLook = {
 // null — у темы атмосферы нет (сейчас таких нет; модуль на null бросает ошибку,
 // Explore.tsx его тогда не создаёт).
 export const ATMOSPHERE: Record<BackdropPreset, AtmosphereThemeLook | null> = {
-  // Кладбище (A, F): порывы, пыль и сухие листья.
+  // Кладбище (A, B): порывы, пыль и сухие листья.
   graveyard: { speed: 65, sway: 9, dust: 24, flakes: 22, fog: 0, fogLift: 0, color: 0xc7b182, dustFall: 3, flakeFall: 13, flakeRx: 5, flakeRy: 1.8, drips: false },
-  // Склеп (B, D_OPEN, D_SEALED): слабый сквозняк, пыль, туман у пола, капли.
+  // Склеп (E, F): слабый сквозняк, пыль, туман у пола, капли.
   flooded_crypt: { speed: 19, sway: 4, dust: 18, flakes: 0, fog: 0.15, fogLift: 40, color: 0xa8b9c1, dustFall: 3, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: true },
-  // Литейная (C, E): сухой ветер, пыль и зола.
+  // Литейная (C, D): сухой ветер, пыль и зола.
   foundry: { speed: 57, sway: 7, dust: 45, flakes: 8, fog: 0, fogLift: 0, color: 0xc7bca8, dustFall: 7, flakeFall: 7, flakeRx: 2.7, flakeRy: 1.2, drips: false },
   // Болото (B2, C2), 29.10.2026: ветер, пыль, соринки (как зола: 2.7×1.2 px,
   // оседание 7), туман у пола нижнего яруса — на 36 px выше пола (у образца
@@ -2334,7 +2336,7 @@ export const ATMO_DRIP_COLOR = 0xb8cdda
 export const ATMO_DRIP_ALPHA = 0.72
 // Туман склепа — полоса над полом нижнего зала (решение Андрея 20.10.2026):
 // самый нижний ряд пола, где пол тянется хотя бы ATMO_FOG_MIN_CELLS клеток
-// (B — ряд 21, x 0–47; D_OPEN и D_SEALED — ряд 21, x 7–45). Пятно — эллипс
+// (считается по сетке карты при старте забега). Пятно — эллипс
 // радиусом 175 px, сжатый по вертикали до 0.28, плотность в центре — fog темы,
 // к краю линейно до нуля (как у образца). Пятен — 6 на 1200 px полосы, шаг 205,
 // дрейф 0.8 от сноса ветром, покачивание ±22 px. Центр — на fogLift темы выше

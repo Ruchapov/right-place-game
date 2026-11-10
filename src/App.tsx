@@ -374,11 +374,12 @@ function itemStatLine(item: InventoryItem['item']): string {
 
 // ВРЕМЕННО: тестовая панель выбора карты Explore (см. кнопки ниже в JSX).
 const EXPLORE_MAPS: { label: string; file: string }[] = [
-  { label: 'A Серпантин', file: 'map_A_serpentine.txt' },
-  { label: 'B Разлом', file: 'map_B_razlom.txt' },
-  { label: 'C Спуск к боссу', file: 'map_C_boss_descent.txt' },
-  { label: 'E Башни', file: 'map_E_towers.txt' },
-  { label: 'F Святилище', file: 'map_F_sanctuary.txt' },
+  { label: 'A Погребальный квартал', file: 'map_A_burial-quarter.txt' },
+  { label: 'B Дом процессии', file: 'map_B_procession.txt' },
+  { label: 'C Литейные дворы (босс)', file: 'map_C_casting-yards.txt' },
+  { label: 'D Корпус литейной', file: 'map_D_workshops.txt' },
+  { label: 'E Катакомбы трёх залов', file: 'map_E_three-halls.txt' },
+  { label: 'F Восточный двор', file: 'map_F_eastern-stair.txt' },
   { label: 'B2 Провал', file: 'map_B2_swamp.txt' },
   { label: 'C2 Провал (босс)', file: 'map_C2_swamp_boss.txt' },
 ]
@@ -1070,12 +1071,9 @@ export default function App() {
   const [howToOpen, setHowToOpen] = useState(false)
   const tutOldPlayerRef = useRef(false)
   // undefined — обычный запуск ("Начать забег"): Explore получает mapFile
-  // не заданным и просит карту у сервера сам. Debug-панель карт A-F (и
-  // кнопка "D Тайник (50/50)") ставят сюда конкретный файл явно.
+  // не заданным и просит карту у сервера сам. Debug-панель карт ставит сюда
+  // конкретный файл явно.
   const [exploreMapFile, setExploreMapFile] = useState<string | undefined>(undefined)
-  // ВРЕМЕННО: отладочная подпись выпавшего состояния D (50/50 OPEN/SEALED,
-  // см. кнопку ниже) — убрать вместе с самой тестовой панелью.
-  const [dRolledState, setDRolledState] = useState<string | null>(null)
 
   // Live energy
   const [energyBase, setEnergyBase] = useState(MAX_ENERGY)
@@ -5252,31 +5250,7 @@ export default function App() {
                       {m.label}
                     </button>
                   ))}
-                  <button key="D-5050"
-                    onClick={() => {
-                      const open = Math.random() < 0.5
-                      const file = open ? 'map_D_OPEN.txt' : 'map_D_SEALED.txt'
-                      setDRolledState(open ? 'OPEN' : 'SEALED')
-                      setExploreMapFile(file)
-                      setShowExploreTest(true)
-                    }}
-                    style={{
-                      boxSizing:'border-box', width:'100%',
-                      padding:'5px 6px', borderRadius:6, border:'1px solid #3A3344',
-                      background:'#221E2B', color:'#EDE7F2', fontSize:10, fontWeight:'bold',
-                      whiteSpace:'normal', lineHeight:1.2, cursor:'pointer',
-                    }}>
-                    D Тайник (50/50)
-                  </button>
                 </div>
-                {dRolledState && (
-                  <div style={{
-                    fontSize:10,
-                    color: dRolledState === 'OPEN' ? '#4FB477' : '#E0353B'
-                  }}>
-                    D выпало: {dRolledState}
-                  </div>
-                )}
               </div>
             )}
           </div>

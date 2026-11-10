@@ -310,6 +310,52 @@ def lint_clearance(f, quiet=False):
             print(f'{f}: клиренс в порядке')
     return violations
 
+# ---------- строгая волна: падение и ровный прыжок не сквозь камень ----------
+def build_strict(g):
+    """
+    Штатная build() плюс проверка пути у падения (dy<0) и ровного прыжка (dy==0)
+    — 10.11.2026. В build() у этих двух переходов коридора нет вовсе, и волна
+    «падала» сквозь сплошную кладку: на новых картах 10.11.2026 это прятало три
+    настоящих тупика.
+
+    Путь a -> b: сначала вбок на высоте старта (строки ay-1 и ay — голова и
+    ноги — от ax до bx без '#'; '=' сбоку проходима), потом вниз по столбцу bx
+    от ay до by без '#'. Подъём (dy>0) — штатный path_clear() из build().
+    """
+    S, can = build(g)
+    H, W = len(g), len(g[0])
+
+    def solid(x, y):
+        return 0 <= y < H and 0 <= x < W and g[y][x] == '#'
+
+    def path_ok(ax, ay, bx, by):
+        x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
+        for y in (ay - 1, ay):
+            for x in range(x0, x1 + 1):
+                if solid(x, y):
+                    return False
+        for y in range(ay, by + 1):
+            if solid(bx, y):
+                return False
+        return True
+
+    def strict_can(a, b):
+        if not can(a, b):
+            return False
+        ax, ay = a; bx, by = b
+        if ay - by > 0:
+            return True
+        return path_ok(ax, ay, bx, by)
+
+    return S, strict_can
+
+def strict_wave(g, start):
+    """Строгая волна туда и обратно: (fwd, back, S) — множества клеток стояния."""
+    S, can = build_strict(g)
+    fwd = wave(S, can, start) & S
+    back = wave(S, can, start, reverse=True) & S
+    return fwd, back, S
+
 # ---------- единый валидатор ----------
 def validate(g, start):
     """

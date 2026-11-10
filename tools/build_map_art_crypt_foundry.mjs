@@ -455,8 +455,10 @@ async function buildBackground(themeId, name) {
   return { themeId, name, src, srcW: m.width, srcH: m.height, srcBytes: fs.statSync(src).size, W: w, H: theme.height, png, pick }
 }
 
+// Карты склепа и литейной (B, D_OPEN, D_SEALED, C, E) убраны из игры 10.11.2026 —
+// их заменили новые шесть (tools/build_map_art_new_six.mjs). Скрипт собирает теперь
+// только фоны склепа и литейной; манифест пишется пустым.
 const maps = []
-for (const m of MAPS) maps.push(await buildMap(m))
 const bgs = []
 for (const themeId of Object.keys(THEMES)) for (const name of ['far', 'mid']) bgs.push(await buildBackground(themeId, name))
 
@@ -488,8 +490,8 @@ for (const b of bgs) fs.writeFileSync(path.join(REPO, `public/assets/maps/backgr
 
 const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art_crypt_foundry.mjs — руками не править, пересобирать скриптом.
 //
-// Готовые слои платформ и декора карт склепа (B, D_OPEN, D_SEALED) и литейной (C, E).
-// Слои карт A и F — в mapArtManifest.ts (их собирает tools/build_map_art.mjs).
+// Готовые слои карт склепа и литейной — с 10.11.2026 пусто: B, D, C, E заменены
+// новыми шестью (mapArtManifestNewSix.ts). Скрипт собирает только фоны этих тем.
 // gridChecksum — контрольная сумма сетки .txt, под которую слой собран: поменяют
 // геометрию карты и не пересоберут слой — картинка разойдётся со столкновениями,
 // и игра скажет об этом в консоли.

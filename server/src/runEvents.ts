@@ -16,17 +16,21 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const MAPS_DIR = join(MODULE_DIR, 'maps')
 
 // Белый список карт, которые реально существуют на клиенте (EXPLORE_MAPS в
-// src/App.tsx + D_OPEN/D_SEALED, см. "D Тайник (50/50)" там же) — источник
-// правды для валидации mapFile из запроса клиента (сверка на ТОЧНОЕ
-// совпадение, не префикс/regex — см. POST /run/start-explore в run.ts).
+// src/App.tsx) — источник правды для валидации mapFile из запроса клиента
+// (сверка на ТОЧНОЕ совпадение, не префикс/regex — см. POST /run/start-explore
+// в run.ts).
+// 10.11.2026: прежние A–F (Серпантин, Разлом, Спуск к боссу, Тайник D_OPEN /
+// D_SEALED, Башни, Святилище) заменены шестью новыми картами пакета
+// new-six/handoff-six-maps-2026-11-10 (docs/maps.md, «Шесть новых карт»). Ключ
+// пакета — второй токен имени: первый (буква) по-прежнему выбирает слоты
+// (slotsFileForMap) и тему (themeForMap).
 export const KNOWN_MAP_FILES = [
-  'map_A_serpentine.txt',
-  'map_B_razlom.txt',
-  'map_C_boss_descent.txt',
-  'map_D_OPEN.txt',
-  'map_D_SEALED.txt',
-  'map_E_towers.txt',
-  'map_F_sanctuary.txt',
+  'map_A_burial-quarter.txt',
+  'map_B_procession.txt',
+  'map_C_casting-yards.txt',
+  'map_D_workshops.txt',
+  'map_E_three-halls.txt',
+  'map_F_eastern-stair.txt',
   // Болото (29.10.2026): имена с вторым токеном, чтобы первый (B2, C2) не путался
   // с B и C — по нему slotsFileForMap берёт слоты, а клиент — тему фона.
   'map_B2_swamp.txt',
@@ -36,13 +40,8 @@ export const KNOWN_MAP_FILES = [
 export type MapFile = (typeof KNOWN_MAP_FILES)[number]
 
 // Логический пул карт для авто-выбора сервером, когда клиент не прислал
-// mapFile (см. POST /run/start-explore) — СЛОТЫ, а не файлы из
-// KNOWN_MAP_FILES: карта D — ОДНА позиция в пуле, а не две (D_OPEN и
-// D_SEALED там — два отдельных элемента белого списка), иначе D выпадала бы
-// вдвое чаще остальных пяти карт. Если выпал слот D — состояние (OPEN/SEALED)
-// разыгрывается отдельным 50/50, тем же броском, что раньше делал клиент в
-// App.tsx (кнопка "D Тайник (50/50)": `Math.random() < 0.5`).
-// С 29.10.2026 слотов 8: + болото B2 и C2, с тем же шансом, что у остальных.
+// mapFile (см. POST /run/start-explore). Восемь слотов с равным шансом.
+// До 10.11.2026 слот D разыгрывал ещё OPEN/SEALED тайника — у новой D тайника нет.
 const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F', 'B2', 'C2'] as const
 
 // Выбирает карту забега сама (см. POST /run/start-explore: mapFile в теле
@@ -52,12 +51,12 @@ const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F', 'B2', 'C2'] as const
 export function pickRunMapFile(): MapFile {
   const slot = MAP_POOL[Math.floor(Math.random() * MAP_POOL.length)]
   switch (slot) {
-    case 'A': return 'map_A_serpentine.txt'
-    case 'B': return 'map_B_razlom.txt'
-    case 'C': return 'map_C_boss_descent.txt'
-    case 'D': return Math.random() < 0.5 ? 'map_D_OPEN.txt' : 'map_D_SEALED.txt'
-    case 'E': return 'map_E_towers.txt'
-    case 'F': return 'map_F_sanctuary.txt'
+    case 'A': return 'map_A_burial-quarter.txt'
+    case 'B': return 'map_B_procession.txt'
+    case 'C': return 'map_C_casting-yards.txt'
+    case 'D': return 'map_D_workshops.txt'
+    case 'E': return 'map_E_three-halls.txt'
+    case 'F': return 'map_F_eastern-stair.txt'
     case 'B2': return 'map_B2_swamp.txt'
     case 'C2': return 'map_C2_swamp_boss.txt'
   }
@@ -126,15 +125,16 @@ export const ENEMY_GROUP_WEIGHTS: Partial<Record<RunEnemyKind, number>> = {
 
 /**
  * Тема карты — по её id (map_<id>_…), как BACKDROP_BY_MAP на клиенте
- * (src/explore/constants.ts): A, F — кладбище; B, D — затопленный склеп; C, E —
- * литейная; B2, C2 — болото.
+ * (src/explore/constants.ts): A, B — кладбище; C, D — литейная; E, F —
+ * затопленный склеп; B2, C2 — болото (новые шесть карт, 10.11.2026; до этого
+ * A, F — кладбище, B, D — склеп, C, E — литейная).
  */
 export type MapTheme = 'graveyard' | 'flooded_crypt' | 'foundry' | 'swamp'
 export function themeForMap(mapFile: string): MapTheme | null {
   const id = mapFile.match(/^map_([^_]+)_/)?.[1] ?? ''
-  if (id === 'A' || id === 'F') return 'graveyard'
-  if (id === 'B' || id === 'D') return 'flooded_crypt'
-  if (id === 'C' || id === 'E') return 'foundry'
+  if (id === 'A' || id === 'B') return 'graveyard'
+  if (id === 'E' || id === 'F') return 'flooded_crypt'
+  if (id === 'C' || id === 'D') return 'foundry'
   if (id === 'B2' || id === 'C2') return 'swamp'
   return null
 }
@@ -338,13 +338,10 @@ export function rollTrophies(multiplier: number, level: number): number {
 }
 
 // Имя слот-файла по имени карты — та же схема, что slotsFileForMap в
-// src/explore/mapEvents.ts:20-26, включая ветку map_D_* (слоты по СОСТОЯНИЮ
-// OPEN/SEALED, не по первому токену — см. CLAUDE.md "Особая механика:
-// тайник карты D").
+// src/explore/mapEvents.ts: map_<id>_slots.json по первому токену. Ветки
+// map_D_* (слоты по состоянию тайника OPEN/SEALED) нет с 10.11.2026 — у новой
+// D тайника нет.
 export function slotsFileForMap(mapFile: string): string {
-  if (mapFile.startsWith('map_D_')) {
-    return `${mapFile.replace(/\.txt$/, '')}_slots.json`
-  }
   const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
   return `map_${mapId}_slots.json`
 }
@@ -390,28 +387,19 @@ function buildEventCandidates(slots: SlotsFile): EventCandidate[] {
   return candidates
 }
 
-// Выбор тройки с гарантиями — та же логика и тот же порядок проверок, что
-// Explore.tsx:483-503:
-//   1) map_D_OPEN* -> смуглер, если есть в пуле, гарантированно первым
-//   2) иначе бросок BOSS_SPAWN_CHANCE -> если выпал И боссу есть кандидат,
-//      он гарантированно первым
-//   3) иначе обычный pickRandom по всему пулу (босс-кандидат, если он был,
+// Выбор тройки с гарантией босса — та же логика и тот же порядок проверок, что
+// офлайн-заглушка в Explore.tsx:
+//   1) бросок BOSS_SPAWN_CHANCE -> если выпал И боссу есть кандидат, он
+//      гарантированно первым
+//   2) иначе обычный pickRandom по всему пулу (босс-кандидат, если он был,
 //      исключается из пула заранее, чтобы pickRandom не мог вытащить его
 //      сам по себе при непрошедшем броске)
-// Если гарантированного кандидата в пуле нет (index === -1) — просто
-// проваливаемся к следующей проверке, как и клиент.
-function pickChosenEvents(mapFile: string, eventPool: EventCandidate[]): EventCandidate[] {
-  const smugglerIndex = mapFile.startsWith('map_D_OPEN')
-    ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
-    : -1
+// До 10.11.2026 первой шла гарантия Контрабандиста на map_D_OPEN; у новой D
+// тайника и Контрабандиста нет, а на E (three-halls) он — обычный кандидат пула.
+function pickChosenEvents(eventPool: EventCandidate[]): EventCandidate[] {
   const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
   const bossWillSpawn = bossIndex !== -1 && Math.random() < BOSS_SPAWN_CHANCE
 
-  if (smugglerIndex !== -1) {
-    const smugglerCandidate = eventPool[smugglerIndex]
-    const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
-    return [smugglerCandidate, ...pickRandom(restPool, EVENTS_PER_RUN - 1)]
-  }
   if (bossWillSpawn) {
     const bossCandidate = eventPool[bossIndex]
     const restPool = eventPool.filter((_, i) => i !== bossIndex)
@@ -458,7 +446,7 @@ function scatterEnemyGroups(slots: SlotsFile, chosen: EventCandidate[]): EventCa
 export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent[] {
   const slots = readSlots(mapFile)
   const eventPool = buildEventCandidates(slots)
-  const chosenEvents = scatterEnemyGroups(slots, pickChosenEvents(mapFile, eventPool))
+  const chosenEvents = scatterEnemyGroups(slots, pickChosenEvents(eventPool))
 
   return chosenEvents.map((ev) => {
     const multiplier = TROPHY_MULT_BY_KIND[ev.kind]

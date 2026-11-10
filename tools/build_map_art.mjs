@@ -593,7 +593,10 @@ async function swampBackgrounds() {
   return out
 }
 
-const maps = [await verifyAndEncode(await (console.log('== Сборки карты A'), buildA())), await verifyAndEncode(await (console.log('\n== Сборки карты F'), buildF()))]
+// Старые карты A и F убраны из игры 10.11.2026 (их заменили новые шесть —
+// tools/build_map_art_new_six.mjs). buildA/buildF оставлены для истории, но не
+// зовутся: их сеток в public/ больше нет. Скрипт собирает болото и фон кладбища.
+const maps = []
 const bgs = await backgrounds()
 const swamps = []
 for (const m of SWAMP_MAPS) swamps.push(await buildSwamp(m))
@@ -614,7 +617,7 @@ const swayList = (m) => `, sway: [${m.movers.map((v) => `{ sprite: '${v.item}', 
 const sliceList = (m) => (m.slices.length > 1 ? `, slices: [${m.slices.map((s) => `{ file: '${s.file}', x: ${s.x}, width: ${s.width} }`).join(', ')}]` : '')
 const manifest = `// СГЕНЕРИРОВАНО tools/build_map_art.mjs — руками не править, пересобирать скриптом.
 //
-// Готовые слои платформ и декора карт A, F и болота (B2, C2). gridChecksum —
+// Готовые слои платформ и декора болота (B2, C2); A и F убраны 10.11.2026. gridChecksum —
 // контрольная сумма сетки .txt, под которую слой собран: поменяют геометрию карты
 // и не пересоберут слой — картинка разойдётся со столкновениями, и игра скажет об
 // этом в консоли. slices — слой шире потолка текстуры (4096 px) нарезан по
@@ -623,7 +626,10 @@ export type MapArtSlice = { file: string; x: number; width: number }
 // sway — качающиеся стебли (болото): спрайт sway/<sprite>.png, левый верхний угол
 // в покое (x, y), размер, своя фаза; качается вокруг нижней точки (корень).
 export type MapArtSway = { sprite: string; x: number; y: number; w: number; h: number; phase: number }
-export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number; slices?: MapArtSlice[]; sway?: MapArtSway[] }
+// backdrop — вид фона ПО КАРТЕ (новые шесть, 10.11.2026): высота фона в мире, вуаль и
+// прозрачность ближнего слоя поверх фона темы. Нет поля — вид фона по теме (BACKDROP_LOOK).
+export type MapArtBackdrop = { worldHeight: number; dimColor: number; dimAlpha: number; midAlpha: number }
+export type MapArtEntry = { file: string; width: number; height: number; gridChecksum: number; slices?: MapArtSlice[]; sway?: MapArtSway[]; backdrop?: MapArtBackdrop }
 
 export const MAP_ART: Record<string, MapArtEntry> = {
 ${maps.map((m) => `  '${m.file}': { file: '${m.file.replace(/\.txt$/, '.webp')}', width: ${m.W}, height: ${m.HEIGHT}, gridChecksum: 0x${m.checksum.toString(16).padStart(8, '0')} },`).join('\n')}

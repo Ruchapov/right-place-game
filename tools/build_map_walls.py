@@ -196,13 +196,14 @@ def graveyard_wall(env, rows, side, seed):
 
 MAPS_TABLE = [
     # имя карты, тема, сид левой и правой стены
-    ('map_A_serpentine', 'graveyard', 0, 0),
-    ('map_F_sanctuary', 'graveyard', 0, 0),
-    ('map_B_razlom', 'crypt', 501, 502),
-    ('map_D_OPEN', 'crypt', 511, 512),
-    ('map_D_SEALED', 'crypt', 511, 512),
-    ('map_C_boss_descent', 'foundry', 521, 522),
-    ('map_E_towers', 'foundry', 531, 532),
+    # 10.11.2026 прежние A–F (Серпантин, Разлом, Спуск, Тайник, Башни, Святилище)
+    # заменены новыми шестью; их стены — в истории git.
+    ('map_A_burial-quarter', 'graveyard', 0, 0),
+    ('map_B_procession', 'graveyard', 0, 0),
+    ('map_C_casting-yards', 'foundry', 521, 522),
+    ('map_D_workshops', 'foundry', 561, 562),
+    ('map_E_three-halls', 'crypt', 571, 572),
+    ('map_F_eastern-stair', 'crypt', 581, 582),
     ('map_B2_swamp', 'swamp', 541, 542),
     ('map_C2_swamp_boss', 'swamp', 551, 552),
 ]
@@ -231,7 +232,9 @@ def main():
             if theme == 'crypt':
                 img = crypt_wall(env, rows, side, seed)
             elif theme == 'foundry':
-                img = foundry_wall(env, rows, side, seed, 'C' if name.startswith('map_C_') else 'E')
+                # Обе литейные карты (C, D с 10.11.2026) — способом прежней C: пролёт во
+                # всю высоту, без ряда 11 и fascia прежней E (у новых карт её массы нет).
+                img = foundry_wall(env, rows, side, seed, 'C')
             elif theme == 'swamp':
                 img = swamp_wall(env, rows, side, seed)
             else:

@@ -165,7 +165,7 @@ type ExploreProps = {
   // не приросты (см. RunResultSummary в api.ts). НЕ вызывается на
   // прерванном/офлайн/неудачном сохранении — обновлять player нечем.
   onRunComplete?: (result: RunResultSummary) => void
-  // Имя файла сетки карты (напр. 'map_B_razlom.txt'). Задан (debug-панель
+  // Имя файла сетки карты (напр. 'map_B_procession.txt'). Задан (debug-панель
   // карт A-F в App.tsx) — карта известна заранее, 1:1 прежнее поведение. Не
   // задан (обычная кнопка "Начать забег") — карту называет сервер: см.
   // mapFile/setup() ниже, /run/start-explore зовётся БЕЗ mapFile, а сетка/
@@ -2942,8 +2942,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // как промах сетки или листов спрайтов. Пустой .catch — по той же причине,
       // что у commonAssetsLoad выше: ошибку поднимет await.
       const mapTheme = backdropForMap(resolvedMapFile)
-      // Вид фона — по теме, как в одобренном предпросмотре.
-      const look = backdropLook(mapTheme)
+      // Вид фона — по теме, как в одобренном предпросмотре; у новых шести карт
+      // (10.11.2026) высота фона, вуаль и ближний слой — по карте (mapArt.backdrop).
+      const look = mapArt.backdrop ? { ...backdropLook(mapTheme), ...mapArt.backdrop } : backdropLook(mapTheme)
       // Высота картинки фона в пикселях мира: у склепа и литейной — высота самой
       // карты ('map'), как в их предпросмотрах; она же — высота готового слоя.
       const backdropWorldHeight = look.worldHeight === 'map' ? mapArt.height : look.worldHeight
@@ -3240,17 +3241,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // отложенная потеря времени).
         setLocalEventFallback(true)
         const eventPool = buildEventCandidates(slots)
-        const smugglerIndex = resolvedMapFile.startsWith('map_D_OPEN')
-          ? eventPool.findIndex((ev) => ev.kind === 'smuggler')
-          : -1
+        // Гарантии Контрабандиста (была на map_D_OPEN) нет с 10.11.2026 — как на сервере.
         const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
         // ?boss=… (09.11.2026) — босс в каждом забеге, где у карты есть его место.
         const bossRoll = bossIndex !== -1 && (devUrlParam('boss') !== null || Math.random() < C.BOSS_SPAWN_CHANCE)
-        if (smugglerIndex !== -1) {
-          const smugglerCandidate = eventPool[smugglerIndex]
-          const restPool = eventPool.filter((_, i) => i !== smugglerIndex)
-          chosenEvents = [smugglerCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
-        } else if (bossRoll) {
+        if (bossRoll) {
           const bossCandidate = eventPool[bossIndex]
           const restPool = eventPool.filter((_, i) => i !== bossIndex)
           chosenEvents = [bossCandidate, ...pickRandom(restPool, C.EVENTS_PER_RUN - 1)]
