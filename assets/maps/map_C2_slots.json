@@ -225,8 +225,8 @@
       22
     ],
     [
-      92,
-      22
+      87,
+      20
     ]
   ],
   "hazard": [
@@ -433,21 +433,6 @@
       "x": 85,
       "y": 22,
       "type": "grave_open_grave"
-    },
-    {
-      "x": 89,
-      "y": 22,
-      "type": "grave_open_grave"
-    },
-    {
-      "x": 90,
-      "y": 22,
-      "type": "grave_urn"
-    },
-    {
-      "x": 91,
-      "y": 22,
-      "type": "grave_urn"
     },
     {
       "x": 50,
