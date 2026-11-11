@@ -80,7 +80,7 @@ export const INTRO_CARDS: TutorialTip[] = [
  */
 export type RunTipId =
   | 'run_zvonar' | 'run_gatekeeper' | 'run_elite' | 'run_patrol' | 'run_chest'
-  | 'run_obelisk' | 'run_smuggler' | 'run_starbloom'
+  | 'run_obelisk' | 'run_smuggler' | 'run_starbloom' | 'run_flame' | 'run_runner'
   | 'run_fencer' | 'run_gravedigger' | 'run_crossbowman' | 'run_stoker' | 'run_beetle'
   | 'run_shadow' | 'run_noticed'
   | 'run_boss_werewolf' | 'run_boss_abbot' | 'run_boss_serpent' | 'run_boss_crowking'
@@ -92,6 +92,8 @@ export const RUN_TIPS: Record<RunTipId, TutorialTip> = {
   run_chest: { id: 'run_chest', title: 'Сундук', text: 'Не всё, что заперто, хочет, чтобы его открыли.\nИногда сундук кусается.', icon: 'event_chest.png' },
   run_obelisk: { id: 'run_obelisk', title: 'Обелиски', text: 'Разбуди один камень — и успей зажечь остальные,\nпока они не уснули снова.', icon: 'map_obelisk.png' },
   run_smuggler: { id: 'run_smuggler', title: 'Контрабандист', text: 'Любит сделки и не любит проигрывать.\nРискни трофеями — или пройди мимо.', icon: 'event_smuggler.png' },
+  run_flame: { id: 'run_flame', title: 'Носитель огня', text: 'Возьми огонь из жаровни и донеси до пустой чаши.\nПропустишь удар — огонь погаснет.', icon: 'event_flame.png' },
+  run_runner: { id: 'run_runner', title: 'Беглец', text: 'Заметит — побежит, и не сражается.\nТри удара, пока он не скрылся.', icon: 'event_runner.png' },
   run_starbloom: { id: 'run_starbloom', title: 'Звёздоцвет', text: 'Цветок, которому здесь не место.\nСрежь его — Мастер знает, что делать с пыльцой.', icon: 'item_star_pollen.png' },
   run_fencer: { id: 'run_fencer', title: 'Безликий фехтовальщик', text: 'Он ждёт, когда ты начнёшь махать мечом без остановки.\nБей реже — и точнее.', icon: 'event_enemy.png' },
   run_gravedigger: { id: 'run_gravedigger', title: 'Гробокопатель', text: 'Издалека швыряет землёй, вблизи бьёт лопатой.\nНе стой там, куда летит ком.', icon: 'event_enemy.png' },

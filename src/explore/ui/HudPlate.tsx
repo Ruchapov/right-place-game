@@ -21,6 +21,11 @@ interface HudPlateProps {
    * плита показывала бы вид по умолчанию, а не запас.
    */
   manaRingRef: (el: HTMLDivElement | null) => void
+  /**
+   * Огонёк Носителя огня у героя (11.11.2026) — иконка события 'flame' мягко
+   * пульсирует, пока он его несёт.
+   */
+  flameCarrying: boolean
 }
 
 // Диаметр гнезда маны — доля ШИРИНЫ плиты, тем же выражением, каким задана сама
@@ -31,7 +36,7 @@ const MANA_SOCKET_SIZE = `calc(${C.HP_FRAME_W} * ${C.MANA_SOCKET_D})`
 // узком экране около 4.5 px, и тень в постоянных пикселях залила бы соседей.
 const MANA_ORB_GLOW = `0 0 calc(${C.HP_FRAME_W} * 0.012) calc(${C.HP_FRAME_W} * 0.004) rgba(70,196,232,0.9)`
 
-export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady, manaRingRef }: HudPlateProps) {
+export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady, manaRingRef, flameCarrying }: HudPlateProps) {
   return (
     <>
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
@@ -168,6 +173,7 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
                     height: '100%',
                     objectFit: 'contain',
                     opacity: closed ? 1 : 0.8,
+                    animation: kind === 'flame' && !closed && flameCarrying ? 'flameIconPulse 1.1s ease-in-out infinite' : undefined,
                   }}
                 />
               )}

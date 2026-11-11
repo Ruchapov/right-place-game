@@ -39,7 +39,7 @@ import {
   isOverlappingAtFrameStart,
   sweepFootBlock,
 } from './explore/collision'
-import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates } from './explore/mapEvents'
+import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates, devPlaceFlame, devPlaceRunner, eventCells } from './explore/mapEvents'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier, potionHealAmount } from './potions'
 import { clamp, isLowLandscape, pickRandom, worldScaleFor } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
@@ -79,13 +79,16 @@ import { createReflectGlowSystem } from './explore/entities/reflectGlow'
 import { createMapEdges } from './explore/entities/mapEdges'
 import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
+import { createFireSystem, type Fire } from './explore/entities/fireShader'
+import { createRunnerSystem } from './explore/entities/runner'
+import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { loadSheetFrames } from './explore/spriteLoader'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
@@ -550,6 +553,9 @@ type FinishPayload = {
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальной офлайн-заглушкой.
  */
 const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop[]> = {
+  // Носитель огня — как сундук, Беглец — как враг (11.11.2026).
+  flame: [{ category: 'potion', tier: 2 }],
+  runner: [{ category: 'soul_shard' }],
   // Руна (09.11.2026) — вторым рядом, как runeDrop у сервера.
   enemy: [{ category: 'soul_shard' }, { category: 'rune', kind: 'attack' }],
   chest: [{ category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 }],
@@ -661,7 +667,7 @@ function devScatterGroups(slots: unknown, chosen: EventCandidate[]): { events: E
 // на сервере: из точек, оставшихся после групп (pickPatrolSpots). Вид —
 // devEnemyKind, трофеи — свой бросок заглушки.
 function devRollPatrols(rest: [number, number][], chosen: EventCandidate[], mapFile: string): StartExplorePatrol[] {
-  const eventPoints: [number, number][] = chosen.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
+  const eventPoints: [number, number][] = chosen.flatMap(eventCells)
   return pickPatrolSpots(rest, eventPoints).map(([x, y]) => ({
     x, y, enemyKind: devEnemyKind(mapFile) as StartExplorePatrol['enemyKind'], trophyReward: rollTrophies(TROPHY_MULT_PATROL, C.PLAYER_LEVEL_FALLBACK),
   }))
@@ -694,7 +700,9 @@ function devEventReward(kind: EventKind, chestIsMimic: boolean, chestIsShadow = 
     : kind === 'chest' ? (chestIsMimic ? 0 : chestIsShadow ? C.TROPHY_MULT_CHEST * 1.5 : C.TROPHY_MULT_CHEST)
       : kind === 'obelisk' ? C.TROPHY_MULT_OBELISK
         : kind === 'boss' ? C.TROPHY_MULT_BOSS
-          : 0
+          : kind === 'flame' ? C.TROPHY_MULT_FLAME
+            : kind === 'runner' ? C.TROPHY_MULT_RUNNER
+              : 0
   return {
     trophies: mult === 0 ? 0 : rollTrophies(mult, C.PLAYER_LEVEL_FALLBACK),
     drops: TEMP_DEV_EVENT_DROPS[kind],
@@ -1824,6 +1832,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const [obeliskHud, setObeliskHud] = useState<ObeliskHud | null>(null)
   const obeliskHudSecondsRef = useRef(-1)
   const obeliskHudStruckRef = useRef(-1)
+  // Носитель огня (11.11.2026): огонёк у героя. Ставит/снимает тикер (касание
+  // жаровни, перелёт в чашу); гасит applyDamage — любой урон, который прошёл,
+  // — через flameDouseRef (его заполняет setup: дым и надпись). flameCarrying —
+  // то же для HUD (пульс иконки), пишется только на смене.
+  const flameCarryRef = useRef(false)
+  const flameDouseRef = useRef<() => void>(() => {})
+  const [flameCarrying, setFlameCarrying] = useState(false)
+  // Беглец (11.11.2026): таймер погони для HUD, целые секунды; null — погони нет.
+  const [runnerHudSeconds, setRunnerHudSeconds] = useState<number | null>(null)
 
   // Босс карты C (ФАЗА 1, см. type Boss выше и задачу) — максимум ОДИН за
   // забег (не список, как enemiesRef), null пока не заспавнен/не карта C.
@@ -2295,6 +2312,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // снимок уже ушёл срезом из closeEvent.
     if (eventsRef.current.length > 0 && eventsRef.current.every((e) => e.closed)) sendProgress()
     deathHoldRef.current = 0
+    // Огонёк Носителя огня просто исчезает (11.11.2026).
+    flameCarryRef.current = false
     attackingRef.current = false
     dashingRef.current = false // обрываем dash (смерть главнее)
     castingRef.current = false // и каст (смерть главнее)
@@ -2472,6 +2491,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     damageTakenRef.current += actualDamage
     hpRef.current = Math.max(0, hpRef.current - armored)
     updateHpBar()
+    // Огонёк Носителя огня гаснет от ЛЮБОГО урона, который реально прошёл
+    // (11.11.2026): здесь — после всех ранних выходов (бессмертие, смерть,
+    // рывок, окно оберега), а парирование и отражение зелья сюда не доходят.
+    if (armored > 0 && flameCarryRef.current) flameDouseRef.current()
     if (hpRef.current <= 0) {
       // Оберег от смерти: вместо смерти — подъём с доли maxHp и окно
       // неуязвимости. Спасает ОДИН раз за забег (charmReadyRef гасится тут же),
@@ -2748,6 +2771,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
     let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
+    // Носитель огня и Беглец (11.11.2026): огни, дым, Беглецы.
+    let fireSystem: ReturnType<typeof createFireSystem> | null = null
+    let smokeSystem: ReturnType<typeof createSmokePuffSystem> | null = null
+    let runnerSystem: ReturnType<typeof createRunnerSystem> | null = null
     let reflectGlowSystem: ReturnType<typeof createReflectGlowSystem> | null = null
     let mapEdges: ReturnType<typeof createMapEdges> | null = null
 
@@ -3253,9 +3280,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           const poolWithoutBoss = bossIndex !== -1 ? eventPool.filter((_, i) => i !== bossIndex) : eventPool
           chosenEvents = pickRandom(poolWithoutBoss, C.EVENTS_PER_RUN)
         }
+        // ?forceEvent=flame|runner (11.11.2026, только заглушка) — это событие
+        // первым в тройке. Сервер такого параметра не знает.
+        const forcedKind = devUrlParam('forceEvent')
+        const forced = eventPool.find((ev) => (forcedKind === 'flame' || forcedKind === 'runner') && ev.kind === forcedKind)
+        if (forced) chosenEvents = [forced, ...chosenEvents.filter((ev) => ev.kind !== forced.kind)].slice(0, C.EVENTS_PER_RUN)
+        // Жаровня и чаша — до групп, Беглец — после (как на сервере).
+        chosenEvents = devPlaceFlame(slots, eventPool, chosenEvents)
         bossWillSpawn = chosenEvents.some((ev) => ev.kind === 'boss')
         const scattered = devScatterGroups(slots, chosenEvents)
-        chosenEvents = scattered.events
+        chosenEvents = devPlaceRunner(slots, eventPool, scattered.events)
+        // Точка Беглеца — тоже не для патрульных.
+        const runnerSpot = chosenEvents.find((ev) => ev.kind === 'runner')
+        if (runnerSpot) scattered.rest = remainingPoints(scattered.rest, [[runnerSpot.x, runnerSpot.y]])
         // Вид врагов офлайн бросает сам клиент — сервера, который назвал бы его,
         // здесь нет (см. devEnemyKind и плашку «ЗАГЛУШКА»).
         // Ловушку у сундука — тоже, и КАК СЕРВЕР: здесь, на старте забега, один
@@ -3309,6 +3346,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         }
         return isMimic
       })
+      // Чаша Носителя огня (11.11.2026): без неё событие не сыграть — громкий
+      // отказ, как у сундука без решения (забег не подтверждён, закроется без штрафа).
+      const eventFlameGoal: ([number, number] | null)[] = chosenEvents.map((ev, eventIndex) => {
+        if (ev.kind !== 'flame') return null
+        const goal = readFlameGoal(ev.goal)
+        if (goal === null) {
+          throw new Error(`Explore: сервер не назвал чашу Носителя огня (событие ${eventIndex}, goal=${JSON.stringify(ev.goal)}) — забег не показан.`)
+        }
+        return goal
+      })
       // Тень у сундука (09.11.2026): решение сервера (как isMimic); нет поля — нет Тени.
       const eventChestShadow: boolean[] = chosenEvents.map((ev) => ev.kind === 'chest' && readChestShadow(ev))
       // Какой босс (09.11.2026): называет сервер полем bossKind; нет поля
@@ -3334,7 +3381,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       const ncBossKind = bossWillSpawn && (bossKindNamed === 'serpent' || bossKindNamed === 'crowking') ? bossKindNamed : null
       const ncNeed = (k: NcKind) => eventEnemyKinds.includes(k as EnemyKind) || patrolKinds.includes(k as StartExplorePatrol['enemyKind'])
       const runAssetNeeds: RunAssetNeeds = {
-        beast: eventEnemyKinds.includes('beast') || patrolKinds.includes('beast'),
+        // Беглец (11.11.2026) — зверь, его листы те же.
+        beast: eventEnemyKinds.includes('beast') || patrolKinds.includes('beast') || chosenEvents.some((ev) => ev.kind === 'runner'),
         zvonar: eventEnemyKinds.includes('zvonar') || patrolKinds.includes('zvonar') || abbotWillSpawn,
         gatekeeper: eventEnemyKinds.includes('gatekeeper') || patrolKinds.includes('gatekeeper'),
         chest: chosenEvents.some((ev) => ev.kind === 'chest'),
@@ -3355,6 +3403,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       ncRetained = retainNcAssets((Object.keys(runAssetNeeds.nc) as NcKind[]).filter((k) => runAssetNeeds.nc[k]))
       const eventAssetsLoad = loadEventAssets(runAssetNeeds)
       eventAssetsLoad.catch(() => {})
+      // Жаровня Носителя огня (11.11.2026) — только в забег с этим событием.
+      const brazierLoad: Promise<Texture | null> = chosenEvents.some((ev) => ev.kind === 'flame')
+        ? Assets.load<Texture>(C.BRAZIER_SRC) : Promise.resolve(null)
+      brazierLoad.catch(() => {})
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
@@ -3957,6 +4009,30 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       })
       // Золотое свечение элиты (30.10.2026) — копия кадра позади врага.
       eliteGlowSystem = createEliteGlowSystem({ worldContainer })
+      // Носитель огня и Беглец (11.11.2026).
+      const brazierTexture = await brazierLoad
+      smokeSystem = createSmokePuffSystem({ parent: worldContainer })
+      const smoke = smokeSystem
+      fireSystem = createFireSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL })
+      const glowForRunner = eliteGlowSystem
+      runnerSystem = createRunnerSystem({
+        phys,
+        getPlayerCombatBox,
+        grid,
+        worldContainer,
+        enemies: enemiesRef,
+        events: eventsRef,
+        beastFrames: beastFramesRef,
+        spawnBeast: (tx, ty, idx) => enemySystem!.spawn(tx, ty, idx),
+        attachGlow: (enemy) => glowForRunner.attach(enemy, 'runner'),
+        playSpriteAnim,
+        findGroundSurfaceY,
+        closeEvent,
+        dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
+        smoke: (x, y, count, ms, spread) => smoke.spawn(x, y, count, ms, spread),
+        onHud: (seconds) => setRunnerHudSeconds(seconds),
+      })
+      setRunnerHudSeconds(null)
       reflectGlowSystem = createReflectGlowSystem({ worldContainer, getHero: () => heroSpriteRef.current })
       // Отдача зелья отражения: урон до брони — ударившему, мимо двери
       // Привратника ('tick' — дверь его не держит) и без хитстана, как тик крови.
@@ -4668,8 +4744,71 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         eliteGlowSystem!.attach(enemy)
       }
 
+      // Носитель огня (11.11.2026): жаровня (горит всегда) и чаша (холодная до
+      // финиша) — один спрайт Brazier.webp, низ на полу, без стены (сквозь неё
+      // проходят, как сквозь Контрабандиста). Огонёк над героем — свой огонь,
+      // создан здесь, после спрайта героя, чтобы рисоваться поверх него.
+      type BrazierSite = { x: number; w: number; floorY: number; fire: Fire }
+      let flameSite: {
+        eventIndex: number
+        start: BrazierSite
+        cup: BrazierSite
+        orb: Fire
+        /** Огонёк летит в чашу, мс до конца перелёта (FIRE_HANDOFF_MS). */
+        handoffMs: number
+        /** Чаша вспыхивает, мс до полного огня (FIRE_IGNITE_MS). */
+        igniteMs: number
+        lit: boolean
+        /** Откуда летит огонёк (где он был над героем). */
+        fromX: number
+        fromY: number
+        /** Часы покачивания огонька. */
+        bobMs: number
+      } | null = null
+      flameCarryRef.current = false
+      setFlameCarrying(false)
+      let flameCarryingShown = false
+      // Огонёк погас (урон прошёл, applyDamage): дым над головой и надпись.
+      flameDouseRef.current = () => {
+        flameCarryRef.current = false
+        const site = flameSite
+        if (site) smokeSystem?.spawn(site.orb.root.x, site.orb.root.y - C.FIRE_ORB_H / 2, C.FIRE_SMOKE_COUNT, C.FIRE_SMOKE_MS, 26)
+        showSmugglerNotice('Огонь погас')
+      }
+
+      function spawnBrazier(tileX: number, tileY: number): BrazierSite {
+        const tex = sheetsFor(brazierTexture, 'жаровня')
+        const w = C.BRAZIER_DRAW_H * (C.BRAZIER_SRC_W / C.BRAZIER_SRC_H)
+        const x = tileX * C.TILE_SIZE + C.TILE_SIZE / 2
+        const footGuess = (tileY + 1) * C.TILE_SIZE
+        const floorY = findGroundSurfaceY(x - w / 2, w, footGuess) ?? footGuess
+        const sprite = new Sprite(tex)
+        sprite.anchor.set(0.5, 1)
+        sprite.width = w
+        sprite.height = C.BRAZIER_DRAW_H
+        sprite.x = x
+        sprite.y = floorY
+        const fire = fireSystem!.create(w * C.BRAZIER_FIRE_W_FRAC, C.BRAZIER_FIRE_H, false)
+        const rimY = floorY - C.BRAZIER_DRAW_H + C.BRAZIER_RIM_SRC_PX * (C.BRAZIER_DRAW_H / C.BRAZIER_SRC_H)
+        fire.root.position.set(x, rimY + C.BRAZIER_FIRE_SINK)
+        // Чаша и её огонь — ПОД героем (он проходит перед ними), огонёк над
+        // головой создаётся отдельно и остаётся поверх.
+        const hero = heroSpriteRef.current
+        const at = hero && hero.parent === worldContainer ? worldContainer.getChildIndex(hero) : worldContainer.children.length
+        worldContainer.addChildAt(sprite, at)
+        worldContainer.addChildAt(fire.root, at + 1)
+        return { x, w, floorY, fire }
+      }
+
       eventsRef.current = chosenEvents.map((ev, eventIndex) => {
         const reward = eventRewards[eventIndex]
+        // Беглец (11.11.2026) — зверь со своим модулем (entities/runner.ts);
+        // событие закрывает его смерть (как группу из одного).
+        if (ev.kind === 'runner') {
+          sheetsFor(beastFramesRef.current, 'Беглец (листы зверя)')
+          runnerSystem!.spawn(ev.x, ev.y, eventIndex)
+          return { ...ev, closed: false, remainingEnemies: 1, trophyReward: reward.trophies, drops: reward.drops }
+        }
         if (ev.kind === 'enemy') {
           const points = ev.clusterPoints ?? []
           if (points.length === 0) {
@@ -4806,6 +4945,18 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         if (ev.kind === 'boss') {
           marker.visible = false // визуал несёт спрайт босса, не кружок
           bossEventIndexRef.current = eventIndex
+        }
+
+        if (ev.kind === 'flame') {
+          marker.visible = false
+          const goal = eventFlameGoal[eventIndex]
+          if (goal === null) throw new Error(`Explore: у Носителя огня (событие ${eventIndex}) нет чаши — забег не показан.`)
+          const start = spawnBrazier(ev.x, ev.y)
+          const cup = spawnBrazier(goal[0], goal[1])
+          cup.fire.alpha = 0
+          const orb = fireSystem!.create(C.FIRE_ORB_W, C.FIRE_ORB_H, true)
+          orb.alpha = 0
+          flameSite = { eventIndex, start, cup, orb, handoffMs: 0, igniteMs: 0, lit: false, fromX: 0, fromY: 0, bobMs: 0 }
         }
 
         return { ...ev, marker, closed: false, trophyReward: reward.trophies, drops: reward.drops }
@@ -5288,6 +5439,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         if (want('run_chest') && chestsRef.current.some((c) => !c.opened && inView(c.sprite.x, c.sprite.y))) return 'run_chest'
         if (want('run_obelisk') && obelisksRef.current.some((o) => inView(o.sprite.x, o.sprite.y))) return 'run_obelisk'
         if (want('run_smuggler') && smugglersRef.current.some((m) => inView(m.sprite.x, m.sprite.y))) return 'run_smuggler'
+        if (want('run_flame') && flameSite !== null && inView(flameSite.start.x, flameSite.start.floorY - C.BRAZIER_DRAW_H / 2)) return 'run_flame'
+        if (want('run_runner') && enemiesRef.current.some((e) => e.runner !== undefined && e.runner.phase !== 'gone' && !e.dead
+          && inView(e.x + e.width / 2, e.y + e.height / 2))) return 'run_runner'
         if (want('run_starbloom') && starbloomSystem !== null && starbloomTile !== null && !starbloomCutRef.current
           && inView((starbloomTile[0] + 0.5) * C.TILE_SIZE, (starbloomTile[1] + 0.5) * C.TILE_SIZE)) return 'run_starbloom'
         return null
@@ -5640,6 +5794,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // получает: пометку guarded читает applyEnemyHitReaction сразу следом.
         // Тень поднимается из сундука — урона не берёт.
         if (enemy.kind === 'shadow' && enemy.nc && enemy.nc.reveal < 1) return false
+        // Беглец (11.11.2026): урон — счётчиком ударов. Каждое попадание мечом
+        // или навыком снимает треть HP (последнее — остаток), тик кровотечения
+        // ударом не считается. Исчезнувшего не бьют.
+        if (enemy.runner) {
+          const hit = runnerSystem?.hitAmount(enemy, via === 'tick') ?? null
+          if (hit === null || hit === 0) return false
+          amount = hit
+        }
         // Фехтовальщик (09.11.2026): меч в кадры блока — урона нет (искра,
         // героя отталкивает); в кадры open — ×1.5; два удара подряд — встанет в блок.
         if (enemy.kind === 'fencer' && enemy.nc) {
@@ -6571,7 +6733,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
             ev.kind === 'chest' ||
             ev.kind === 'smuggler' ||
             ev.kind === 'obelisk' ||
-            ev.kind === 'boss'
+            ev.kind === 'boss' ||
+            // Носитель огня — закрывается только донесённым огнём, Беглец — смертью
+            // (11.11.2026); касание их точек ничего не закрывает.
+            ev.kind === 'flame' ||
+            ev.kind === 'runner'
           ) continue
           const evLeft = ev.x * C.TILE_SIZE
           const evTop = ev.y * C.TILE_SIZE
@@ -6806,6 +6972,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Привратник — третьим по тому же списку врагов, теми же двумя
         // масштабами времени. Снарядов у него нет, порядок внутри не важен.
         gatekeeperSystem!.update(dt, ticker.deltaMS)
+        // Беглец (11.11.2026) — по тому же списку врагов; зверь его пропускает.
+        runnerSystem!.update(dt, ticker.deltaMS, deathRef.current)
 
         // Босс карты C (см. explore/entities/boss.ts) — вызов на ТОМ ЖЕ
         // месте кадра, где раньше стоял AI-блок + шипы + волны: сразу после
@@ -6833,6 +7001,70 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // этом кадре, сразу получает свой первый шаг — тот же порядок, что у
         // босса с шипами. Здесь же шары снимаются, если герой мёртв.
         manaSystem!.update(ticker.deltaMS)
+
+        // Носитель огня (11.11.2026): касание жаровни без огонька — огонёк над
+        // героем; касание чаши с огоньком — он перелетает в чашу (FIRE_HANDOFF_MS),
+        // чаша вспыхивает и горит до конца забега, событие закрыто наградой над
+        // ней. Гаснет огонёк в applyDamage (flameDouseRef), со смертью — исчезает.
+        if (flameSite) {
+          const site = flameSite
+          const box = getPlayerCombatBox()
+          const touches = (b: BrazierSite) =>
+            box.x < b.x + b.w / 2 + C.BRAZIER_TOUCH_PAD && box.x + box.w > b.x - b.w / 2 - C.BRAZIER_TOUCH_PAD
+            && phys.y < b.floorY + C.BRAZIER_TOUCH_PAD && phys.y + C.PLAYER_HEIGHT > b.floorY - C.BRAZIER_DRAW_H - C.BRAZIER_TOUCH_PAD
+          site.bobMs = (site.bobMs + ticker.deltaMS) % C.FIRE_ORB_BOB_PERIOD_MS
+          const bobA = (site.bobMs / C.FIRE_ORB_BOB_PERIOD_MS) * Math.PI * 2
+          const headTop = phys.y + (phys.onGround ? C.SPIKE_BODY_TOP_GROUND : C.SPIKE_BODY_TOP_AIR)
+          const orbX = phys.x + C.PLAYER_WIDTH / 2 + C.FIRE_ORB_BOB_PX * Math.cos(bobA)
+          const orbY = headTop - C.FIRE_ORB_ABOVE_HEAD + C.FIRE_ORB_BOB_PX * Math.sin(bobA)
+          if (!site.lit && site.handoffMs <= 0 && !deathRef.current) {
+            if (!flameCarryRef.current && touches(site.start)) {
+              flameCarryRef.current = true
+            } else if (flameCarryRef.current && touches(site.cup)) {
+              flameCarryRef.current = false
+              site.handoffMs = C.FIRE_HANDOFF_MS
+              site.fromX = orbX
+              site.fromY = orbY
+            }
+          }
+          if (site.handoffMs > 0) {
+            site.handoffMs = Math.max(0, site.handoffMs - ticker.deltaMS)
+            const t = 1 - site.handoffMs / C.FIRE_HANDOFF_MS
+            const e = t * t * (3 - 2 * t)
+            site.orb.root.position.set(
+              site.fromX + (site.cup.fire.root.x - site.fromX) * e,
+              site.fromY + (site.cup.fire.root.y - site.fromY) * e - Math.sin(Math.PI * t) * 30,
+            )
+            site.orb.alpha = 1
+            if (site.handoffMs <= 0) {
+              site.lit = true
+              site.igniteMs = C.FIRE_IGNITE_MS
+              site.orb.alpha = 0
+              closeEvent(site.eventIndex, site.cup.x, site.cup.fire.root.y - C.BRAZIER_FIRE_H * 0.6)
+            }
+          } else {
+            site.orb.root.position.set(orbX, orbY)
+            site.orb.alpha = flameCarryRef.current ? 1 : 0
+          }
+          if (site.lit) {
+            site.igniteMs = Math.max(0, site.igniteMs - ticker.deltaMS)
+            const k = 1 - site.igniteMs / C.FIRE_IGNITE_MS
+            // Вспышка: огонь поднимается выше и оседает до своего роста.
+            site.cup.fire.alpha = Math.min(1, k * 2)
+            site.cup.fire.root.scale.set(1, 1 + 0.45 * Math.sin(Math.PI * k))
+          }
+          if (flameCarryRef.current !== flameCarryingShown) {
+            flameCarryingShown = flameCarryRef.current
+            setFlameCarrying(flameCarryingShown)
+          }
+        }
+        {
+          const s = viewScale
+          const left = -worldContainer.x / s
+          const top = -worldContainer.y / s
+          fireSystem!.update(ticker.deltaMS, left, top, left + app!.screen.width / s, top + app!.screen.height / s)
+        }
+        smokeSystem!.update(ticker.deltaMS)
 
         // Сундуки: завершение анимации открытия (тем же способом, каким
         // определяется конец attack/hurt у героя — конец текстур ИЛИ спрайт
@@ -7412,6 +7644,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
       eliteGlowSystem?.dispose()
+      fireSystem?.dispose()
+      smokeSystem?.dispose()
+      runnerSystem?.dispose()
+      fireSystem = null
+      smokeSystem = null
+      runnerSystem = null
+      flameCarryRef.current = false
       reflectGlowSystem?.dispose()
       mapEdges?.dispose()
       // Хитстоп мог остановить общий тикер анимаций — вернуть ход (30.10.2026).
@@ -7833,6 +8072,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               0%, 100% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.6), 0 0 16px 4px rgba(232,178,58,0.3); }
               50% { box-shadow: 0 0 8px 2px rgba(232,178,58,0.9), 0 0 16px 4px rgba(232,178,58,0.5); }
             }
+            @keyframes flameIconPulse {
+              0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px rgba(255,140,40,0.5)); }
+              50% { transform: scale(1.12); filter: drop-shadow(0 0 6px rgba(255,170,60,0.95)); }
+            }
             @keyframes obeliskTimerPulse {
               0%, 100% { opacity: 1; }
               50% { opacity: 0.55; }
@@ -7905,6 +8148,50 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         </div>
       )}
 
+      {/* Таймер Беглеца (11.11.2026) — то же место и тот же вид, что у
+          обелисков, плюс иконка события; если оба идут разом — под таймером
+          обелисков. Тапы не ловит. */}
+      {ready && runnerHudSeconds !== null && (
+        <div
+          data-runner-hud=""
+          style={{
+            position: 'fixed',
+            top: `calc(var(--rp-safe-top, 0px) + ${obeliskHud?.active ? 62 : 6}px)`,
+            left: `calc(var(--rp-safe-left, 0px) + 8px + ${C.HP_FRAME_W} + 8px)`,
+            right: `calc(var(--rp-safe-right, 0px) + ${C.SETTINGS_BTN_RIGHT + C.SETTINGS_BTN_SIZE + 8}px)`,
+            zIndex: 1001,
+            display: 'flex',
+            flexDirection: 'row',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 6,
+            pointerEvents: 'none',
+          }}
+        >
+          <img
+            src={C.EVENT_ICON_SRC.runner}
+            alt=""
+            draggable={false}
+            style={{ width: 'clamp(22px, 7vmin, 34px)', height: 'clamp(22px, 7vmin, 34px)', objectFit: 'contain', flexShrink: 0 }}
+          />
+          <div
+            style={{
+              fontFamily: C.FONT_DISPLAY,
+              fontSize: 'clamp(20px, 6vmin, 34px)',
+              fontWeight: 900,
+              letterSpacing: '0.02em',
+              lineHeight: 1,
+              whiteSpace: 'nowrap',
+              color: runnerHudSeconds < 10 ? '#E0353B' : '#EDE7F2',
+              textShadow: '0 2px 4px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)',
+              animation: runnerHudSeconds < 10 ? 'obeliskTimerPulse 0.8s ease-in-out infinite' : 'none',
+            }}
+          >
+            {Math.floor(runnerHudSeconds / 60)}:{String(runnerHudSeconds % 60).padStart(2, '0')}
+          </div>
+        </div>
+      )}
+
       <HudPlate
         hpFillRef={hpFillRef}
         hpTextRef={hpTextRef}
@@ -7918,6 +8205,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           manaRingElRef.current = el
           updateManaSockets()
         }}
+        flameCarrying={flameCarrying}
       />
 
       {/* Выход через шестерёнку = смерть по решению разработчика (трофеи

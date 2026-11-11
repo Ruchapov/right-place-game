@@ -890,6 +890,10 @@ export const TROPHY_MULT_ENEMY = 1.25
 export const TROPHY_MULT_CHEST = 3
 export const TROPHY_MULT_OBELISK = 2
 export const TROPHY_MULT_BOSS = 4
+// Носитель огня и Беглец (11.11.2026). Пары — TROPHY_MULT_FLAME / _RUNNER в
+// server/src/runEvents.ts; здесь их читает только офлайн-заглушка.
+export const TROPHY_MULT_FLAME = 3
+export const TROPHY_MULT_RUNNER = 3
 
 // Прыжок пока БЕЗ проигрывания — статичная поза по вертикальной скорости
 // (взлёт/падение), см. использование в тикере. Индексы 0-based.
@@ -1669,6 +1673,8 @@ export const EVENT_MARKER_COLOR: Record<EventKind, number> = {
   puzzle: 0x46c4e8,
   boss: 0xf08a24,
   obelisk: 0xf08a24,
+  flame: 0xff8c28,
+  runner: 0xfff2b0,
 }
 
 // Иконки HUD-прогресса событий — тот же способ формирования пути (BASE_URL),
@@ -1682,7 +1688,73 @@ export const EVENT_ICON_SRC: Record<EventKind, string> = {
   // Отдельной иконки для обелисков нет — переиспользуем event_puzzle.png
   // (та же роль "загадка", обелиски заменяют Puzzle на карте F).
   obelisk: `${import.meta.env.BASE_URL}assets/icons/event_puzzle.png`,
+  flame: `${import.meta.env.BASE_URL}assets/icons/event_flame.png`,
+  runner: `${import.meta.env.BASE_URL}assets/icons/event_runner.png`,
 }
+
+// --- «Носитель огня» (11.11.2026, docs/explore-features.md) ---
+// Жаровня и чаша — один спрайт Brazier.webp (342×260, без огня), рисуется
+// высотой BRAZIER_DRAW_H, низ на полу (как сундук). Край чаши — в
+// BRAZIER_RIM_SRC_PX px листа от верха картинки; огонь стоит на нём.
+export const BRAZIER_SRC = `${import.meta.env.BASE_URL}assets/objects/Brazier.webp`
+export const BRAZIER_SRC_W = 342
+export const BRAZIER_SRC_H = 260
+export const BRAZIER_DRAW_H = 100
+export const BRAZIER_RIM_SRC_PX = 9
+/** Низ огня в чаше ниже края, мировые px (fire_mock.py: rim + 6). */
+export const BRAZIER_FIRE_SINK = 6
+/** Огонь в чаше: доля ширины чаши и высота, мировые px. */
+export const BRAZIER_FIRE_W_FRAC = 0.85
+export const BRAZIER_FIRE_H = 115
+/** Касание: насколько шире чаши (по X) и выше пола засчитывается герой. */
+export const BRAZIER_TOUCH_PAD = 10
+/** Огонёк над героем: размер, высота над макушкой, покачивание по кругу. */
+export const FIRE_ORB_W = 30
+export const FIRE_ORB_H = 46
+export const FIRE_ORB_ABOVE_HEAD = 10
+export const FIRE_ORB_BOB_PX = 3
+export const FIRE_ORB_BOB_PERIOD_MS = 1200
+/** Перелёт огонька в чашу, мс. */
+export const FIRE_HANDOFF_MS = 300
+/** Вспышка чаши при зажигании: сила огня поднимается от 0 за столько мс. */
+export const FIRE_IGNITE_MS = 450
+/** Клуб дыма, когда огонёк гаснет: частиц и сколько живут. */
+export const FIRE_SMOKE_COUNT = 10
+export const FIRE_SMOKE_MS = 400
+/** Шейдер огня (fire_mock.py): ширина языка, сдвиг шума вверх (клеток шума в
+ *  секунду на 1-ю октаву — 64 клетки за период образца 1.2 с). */
+export const FIRE_BOWL_WID = 0.5
+export const FIRE_ORB_WID = 0.5
+export const FIRE_NOISE_SPEED = 64 / 1.2
+/** Время шума закольцовано (точность float в шейдере). */
+export const FIRE_TIME_WRAP_S = 600
+/** Свечение позади огня: цвет, альфа в центре, радиус от размера огня, «дыхание». */
+export const FIRE_GLOW_COLOR = 0xff8c28
+export const FIRE_GLOW_ALPHA = 0.28
+export const FIRE_GLOW_RINGS = 10
+export const FIRE_GLOW_RADIUS_MULT = 1.4
+export const FIRE_GLOW_BREATHE = 0.06
+export const FIRE_GLOW_BREATHE_FREQ = 2.4
+
+// --- «Беглец» (11.11.2026) ---
+// Обычный зверь (листы beast) с золотым свечением своего цвета, светлее элиты и
+// с быстрым пульсом, и следом золотых искр на бегу. Не атакует; три удара героя.
+export const RUNNER_HITS = 3
+export const RUNNER_WAKE_TILES = 6
+export const RUNNER_SPEED_MULT = 0.85
+export const RUNNER_TIME_MS = 25000
+export const RUNNER_RESPAWN_MS = 5000
+/** После разворота у стены бежит мимо героя столько мс, не глядя на него. */
+export const RUNNER_PASS_MS = 1200
+export const RUNNER_GLOW_TINT = 0xfff2b0
+export const RUNNER_GLOW_PERIOD_MS = 600
+/** След искр: частиц одновременно, жизнь, как часто новая. */
+export const RUNNER_SPARK_COUNT = 8
+export const RUNNER_SPARK_MS = 400
+export const RUNNER_SPARK_EVERY_MS = 55
+/** Клуб дыма, когда исчезает (не пойман за RUNNER_TIME_MS). */
+export const RUNNER_SMOKE_COUNT = 14
+export const RUNNER_SMOKE_MS = 500
 
 export const SETTINGS_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/event_settings.png`
 // Размер/отступ кнопки-шестерёнки (см. её JSX ниже, width/right) — вынесены

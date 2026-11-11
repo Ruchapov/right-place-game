@@ -306,6 +306,8 @@ export function createEnemySystem(deps: EnemyDeps) {
       // несовместимых набора состояний в одной функции. Общее — тип Enemy и
       // список, поэтому урон, скиллы, станы и парирование у обоих одни и те же.
       if (enemy.kind !== 'beast') continue
+      // Беглец (11.11.2026) — тоже зверь, но его ведёт entities/runner.ts.
+      if (enemy.runner) continue
 
       // Death — высший приоритет (death > hurt > attack > walk/idle):
       // мёртвый враг ПОЛНОСТЬЮ пропускает физику/AI/hurt/attack/idle-walk

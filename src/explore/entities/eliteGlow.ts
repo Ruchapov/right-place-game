@@ -22,22 +22,32 @@ export type EliteGlowDeps = {
   worldContainer: Container
 }
 
-type Glow = { enemy: Enemy; sprite: Sprite; fadeMs: number }
+// Беглец (11.11.2026) — то же свечение своим видом: цвет светлее элитного
+// (RUNNER_GLOW_TINT) и пульс быстрее (RUNNER_GLOW_PERIOD_MS), чтобы его нельзя
+// было спутать с элитой.
+export type GlowStyle = 'elite' | 'runner'
+
+type Glow = { enemy: Enemy; sprite: Sprite; fadeMs: number; periodMs: number }
+
+// Сплошной цвет: RGB = смещение (0..1), альфа — альфа кадра.
+function solidColorFilter(tint: number): ColorMatrixFilter {
+  const filter = new ColorMatrixFilter()
+  filter.matrix = [
+    0, 0, 0, 0, ((tint >> 16) & 0xff) / 255,
+    0, 0, 0, 0, ((tint >> 8) & 0xff) / 255,
+    0, 0, 0, 0, (tint & 0xff) / 255,
+    0, 0, 0, 1, 0,
+  ]
+  return filter
+}
 
 export function createEliteGlowSystem(deps: EliteGlowDeps) {
   const glows: Glow[] = []
-  const r = ((C.ELITE_GLOW_TINT >> 16) & 0xff) / 255
-  const g = ((C.ELITE_GLOW_TINT >> 8) & 0xff) / 255
-  const b = (C.ELITE_GLOW_TINT & 0xff) / 255
-  const filter = new ColorMatrixFilter()
-  // Сплошной цвет: RGB = смещение (0..1), альфа — альфа кадра.
-  filter.matrix = [
-    0, 0, 0, 0, r,
-    0, 0, 0, 0, g,
-    0, 0, 0, 0, b,
-    0, 0, 0, 1, 0,
-  ]
-  let phaseMs = 0
+  const filters: Record<GlowStyle, ColorMatrixFilter> = {
+    elite: solidColorFilter(C.ELITE_GLOW_TINT),
+    runner: solidColorFilter(C.RUNNER_GLOW_TINT),
+  }
+  let clockMs = 0
   // Кадр анимации врагу меняет НЕ тикер логики, а общий Ticker.shared (так
   // устроен AnimatedSprite). Свой слушатель там же, с низким приоритетом — после
   // смены кадра: без него копия отставала бы на кадр и на быстрой атаке давала
@@ -48,13 +58,13 @@ export function createEliteGlowSystem(deps: EliteGlowDeps) {
   Ticker.shared.add(syncFrames, null, UPDATE_PRIORITY.LOW)
 
   // Свечение врагу — сразу после его спавна (спрайт уже в мире).
-  function attach(enemy: Enemy) {
+  function attach(enemy: Enemy, style: GlowStyle = 'elite') {
     const sprite = new Sprite(enemy.sprite.texture)
-    sprite.filters = [filter]
-    sprite.tint = C.ELITE_GLOW_TINT
+    sprite.filters = [filters[style]]
+    sprite.tint = style === 'runner' ? C.RUNNER_GLOW_TINT : C.ELITE_GLOW_TINT
     const parent = enemy.sprite.parent ?? deps.worldContainer
     parent.addChildAt(sprite, parent.getChildIndex(enemy.sprite))
-    glows.push({ enemy, sprite, fadeMs: C.ELITE_GLOW_FADE_MS })
+    glows.push({ enemy, sprite, fadeMs: C.ELITE_GLOW_FADE_MS, periodMs: style === 'runner' ? C.RUNNER_GLOW_PERIOD_MS : C.ELITE_GLOW_PERIOD_MS })
     sync(glows[glows.length - 1], 1)
   }
 
@@ -72,11 +82,11 @@ export function createEliteGlowSystem(deps: EliteGlowDeps) {
 
   // В тикере ПОСЛЕ систем врагов — копия берёт кадр, который будет нарисован.
   function update(deltaMS: number) {
-    phaseMs = (phaseMs + deltaMS) % C.ELITE_GLOW_PERIOD_MS
-    const wave = 0.5 - 0.5 * Math.cos((phaseMs / C.ELITE_GLOW_PERIOD_MS) * Math.PI * 2)
-    const pulse = C.ELITE_GLOW_ALPHA_MIN + (C.ELITE_GLOW_ALPHA_MAX - C.ELITE_GLOW_ALPHA_MIN) * wave
+    clockMs = (clockMs + deltaMS) % (C.ELITE_GLOW_PERIOD_MS * C.RUNNER_GLOW_PERIOD_MS)
     for (let i = glows.length - 1; i >= 0; i--) {
       const glow = glows[i]
+      const wave = 0.5 - 0.5 * Math.cos(((clockMs % glow.periodMs) / glow.periodMs) * Math.PI * 2)
+      const pulse = C.ELITE_GLOW_ALPHA_MIN + (C.ELITE_GLOW_ALPHA_MAX - C.ELITE_GLOW_ALPHA_MIN) * wave
       if (glow.enemy.sprite.destroyed) {
         glow.sprite.destroy()
         glows.splice(i, 1)
@@ -91,7 +101,8 @@ export function createEliteGlowSystem(deps: EliteGlowDeps) {
     Ticker.shared.remove(syncFrames, null)
     for (const glow of glows) if (!glow.sprite.destroyed) glow.sprite.destroy()
     glows.length = 0
-    filter.destroy()
+    filters.elite.destroy()
+    filters.runner.destroy()
   }
 
   return { attach, update, dispose }

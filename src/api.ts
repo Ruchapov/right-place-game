@@ -428,9 +428,16 @@ async function cancelUnshownRun(token: string, runId: string): Promise<void> {
   }
 }
 
-// Event kind returned by /run/start-explore — same 6 kinds as
-// server/src/runEvents.ts's RunEventKind.
-export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
+// Event kind returned by /run/start-explore — same 8 kinds as
+// server/src/runEvents.ts's RunEventKind (flame, runner — 11.11.2026).
+export type StartExploreEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk' | 'flame' | 'runner'
+
+/**
+ * Новые виды событий, которые этот клиент умеет показывать (11.11.2026): уходят
+ * полем eventKinds в теле старта, и только тогда сервер кладёт их в пул.
+ * Старый клиент (бандл в кэше Telegram) поля не шлёт — и не получает их.
+ */
+export const OPT_IN_EVENT_KINDS: readonly StartExploreEventKind[] = ['flame', 'runner']
 
 /**
  * Чья группа врагов — только у kind === 'enemy' (04.10.2026; Привратник —
@@ -453,6 +460,8 @@ export type StartExploreEvent = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /** Чаша Носителя огня (11.11.2026) — только у flame; x, y — жаровня. Через readFlameGoal. */
+  goal?: [number, number]
   /**
    * Чья это группа. Разбирать ТОЛЬКО через readEnemyKind ниже: поля может не
    * быть вовсе (забег начат сервером, где Звонаря ещё не существовало).
@@ -649,7 +658,7 @@ const START_EXPLORE_TIMEOUT_MS = 45000
 // Проверяет состав сервер (каталог, флаг runSlot, повторы, потолок, запас) —
 // здешние гнёзда не источник истины.
 export async function startRunExplore(token: string, mapFile?: string, consumables?: ConsumableId[]): Promise<StartExploreResult> {
-  const body: { mapFile?: string; consumables?: ConsumableId[] } = {}
+  const body: { mapFile?: string; consumables?: ConsumableId[]; eventKinds: readonly StartExploreEventKind[] } = { eventKinds: OPT_IN_EVENT_KINDS }
   if (mapFile !== undefined) body.mapFile = mapFile
   if (consumables !== undefined && consumables.length > 0) body.consumables = consumables
   // Id прошлого забега сбрасывается ДО запроса: упади старт — запросы, которые
@@ -2041,6 +2050,15 @@ export function readRunDrops(raw: unknown): RunDrop[] {
  * состояние экрана, а здесь выбор между наборами спрайт-листов, и забег без
  * врагов хуже забега со зверями вместо Звонарей или Привратников.
  */
+/**
+ * Чаша Носителя огня (11.11.2026): [x, y] клетки или null — сервер не назвал
+ * (ошибка розыгрыша; такой забег не показывается, как сундук без решения).
+ */
+export function readFlameGoal(raw: unknown): [number, number] | null {
+  return Array.isArray(raw) && raw.length === 2 && Number.isInteger(raw[0]) && Number.isInteger(raw[1])
+    ? [raw[0] as number, raw[1] as number] : null
+}
+
 export function readEnemyKind(raw: unknown): StartExploreEnemyKind {
   if (raw === undefined || raw === null) return 'beast'
   if (isStartEnemyKind(raw)) return raw

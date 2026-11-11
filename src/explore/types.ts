@@ -6,7 +6,7 @@ export type Grid = string[][]
 // "3 события за забег" — ВРЕМЕННЫЙ каркас (Phase 2, часть 2). kind совпадает
 // со строками ROOM_LABELS в App.tsx (enemy/chest/smuggler/puzzle/boss), чтобы
 // результат забега можно было отдать старому results-экрану без маппинга.
-export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
+export type EventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk' | 'flame' | 'runner'
 
 // clusterPoints — ТОЛЬКО для kind='enemy': все 3 точки кластера (не только
 // points[0]) — нужны, чтобы заспавнить весь кластер, а не одного врага.
@@ -70,6 +70,8 @@ export type EventCandidate = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /** Чаша Носителя огня (11.11.2026) — только у 'flame'; x, y — жаровня. Через readFlameGoal. */
+  goal?: [number, number]
   // Элитный враг группы (30.10.2026) — индекс в clusterPoints; только у
   // 'enemy'. Нет поля — элиты нет. Читать через readEliteIndex (api.ts).
   eliteIndex?: number
@@ -352,6 +354,12 @@ export type Enemy = {
    */
   elite?: boolean
   /**
+   * Беглец (11.11.2026, entities/runner.ts): зверь события 'runner'. Его ведёт
+   * свой модуль (entities/enemy.ts таких пропускает), урон — счётчиком ударов
+   * (damageEnemy). Поля нет — обычный враг.
+   */
+  runner?: RunnerState
+  /**
    * Отдача от удара мечом (30.10.2026): сколько мс ещё отъезжать и куда (от
    * героя). 0 — не отъезжает. Ведёт applyKnockback в Explore.tsx, после систем
    * врагов, с проверкой стены и края пола.
@@ -451,6 +459,29 @@ export type Enemy = {
   attackDamage: number
   hpBarBg: Graphics
   hpBarFill: Graphics
+}
+
+/**
+ * Состояние Беглеца (11.11.2026, entities/runner.ts).
+ *   'asleep' — стоит на точке, ждёт героя;
+ *   'fleeing' — проснулся, бежит от героя, идёт таймер RUNNER_TIME_MS;
+ *   'gone' — не пойман, исчез; через RUNNER_RESPAWN_MS снова спит на точке.
+ * В 'gone' его нет в enemiesRef: ни меч, ни навыки его не задевают.
+ */
+export type RunnerState = {
+  phase: 'asleep' | 'fleeing' | 'gone'
+  /** Сколько ударов героя ещё нужно (RUNNER_HITS при пробуждении и после возврата). */
+  hitsLeft: number
+  /** Мс до конца погони (fleeing) или до возврата (gone). */
+  timerMs: number
+  /** Точка сна — мировые x, y бокса. */
+  homeX: number
+  homeY: number
+  /** Куда бежит; passMs > 0 — после разворота у стены бежит мимо героя. */
+  dir: 1 | -1
+  passMs: number
+  /** Ударили, пока спал, — проснуться в этом тике. */
+  woken: boolean
 }
 
 // Сундук (reward-событие) — открывается ударом игрока (см. applyAttackHit),

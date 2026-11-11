@@ -2,6 +2,7 @@ import type { BackdropPreset } from '../mapRenderer'
 import * as C from './constants'
 import type { EventCandidate } from './types'
 import { pickRandom } from './utils'
+import { PATROL_EVENT_CLEARANCE, remainingPoints } from '../runExtras'
 
 export function backdropForMap(mapFile: string): BackdropPreset {
   const mapId = mapFile.match(/^map_([^_]+)_/)?.[1] ?? mapFile
@@ -68,5 +69,77 @@ export function buildEventCandidates(slots: unknown): EventCandidate[] {
   const obeliskStart = pickRandom(obeliskPoints, 1)[0]
   if (obeliskStart) candidates.push({ kind: 'obelisk', x: obeliskStart[0], y: obeliskStart[1] })
 
+  // Носитель огня и Беглец (11.11.2026) — по одному кандидату, как на сервере
+  // (buildEventCandidates в server/src/runEvents.ts). Точки — заглушка: их
+  // раздают devPlaceFlame / devPlaceRunner ниже, после выбора тройки.
+  const rewardPoints = (s?.reward ?? []).filter(isPointXY)
+  if (rewardPoints.length >= 3) candidates.push({ kind: 'flame', x: rewardPoints[0][0], y: rewardPoints[0][1] })
+  const enemyPool = enemyPointPool(slots)
+  if (enemyPool.length > 0) candidates.push({ kind: 'runner', x: enemyPool[0][0], y: enemyPool[0][1] })
+
   return candidates
+}
+
+// --- Офлайн-заглушка: места Носителя огня и Беглеца (11.11.2026) ---
+// Те же правила, что placeFlame / placeRunner на сервере (runEvents.ts); здесь
+// — только чтобы событие можно было проверить вне Telegram. Сверять не надо.
+
+function enemyPointPool(slots: unknown): [number, number][] {
+  const clusters = (slots as { enemyClusters?: { points?: unknown }[] } | null)?.enemyClusters ?? []
+  return clusters.flatMap((c) => Array.isArray(c?.points) ? c.points.filter(isPointXY) : [])
+}
+
+const pointKey = (p: readonly [number, number]) => `${p[0]},${p[1]}`
+
+/** Все клетки события: группа — её точки, огонь — жаровня и чаша, прочие — x, y. */
+export function eventCells(ev: EventCandidate): [number, number][] {
+  const own: [number, number][] = ev.clusterPoints ?? [[ev.x, ev.y]]
+  return ev.goal ? [...own, ev.goal] : own
+}
+
+function devReplacement(pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate | null {
+  const flameCells = new Set(chosen.flatMap((ev) => ev.kind === 'flame' ? eventCells(ev).map(pointKey) : []))
+  const taken = new Set(chosen.map((ev) => `${ev.kind}:${ev.x},${ev.y}`))
+  const free = pool.filter((c) => !taken.has(`${c.kind}:${c.x},${c.y}`)
+    && c.kind !== 'boss' && c.kind !== 'flame' && c.kind !== 'runner' && c.kind !== 'enemy'
+    && !(c.kind === 'chest' && flameCells.has(pointKey([c.x, c.y]))))
+  return pickRandom(free, 1)[0] ?? null
+}
+
+/** Жаровня и чаша — самая далёкая пара точек reward без сундуков; кто где — 50/50. */
+export function devPlaceFlame(slots: unknown, pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate[] {
+  const i = chosen.findIndex((ev) => ev.kind === 'flame')
+  if (i === -1) return chosen
+  const chestCells = new Set(chosen.filter((ev) => ev.kind === 'chest').map((ev) => pointKey([ev.x, ev.y])))
+  const free = ((slots as { reward?: unknown[] } | null)?.reward ?? []).filter(isPointXY).filter((p) => !chestCells.has(pointKey(p)))
+  let best: [[number, number], [number, number]] | null = null
+  let bestD = -1
+  for (let a = 0; a < free.length; a++) {
+    for (let b = a + 1; b < free.length; b++) {
+      const d = Math.hypot(free[a][0] - free[b][0], free[a][1] - free[b][1])
+      if (d > bestD) { bestD = d; best = [free[a], free[b]] }
+    }
+  }
+  if (best) {
+    const [s, g] = Math.random() < 0.5 ? best : [best[1], best[0]]
+    return chosen.map((ev, k) => k === i ? { ...ev, x: s[0], y: s[1], goal: [g[0], g[1]] } : ev)
+  }
+  const rest = chosen.filter((_, k) => k !== i)
+  const swap = devReplacement(pool, rest)
+  return swap ? [...rest.slice(0, i), swap, ...rest.slice(i)] : rest
+}
+
+/** Беглец — свободная от групп точка врагов, не ближе PATROL_EVENT_CLEARANCE к другим событиям. */
+export function devPlaceRunner(slots: unknown, pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate[] {
+  const i = chosen.findIndex((ev) => ev.kind === 'runner')
+  if (i === -1) return chosen
+  const others = chosen.filter((_, k) => k !== i)
+  const groupPoints = others.flatMap((ev) => ev.kind === 'enemy' ? ev.clusterPoints ?? [] : [])
+  const otherCells = others.flatMap(eventCells)
+  const clear = (p: [number, number]) =>
+    otherCells.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
+  const spot = pickRandom(remainingPoints(enemyPointPool(slots), groupPoints).filter(clear), 1)[0]
+  if (spot) return chosen.map((ev, k) => k === i ? { ...ev, x: spot[0], y: spot[1] } : ev)
+  const swap = devReplacement(pool, others)
+  return swap ? [...others.slice(0, i), swap, ...others.slice(i)] : others
 }
