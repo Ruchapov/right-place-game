@@ -382,6 +382,8 @@ const EXPLORE_MAPS: { label: string; file: string }[] = [
   { label: 'F Восточный двор', file: 'map_F_eastern-stair.txt' },
   { label: 'B2 Провал', file: 'map_B2_swamp.txt' },
   { label: 'C2 Провал (босс)', file: 'map_C2_swamp_boss.txt' },
+  { label: 'W Трясинный колодец (босс)', file: 'map_W_swamp-well.txt' },
+  { label: 'Y Затопленный погост', file: 'map_Y_swamp-yards.txt' },
 ]
 
 const SLOT_SVG_PATHS: Record<string, string> = {

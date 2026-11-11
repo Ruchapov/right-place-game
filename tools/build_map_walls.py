@@ -206,6 +206,8 @@ MAPS_TABLE = [
     ('map_F_eastern-stair', 'crypt', 581, 582),
     ('map_B2_swamp', 'swamp', 541, 542),
     ('map_C2_swamp_boss', 'swamp', 551, 552),
+    ('map_W_swamp-well', 'swamp', 591, 592),
+    ('map_Y_swamp-yards', 'swamp', 601, 602),
 ]
 
 

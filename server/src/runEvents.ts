@@ -35,14 +35,17 @@ export const KNOWN_MAP_FILES = [
   // с B и C — по нему slotsFileForMap берёт слоты, а клиент — тему фона.
   'map_B2_swamp.txt',
   'map_C2_swamp_boss.txt',
+  // Болото (11.11.2026): Трясинный колодец (босс) и Затопленный погост.
+  'map_W_swamp-well.txt',
+  'map_Y_swamp-yards.txt',
 ] as const
 
 export type MapFile = (typeof KNOWN_MAP_FILES)[number]
 
 // Логический пул карт для авто-выбора сервером, когда клиент не прислал
-// mapFile (см. POST /run/start-explore). Восемь слотов с равным шансом.
+// mapFile (см. POST /run/start-explore). Десять слотов с равным шансом (с 11.11.2026 + W, Y).
 // До 10.11.2026 слот D разыгрывал ещё OPEN/SEALED тайника — у новой D тайника нет.
-const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F', 'B2', 'C2'] as const
+const MAP_POOL = ['A', 'B', 'C', 'D', 'E', 'F', 'B2', 'C2', 'W', 'Y'] as const
 
 // Выбирает карту забега сама (см. POST /run/start-explore: mapFile в теле
 // запроса теперь необязателен). Возвращает готовое имя файла из
@@ -59,6 +62,8 @@ export function pickRunMapFile(): MapFile {
     case 'F': return 'map_F_eastern-stair.txt'
     case 'B2': return 'map_B2_swamp.txt'
     case 'C2': return 'map_C2_swamp_boss.txt'
+    case 'W': return 'map_W_swamp-well.txt'
+    case 'Y': return 'map_Y_swamp-yards.txt'
   }
 }
 
@@ -126,7 +131,7 @@ export const ENEMY_GROUP_WEIGHTS: Partial<Record<RunEnemyKind, number>> = {
 /**
  * Тема карты — по её id (map_<id>_…), как BACKDROP_BY_MAP на клиенте
  * (src/explore/constants.ts): A, B — кладбище; C, D — литейная; E, F —
- * затопленный склеп; B2, C2 — болото (новые шесть карт, 10.11.2026; до этого
+ * затопленный склеп; B2, C2, W, Y — болото (новые шесть карт, 10.11.2026; до этого
  * A, F — кладбище, B, D — склеп, C, E — литейная).
  */
 export type MapTheme = 'graveyard' | 'flooded_crypt' | 'foundry' | 'swamp'
@@ -135,7 +140,7 @@ export function themeForMap(mapFile: string): MapTheme | null {
   if (id === 'A' || id === 'B') return 'graveyard'
   if (id === 'E' || id === 'F') return 'flooded_crypt'
   if (id === 'C' || id === 'D') return 'foundry'
-  if (id === 'B2' || id === 'C2') return 'swamp'
+  if (id === 'B2' || id === 'C2' || id === 'W' || id === 'Y') return 'swamp'
   return null
 }
 
@@ -163,12 +168,12 @@ export const CHEST_SHADOW_TROPHY_MULT = 1.5
 
 /**
  * Какой босс выйдет на карте с местом босса (09.11.2026): на C — Тварь / Змей /
- * Король, на C2 — Настоятель / Змей / Король, по трети. Отдаётся клиенту полем
+ * Король, на C2 и W (ABBOT_MAP_PREFIXES, game.ts) — Настоятель / Змей / Король, по трети. Отдаётся клиенту полем
  * bossKind события boss; клиент своего броска не делает.
  */
 export type RunBossKind = 'werewolf' | 'abbot' | 'serpent' | 'crowking'
 export function rollBossKind(mapFile: string): RunBossKind {
-  const first: RunBossKind = mapFile.startsWith('map_C2') ? 'abbot' : 'werewolf'
+  const first: RunBossKind = ABBOT_MAP_PREFIXES.some((p) => mapFile.startsWith(p)) ? 'abbot' : 'werewolf'
   const pool: RunBossKind[] = [first, 'serpent', 'crowking']
   return pool[Math.floor(Math.random() * pool.length)]
 }
@@ -201,6 +206,7 @@ export function rollEnemyKind(characterLevel: number, mapFile = ''): RunEnemyKin
 // --- Типы ---
 
 import type { EventDrop } from './runDrops.js'
+import { ABBOT_MAP_PREFIXES } from './game.js'
 import { ELITE_CHANCE, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
 
 export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'

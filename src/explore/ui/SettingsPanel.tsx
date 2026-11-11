@@ -10,6 +10,8 @@ const TEMP_MAP_SWITCHER: { letter: string; file: string }[] = [
   { letter: 'F', file: 'map_F_eastern-stair.txt' },
   { letter: 'B2', file: 'map_B2_swamp.txt' },
   { letter: 'C2', file: 'map_C2_swamp_boss.txt' },
+  { letter: 'W', file: 'map_W_swamp-well.txt' },
+  { letter: 'Y', file: 'map_Y_swamp-yards.txt' },
 ]
 
 interface SettingsPanelProps {

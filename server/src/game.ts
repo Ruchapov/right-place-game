@@ -322,7 +322,8 @@ export function scaledBossMaxHp(level: number): number {
 // Настоятель (30.10.2026) — второй босс, выходит вместо Твари на своих картах
 // (mirrors ABBOT_MAP_PREFIXES и ABBOT_HP_MULT в src/explore/constants.ts, тот же
 // ручной синк). HP — HP Твари × ABBOT_HP_MULT, округление как у клиента.
-export const ABBOT_MAP_PREFIXES = ['map_C2'] as const
+// 11.11.2026: + болотная W (Трясинный колодец).
+export const ABBOT_MAP_PREFIXES = ['map_C2', 'map_W'] as const
 export const ABBOT_HP_MULT = 1.5
 
 /** HP босса забега на этой карте — для потолка нанесённого урона. */

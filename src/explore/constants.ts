@@ -19,6 +19,8 @@ export const BACKDROP_BY_MAP: Record<string, BackdropPreset> = {
   F: 'flooded_crypt',  // eastern-stair — Восточный лестничный двор
   B2: 'swamp',         // Провал (болото, 29.10.2026)
   C2: 'swamp',         // Провал, с боссом
+  W: 'swamp',          // swamp-well — Трясинный колодец, с боссом (11.11.2026)
+  Y: 'swamp',          // swamp-yards — Затопленный погост (11.11.2026)
 }
 
 export const TILE_SIZE = 64
@@ -2140,9 +2142,9 @@ export const ABBOT_HURT2_STUN_FRAME = 12
 
 // --- Настоятель в бою (29.10.2026, entities/abbot.ts) ---
 // Появляется на карте, где есть место босса и карта — его (ABBOT_MAP_PREFIXES):
-// сейчас это болотная C2. На карте C по-прежнему Тварь. Событие, шанс, награда
-// и награда — общие для босса (kind 'boss').
-export const ABBOT_MAP_PREFIXES = ['map_C2'] as const
+// болотные C2 и W (Трясинный колодец, 11.11.2026). На карте C по-прежнему Тварь.
+// Событие, шанс, награда и награда — общие для босса (kind 'boss').
+export const ABBOT_MAP_PREFIXES = ['map_C2', 'map_W'] as const
 /**
  * HP — в полтора раза больше, чем у Твари того же уровня (30.10.2026, Андрей:
  * «слишком лёгкий»). ⚠️ Ручной синк с сервером: ABBOT_HP_MULT и

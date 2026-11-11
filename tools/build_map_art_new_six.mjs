@@ -3,8 +3,12 @@
 //   node tools/build_map_art_new_six.mjs B D F         собрать, сверить, записать в public/ и src/
 //   node tools/build_map_art_new_six.mjs --check B D F только собрать и сверить, ничего не писать
 //
-// Без букв — все шесть. В манифест попадают ТОЛЬКО перечисленные карты: так
-// пишутся карты, которые стоят в пуле (MAP_POOL, server/src/runEvents.ts).
+// Без букв — все карты скрипта. Собранные карты ЗАМЕНЯЮТ свои строки в манифесте,
+// строки остальных карт остаются как были.
+//
+// С 11.11.2026 здесь же две болотные карты W (swamp-well) и Y (swamp-yards) —
+// пакет maps/swamp/new-two/handoff-2026-11 (тот же формат; высота фона и
+// прозрачность ближнего слоя у него в render-config.backgrounds[]).
 //
 // ОТКУДА. Пакет maps/new-six/handoff-six-maps-2026-11-10 архива арта
 // (D:\dev\right-place-art, переменная RIGHT_PLACE_ART); его ведёт Codex, сюда он
@@ -38,7 +42,8 @@ sharp.concurrency(1)
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ART = (process.env.RIGHT_PLACE_ART ?? 'D:/dev/right-place-art').replaceAll('\\', '/')
-const PACK = `${ART}/maps/new-six/handoff-six-maps-2026-11-10`
+const PACK_SIX = `${ART}/maps/new-six/handoff-six-maps-2026-11-10`
+const PACK_SWAMP = `${ART}/maps/swamp/new-two/handoff-2026-11`
 const CHECK_ONLY = process.argv.includes('--check')
 const TILE = 64
 const TEXTURE_MAX_SIDE = 4096
@@ -52,15 +57,18 @@ const MAPS = {
   D: { key: 'workshops', theme: 'foundry' },
   E: { key: 'three-halls', theme: 'flooded_crypt' },
   F: { key: 'eastern-stair', theme: 'flooded_crypt' },
+  W: { key: 'swamp-well', theme: 'swamp', pack: PACK_SWAMP },
+  Y: { key: 'swamp-yards', theme: 'swamp', pack: PACK_SWAMP },
 }
 
 function fail(msg) { console.error(`\nСТОП: ${msg}`); process.exit(1) }
 const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
-const manifest = JSON.parse(fs.readFileSync(`${PACK}/manifest.json`, 'utf8'))
-function pinned(rel) {
-  const file = `${PACK}/${rel}`
+const manifests = {}
+function pinned(rel, pack = PACK_SIX) {
+  const file = `${pack}/${rel}`
+  manifests[pack] ??= JSON.parse(fs.readFileSync(`${pack}/manifest.json`, 'utf8'))
   if (!fs.existsSync(file)) fail(`нет файла пакета ${file}`)
-  if (manifest[rel] !== sha(file)) fail(`файл пакета ${rel} не тот, что в manifest.json`)
+  if (manifests[pack][rel] !== sha(file)) fail(`файл пакета ${rel} не тот, что в manifest.json`)
   return file
 }
 const raw = (input) => sharp(input).ensureAlpha().raw().toBuffer()
@@ -112,18 +120,18 @@ function geometryCheck(layer, W, rows) {
 }
 
 async function buildMap(letter) {
-  const { key, theme } = MAPS[letter]
+  const { key, theme, pack = PACK_SIX } = MAPS[letter]
   const file = `map_${letter}_${key}.txt`
   console.log(`\n== ${letter} — ${key} (${file})`)
-  const overlay = pinned(`${key}/world-overlay.png`)
-  const config = JSON.parse(fs.readFileSync(pinned(`${key}/render-config.json`), 'utf8'))
-  const packRows = gridRows(fs.readFileSync(pinned(`${key}/${key}.txt`), 'utf8'))
+  const overlay = pinned(`${key}/world-overlay.png`, pack)
+  const config = JSON.parse(fs.readFileSync(pinned(`${key}/render-config.json`, pack), 'utf8'))
+  const packRows = gridRows(fs.readFileSync(pinned(`${key}/${key}.txt`, pack), 'utf8'))
   const rows = gridRows(fs.readFileSync(path.join(REPO, 'public/assets/maps', file), 'utf8'))
   if (rows.join('\n') !== packRows.join('\n')) fail(`сетка ${file} в игре не совпадает с ${key}.txt пакета`)
   if (config.theme !== theme) fail(`тема ${key} в пакете ${config.theme}, в скрипте ${theme}`)
   for (const layer of ['far', 'mid']) {
     const game = path.join(REPO, `public/assets/maps/backgrounds/bg_${theme}_${layer}.webp`)
-    if (sha(pinned(`${key}/background-${layer}.webp`)) !== sha(game)) fail(`фон ${key}/background-${layer}.webp не совпадает с ${path.basename(game)} — нужен свой файл фона`)
+    if (sha(pinned(`${key}/background-${layer}.webp`, pack)) !== sha(game)) fail(`фон ${key}/background-${layer}.webp не совпадает с ${path.basename(game)} — нужен свой файл фона`)
   }
   const meta = await sharp(overlay).metadata()
   const W = meta.width, H = meta.height
@@ -174,7 +182,12 @@ async function buildMap(letter) {
   console.log(`  стык: встык до сжатия — байт в байт; после сжатия у стыка макс ${seamMax}, по слою макс ${allMax}`)
   if (seamMax > allMax) fail(`ошибка у стыка ${seamMax} больше, чем по слою ${allMax}`)
   const [vr, vg, vb, va] = config.veilRGBA
-  const backdrop = { worldHeight: config.staticBackgroundHeight, dimColor: (vr << 16) | (vg << 8) | vb, dimAlpha: va, midAlpha: config.midOpacity }
+  // Шесть карт: staticBackgroundHeight и midOpacity; болото new-two: backgrounds[] (renderedSize, opacity).
+  const bgs = config.backgrounds
+  const worldHeight = config.staticBackgroundHeight ?? bgs?.[0]?.renderedSize?.[1]
+  const midAlpha = config.midOpacity ?? bgs?.find((b) => b.file === 'background-mid.webp')?.opacity
+  if (!(worldHeight > 0) || !(midAlpha >= 0)) fail(`render-config ${key}: нет высоты фона или прозрачности ближнего слоя`)
+  const backdrop = { worldHeight, dimColor: (vr << 16) | (vg << 8) | vb, dimAlpha: va, midAlpha }
   console.log(`  фон: тема ${theme}, высота в мире ${backdrop.worldHeight} px (карта ${H}), вуаль (${vr},${vg},${vb}) ${va}/255, ближний слой ${backdrop.midAlpha}`)
   return { letter, file, W, H, slices, checksum: gridChecksum(rows), backdrop, total: slices.reduce((t, s) => t + s.webp.length, 0) }
 }
@@ -199,9 +212,15 @@ if (CHECK_ONLY) {
 const artDir = path.join(REPO, 'public/assets/maps/art')
 for (const m of built) for (const s of m.slices) fs.writeFileSync(path.join(artDir, s.file), s.webp)
 const hex = (n) => `0x${n.toString(16).padStart(8, '0')}`
+const manifestPath = path.join(REPO, 'src/explore/mapArtManifestNewSix.ts')
+const builtFiles = new Set(built.map((m) => m.file))
+const keptLines = fs.existsSync(manifestPath)
+  ? fs.readFileSync(manifestPath, 'utf8').split('\n').filter((l) => /^  'map_[^']+\.txt': /.test(l) && !builtFiles.has(l.match(/^  '([^']+)'/)[1]))
+  : []
 const ts = `// СГЕНЕРИРОВАНО tools/build_map_art_new_six.mjs — руками не править, пересобирать скриптом.
 //
-// Готовые слои шести новых карт (10.11.2026, пакет new-six/handoff-six-maps-2026-11-10):
+// Готовые слои шести новых карт (10.11.2026, пакет new-six/handoff-six-maps-2026-11-10)
+// и болотных W, Y (11.11.2026, пакет swamp/new-two/handoff-2026-11):
 // world-overlay.png, нарезанный по ширине (не шире 4096 px), части ставятся встык с x.
 // gridChecksum — сумма сетки .txt, под которую собран слой. backdrop — вид фона по
 // карте из render-config.json пакета: файлы фона — темы (байт в байт те же),
@@ -209,10 +228,10 @@ const ts = `// СГЕНЕРИРОВАНО tools/build_map_art_new_six.mjs — р
 import type { MapArtEntry } from './mapArtManifest'
 
 export const MAP_ART_NEW_SIX: Record<string, MapArtEntry> = {
-${built.map((m) => `  '${m.file}': { file: '${m.slices[0].file}', width: ${m.W}, height: ${m.H}, gridChecksum: ${hex(m.checksum)}, slices: [${m.slices.map((s) => `{ file: '${s.file}', x: ${s.x}, width: ${s.width} }`).join(', ')}], backdrop: { worldHeight: ${m.backdrop.worldHeight}, dimColor: 0x${m.backdrop.dimColor.toString(16).padStart(6, '0')}, dimAlpha: ${m.backdrop.dimAlpha} / 255, midAlpha: ${m.backdrop.midAlpha} } },`).join('\n')}
+${[...keptLines, ...built.map((m) => `  '${m.file}': { file: '${m.slices[0].file}', width: ${m.W}, height: ${m.H}, gridChecksum: ${hex(m.checksum)}, slices: [${m.slices.map((s) => `{ file: '${s.file}', x: ${s.x}, width: ${s.width} }`).join(', ')}], backdrop: { worldHeight: ${m.backdrop.worldHeight}, dimColor: 0x${m.backdrop.dimColor.toString(16).padStart(6, '0')}, dimAlpha: ${m.backdrop.dimAlpha} / 255, midAlpha: ${m.backdrop.midAlpha} } },`)].sort().join('\n')}
 }
 `
-fs.writeFileSync(path.join(REPO, 'src/explore/mapArtManifestNewSix.ts'), ts)
+fs.writeFileSync(manifestPath, ts)
 console.log('\nЗаписано:')
 for (const m of built) console.log(`  ${m.file}: ${m.slices.length} част., всего ${mb(m.total)}`)
 console.log('  src/explore/mapArtManifestNewSix.ts')
