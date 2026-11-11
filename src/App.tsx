@@ -1128,21 +1128,23 @@ export default function App() {
     else enqueueTips(tips)
   }, [tutorialLoaded, tutPlayerLevel])
 
-  // Первые предметы в сумке: книга навыка, кольцо, снаряжение.
+  // Первые предметы в сумке: книга навыка, кольцо, снаряжение, руна (11.11.2026).
   const tutHasBook = player?.consumables != null && Object.entries(player.consumables).some(([id, n]) => id.startsWith('book_') && n > 0)
   const tutHasRing = player?.classItems != null && Object.entries(player.classItems).some(([id, n]) => id.startsWith('ring_') && n > 0)
   const tutHasEquipment = inventory.some((i) => !i.equipped)
+  const tutHasRune = player?.runes != null && Object.values(player.runes.stock).some((n) => n > 0)
   useEffect(() => {
     if (tutorialLoaded === null) return
     const owned: TutorialTip[] = [
       ...(tutHasBook ? [ITEM_TIPS.item_book] : []),
       ...(tutHasRing ? [ITEM_TIPS.item_ring] : []),
       ...(tutHasEquipment ? [ITEM_TIPS.item_equipment] : []),
+      ...(tutHasRune ? [ITEM_TIPS.item_rune] : []),
     ].filter((t) => !hasSeen(t.id))
     if (owned.length === 0) return
     if (tutOldPlayerRef.current) markSeen(...owned.map((t) => t.id))
     else enqueueTips(owned)
-  }, [tutorialLoaded, tutHasBook, tutHasRing, tutHasEquipment])
+  }, [tutorialLoaded, tutHasBook, tutHasRing, tutHasEquipment, tutHasRune])
 
   const closeTutorialTip = (tip: TutorialTip) => {
     markSeen(tip.id)

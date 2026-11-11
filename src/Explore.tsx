@@ -5,7 +5,7 @@ import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
 import TutorialCard from './ui/TutorialCard'
-import { RUN_TIPS, hasSeen, markSeen, tutorialReady, type RunTipId, type TutorialTip } from './tutorial'
+import { RUN_TIPS, runTipSeen, markSeen, tutorialReady, type RunTipId, type TutorialTip } from './tutorial'
 import TouchControls, { CONTROLS_BLOCK_H, LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
@@ -5259,16 +5259,32 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const right = left + app!.screen.width / s + 2 * pad
         const bottom = top + app!.screen.height / s + 2 * pad
         const inView = (x: number, y: number) => x >= left && x <= right && y >= top && y <= bottom
-        const want = (id: RunTipId) => !hasSeen(id)
+        const want = (id: RunTipId) => !runTipSeen(id)
         const boss = bossRef.current
-        if (boss && !boss.dead && want('run_boss') && inView(bossBox(boss).x + bossBox(boss).w / 2, bossBox(boss).y + bossBox(boss).h / 2)) return 'run_boss'
+        if (boss && !boss.dead) {
+          // Босс — по виду (11.11.2026): Настоятель (boss.abbot), Змей и Король
+          // (boss.nc), иначе Тварь.
+          const bossTip: RunTipId = boss.abbot ? 'run_boss_abbot'
+            : boss.nc?.kind === 'serpent' ? 'run_boss_serpent'
+              : boss.nc?.kind === 'crowking' ? 'run_boss_crowking' : 'run_boss_werewolf'
+          const bb = bossBox(boss)
+          if (want(bossTip) && inView(bb.x + bb.w / 2, bb.y + bb.h / 2)) return bossTip
+        }
+        // Враг по виду; Тень — тот же список врагов (kind 'shadow', entities/shadow.ts).
+        const KIND_TIP: Partial<Record<Enemy['kind'], RunTipId>> = {
+          gatekeeper: 'run_gatekeeper', zvonar: 'run_zvonar', fencer: 'run_fencer', gravedigger: 'run_gravedigger',
+          crossbowman: 'run_crossbowman', stoker: 'run_stoker', beetle: 'run_beetle', shadow: 'run_shadow',
+        }
         for (const e of enemiesRef.current) {
           if (e.dead || !inView(e.x + e.width / 2, e.y + e.height / 2)) continue
           if (e.elite && want('run_elite')) return 'run_elite'
-          if (e.kind === 'gatekeeper' && want('run_gatekeeper')) return 'run_gatekeeper'
-          if (e.kind === 'zvonar' && want('run_zvonar')) return 'run_zvonar'
+          const kindTip = KIND_TIP[e.kind]
+          if (kindTip && want(kindTip)) return kindTip
           if (e.patrolIndex !== undefined && want('run_patrol')) return 'run_patrol'
         }
+        // Первый «!» над любым врагом (perception.ts, syncMark): noticePending или markMs.
+        if (want('run_noticed') && enemiesRef.current.some((e) => !e.dead && (e.noticePending || (e.markMs ?? 0) > 0)
+          && inView(e.x + e.width / 2, e.y + e.height / 2))) return 'run_noticed'
         if (want('run_chest') && chestsRef.current.some((c) => !c.opened && inView(c.sprite.x, c.sprite.y))) return 'run_chest'
         if (want('run_obelisk') && obelisksRef.current.some((o) => inView(o.sprite.x, o.sprite.y))) return 'run_obelisk'
         if (want('run_smuggler') && smugglersRef.current.some((m) => inView(m.sprite.x, m.sprite.y))) return 'run_smuggler'
