@@ -266,3 +266,6 @@ export function syncFigureUniforms(f: Filter, sprite: Sprite, bodySheetPx: numbe
   body[0] = footY - bodySheetPx * Math.abs(wt.d)
   body[1] = footY
 }
+
+/** Вершинный шейдер фильтров (общий для собственных Filter, entities/enemyFreeze.ts). */
+export const FILTER_VERTEX = VERTEX

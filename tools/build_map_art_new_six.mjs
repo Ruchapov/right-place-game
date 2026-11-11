@@ -36,6 +36,7 @@ import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
+import { candlePlacements, CANDLE_ASSETS, loadAsset, eraseInLayer, NICHES, eraseNiche } from './live_decor_flames.mjs'
 
 sharp.cache(false)
 sharp.concurrency(1)
@@ -137,6 +138,21 @@ async function buildMap(letter) {
   const W = meta.width, H = meta.height
   if (W !== rows[0].length * TILE || H !== rows.length * TILE) fail(`слой ${W}×${H}, а сетка ${rows[0].length}×${rows.length} тайлов`)
   const layer = await raw(overlay)
+  // Живой огонь (12.11.2026): нарисованное пламя свечей и огонёк в нише колонны
+  // стираются со слоя — огонь рисует игра (tools/live_decor_flames.mjs).
+  const flames = []
+  for (const e of candlePlacements(pack, key)) {
+    for (const f of eraseInLayer(layer, W, H, e, await loadAsset(e.asset))) flames.push({ kind: CANDLE_ASSETS[e.asset].kind, ...f })
+  }
+  for (const box of NICHES[key] ?? []) {
+    const f = eraseNiche(layer, W, box)
+    if (!f) fail(`в нише колонны ${key} (${box.x}, ${box.y}) огонька не нашлось`)
+    flames.push({ kind: 'niche', ...f })
+  }
+  const kinds = {}
+  for (const f of flames) kinds[f.kind] = (kinds[f.kind] ?? 0) + 1
+  console.log(`  живой огонь: ${flames.length} фитилей ${JSON.stringify(kinds)}`)
+  const layerPng = await sharp(layer, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer()
   const g = geometryCheck(layer, W, rows)
   console.log(`  слой ${W}×${H}; против сетки: просветы в тверди ${g.thinInner}, тонкая нижняя кромка ${g.thinEdge}, верх '#' макс ${g.surfOff} px, верх '=' макс ${g.thinOff} px, воздух закрыт камнем ${g.airBlocked}`)
   if (g.surfOff > 2) fail(`верх опорной поверхности '#' карты ${letter} не на линии тайла (${g.surfOff} px)`)
@@ -149,7 +165,7 @@ async function buildMap(letter) {
     const parts = []
     for (let k = 0, x = 0; x < W; k++, x += cellsPer * TILE) {
       const width = Math.min(cellsPer * TILE, W - x)
-      const png = await sharp(overlay).extract({ left: x, top: 0, width, height: H }).png().toBuffer()
+      const png = await sharp(layerPng).extract({ left: x, top: 0, width, height: H }).png().toBuffer()
       const rawPart = await raw(png)
       let pick = null
       for (const [label, opts] of ladder) {
@@ -189,7 +205,7 @@ async function buildMap(letter) {
   if (!(worldHeight > 0) || !(midAlpha >= 0)) fail(`render-config ${key}: нет высоты фона или прозрачности ближнего слоя`)
   const backdrop = { worldHeight, dimColor: (vr << 16) | (vg << 8) | vb, dimAlpha: va, midAlpha }
   console.log(`  фон: тема ${theme}, высота в мире ${backdrop.worldHeight} px (карта ${H}), вуаль (${vr},${vg},${vb}) ${va}/255, ближний слой ${backdrop.midAlpha}`)
-  return { letter, file, W, H, slices, checksum: gridChecksum(rows), backdrop, total: slices.reduce((t, s) => t + s.webp.length, 0) }
+  return { letter, file, W, H, slices, flames, checksum: gridChecksum(rows), backdrop, total: slices.reduce((t, s) => t + s.webp.length, 0) }
 }
 
 const letters = process.argv.slice(2).filter((a) => !a.startsWith('--'))
@@ -232,6 +248,25 @@ ${[...keptLines, ...built.map((m) => `  '${m.file}': { file: '${m.slices[0].file
 }
 `
 fs.writeFileSync(manifestPath, ts)
+// Точки огня: строки собранных карт заменяются, остальные остаются.
+const decorPath = path.join(REPO, 'src/explore/liveDecorManifest.ts')
+const keptDecor = fs.existsSync(decorPath)
+  ? fs.readFileSync(decorPath, 'utf8').split('\n').filter((l) => /^  'map_[^']+\.txt': /.test(l) && !builtFiles.has(l.match(/^  '([^']+)'/)[1]))
+  : []
+const decorTs = `// СГЕНЕРИРОВАНО tools/build_map_art_new_six.mjs — руками не править, пересобирать скриптом.
+//
+// Живой огонь на декоре карт (12.11.2026): точки фитилей, с которых на слое стёрто
+// нарисованное пламя (tools/live_decor_flames.mjs). x, y — фитиль (низ пламени) в px
+// мира; w, h — размер прежнего яркого пятна пламени; kind — candles (две свечи с мхом),
+// candle (одна свеча), foundry (свечи литейной), niche (огонёк в нише колонны-опоры).
+export type LiveFlameKind = 'candles' | 'candle' | 'foundry' | 'niche'
+export interface LiveFlamePoint { kind: LiveFlameKind; x: number; y: number; w: number; h: number }
+
+export const LIVE_DECOR_FLAMES: Record<string, LiveFlamePoint[]> = {
+${[...keptDecor, ...built.map((m) => `  '${m.file}': [${m.flames.map((f) => `{ kind: '${f.kind}', x: ${f.x}, y: ${f.y}, w: ${f.w}, h: ${f.h} }`).join(', ')}],`)].sort().join('\n')}
+}
+`
+fs.writeFileSync(decorPath, decorTs)
 console.log('\nЗаписано:')
 for (const m of built) console.log(`  ${m.file}: ${m.slices.length} част., всего ${mb(m.total)}`)
-console.log('  src/explore/mapArtManifestNewSix.ts')
+console.log('  src/explore/mapArtManifestNewSix.ts, src/explore/liveDecorManifest.ts')

@@ -2465,3 +2465,69 @@ export const ASH_FIRE_MIN_W = 48
 export const ASH_FIRE_ANIM_SPEED = 12 / 60
 // Последние столько мс след гаснет (альфа к нулю), а не пропадает разом.
 export const ASH_FIRE_FADE_MS = 400
+
+// ─── ЖИВОЙ ДЕКОР, ЗАМОРОЗКА, БЛИК СУНДУКОВ, ЗАСТАВКА БОССА (12.11.2026) ───
+// Задание shaders_task/task-freeze-candles.md; эталоны — его превью (одобрены Андреем).
+// Свечи (entities/candleFlames.ts). Квад пламени — 2× ширины и 1.2× высоты прежнего
+// пламени, но не меньше этих мировых px (у литейных свечей пламя 1–3 px).
+export const CANDLE_FLAME_MIN_W = 6
+export const CANDLE_FLAME_MIN_H = 7
+export const CANDLE_GLOW_COLOR = 0xffa040
+export const CANDLE_GLOW_ALPHA = 0.35
+// Поперечник свечения — во столько высот квада пламени.
+export const CANDLE_GLOW_SIZE = 3.4
+export const CANDLE_NICHE_GLOW_ALPHA = 0.3
+export const CANDLE_NICHE_GLOW_SIZE = 2.6
+export const CANDLE_SPARKS = 2
+export const CANDLE_SPARK_SIZE = 2.2
+export const CANDLE_SPARK_COLOR = 0xffb050
+export const CANDLE_SPARK_LIFE_S = 1.5
+export const CANDLE_SPARK_RISE = 16
+export const CANDLE_SPARK_WAIT_MIN_S = 1.5
+export const CANDLE_SPARK_WAIT_RAND_S = 4
+export const CANDLE_TIME_WRAP_S = 600
+// Порыв от рывка: ближе стольких px по x (и по y — тот же этаж) от фитиля, спад за … с.
+export const CANDLE_GUST_RADIUS = 110
+export const CANDLE_GUST_RADIUS_Y = 96
+export const CANDLE_GUST_FADE_S = 0.9
+
+// Заморозка врага (entities/enemyFreeze.ts).
+export const FREEZE_DEFAULT_MS = 2000
+// Иней по контуру: смещение выборок альфы, px текстуры фильтра (CSS px экрана).
+export const FREEZE_RIM_PX = 3
+export const FREEZE_FILTER_PADDING = 4
+// Цвет инея — #e1f5ff, вшит в шейдер (entities/enemyFreeze.ts).
+export const FREEZE_GLINTS = 3
+export const FREEZE_SHARDS = 7
+export const FREEZE_SHARD_LIFE_MS = 650
+export const FREEZE_SHARD_COLOR = 0x9fdcff
+export const FREEZE_SHARD_GRAVITY = 900
+
+// Цепь-маятник (entities/chainSway.ts): тихое покачивание, толчок от героя.
+export const CHAIN_IDLE_AMP = 0.03
+export const CHAIN_IDLE_FREQ = 1.7
+export const CHAIN_STIFF = 12
+export const CHAIN_DAMP = 1.6
+export const CHAIN_MAX_ANGLE = 15 * Math.PI / 180
+export const CHAIN_PUSH_RADIUS = 60
+export const CHAIN_PUSH_VEL = 1.4
+
+// Блик на сундуках (entities/chestGlint.ts).
+export const CHEST_GLINT_PERIOD_MS = 2500
+export const CHEST_GLINT_SWEEP_MS = 600
+export const CHEST_GLINT_ALPHA = 0.55
+// Ширина полосы — доля ширины сундука.
+export const CHEST_GLINT_BAND = 0.28
+export const CHEST_GLINT_STAR_MS = 380
+export const CHEST_GLINT_STAR_SIZE = 9
+
+// Заставка босса (entities/bossIntro.ts): тайминги, зум, зона входа.
+export const BOSS_INTRO_IN_MS = 600
+export const BOSS_INTRO_HOLD_MS = 1400
+export const BOSS_INTRO_OUT_MS = 500
+export const BOSS_INTRO_ZOOM = 1.25
+// Зона босса: герой ближе стольких тайлов по x и по y к центру босса, босс жив.
+export const BOSS_INTRO_ZONE_TILES_X = 7
+export const BOSS_INTRO_ZONE_TILES_Y = 3
+// После заставки у босса столько мс до первого удара/призыва (таймеры «с начала»).
+export const BOSS_INTRO_GRACE_MS = 1500

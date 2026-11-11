@@ -80,6 +80,12 @@ import { createMapEdges } from './explore/entities/mapEdges'
 import { ELITE_CHANCE, ELITE_HP_MULT, ELITE_DMG_MULT, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras'
 import { createAshTrailSystem } from './explore/entities/ashTrail'
 import { createFireSystem, type Fire } from './explore/entities/fireShader'
+import { createCandleFlameSystem } from './explore/entities/candleFlames'
+import { createEnemyFreezeSystem } from './explore/entities/enemyFreeze'
+import { CHAINS, CHAIN_TEXTURE, createChainSwaySystem } from './explore/entities/chainSway'
+import { createChestGlintSystem } from './explore/entities/chestGlint'
+import { BOSS_INTRO_CSS, BOSS_INTRO_TOTAL_MS, bossDisplayName, bossIntroBlend, restartBossTimers } from './explore/entities/bossIntro'
+import { LIVE_DECOR_FLAMES } from './explore/liveDecorManifest'
 import { createRunnerSystem } from './explore/entities/runner'
 import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
@@ -1076,6 +1082,11 @@ function ResultsScreen({
   )
 }
 
+// Проверка заморозки до появления её источника (12.11.2026): в адресе debugFreeze
+// (?debugFreeze=1, или в Telegram t.me/RightPlaceGame_bot/game?startapp=debugFreeze —
+// тогда он приходит в tgWebAppStartParam) — удар мечом замораживает врага на 2 с.
+const DEBUG_FREEZE = typeof window !== 'undefined' && /debugFreeze/.test(window.location.href)
+
 export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent, gear: gearProp, bootsSpeedPct }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
@@ -1782,6 +1793,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // хитстопе, анимации спрайтов (общий Ticker.shared) — на speed 0.
   const [runTip, setRunTip] = useState<TutorialTip | null>(null)
   const tutorialPausedRef = useRef(false)
+  // Заставка босса (12.11.2026, entities/bossIntro.ts): титр поверх холста — DOM,
+  // ведёт его тикер (data-on, текст); тап по нему пропускает заставку.
+  const bossIntroRef = useRef<HTMLDivElement | null>(null)
+  const bossIntroNameRef = useRef<HTMLDivElement | null>(null)
+  const bossIntroSkipRef = useRef(false)
 
   // Сундуки (reward-события) — по объекту Chest на событие. hitbox считается
   // ОДИН раз при создании (см. setup), читается каждый кадр в ticker'е для
@@ -2777,6 +2793,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let runnerSystem: ReturnType<typeof createRunnerSystem> | null = null
     let reflectGlowSystem: ReturnType<typeof createReflectGlowSystem> | null = null
     let mapEdges: ReturnType<typeof createMapEdges> | null = null
+    // Живой декор, заморозка, блик сундуков (12.11.2026, задание shaders_task).
+    let candleFlameSystem: ReturnType<typeof createCandleFlameSystem> | null = null
+    let enemyFreezeSystem: ReturnType<typeof createEnemyFreezeSystem> | null = null
+    let chainSwaySystem: ReturnType<typeof createChainSwaySystem> | null = null
+    let chestGlintSystem: ReturnType<typeof createChestGlintSystem> | null = null
 
     async function setup() {
       app = new Application()
@@ -3665,6 +3686,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           animate: swayDecorAnimate,
         })
       }
+      // Живые свечи и огонёк в нише колонны (12.11.2026, entities/candleFlames.ts):
+      // нарисованное пламя стёрто со слоя при сборке, огонь — шейдером от фитилей.
+      // Поверх слоя и под шипами, врагами и героем.
+      const flamePoints = LIVE_DECOR_FLAMES[resolvedMapFile] ?? []
+      if (flamePoints.length > 0) {
+        candleFlameSystem = createCandleFlameSystem({ parent: worldContainer, points: flamePoints, webgl: !onCanvasRenderer })
+        console.info(`Explore: живой огонь — ${flamePoints.length} фитилей`)
+      }
+      // Висячие цепи-маятники (entities/chainSway.ts) — на картах пока нет ни одной.
+      const chainPoints = CHAINS[resolvedMapFile] ?? []
+      if (chainPoints.length > 0) {
+        const chainTexture = await Assets.load(`${base}${CHAIN_TEXTURE}`) as Texture
+        chainSwaySystem = createChainSwaySystem(worldContainer, chainPoints.map((c) => ({ ...c, texture: chainTexture })))
+      }
       // Шипы — поверх слоя: одна текстура клетки, по спрайту на шип.
       // Блик (29.10.2026, docs/maps.md, «Шипы») — тоже одна текстура клетки и по
       // спрайту на шип, все в ОДНОМ контейнере над шипами: синхронность и одна
@@ -4014,6 +4049,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       smokeSystem = createSmokePuffSystem({ parent: worldContainer })
       const smoke = smokeSystem
       fireSystem = createFireSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL })
+      enemyFreezeSystem = createEnemyFreezeSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL })
       const glowForRunner = eliteGlowSystem
       runnerSystem = createRunnerSystem({
         phys,
@@ -4984,6 +5020,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       } else {
         bossRef.current = null
       }
+      // Блик на закрытых сундуках (12.11.2026, entities/chestGlint.ts) — копия кадра
+      // над сундуком, поэтому после спавна сундуков.
+      if (chestsRef.current.length > 0 && !reduceMotion) chestGlintSystem = createChestGlintSystem(chestsRef.current)
 
       // Панель Смуглера (окно обмена) — ОДИН Container на весь забег (не по
       // смуглеру: в один момент активен максимум один, см. smugglerActiveRef
@@ -5842,6 +5881,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         enemy.investigateX = sourceX
         enemy.investigateTimer = C.INVESTIGATE_MS
         enemy.investigateLookTimer = 0
+        // ?debugFreeze=1 (12.11.2026): удар мечом по живому — заморозка на 2 с
+        // (entities/enemyFreeze.ts; источника в игре пока нет). Беглеца не морозим.
+        if (DEBUG_FREEZE && via === 'sword' && enemy.hp > 0 && !enemy.runner) enemyFreezeSystem?.freeze(enemy, C.FREEZE_DEFAULT_MS)
         if (enemy.hp <= 0) {
           // Смерть — высший приоритет, перебивает hurt/attack/windup
           // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
@@ -6365,7 +6407,87 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // приземление на твердь. Платформы '=' — следующий шаг.
       const worldWidthPx = grid[0].length * C.TILE_SIZE
 
+      // ЗАСТАВКА БОССА (12.11.2026, entities/bossIntro.ts): один раз за забег.
+      // bossIntroMs — сколько идёт (null — не идёт); камера едет от того места, где
+      // стояла в момент входа в зону, к боссу с приближением и обратно.
+      let bossIntroMs: number | null = null
+      let bossIntroPlayed = false
+      const bossIntroFrom = { x: 0, y: 0, s: 1 }
+      const setTouchControlsHidden = (hidden: boolean) => {
+        const tc = document.querySelector<HTMLElement>('[data-touch-controls]')
+        if (tc) tc.style.visibility = hidden ? 'hidden' : ''
+      }
+      const startBossIntro = (b: Boss) => {
+        bossIntroPlayed = true
+        bossIntroMs = 0
+        bossIntroSkipRef.current = false
+        bossIntroFrom.x = worldContainer.x
+        bossIntroFrom.y = worldContainer.y
+        bossIntroFrom.s = worldContainer.scale.x
+        Ticker.shared.speed = 0
+        const el = bossIntroRef.current
+        if (bossIntroNameRef.current) bossIntroNameRef.current.textContent = bossDisplayName(b)
+        if (el) { el.dataset.on = '1'; el.style.display = 'block' }
+        // Боевые кнопки на время заставки прячутся — титр внизу, а ввода всё равно нет.
+        setTouchControlsHidden(true)
+      }
+      const endBossIntro = () => {
+        bossIntroMs = null
+        bossIntroSkipRef.current = false
+        const el = bossIntroRef.current
+        if (el) { el.dataset.on = '0'; el.style.display = 'none' }
+        setTouchControlsHidden(false)
+        worldContainer.scale.set(viewScale)
+        updateCamera(Infinity)
+        if (!tutorialPausedRef.current) Ticker.shared.speed = 1
+        // Нажатое во время заставки не срабатывает после неё; босс — с чистыми таймерами.
+        attackPressedRef.current = false
+        jumpPressedRef.current = false
+        dodgePressedRef.current = false
+        drinkPressedRef.current = false
+        skill1PressedRef.current = false
+        skill2PressedRef.current = false
+        const b = bossRef.current
+        if (b) restartBossTimers(b)
+      }
+      const bossIntroCamera = (b: Boss, blend: number) => {
+        const sw = app!.screen.width, sh = app!.screen.height
+        const box = bossBox(b)
+        const tz = viewScale * C.BOSS_INTRO_ZOOM
+        const tx = clamp(sw / 2 - (box.x + box.w / 2) * tz, sw - grid[0].length * C.TILE_SIZE * tz - cameraFieldRight, cameraFieldLeft)
+        const ty = clamp(sh * 0.5 - (box.y + box.h / 2) * tz, sh - grid.length * C.TILE_SIZE * tz, 0)
+        worldContainer.scale.set(bossIntroFrom.s + (tz - bossIntroFrom.s) * blend)
+        worldContainer.x = bossIntroFrom.x + (tx - bossIntroFrom.x) * blend
+        worldContainer.y = bossIntroFrom.y + (ty - bossIntroFrom.y) * blend
+      }
+      // Живой декор: свечи, цепи, блик сундуков, заморозка — рамка камеры в мире.
+      // Рывок, шедший в начале тика (его могли оборвать в этом же тике), тоже раздувает свечи.
+      let dashAtTickStart = false
+      const updateLiveDecor = (deltaMS: number) => {
+        const sc = worldContainer.scale.x
+        const left = -worldContainer.x / sc, top = -worldContainer.y / sc
+        const right = left + app!.screen.width / sc, bottom = top + app!.screen.height / sc
+        const heroX = player.x + player.width / 2, heroY = player.y + player.height / 2
+        candleFlameSystem?.update(deltaMS, left, top, right, bottom,
+          dashingRef.current || dashAtTickStart ? { x: heroX, y: heroY, dir: facingRef.current === -1 ? -1 : 1 } : null)
+        chainSwaySystem?.update(deltaMS, { x: heroX, y: heroY, vx: phys.vx * 60, dashing: dashingRef.current }, left, right)
+        chestGlintSystem?.update(deltaMS, left, right)
+        enemyFreezeSystem?.update(deltaMS)
+      }
+
       app.ticker.add((ticker) => {
+        // Заставка босса идёт — логика забега стоит (как при подсказке обучения):
+        // босс и герой не двигаются, урона нет, ввод не обрабатывается; живёт только
+        // камера, титр и декор. Тап по титру (bossIntroSkipRef) — сразу конец.
+        if (bossIntroMs !== null) {
+          bossIntroMs += ticker.deltaMS
+          const b = bossRef.current
+          if (bossIntroSkipRef.current || bossIntroMs >= BOSS_INTRO_TOTAL_MS || !b || b.dead) endBossIntro()
+          else bossIntroCamera(b, bossIntroBlend(bossIntroMs))
+          updateLiveDecor(ticker.deltaMS)
+          return
+        }
+        dashAtTickStart = dashingRef.current
         // Хитстоп (30.10.2026): пока он идёт, игра стоит — логика этого кадра не
         // выполняется, а анимации спрайтов (их крутит общий Ticker.shared, а не
         // этот тикер) стоят на speed 0. Нажатия копятся во флагах и сработают
@@ -7531,11 +7653,23 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         cameraFieldsAgeMs += ticker.deltaMS
         if (cameraFieldsAgeMs >= CAMERA_FIELDS_EVERY_MS) measureCameraFields()
         updateCamera(dt)
+        updateLiveDecor(ticker.deltaMS)
+        // Заставка босса: герой впервые вошёл в зону живого босса — со следующего
+        // тика всё стоит (см. начало тикера). Не поверх подсказки обучения.
+        if (!bossIntroPlayed && !tutorialPausedRef.current && !deathRef.current) {
+          const b = bossRef.current
+          if (b && !b.dead && !b.nc?.hidden) {
+            const box = bossBox(b)
+            const dx = Math.abs(player.x + player.width / 2 - (box.x + box.w / 2))
+            const dy = Math.abs(player.y + player.height - (box.y + box.h))
+            if (dx < C.BOSS_INTRO_ZONE_TILES_X * C.TILE_SIZE && dy < C.BOSS_INTRO_ZONE_TILES_Y * C.TILE_SIZE) startBossIntro(b)
+          }
+        }
         // ОБУЧЕНИЕ: раз в TUTORIAL_SCAN_MS — что впервые попало в кадр. После
         // камеры: кадр — тот, что будет нарисован. Мёртвому герою и после
         // финиша подсказки не нужны.
         tutorialScanMs += ticker.deltaMS
-        if (tutorialScanMs >= TUTORIAL_SCAN_MS && tutorialReady() && !deathRef.current && !finishExploreSentRef.current) {
+        if (bossIntroMs === null && tutorialScanMs >= TUTORIAL_SCAN_MS && tutorialReady() && !deathRef.current && !finishExploreSentRef.current) {
           tutorialScanMs = 0
           const tipId = findRunTip()
           if (tipId !== null) {
@@ -7680,6 +7814,19 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Стебли снимают свои узлы, их собственные текстуры уничтожаются здесь.
       swayDecorSystem?.dispose()
       swayDecorSystem = null
+      // Живой декор, заморозка, блик сундуков: шейдеры, фильтры и текстура свечения —
+      // свои, их app.destroy не снимет.
+      candleFlameSystem?.dispose()
+      candleFlameSystem = null
+      enemyFreezeSystem?.dispose()
+      enemyFreezeSystem = null
+      chainSwaySystem?.dispose()
+      chainSwaySystem = null
+      chestGlintSystem?.dispose()
+      chestGlintSystem = null
+      // Заставка, оборванная выходом, не должна оставить титр на экране.
+      if (bossIntroRef.current) { bossIntroRef.current.dataset.on = '0'; bossIntroRef.current.style.display = 'none' }
+      document.querySelector<HTMLElement>('[data-touch-controls]')?.style.removeProperty('visibility')
       if (swayTextures) for (const t of swayTextures.values()) t.destroy(true)
       swayTextures = null
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
@@ -8223,6 +8370,50 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           sendFinishExplore(!(tasksDone && !deathRef.current))
         }}
         trophies={trophies} runTrophies={() => trophiesEarnedRef.current} tasksDone={finishPhase !== 'none'} />
+
+      {/* Заставка босса (12.11.2026, entities/bossIntro.ts): кашетки и имя кистью.
+          Показ, текст и конец ведёт тикер; тап в любом месте — пропуск. */}
+      <style>{BOSS_INTRO_CSS}</style>
+      <div
+        ref={bossIntroRef}
+        className="rp-bi"
+        data-on="0"
+        onPointerDown={() => { bossIntroSkipRef.current = true }}
+        style={{ display: 'none', position: 'absolute', inset: 0, zIndex: 1500, touchAction: 'none' }}
+      >
+        <div className="rp-bi-top" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: '8%', background: '#050307' }} />
+        <div className="rp-bi-bot" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '8%', background: '#050307' }} />
+        <div
+          className="rp-bi-title"
+          style={{
+            position: 'absolute', left: 0, right: 0,
+            bottom: 'calc(8% + max(var(--rp-safe-bottom, 0px), 10px) + 4vmin)',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'none',
+          }}
+        >
+          <div
+            ref={bossIntroNameRef}
+            className="rp-bi-name"
+            style={{
+              fontFamily: "'Ruslan Display', 'Lora', serif",
+              fontSize: 'clamp(30px, 9vmin, 64px)',
+              lineHeight: 1.1,
+              color: '#1b1214',
+              letterSpacing: '0.04em',
+              padding: '0 4vmin',
+              textShadow: '0 0 2px #f4eee6, 0 0 3px #f4eee6, 1px 1px 0 #e9e2d6, -1px -1px 0 #e9e2d6, 1px -1px 0 #e9e2d6, -1px 1px 0 #e9e2d6, 0 0 14px rgba(240,232,220,0.55)',
+            }}
+          />
+          <div
+            className="rp-bi-line"
+            style={{
+              width: 'min(62vw, 420px)', height: 3, marginTop: '1vmin',
+              background: 'linear-gradient(90deg, transparent, #1b1214 12%, #1b1214 88%, transparent)',
+              boxShadow: '0 0 3px #efe8de', transformOrigin: 'left center',
+            }}
+          />
+        </div>
+      </div>
 
       {/* Подсказка обучения (08.11.2026): игра стоит, пока не нажато «Понятно». */}
       {runTip && (
