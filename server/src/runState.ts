@@ -763,13 +763,16 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   const patrols = patrolsRead === 'malformed' ? [] : patrolsRead
   // Число врагов — не потолок урона (его задаёт сумма HP ниже), но по нему
   // считаются запасы маны и лечения и читаются логи расхождений на финише.
-  const enemyCount = enemyGroups.reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0) + patrols.length
+  // Беглец (11.11.2026) — ещё один враг: +1 к числу и HP зверя к пулу ниже.
+  const runnerCount = events.filter((ev) => ev.kind === 'runner').length
+  const enemyCount = enemyGroups.reduce((sum, ev) => sum + (ev.clusterPoints?.length ?? 0), 0) + patrols.length + runnerCount
   // Элита (30.10.2026) — ×ELITE_HP_MULT к HP своего врага: (ELITE_HP_MULT − 1)
   // лишних «врагов» по HP в её группе.
   const enemyHpTotal = enemyGroups.reduce((sum, ev) => {
     const eliteExtra = ev.eliteIndex !== undefined ? ELITE_HP_MULT - 1 : 0
     return sum + ((ev.clusterPoints?.length ?? 0) + eliteExtra) * perEnemyHp(ev.enemyKind)
   }, 0) + patrols.reduce((sum, p) => sum + perEnemyHp(p.enemyKind), 0)
+    + runnerCount * scaledEnemyMaxHp(characterLevel)
   const bossEvents = events.filter((ev) => ev.kind === 'boss')
   const bossCount = bossEvents.length
   // HP босса — по его виду (bossKind, 09.11.2026); у забегов раньше — по карте.

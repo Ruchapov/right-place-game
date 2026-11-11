@@ -80,6 +80,10 @@ export const TROPHY_MULT_ENEMY = 1.25 // constants.ts:457
 export const TROPHY_MULT_CHEST = 3 // constants.ts:458
 export const TROPHY_MULT_OBELISK = 2 // constants.ts:459
 export const TROPHY_MULT_BOSS = 4 // constants.ts:460
+// Носитель огня и Беглец (11.11.2026, docs/explore-features.md). Пары на клиенте —
+// TROPHY_MULT_FLAME / TROPHY_MULT_RUNNER в constants.ts (их читает офлайн-заглушка).
+export const TROPHY_MULT_FLAME = 3
+export const TROPHY_MULT_RUNNER = 3
 export const TROPHY_BASE = 12.5 // constants.ts:452
 export const TROPHY_LEVEL_POWER = 0.446 // constants.ts:453
 export const TROPHY_SPREAD = 0.4 // constants.ts:454, разброс +-20%
@@ -207,9 +211,26 @@ export function rollEnemyKind(characterLevel: number, mapFile = ''): RunEnemyKin
 
 import type { EventDrop } from './runDrops.js'
 import { ABBOT_MAP_PREFIXES } from './game.js'
-import { ELITE_CHANCE, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
+import { ELITE_CHANCE, GATEKEEPER_MIN_LEVEL, GROUP_SIZE, PATROL_EVENT_CLEARANCE, TROPHY_MULT_PATROL, eliteGroupTrophies, pickPatrolSpots, remainingPoints, scatterGroupPoints } from './runExtras.js'
 
-export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk'
+export type RunEventKind = 'enemy' | 'chest' | 'smuggler' | 'puzzle' | 'boss' | 'obelisk' | 'flame' | 'runner'
+
+/**
+ * Виды событий, которые выпадают только клиенту, назвавшему их в теле старта
+ * (`eventKinds`, 11.11.2026). Telegram держит старый бандл в кэше: старый клиент
+ * поля не шлёт, рисовать эти события не умеет — и не получает их никогда.
+ */
+export const OPT_IN_EVENT_KINDS = ['flame', 'runner'] as const
+export type OptInEventKind = (typeof OPT_IN_EVENT_KINDS)[number]
+
+/** Разбор `eventKinds` тела старта: нет поля — []; не массив — null (отказ 400). */
+export function parseOptInEventKinds(raw: unknown): OptInEventKind[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return null
+  // Незнакомые строки молча пропускаются: клиент новее сервера может прислать
+  // вид, которого здесь ещё нет, — его просто не будет в пуле.
+  return OPT_IN_EVENT_KINDS.filter((k) => raw.includes(k))
+}
 
 /**
  * Чья это группа врагов. Только для kind === 'enemy'.
@@ -230,6 +251,8 @@ type EventCandidate = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /** Чаша Носителя огня (только flame): x, y — жаровня. */
+  goal?: [number, number]
 }
 
 // Итоговое разыгранное событие — то, что кладётся в currentRun/отдаётся клиенту.
@@ -241,6 +264,11 @@ export type RunEvent = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /**
+   * Чаша Носителя огня (11.11.2026) — только у kind === 'flame'; x, y — жаровня.
+   * Обе — точки reward карты, самые далёкие друг от друга из свободных.
+   */
+  goal?: [number, number]
   trophyReward: number
   /**
    * Ловушка или обычный сундук — только для kind === 'chest'.
@@ -360,7 +388,7 @@ function readSlots(mapFile: string): SlotsFile {
 
 // Пул кандидатов — эквивалент buildEventCandidates в src/explore/mapEvents.ts:38-74.
 // Порядок типов в пуле тот же: enemy, chest, smuggler, puzzle, boss, obelisk.
-function buildEventCandidates(slots: SlotsFile): EventCandidate[] {
+function buildEventCandidates(slots: SlotsFile, optIn: readonly OptInEventKind[]): EventCandidate[] {
   const candidates: EventCandidate[] = []
 
   // Кластер — «билет» группы в розыгрыше (их число — шанс выпасть группе), а
@@ -389,6 +417,19 @@ function buildEventCandidates(slots: SlotsFile): EventCandidate[] {
   const obeliskPoints = Array.isArray(slots.obelisk?.points) ? (slots.obelisk.points as unknown[]).filter(isPointXY) : []
   const obeliskStart = pickRandom(obeliskPoints, 1)[0]
   if (obeliskStart) candidates.push({ kind: 'obelisk', x: obeliskStart[0], y: obeliskStart[1] })
+
+  // Носитель огня и Беглец (11.11.2026) — по ОДНОМУ кандидату на карту, как
+  // обелиск, и только клиенту, который их знает. Точки здесь — заглушка: их
+  // раздают placeFlame / placeRunner ПОСЛЕ выбора тройки (жаровне и чаше нужны
+  // свободные от сундуков точки reward, Беглецу — свободная от групп точка врагов).
+  const rewardPoints = (slots.reward ?? []).filter(isPointXY)
+  if (optIn.includes('flame') && rewardPoints.length >= 3) {
+    candidates.push({ kind: 'flame', x: rewardPoints[0][0], y: rewardPoints[0][1] })
+  }
+  const enemyPool = enemyPointPool(slots)
+  if (optIn.includes('runner') && enemyPool.length > 0) {
+    candidates.push({ kind: 'runner', x: enemyPool[0][0], y: enemyPool[0][1] })
+  }
 
   return candidates
 }
@@ -424,6 +465,8 @@ const TROPHY_MULT_BY_KIND: Partial<Record<RunEventKind, number>> = {
   chest: TROPHY_MULT_CHEST,
   obelisk: TROPHY_MULT_OBELISK,
   boss: TROPHY_MULT_BOSS,
+  flame: TROPHY_MULT_FLAME,
+  runner: TROPHY_MULT_RUNNER,
 }
 
 // Точка входа модуля: читает слот-файл карты, выбирает тройку событий по
@@ -449,10 +492,91 @@ function scatterEnemyGroups(slots: SlotsFile, chosen: EventCandidate[]): EventCa
   })
 }
 
-export function rollRunEvents(mapFile: string, characterLevel: number): RunEvent[] {
+const pointKey = (p: readonly [number, number]) => `${p[0]},${p[1]}`
+
+/** Все клетки события: группа — её точки, огонь — жаровня и чаша, прочие — x, y. */
+export function eventPointsOf(ev: { x: number; y: number; clusterPoints?: [number, number][]; goal?: [number, number] }): [number, number][] {
+  const own: [number, number][] = ev.clusterPoints ?? [[ev.x, ev.y]]
+  return ev.goal ? [...own, ev.goal] : own
+}
+
+/** Самая далёкая друг от друга пара точек (по прямой); меньше двух — null. */
+function farthestPair(points: [number, number][]): [[number, number], [number, number]] | null {
+  let best: [[number, number], [number, number]] | null = null
+  let bestD = -1
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const d = Math.hypot(points[i][0] - points[j][0], points[i][1] - points[j][1])
+      if (d > bestD) { bestD = d; best = [points[i], points[j]] }
+    }
+  }
+  return best
+}
+
+/**
+ * Замена события, которому не нашлось места (11.11.2026): случайный кандидат
+ * пула, которого нет в тройке. Не босс (у босса свой бросок), не Носитель огня и
+ * не Беглец (их точки уже не раздать), не группа (её точки раздаются отдельно),
+ * не сундук на клетках огня. Нет такого — null, и событий будет на одно меньше.
+ */
+function replacementFor(pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate | null {
+  const flameCells = new Set(chosen.flatMap((ev) => ev.kind === 'flame' ? eventPointsOf(ev).map(pointKey) : []))
+  const chosenCells = new Set(chosen.map((ev) => `${ev.kind}:${ev.x},${ev.y}`))
+  const free = pool.filter((c) =>
+    !chosenCells.has(`${c.kind}:${c.x},${c.y}`)
+    && c.kind !== 'boss' && c.kind !== 'flame' && c.kind !== 'runner' && c.kind !== 'enemy'
+    && !(c.kind === 'chest' && flameCells.has(pointKey([c.x, c.y]))))
+  return pickRandom(free, 1)[0] ?? null
+}
+
+/**
+ * Жаровня и чаша Носителя огня — до раздачи групп: из точек reward без сундуков
+ * тройки берётся самая далёкая пара, кто из них жаровня — 50/50. Пары нет —
+ * событие заменяется другим кандидатом пула.
+ */
+function placeFlame(slots: SlotsFile, pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate[] {
+  const i = chosen.findIndex((ev) => ev.kind === 'flame')
+  if (i === -1) return chosen
+  const chestCells = new Set(chosen.filter((ev) => ev.kind === 'chest').map((ev) => pointKey([ev.x, ev.y])))
+  const free = (slots.reward ?? []).filter(isPointXY).filter((p) => !chestCells.has(pointKey(p)))
+  const pair = farthestPair(free)
+  if (pair) {
+    const [a, b] = Math.random() < 0.5 ? pair : [pair[1], pair[0]]
+    return chosen.map((ev, k) => k === i ? { ...ev, x: a[0], y: a[1], goal: [b[0], b[1]] } : ev)
+  }
+  const rest = chosen.filter((_, k) => k !== i)
+  const swap = replacementFor(pool, rest)
+  return swap ? [...rest.slice(0, i), swap, ...rest.slice(i)] : rest
+}
+
+/**
+ * Точка Беглеца — после раздачи групп: случайная из оставшихся точек врагов, не
+ * ближе PATROL_EVENT_CLEARANCE (на том же ряду, как у патрульных) к клеткам
+ * других событий. Нет такой — событие заменяется другим кандидатом пула.
+ */
+function placeRunner(slots: SlotsFile, pool: EventCandidate[], chosen: EventCandidate[]): EventCandidate[] {
+  const i = chosen.findIndex((ev) => ev.kind === 'runner')
+  if (i === -1) return chosen
+  const others = chosen.filter((_, k) => k !== i)
+  const groupPoints = others.flatMap((ev) => ev.kind === 'enemy' ? ev.clusterPoints ?? [] : [])
+  const otherCells = others.flatMap(eventPointsOf)
+  const clear = (p: [number, number]) =>
+    otherCells.every((q) => q[1] !== p[1] || Math.abs(q[0] - p[0]) >= PATROL_EVENT_CLEARANCE)
+  const spot = pickRandom(remainingPoints(enemyPointPool(slots), groupPoints).filter(clear), 1)[0]
+  if (spot) return chosen.map((ev, k) => k === i ? { ...ev, x: spot[0], y: spot[1] } : ev)
+  const swap = replacementFor(pool, others)
+  return swap ? [...others.slice(0, i), swap, ...others.slice(i)] : others
+}
+
+/**
+ * optIn — виды из OPT_IN_EVENT_KINDS, которые клиент назвал в `eventKinds`
+ * (11.11.2026): только они попадают в пул.
+ */
+export function rollRunEvents(mapFile: string, characterLevel: number, optIn: readonly OptInEventKind[] = []): RunEvent[] {
   const slots = readSlots(mapFile)
-  const eventPool = buildEventCandidates(slots)
-  const chosenEvents = scatterEnemyGroups(slots, pickChosenEvents(eventPool))
+  const eventPool = buildEventCandidates(slots, optIn)
+  const picked = placeFlame(slots, eventPool, pickChosenEvents(eventPool))
+  const chosenEvents = placeRunner(slots, eventPool, scatterEnemyGroups(slots, picked))
 
   return chosenEvents.map((ev) => {
     const multiplier = TROPHY_MULT_BY_KIND[ev.kind]
@@ -534,8 +658,11 @@ export type RunPatrol = {
 export function rollRunPatrols(mapFile: string, events: RunEvent[], characterLevel: number): RunPatrol[] {
   const slots = readSlots(mapFile)
   const groupPoints = events.flatMap((ev) => ev.kind === 'enemy' ? ev.clusterPoints ?? [] : [])
-  const eventPoints: [number, number][] = events.flatMap((ev) => ev.clusterPoints ?? [[ev.x, ev.y] as [number, number]])
-  return pickPatrolSpots(remainingPoints(enemyPointPool(slots), groupPoints), eventPoints).map(([x, y]) => ({
+  // Жаровня, чаша и Беглец (11.11.2026) — тоже клетки событий; точка Беглеца
+  // вычитается из пула явно (клиренс и так не пустил бы на неё).
+  const eventPoints: [number, number][] = events.flatMap(eventPointsOf)
+  const runnerPoints: [number, number][] = events.filter((ev) => ev.kind === 'runner').map((ev) => [ev.x, ev.y])
+  return pickPatrolSpots(remainingPoints(enemyPointPool(slots), [...groupPoints, ...runnerPoints]), eventPoints).map(([x, y]) => ({
     x,
     y,
     enemyKind: rollEnemyKind(characterLevel, mapFile),
@@ -553,6 +680,8 @@ export type ClientRunEvent = {
   x: number
   y: number
   clusterPoints?: [number, number][]
+  /** Чаша Носителя огня (11.11.2026) — только у flame. */
+  goal?: [number, number]
   enemyKind?: RunEnemyKind
   /** Элитный враг группы (30.10.2026); поля нет — элиты нет. */
   eliteIndex?: number
@@ -603,6 +732,7 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     x: ev.x,
     y: ev.y,
     ...(ev.clusterPoints ? { clusterPoints: ev.clusterPoints } : {}),
+    ...(ev.kind === 'flame' && ev.goal ? { goal: ev.goal } : {}),
     // Чья группа (04.10.2026). Отдаётся ТОЛЬКО если сервер её разыграл: у
     // забега, начатого старым сервером, поля нет вовсе, и клиент читает это
     // как «звери» — см. readEnemyKind в src/api.ts.
@@ -638,7 +768,8 @@ function clientEventDrop(drop: EventDrop | null | undefined): ClientEventDrop | 
  */
 export function pickStarbloomPoint(mapFile: string, events: RunEvent[]): [number, number] | null {
   const slots = readSlots(mapFile)
-  const taken = new Set(events.map((ev) => `${ev.x},${ev.y}`))
+  // Чаша Носителя огня — тоже занятая клетка (11.11.2026).
+  const taken = new Set(events.flatMap(eventPointsOf).map(pointKey))
   const free = (slots.reward ?? []).filter(isPointXY).filter((p) => !taken.has(`${p[0]},${p[1]}`))
   return pickRandom(free, 1)[0] ?? null
 }

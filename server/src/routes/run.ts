@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
+import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, parseOptInEventKinds, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
@@ -1084,6 +1084,9 @@ type StartExploreBody = {
   // id расходников из гнёзд подготовки. Поля НЕТ — забег без расходников: так
   // шлёт клиент до появления гнёзд, и отказывать ему нельзя.
   consumables?: string[]
+  // Виды событий, которые клиент умеет рисовать сверх старых (11.11.2026):
+  // 'flame', 'runner'. Поля нет — старый клиент, этих событий у него не будет.
+  eventKinds?: unknown
 }
 // Body shape for POST /run/finish-explore. closedEvents — indices into the
 // ActiveExploreRun.events array (see FinishExplore route below for how
@@ -1321,6 +1324,10 @@ export async function runRoutes(server: FastifyInstance) {
       mapFile = requestedMapFile
     }
 
+    // Новые виды событий — только тем, кто их назвал (parseOptInEventKinds).
+    const optInKinds = parseOptInEventKinds(request.body?.eventKinds)
+    if (optInKinds === null) return reply.status(400).send({ error: 'eventKinds must be an array' })
+
     // --- Расходники из гнёзд подготовки ---
     //
     // Поля нет — забег без расходников (так шлёт клиент до появления гнёзд).
@@ -1411,7 +1418,7 @@ export async function runRoutes(server: FastifyInstance) {
     // level больше не колонка в БД — вычисляется на месте из статов+бонуса
     // (см. game.ts calculateLevel), никогда не читается напрямую.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-    const rolledEvents = rollRunEvents(mapFile, characterLevel)
+    const rolledEvents = rollRunEvents(mapFile, characterLevel, optInKinds)
     const events = await attachEventDrops(
       rolledEvents,
       characterLevel,

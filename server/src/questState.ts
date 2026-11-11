@@ -385,7 +385,8 @@ export function collectQuestRunFacts(
   // + патрульные (30.10.2026): с них тоже падает мана. В «Перебей группу …»
   // они не идут — groupsOf считает только закрытые события.
   const patrolsRead = readRunPatrols(run)
-  const kills = events.reduce((sum, ev) => sum + (ev.kind === 'enemy' ? ev.clusterPoints?.length ?? 0 : ev.kind === 'boss' ? 1 : 0), 0)
+  // Беглец (11.11.2026) — тоже убитый враг (с него падает мана), в группы не идёт.
+  const kills = events.reduce((sum, ev) => sum + (ev.kind === 'enemy' ? ev.clusterPoints?.length ?? 0 : ev.kind === 'boss' || ev.kind === 'runner' ? 1 : 0), 0)
     + (patrolsRead === 'malformed' ? 0 : patrolsRead.length)
 
   const clamped: string[] = []

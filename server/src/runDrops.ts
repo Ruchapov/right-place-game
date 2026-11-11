@@ -52,6 +52,9 @@ export const DROP_CHANCE_BY_KIND: Record<RunEventKind, number> = {
   boss: 0.5,
   puzzle: 0,
   smuggler: 0,
+  // Носитель огня — как сундук, Беглец — как враг (11.11.2026).
+  flame: 1,
+  runner: 0.5,
 }
 
 /**
