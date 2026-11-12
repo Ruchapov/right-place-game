@@ -8,6 +8,7 @@ import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
 import { parseQuestId, type QuestId } from './quests'
 import type { HunterStat } from './hunter'
+import { parseBreakable, type RunBreakable } from './breakables'
 import type { FriendState } from './referral'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
@@ -577,6 +578,12 @@ export type StartExploreResult = {
    */
   patrols?: unknown
   /**
+   * Бочки и кувшины (12.11.2026): [{x, y, kind, loot}] — форма RunBreakable в
+   * общем каталоге breakables.ts. Поля нет — сервер старше, предметов нет.
+   * Разбирать ТОЛЬКО через readBreakables.
+   */
+  breakables?: unknown
+  /**
    * Молитвы алтаря гильдии на этот забег (30.10.2026): проценты к атаке без
    * силы и к броне. Поля нет — сервер старше гильдий: баффов нет. Разбирать
    * ТОЛЬКО через readGuildBuffs.
@@ -621,6 +628,23 @@ export function readPatrols(raw: unknown): (StartExplorePatrol | null)[] {
     }
     console.error('api: кривой патрульный в ответе старта', p)
     return null
+  })
+}
+
+/**
+ * Бочки и кувшины из ответа старта. Кривая запись — null на её месте (не
+ * рисуется), индексы остальных сохраняются: по ним финиш называет разбитые.
+ */
+export function readBreakables(raw: unknown): (RunBreakable | null)[] {
+  if (raw === undefined || raw === null) return []
+  if (!Array.isArray(raw)) {
+    console.error('api: breakables в ответе старта не список', raw)
+    return []
+  }
+  return raw.map((item) => {
+    const parsed = parseBreakable(item)
+    if (parsed === null) console.error('api: кривая бочка или кувшин в ответе старта', item)
+    return parsed
   })
 }
 
@@ -1002,11 +1026,14 @@ export async function finishRunExplore(
   // Индексы убитых патрульных (30.10.2026) в списке patrols ответа старта.
   // Сервер прибавит их trophyReward к добыче забега.
   killedPatrols?: number[],
+  // Индексы разбитых бочек и кувшинов (12.11.2026) в списке breakables ответа
+  // старта. Сервер прибавит трофеи тех, у кого внутри трофеи.
+  brokenBreakables?: number[],
 ): Promise<FinishExploreResult> {
   // runId (15.10.2026): повтор финиша с тем же id сервер узнаёт и отдаёт
   // сохранённый итог вместо 400 'No active explore run'. Снимается ОДИН раз,
   // вместе с телом: все попытки этого вызова несут один и тот же id.
-  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters, starbloomCut, killedPatrols })
+  const body = JSON.stringify({ ...runIdField(), closedEvents, died, attackDamageDealt, skillDamageDealt, healedAmount, damageTaken, potionsDrunkByTier, charmUsed, skillUses, ...questCounters, starbloomCut, killedPatrols, brokenBreakables })
   const deadline = Date.now() + FINISH_TOTAL_BUDGET_MS
   const attemptLog: string[] = []
   let retries = 0
@@ -1361,6 +1388,7 @@ export type RunProgressSnapshot = {
 export type RunCompletionSnapshot = {
   closedEvents: number[]
   killedPatrols: number[]
+  brokenBreakables: number[]
   charmUsed: boolean
   starbloomCut: boolean
   potionsDrunkByTier: number[]

@@ -2450,6 +2450,47 @@ export const STARBLOOM_HITBOX_W = 56
 export const STARBLOOM_ANIM_SPEED = 12 / 60
 export const STARBLOOM_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/item_star_pollen.png`
 
+// --- Бочки и кувшины (12.11.2026, общий каталог src/breakables.ts) ---
+//
+// Арт — RightPlace_breakables.zip: горизонтальные листы, кадр 305×165, 12 fps.
+// В проекте сложены сеткой по 12 колонок (широкие ленты длиннее 4096 px — не
+// влезли бы в текстуру телефона), WebP без потерь, пиксель в пиксель.
+const BREAKABLES_DIR = `${import.meta.env.BASE_URL}assets/objects/breakables`
+export const BARREL_IDLE_SRC = `${BREAKABLES_DIR}/barrel_idle.webp`
+export const BARREL_HIT_SRC = `${BREAKABLES_DIR}/barrel_hit.webp`
+export const BARREL_CRACKED_SRC = `${BREAKABLES_DIR}/barrel_cracked.webp`
+export const BARREL_BREAK_SRC = `${BREAKABLES_DIR}/barrel_break.webp`
+export const JAR_IDLE_SRC = `${BREAKABLES_DIR}/jar_idle.webp`
+export const JAR_BREAK_SRC = `${BREAKABLES_DIR}/jar_break.webp`
+export const BREAKABLE_CELL_W = 305
+export const BREAKABLE_CELL_H = 165
+export const BREAKABLE_SHEET_COLS = 12
+export const BARREL_HIT_COUNT = 11
+export const BARREL_BREAK_COUNT = 26
+export const JAR_BREAK_COUNT = 35
+// Строка пола внутри кадра (floorY = 125 из .json арта): по ней предмет стоит на
+// полу. Не по низу кадра — обломки в конце разлёта чуть ниже пола, так задумано.
+export const BREAKABLE_FLOOR_Y = 125
+// Середина предмета по x в кадре (непрозрачные пиксели покоя: бочка 107..213,
+// кувшин 84..196) — от неё якорь, чтобы предмет стоял в центре своей клетки.
+export const BARREL_CENTER_X = 160
+export const JAR_CENTER_X = 140
+// Высота предмета в кадре (строки 5..125) и в мире: бочка ≈1.2 клетки, кувшин
+// ≈1 клетка — рядом с героем ростом 2 клетки (PLAYER_HEIGHT 128).
+export const BREAKABLE_ART_H = 120
+export const BARREL_DRAW_H = 77
+export const JAR_DRAW_H = 64
+// Куда должен попасть взмах — ширина самого предмета в мире (106 и 112 px
+// кадра × масштаб).
+export const BARREL_HITBOX_W = 68
+export const JAR_HITBOX_W = 60
+export const BREAKABLE_ANIM_SPEED = 12 / 60
+// Всплывашка выпавшего: мана — шар маны и голубое число, здоровье — значок HP
+// и зелёное (трофеи — как у событий).
+export const BREAKABLE_HP_ICON_SRC = `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`
+export const BREAKABLE_MANA_TEXT_COLOR = 0x6fc3ff
+export const BREAKABLE_HP_TEXT_COLOR = 0x7ee07e
+
 export const ASH_FIRE_SRC = `${import.meta.env.BASE_URL}assets/vfx/ash_fire.webp`
 export const ASH_FIRE_CELL_W = 380
 export const ASH_FIRE_CELL_H = 75

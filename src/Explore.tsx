@@ -89,12 +89,14 @@ import { LIVE_DECOR_FLAMES } from './explore/liveDecorManifest'
 import { createRunnerSystem } from './explore/entities/runner'
 import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
+import { createBreakablesSystem, type BreakableAssets } from './explore/entities/breakables'
+import { rollBreakables, type RunBreakable } from './breakables'
 import { loadSheetFrames } from './explore/spriteLoader'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
@@ -528,6 +530,7 @@ type FinishPayload = {
   // Срублен ли Звёздоцвет (docs/crafter.md) — тем же снимком.
   starbloomCut: boolean
   killedPatrols: number[]
+  brokenBreakables: number[]
 }
 
 /**
@@ -1257,6 +1260,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Убитые патрульные (30.10.2026) — индексы в списке патрульных ответа старта;
   // уходят финишу полем killedPatrols. Пишет onPatrolKilled в setup().
   const killedPatrolsRef = useRef<number[]>([])
+  // Разбитые бочки и кувшины (12.11.2026) — индексы в списке breakables ответа
+  // старта; уходят финишу полем brokenBreakables. Пишет onBreak в setup().
+  const brokenBreakablesRef = useRef<number[]>([])
   // Сырые счётчики за забег — ФАКТИЧЕСКИ снятые/нанесённые/восстановленные,
   // не запрошенные (см. takeDamage/applyAttackHit/питьё зелья ниже:
   // смертельный удар засчитывает только остаток HP цели, а не полный урон
@@ -1510,6 +1516,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       questCounters: { ...questCountersRef.current },
       starbloomCut: starbloomCutRef.current,
       killedPatrols: [...killedPatrolsRef.current],
+      brokenBreakables: [...brokenBreakablesRef.current],
     }
     submitFinish()
   }
@@ -1540,6 +1547,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       payload.questCounters,
       payload.starbloomCut,
       payload.killedPatrols,
+      payload.brokenBreakables,
     )
       .then((result) => {
         setRunResult(result)
@@ -2184,6 +2192,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       snapshot.completion = {
         closedEvents: collectClosedEventIndices(),
         killedPatrols: [...killedPatrolsRef.current],
+        brokenBreakables: [...brokenBreakablesRef.current],
         charmUsed: charmUsedRef.current,
         starbloomCut: starbloomCutRef.current,
         potionsDrunkByTier: [...potionsDrunkByTierRef.current],
@@ -2778,6 +2787,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // каждом забеге, отсюда null.
     let ashTrailSystem: ReturnType<typeof createAshTrailSystem> | null = null
     let starbloomSystem: ReturnType<typeof createStarbloomSystem> | null = null
+    let breakablesSystem: ReturnType<typeof createBreakablesSystem> | null = null
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
     // Камыш и осока болота (entities/swayDecor.ts) и их собственные текстуры —
     // их уничтожает cleanup, иначе они остались бы в видеопамяти после смены карты.
@@ -3347,6 +3357,34 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // сервера (пропускается, но индексы остальных сохраняются для финиша).
       const runPatrols: (StartExplorePatrol | null)[] = startExploreResult ? readPatrols(startExploreResult.patrols) : devPatrols
       const patrolKinds = runPatrols.map((p) => p?.enemyKind ?? null)
+      // Бочки и кувшины (12.11.2026): в настоящей сессии — что назвал сервер;
+      // офлайн-заглушка бросает теми же функциями общего каталога, на тех же
+      // кандидатах карты, мимо клеток событий и патрульных (Звёздоцвета у неё нет).
+      const breakableCandidates: unknown = (slots as { breakables?: unknown } | null)?.breakables
+      const runBreakables: (RunBreakable | null)[] = startExploreResult
+        ? readBreakables(startExploreResult.breakables)
+        : rollBreakables(
+          Array.isArray(breakableCandidates) ? breakableCandidates.filter(isPointXY) : [],
+          [...chosenEvents.flatMap(eventCells), ...devPatrols.map((p): [number, number] => [p.x, p.y])],
+          C.PLAYER_LEVEL_FALLBACK,
+          maxHp,
+          rollTrophies,
+        )
+      // Листы грузятся, только если предметы есть. Украшение поверх боя, как
+      // Звёздоцвет: не загрузились — громко в консоль и забег без них.
+      const breakablesLoad: Promise<{ sheets: BreakableAssets; hpIcon: Texture } | null> = runBreakables.some((b) => b !== null)
+        ? Promise.all([
+          loadSheetFrames(C.BARREL_IDLE_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, 1, C.BREAKABLE_SHEET_COLS),
+          loadSheetFrames(C.BARREL_HIT_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, C.BARREL_HIT_COUNT, C.BREAKABLE_SHEET_COLS),
+          loadSheetFrames(C.BARREL_CRACKED_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, 1, C.BREAKABLE_SHEET_COLS),
+          loadSheetFrames(C.BARREL_BREAK_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, C.BARREL_BREAK_COUNT, C.BREAKABLE_SHEET_COLS),
+          loadSheetFrames(C.JAR_IDLE_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, 1, C.BREAKABLE_SHEET_COLS),
+          loadSheetFrames(C.JAR_BREAK_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, C.JAR_BREAK_COUNT, C.BREAKABLE_SHEET_COLS),
+          Assets.load(C.BREAKABLE_HP_ICON_SRC) as Promise<Texture>,
+        ]).then(([barrelIdle, barrelHit, barrelCracked, barrelBreak, jarIdle, jarBreak, hpIcon]) => ({
+          sheets: { barrelIdle, barrelHit, barrelCracked, barrelBreak, jarIdle, jarBreak }, hpIcon,
+        })).catch((e: unknown) => { console.error('Explore: бочки и кувшины не загрузились — в этом забеге их не будет', e); return null })
+        : Promise.resolve(null)
       // Ловушка или обычный — у КАЖДОГО сундука, тоже один раз здесь и одной
       // формой на оба пути. null — событие не сундук.
       // ⚠️ Сундук без решения — ГРОМКИЙ отказ, а не свой бросок и не «обычный»
@@ -3974,7 +4012,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // фону и запуску PixiJS выше; какие листы условные и почему — см.
       // explore/assets.ts. Любой нужный лист не загрузился — этот await бросает,
       // и setup() уходит в экран ошибки (setup().catch), как и раньше.
-      const [assets, eventAssets, , bloodFrames, bladeSparkFrames, ashFrames, starbloomAssets] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad, bladeAssetsLoad, ashFramesLoad, starbloomLoad])
+      const [assets, eventAssets, , bloodFrames, bladeSparkFrames, ashFrames, starbloomAssets, breakableAssets] = await Promise.all([commonAssetsLoad, eventAssetsLoad, dropIconsLoad, bloodAssetsLoad, bladeAssetsLoad, ashFramesLoad, starbloomLoad, breakablesLoad])
       if (cancelled) {
         // Компонент размонтировался (или сработал предохранитель загрузки), пока
         // грузились листы — не создаём спрайты и не трогаем worldContainer.
@@ -4116,6 +4154,37 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         },
       })
 
+      // Бочки и кувшины (12.11.2026): разбили — всплывает выпавшее, мана и
+      // здоровье — сразу, индекс уходит финишу (трофеи начислит сервер).
+      breakablesSystem = breakableAssets === null ? null : createBreakablesSystem({
+        worldContainer,
+        assets: breakableAssets.sheets,
+        items: runBreakables,
+        findGroundSurfaceY,
+        onBreak: (index, x, y) => {
+          if (brokenBreakablesRef.current.includes(index)) return
+          brokenBreakablesRef.current.push(index)
+          // После всех задач — срез со снимком финиша, как у патрульного.
+          if (runCompleteFiredRef.current) sendProgress()
+          const loot = runBreakables[index]?.loot ?? null
+          if (loot === null) return
+          if (loot.type === 'trophies') {
+            if (loot.amount > 0) spawnRewardFloat(x, y, [{ kind: 'trophy', amount: loot.amount }])
+          } else if (loot.type === 'mana') {
+            // Как шар маны с убитого: в счётчик «Полной чаши» — вся, и та, что
+            // сгорит выше потолка (setMana обрежет её молча).
+            questCountersRef.current.manaCollected += loot.amount
+            setMana(manaRef.current + loot.amount)
+            spawnRewardFloat(x, y, [{ kind: 'icon', amount: loot.amount, texture: assets.manaOrb, color: C.BREAKABLE_MANA_TEXT_COLOR }])
+          } else {
+            // Через healPlayer — в healedAmount, как зелье; сервер держит под это
+            // запас в потолках (clampRunProgress, breakablesReserve).
+            healPlayer(loot.amount)
+            spawnRewardFloat(x, y, [{ kind: 'icon', amount: loot.amount, texture: breakableAssets.hpIcon, color: C.BREAKABLE_HP_TEXT_COLOR }])
+          }
+        },
+      })
+
       // Мана с убитых врагов (см. explore/entities/mana.ts): бросок выпадения
       // и полёт шаров в героя. Создаётся ЗДЕСЬ, после загрузки, а не рядом с
       // остальными системами выше: ей нужна готовая картинка шара. Системы
@@ -4200,9 +4269,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       //                    названия (решение дизайнера). Название игрок увидит
       //                    на экране итогов; над трупом оно было бы длинной
       //                    надписью поверх боя.
+      //   {kind:'icon'}  — число со своей иконкой (мана и здоровье из бочек и
+      //                    кувшинов, 12.11.2026): в трофейный итог не идёт.
       type RewardFloatRow =
         | { kind: RewardKind; amount: number; negative?: boolean; color?: number }
         | { kind: 'drop'; texture: Texture }
+        | { kind: 'icon'; amount: number; texture: Texture; color: number }
 
       function spawnRewardFloat(
         worldX: number,
@@ -4235,19 +4307,20 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           if (reward.kind === 'trophy') {
             trophiesEarnedRef.current += reward.negative ? -reward.amount : reward.amount
           }
+          const negative = reward.kind !== 'icon' && reward.negative === true
           const label = new Text({
-            text: `${reward.negative ? '−' : '+'}${reward.amount}`,
+            text: `${negative ? '−' : '+'}${reward.amount}`,
             style: {
               fontSize: 20,
               fontWeight: 'bold',
-              fill: reward.color ?? (reward.negative ? 0xe0353b : C.REWARD_TEXT_COLOR[reward.kind]),
+              fill: reward.kind === 'icon' ? reward.color : reward.color ?? (negative ? 0xe0353b : C.REWARD_TEXT_COLOR[reward.kind]),
               stroke: { color: 0x000000, width: 4 },
             },
           })
           label.anchor.set(0, 0.5)
           label.x = 0
 
-          const icon = new Sprite(rewardIconTextures[reward.kind])
+          const icon = new Sprite(reward.kind === 'icon' ? reward.texture : rewardIconTextures[reward.kind])
           icon.anchor.set(0, 0.5)
           icon.scale.set(C.REWARD_ICON_H / icon.texture.height)
           icon.x = label.width + 4
@@ -4475,6 +4548,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       smugglerRequestSeqRef.current = 0
       trophiesEarnedRef.current = 0 // сброс на случай повторного запуска setup()
       killedPatrolsRef.current = [] // сброс на случай повторного запуска setup()
+      brokenBreakablesRef.current = [] // сброс на случай повторного запуска setup()
       damageTakenRef.current = 0 // сброс на случай повторного запуска setup()
       attackDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
       skillDamageDealtRef.current = 0 // сброс на случай повторного запуска setup()
@@ -6318,6 +6392,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // Сундук не бьёт и не имеет HP — только открытие анимации.
         // Звёздоцвет срубается тем же взмахом, что открывает сундук.
         if (attackHitboxRef.current) starbloomSystem?.strike(attackHitboxRef.current)
+        // Бочки и кувшины — тем же взмахом; один взмах — один удар по предмету.
+        if (attackHitboxRef.current) breakablesSystem?.strike(attackHitboxRef.current, attackSwingIdRef.current)
 
         if (attackHitboxRef.current) {
           const hb = attackHitboxRef.current
@@ -7791,6 +7867,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       Ticker.shared.speed = 1
       ashTrailSystem?.dispose()
       starbloomSystem?.dispose()
+      breakablesSystem?.dispose()
       // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
       // систему уже уничтоженной сцены (тот же приём, что clearManaOrbsRef ниже).
       classHealFlashRef.current = () => {}

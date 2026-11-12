@@ -14,6 +14,7 @@
     src/hunter.ts       → server/src/hunter.ts
     src/crafter.ts      → server/src/crafter.ts
     src/runExtras.ts    → server/src/runExtras.ts
+    src/breakables.ts   → server/src/breakables.ts
     src/guild.ts        → server/src/guild.ts
     src/runes.ts        → server/src/runes.ts
     src/referral.ts     → server/src/referral.ts
@@ -61,6 +62,7 @@ PAIRS = [
     ("каталог Ловчего", Path("src/hunter.ts"), Path("server/src/hunter.ts")),
     ("каталог Мастера", Path("src/crafter.ts"), Path("server/src/crafter.ts")),
     ("патрули и элита", Path("src/runExtras.ts"), Path("server/src/runExtras.ts")),
+    ("бочки и кувшины", Path("src/breakables.ts"), Path("server/src/breakables.ts")),
     ("каталог гильдий", Path("src/guild.ts"), Path("server/src/guild.ts")),
     ("каталог рун", Path("src/runes.ts"), Path("server/src/runes.ts")),
     ("приглашения друзей", Path("src/referral.ts"), Path("server/src/referral.ts")),
