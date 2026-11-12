@@ -86,6 +86,8 @@ import {
   classItemStockDecrement,
 } from './run.js'
 
+import { queueNotification, queueNotificationMany } from '../bot/notify.js'
+
 const prisma = new PrismaClient()
 type Db = Prisma.TransactionClient | PrismaClient
 
@@ -422,6 +424,8 @@ async function guildAction<E extends Record<string, unknown> | void>(
   reply: FastifyReply,
   endpoint: string,
   action: (tx: Prisma.TransactionClient, characterId: number, now: number) => Promise<E>,
+  /** После удачной транзакции (не повтора): уведомления бота. Ошибка — в лог. */
+  afterCommit?: () => Promise<void>,
 ) {
   const userId = getUserId(request)
   if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
@@ -436,6 +440,9 @@ async function guildAction<E extends Record<string, unknown> | void>(
   const now = Date.now()
   try {
     const done = await applyOnce(character.id, requestId, `guild:${endpoint}`, request.log, (tx) => action(tx, character.id, now))
+    if (!done.replayed && afterCommit) {
+      try { await afterCommit() } catch (e) { request.log.error({ err: e, endpoint }, 'guild: afterCommit failed') }
+    }
     const view = await buildMeView(prisma, character.id, Date.now())
     const extra = !done.replayed && done.value ? done.value : {}
     return reply.send({ ...view, ...extra, ...(done.replayed ? { replayed: true } : {}) })
@@ -576,8 +583,10 @@ export async function guildRoutes(server: FastifyInstance) {
   )
 
   // Подать заявку в гильдию «по заявке».
-  server.post<GuildBody>('/guild/request', (request, reply) =>
-    guildAction(request, reply, 'request', async (tx, characterId, now) => {
+  server.post<GuildBody>('/guild/request', (request, reply) => {
+    // Колокол главе и заместителям (бот, 13.11.2026) — после коммита.
+    let requestedGuild: number | null = null
+    return guildAction(request, reply, 'request', async (tx, characterId, now) => {
       const guildId = intField(request.body?.guildId)
       if (guildId === null) throw new RouteRejection(400, { error: 'Invalid guildId' })
       const g = await tx.guild.findUnique({ where: { id: guildId }, select: { joinMode: true } })
@@ -590,8 +599,14 @@ export async function guildRoutes(server: FastifyInstance) {
       const exists = await tx.guildRequest.findUnique({ where: { guildId_characterId: { guildId, characterId } } })
       if (exists) throw new RouteRejection(400, { error: 'Request already sent' })
       await tx.guildRequest.create({ data: { guildId, characterId } })
-    }),
-  )
+      requestedGuild = guildId
+    }, async () => {
+      if (requestedGuild === null) return
+      const g = await prisma.guild.findUnique({ where: { id: requestedGuild }, select: { name: true } })
+      const reviewers = await prisma.guildMember.findMany({ where: { guildId: requestedGuild, role: { in: ['leader', 'deputy'] } }, select: { characterId: true } })
+      queueNotificationMany(reviewers.map((r) => r.characterId), 'guild_request', { guildName: g?.name ?? '' }, request.log)
+    })
+  })
 
   // Отозвать свою заявку.
   server.post<GuildBody>('/guild/request/cancel', (request, reply) =>
@@ -603,8 +618,10 @@ export async function guildRoutes(server: FastifyInstance) {
   )
 
   // Принять или отклонить заявку — глава и заместитель.
-  server.post<GuildBody>('/guild/requests/decide', (request, reply) =>
-    guildAction(request, reply, 'requests-decide', async (tx, characterId, now) => {
+  server.post<GuildBody>('/guild/requests/decide', (request, reply) => {
+    // Колокол игроку, чью заявку решили (бот, 13.11.2026) — после коммита.
+    let decided: { target: number; accept: boolean; guildId: number } | null = null
+    return guildAction(request, reply, 'requests-decide', async (tx, characterId, now) => {
       const target = intField(request.body?.characterId)
       if (target === null) throw new RouteRejection(400, { error: 'Invalid characterId' })
       const accept = request.body?.accept
@@ -615,9 +632,15 @@ export async function guildRoutes(server: FastifyInstance) {
         if (!req) throw new RouteRejection(400, { error: 'No such request' })
         await tx.guildRequest.delete({ where: { id: req.id } })
         if (accept) await addMember(tx, m.guildId, target, now)
+        decided = { target, accept, guildId: m.guildId }
       })
-    }),
-  )
+    }, async () => {
+      const d = decided as { target: number; accept: boolean; guildId: number } | null
+      if (d === null) return
+      const g = await prisma.guild.findUnique({ where: { id: d.guildId }, select: { name: true } })
+      await queueNotification(d.target, d.accept ? 'guild_accepted' : 'guild_declined', { guildName: g?.name ?? '' }, request.log)
+    })
+  })
 
   // --- Выход, исключение, роли ---
 

@@ -3035,6 +3035,8 @@ export async function runRoutes(server: FastifyInstance) {
       agility: character.agility,
       endurance: character.endurance,
       level: calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels),
+      // Награда за подписку на канал (бот, 13.11.2026).
+      channelRewardClaimed: character.channelRewardAt !== null,
       trophyGoldRate: TROPHY_GOLD_RATE,
       appliedRequestIds,
     })

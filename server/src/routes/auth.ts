@@ -4,6 +4,7 @@ import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
 import { parseReferralStartParam } from '../referral.js'
 import { grantInviteeReward } from './friends.js'
+import { queueNotification } from '../bot/notify.js'
 import { energyForClient, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
   type ActiveExploreRun,
@@ -175,7 +176,11 @@ export async function authRoutes(server: FastifyInstance) {
         },
         include: { character: true }
       })
-      if (invitedById !== null) request.log.info({ inviterId: invitedById, userId: user.id }, 'login: new player joined by referral')
+      if (invitedById !== null) {
+        request.log.info({ inviterId: invitedById, userId: user.id }, 'login: new player joined by referral')
+        // Колокол пригласившему (бот, 13.11.2026) — лучшим усилием, без ожидания.
+        void queueNotification(invitedById, 'friend_joined', undefined, request.log)
+      }
     }
 
     // Generate JWT token (expires in 7 days)
@@ -192,8 +197,16 @@ export async function authRoutes(server: FastifyInstance) {
     // Последний вход (30.10.2026, docs/guilds.md): по нему гильдия передаёт
     // главенство неактивному 14 дней главе. Отдельной записью и лучшим
     // усилием: вход обязан открываться, даже если она не прошла.
+    // Той же записью — бот (13.11.2026): allows_write_to_pm в подписанном initData
+    // значит «боту писать можно»; вход снимает счётчик звонов «вернись».
+    const allowsPm = (telegramUser as { allows_write_to_pm?: unknown }).allows_write_to_pm === true
     try {
-      await prisma.character.update({ where: { id: char.id }, data: { lastSeenAt: new Date() } })
+      await prisma.character.update({
+        where: { id: char.id },
+        data: { lastSeenAt: new Date(), comebackStage: 0, ...(allowsPm ? { botAllowed: true } : {}) },
+      })
+      char.comebackStage = 0
+      if (allowsPm) char.botAllowed = true
     } catch (e) {
       request.log.error({ userId: user.id, err: e }, 'login: lastSeenAt write failed')
     }
@@ -607,6 +620,8 @@ export async function authRoutes(server: FastifyInstance) {
         // Элитные трофеи (30.10.2026, docs/guilds.md) — личная валюта гильдий.
         // Ветка закрытия забега их не пишет.
         eliteTrophies: char.eliteTrophies,
+        // Награда за подписку на канал (бот, 13.11.2026) — получена ли.
+        channelRewardClaimed: char.channelRewardAt !== null,
       },
       // Курс обмена трофеев на золото — та же константа и тем же полем, что
       // в GET /character/profile (TROPHY_GOLD_RATE, game.ts). Едет с логином,

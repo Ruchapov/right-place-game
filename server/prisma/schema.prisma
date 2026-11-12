@@ -232,7 +232,23 @@ model Character {
   inviteeRewardAt     DateTime?
   inviterClaimedAt    DateTime?
   referralReadyAt     DateTime?
-  currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
+  // Бот @RightPlaceGame_bot (13.11.2026, миграция 20261113120000_bot_notifications_add,
+  // server/src/bot/). botAllowed — игрок разрешил боту писать (allows_write_to_pm
+  // во входе, сообщение боту, requestWriteAccess); botBlocked — бот получил 403.
+  // notifySettings — {energy, quests, friends, guild, comeback}, NULL = все true.
+  // lastActiveAt — последний запрос с JWT (не чаще раза в минуту): «в игре ли».
+  // energyNotifiedAt / questsNotifiedAt — когда звали за полную энергию и новые
+  // задания; comebackStage — 0/1/2 звона «вернись»; channelRewardAt — +50 RP за канал.
+  botAllowed          Boolean  @default(false)
+  botBlocked          Boolean  @default(false)
+  notifySettings      Json?
+  lastActiveAt        DateTime?
+  energyNotifiedAt    DateTime?
+  questsNotifiedAt    DateTime?
+  comebackStage       Int      @default(0)
+  channelRewardAt     DateTime?
+  botNotifications    BotNotification[]
+  currentRun         Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   inventoryItems      InventoryItem[]
@@ -387,4 +403,22 @@ model GuildMessage {
   createdAt   DateTime   @default(now())
 
   @@index([guildId, id])
+}
+
+/// Очередь уведомлений бота (13.11.2026, server/src/bot/notify.ts). Ставит
+/// queueNotification, отправляет GET /cron/tick. sentAt NULL — ещё в очереди;
+/// error — почему не отправлено ('expired', 'blocked', текст Bot API).
+model BotNotification {
+  id          Int       @id @default(autoincrement())
+  characterId Int
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  kind        String
+  createdAt   DateTime  @default(now())
+  sendAfter   DateTime
+  sentAt      DateTime?
+  error       String?
+  payload     Json?
+
+  @@index([sentAt, sendAfter])
+  @@index([characterId])
 }

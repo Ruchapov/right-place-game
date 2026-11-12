@@ -8,15 +8,15 @@
 // Привязка друга — в /auth/login (routes/auth.ts), только при создании игрока.
 // Ограничений на число друзей и наград нет (решение владельца 12.11.2026).
 //
-// ⚠️ Уведомлений бота нет: server/src/bot/notify.ts в проекте отсутствует. Когда
-// он появится — queueNotification(inviterId, 'friend_joined' | 'friend_reward', …)
-// лучшим усилием, в try/catch, после привязки (auth.ts) и в grantInviteeReward ниже.
+// Колокол бота (13.11.2026): friend_joined — после привязки (auth.ts),
+// friend_reward — в grantInviteeReward ниже, ровно один раз (после условной записи).
 import { randomBytes } from 'node:crypto'
 import { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { calculateLevel } from '../game.js'
 import { REFERRAL_CODE_LENGTH, REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP, friendState, referralUrl, type FriendState } from '../referral.js'
 import { getUserId } from './run.js'
+import { queueNotification } from '../bot/notify.js'
 
 const prisma = new PrismaClient()
 
@@ -28,7 +28,7 @@ function newReferralCode(): string {
 }
 
 /** Код персонажа; нет — создаётся (условной записью: два GET разом дадут один код). */
-async function ensureReferralCode(characterId: number): Promise<string> {
+export async function ensureReferralCode(characterId: number): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await prisma.character.findUnique({ where: { id: characterId }, select: { referralCode: true } })
     if (!cur) throw new Error('character vanished')
@@ -67,6 +67,7 @@ export async function grantInviteeReward(characterId: number, log: FastifyBaseLo
       data: { gold: { increment: REFERRAL_GOLD }, rp: { increment: REFERRAL_RP }, inviteeRewardAt: now, referralReadyAt: now },
     })
     if (res.count === 0) return null
+    void queueNotification(c.invitedById, 'friend_reward', undefined, log)
     const [after, inviter] = await Promise.all([
       prisma.character.findUnique({ where: { id: characterId }, select: { gold: true, rp: true } }),
       prisma.character.findUnique({ where: { id: c.invitedById }, select: { user: { select: { firstName: true } } } }),
