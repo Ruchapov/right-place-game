@@ -3,7 +3,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -22,6 +22,8 @@ import { CRAFTER_LEVEL, OTHER_TIER, BOOTS_SPEED_CAP_PCT, gearEffectsOf, otherIte
 import { CrafterSection } from './ui/CrafterSection'
 import { RingSlots } from './ui/RingSlots'
 import { GuildPanel, GuildBuffChips } from './ui/GuildPanel'
+import { ChannelPanel } from './ui/ChannelPanel'
+import { NotifySettingsSheet } from './ui/NotifySettingsSheet'
 import { hasActiveGuildBuff } from './ui/guildText'
 import { GUILD_INVITE_PREFIX, parseGuildInviteCode } from './guild'
 // Ловчий (27.10.2026) — общий каталог src/hunter.ts ↔ server/src/hunter.ts.
@@ -1044,7 +1046,10 @@ export default function App() {
   // «Сообщество» (до 30.10.2026 — «Друзья»): переключатель «Гильдия | Друзья»,
   // состояние гильдии (GuildPanel, docs/guilds.md) и код приглашения из
   // start_param (g_<код>), ещё не показанный игроку.
-  const [communityTab, setCommunityTab] = useState<'guild' | 'friends'>('guild')
+  const [communityTab, setCommunityTab] = useState<'guild' | 'friends' | 'channel'>('guild')
+  // Бот (13.11.2026): получена ли награда за канал (null — сервер не назвал) и окно уведомлений.
+  const [channelClaimed, setChannelClaimed] = useState<boolean | null>(null)
+  const [notifyOpen, setNotifyOpen] = useState(false)
   // Вкладка «Друзья» открыта — перечитать список (друзья растут, пока она закрыта).
   useEffect(() => {
     if (activeTab === 'friends' && communityTab === 'friends') void loadFriends()
@@ -1334,6 +1339,7 @@ export default function App() {
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
     setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck) })
+    setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
     // минуты (сервер прислал его полем energyAccruedSec) — тогда клиентские
@@ -3378,6 +3384,19 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {/* Колокол бота (13.11.2026): о чём звать в Telegram. */}
+              <div style={{ margin:'16px 8px 4px' }}>
+                <button type="button" className="rp-press-btn" onClick={() => setNotifyOpen(true)} style={{
+                  width:'100%', minHeight:48, borderRadius:10, cursor:'pointer', boxSizing:'border-box',
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+                  border:`1px solid ${C.glowEdge}`, background:'linear-gradient(180deg, #3a2c14, #241b0e)',
+                  color:C.glowCore, fontFamily:FONT_DISPLAY, fontWeight:700, fontSize:14,
+                  boxShadow:'inset 0 1px 0 rgba(245,188,91,.18)',
+                }}>
+                  <span aria-hidden="true">🔔</span> Уведомления
+                </button>
+              </div>
               </div>
 
               {/* Карточка НАДЕТОГО навыка (тап по гнезду выше). Оверлей той же
@@ -4775,8 +4794,8 @@ export default function App() {
 
               {/* «Сообщество» (30.10.2026): переключатель «Гильдия | Друзья».
                   Друзья — прежняя заглушка как есть. */}
-              <div data-community-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 10px' }}>
-                {([['guild', 'Гильдия'], ['friends', 'Друзья']] as const).map(([id, label]) => (
+              <div data-community-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 10px' }}>
+                {([['guild', 'Гильдия'], ['friends', 'Друзья'], ['channel', 'Канал']] as const).map(([id, label]) => (
                   <button key={id} onClick={() => setCommunityTab(id)} style={{
                     minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:13,
                     border:`1px solid ${communityTab === id ? C.glowEdge : C.stoneDark}`,
@@ -4799,6 +4818,18 @@ export default function App() {
                   sideMenu={sideMenu}
                   overlayPad={sideOverlayPad}
                   overlayCard={sideOverlayCard}
+                />
+              )}
+
+              {communityTab === 'channel' && (
+                <ChannelPanel
+                  token={isTelegramSession ? localStorage.getItem('jwt') : null}
+                  claimed={channelClaimed}
+                  onClaimed={(rp) => {
+                    setChannelClaimed(true)
+                    if (rp !== null) setPlayer(prev => prev ? { ...prev, rp } : prev)
+                  }}
+                  sideMenu={sideMenu}
                 />
               )}
 
@@ -6199,6 +6230,10 @@ export default function App() {
       ) : tutQueue.length > 0 ? (
         <TutorialCard tip={tutQueue[0]} onNext={() => closeTutorialTip(tutQueue[0])} />
       ) : null)}
+
+      {notifyOpen && (
+        <NotifySettingsSheet token={isTelegramSession ? localStorage.getItem('jwt') : null} onClose={() => setNotifyOpen(false)} />
+      )}
 
       {/* «Как играть» — маленькое окно с двумя действиями. */}
       {howToOpen && (

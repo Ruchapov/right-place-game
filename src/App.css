@@ -197,3 +197,8 @@
 .no-scrollbar::-webkit-scrollbar {
   display: none;             /* Chrome, Safari, Android WebView */
 }
+
+/* Нажатие с откликом (кнопка «Уведомления» на «Персонаже», 13.11.2026). */
+.rp-press-btn { transition: transform .08s ease, filter .12s ease }
+.rp-press-btn:active { transform: scale(.97); filter: brightness(1.15) }
+.rp-press-btn:focus-visible { outline: 2px solid #D99A3E; outline-offset: 2px }

@@ -3226,3 +3226,71 @@ export async function claimFriends(token: string, friendId: number | null): Prom
   }
   return { view, gold, rp, goldGained, rpGained }
 }
+
+// --- Бот @RightPlaceGame_bot (13.11.2026): уведомления и награда за канал ---
+
+const BOT_TIMEOUT_MS = 8000
+
+/** Пять переключателей Колокола — порядок показа. Ключи — как на сервере (bot/notify.ts). */
+export const NOTIFY_SETTING_KEYS = ['energy', 'quests', 'friends', 'guild', 'comeback'] as const
+export type NotifySettingKey = typeof NOTIFY_SETTING_KEYS[number]
+export type NotifySettingsView = { botAllowed: boolean; botBlocked: boolean; settings: Record<NotifySettingKey, boolean> }
+
+function notifySettingsOrThrow(path: string, raw: unknown): NotifySettingsView {
+  const r = raw as Record<string, unknown> | null
+  const s = r && typeof r.settings === 'object' && r.settings !== null ? (r.settings as Record<string, unknown>) : null
+  if (!r || typeof r.botAllowed !== 'boolean' || typeof r.botBlocked !== 'boolean' || !s || NOTIFY_SETTING_KEYS.some((k) => typeof s[k] !== 'boolean')) {
+    console.error(`api: ${path} — ответ не по форме`, raw)
+    throw new RequestError(`${path}: bad answer`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+  }
+  return { botAllowed: r.botAllowed, botBlocked: r.botBlocked, settings: s as Record<NotifySettingKey, boolean> }
+}
+
+export async function fetchNotifySettings(token: string): Promise<NotifySettingsView> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/character/notify-settings`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, BOT_TIMEOUT_MS)
+  return notifySettingsOrThrow('/character/notify-settings', raw)
+}
+
+export async function saveNotifySettings(token: string, patch: Partial<Record<NotifySettingKey, boolean>>): Promise<NotifySettingsView> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/character/notify-settings`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: patch }),
+  }, BOT_TIMEOUT_MS)
+  return notifySettingsOrThrow('/character/notify-settings', raw)
+}
+
+/** Игрок согласился в requestWriteAccess — сервер разрешает боту писать. */
+export async function markBotAllowed(token: string): Promise<NotifySettingsView> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/character/bot-allowed`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}',
+  }, BOT_TIMEOUT_MS)
+  return notifySettingsOrThrow('/character/bot-allowed', raw)
+}
+
+export type ChannelRewardResult =
+  | { kind: 'granted'; rp: number; rpGained: number }
+  | { kind: 'not_subscribed' }
+  | { kind: 'already' }
+
+/** +50 RP за подписку. Отказы по существу — результатом; сеть и 5xx — исключением. */
+export async function claimChannelReward(token: string): Promise<ChannelRewardResult> {
+  try {
+    const raw = await requestJson<Record<string, unknown>>(`${SERVER_URL}/character/channel-reward`, {
+      method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}',
+    }, BOT_TIMEOUT_MS)
+    const rp = readCurrencyCount(raw.rp), rpGained = readCurrencyCount(raw.rpGained)
+    if (rp === null || rpGained === null) {
+      console.error('api: /character/channel-reward — нет RP в ответе', raw)
+      throw new RequestError('/character/channel-reward: no rp', { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+    }
+    return { kind: 'granted', rp, rpGained }
+  } catch (e) {
+    if (e instanceof RequestError && e.serverError === 'not_subscribed') return { kind: 'not_subscribed' }
+    if (e instanceof RequestError && e.serverError === 'already') return { kind: 'already' }
+    throw e
+  }
+}
+
+/** channelRewardClaimed из входа и профиля: нет поля или не boolean — null («неизвестно»). */
+export function readChannelRewardClaimed(raw: unknown): boolean | null {
+  return typeof raw === 'boolean' ? raw : null
+}
