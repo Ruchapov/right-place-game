@@ -13,6 +13,7 @@ import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
 import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
 import { OTHER_TIER, RING_PROSPECTOR_MULT, RING_SLOT_COUNT, CRAFTER_LEVEL, FORGE_GOLD, FORGE_RP, FORGE_INGOTS, FORGE_SOURCE_TIER, SMELT_POTION_TIER, SMELT_CRIT_CHANCE, SMELT_CRIT_INGOTS, parseCrafterRawId, parseOtherItemId, parseRingId, otherItemById, gearEffectsOf, runMaxHpOf } from '../crafter.js'
+import { grantInviteeReward } from './friends.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -2033,6 +2034,14 @@ export async function runRoutes(server: FastifyInstance) {
     // выше; здесь — только удобство повтора, поэтому сбой — громкий лог, а не
     // отказ уже сохранённому забегу.
     await storeFinishResult(character.id, run, result, request.log)
+    // Награда приглашённому (12.11.2026, docs/referral.md): этот забег довёл его
+    // до порога — забега уже нет, начисляется отдельной условной записью. В
+    // сохранённый итог повтора она не входит (повтор окна не покажет — награда
+    // при этом уже начислена). gold/rp ответа — после неё.
+    const referralReward = await grantInviteeReward(character.id, request.log)
+    if (referralReward !== null) {
+      return reply.send({ ...result, gold: referralReward.gold, rp: referralReward.rp, referralReward: { inviterName: referralReward.inviterName } })
+    }
     return reply.send(result)
   })
 

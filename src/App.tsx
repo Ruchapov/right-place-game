@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { retrieveRawInitData, retrieveLaunchParams } from '@telegram-apps/sdk'
+import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@telegram-apps/sdk'
+// Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
+import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, RequestError, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -959,6 +961,16 @@ export default function App() {
   // Таймер автоскрытия тоста. В ref, а не в состоянии: второй обмен подряд должен
   // сбросить прежний таймер, иначе он погасит новый тост раньше времени.
   const goldToastTimerRef = useRef<number | null>(null)
+  // RP в том же тосте (приглашения друзей, 12.11.2026): «+5000 золота, +100 RP».
+  const [rpToast, setRpToast] = useState<number | null>(null)
+  // Приглашения друзей (12.11.2026, docs/referral.md): вид вкладки «Друзья» от
+  // GET /character/friends; что сейчас забирается (id друга / 'all'); отказ
+  // забора; окно «Награда за приглашение» (флаг referralReward входа и финиша).
+  const [friendsView, setFriendsView] = useState<FriendsView | null>(null)
+  const [friendsStatus, setFriendsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [friendsClaiming, setFriendsClaiming] = useState<number | 'all' | null>(null)
+  const [friendsClaimError, setFriendsClaimError] = useState<string | null>(null)
+  const [referralRewardNotice, setReferralRewardNotice] = useState<ReferralReward | null>(null)
   // Выбранная ячейка инвентаря. Предмет адресуется inventoryItemId — именно им
   // оперирует POST /character/equip, и именно он различает два одинаковых
   // предмета (в БД это две строки InventoryItem, стакинга нет). Прежняя пара
@@ -1033,6 +1045,11 @@ export default function App() {
   // состояние гильдии (GuildPanel, docs/guilds.md) и код приглашения из
   // start_param (g_<код>), ещё не показанный игроку.
   const [communityTab, setCommunityTab] = useState<'guild' | 'friends'>('guild')
+  // Вкладка «Друзья» открыта — перечитать список (друзья растут, пока она закрыта).
+  useEffect(() => {
+    if (activeTab === 'friends' && communityTab === 'friends') void loadFriends()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadFriends читает свежие значения сам
+  }, [activeTab, communityTab, isTelegramSession])
   const [guildMe, setGuildMe] = useState<GuildMe | null>(null)
   const [guildInviteCode, setGuildInviteCode] = useState<string | null>(null)
   // Тик для иконок баффов алтаря («Персонаж», подготовка): раз в секунду, только
@@ -1345,6 +1362,9 @@ export default function App() {
     // расхождение с сервером, и оно должно быть громким, а не молча
     // разрешённым в пользу одного из них (показываем 'interrupted': он
     // единственный из двух говорит о штрафе).
+    // Награда за приглашение (12.11.2026): этот вход её выдал — окно.
+    const loginReferral = readReferralReward(data.referralReward)
+    if (loginReferral !== null) setReferralRewardNotice(loginReferral)
     if (data.interruptedRun && data.abandonedRun) {
       console.error('App: /auth/login прислал оба итога прошлого забега сразу', data.interruptedRun, data.abandonedRun)
     }
@@ -1849,6 +1869,9 @@ export default function App() {
     // а отличить повтор от первого ответа клиент не может.
     if (result.quests) applyQuests(result.quests, null, null)
     void loadQuests()
+    // Награда за приглашение (12.11.2026): этот забег довёл до порога — окно
+    // поверх итогов забега.
+    if (result.referralReward) setReferralRewardNotice(result.referralReward)
   }
 
   // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
@@ -2764,13 +2787,57 @@ export default function App() {
 
   // Тост "+N золота". Прежний таймер снимается, иначе второй обмен подряд
   // получил бы тост, погашенный таймером первого.
-  function showGoldToast(amount: number) {
+  function showGoldToast(amount: number, rp: number | null = null) {
     if (goldToastTimerRef.current !== null) clearTimeout(goldToastTimerRef.current)
     setGoldToast(amount)
+    setRpToast(rp)
     goldToastTimerRef.current = window.setTimeout(() => {
       setGoldToast(null)
+      setRpToast(null)
       goldToastTimerRef.current = null
     }, 2600)
+  }
+
+  // --- Приглашения друзей (12.11.2026, docs/referral.md) ---
+  async function loadFriends() {
+    const token = localStorage.getItem('jwt')
+    if (!isTelegramSession || !token) {
+      // Заглушка вне Telegram: сервера нет — пустой список, ссылка без кода.
+      setFriendsView({ link: '', invitedBy: null, friends: [] }) // пустая ссылка — «Ссылка — в Telegram»
+      setFriendsStatus('ready')
+      return
+    }
+    setFriendsStatus((s) => (s === 'ready' ? s : 'loading'))
+    try {
+      setFriendsView(await fetchFriends(token))
+      setFriendsStatus('ready')
+    } catch (e) {
+      console.error('App: GET /character/friends не удался', e)
+      setFriendsStatus((s) => (s === 'ready' ? s : 'error'))
+    }
+  }
+
+  async function handleFriendsClaim(friendId: number | null) {
+    const token = localStorage.getItem('jwt')
+    if (!isTelegramSession || !token || friendsClaiming !== null) return
+    setFriendsClaiming(friendId ?? 'all')
+    setFriendsClaimError(null)
+    try {
+      const r = await claimFriends(token, friendId)
+      setFriendsView(r.view)
+      setPlayer(prev => prev ? { ...prev, gold: r.gold, rp: r.rp } : prev)
+      showGoldToast(r.goldGained, r.rpGained)
+    } catch (e) {
+      const err = e instanceof RequestError ? e : null
+      if (err?.serverError === 'Run in progress') setFriendsClaimError('Награду можно забрать после вылазки.')
+      else if (err?.status === 409 || err?.serverError === 'Not ready' || err?.status === 404) setFriendsClaimError(null)
+      else setFriendsClaimError('Не получилось. Проверь связь и попробуй ещё раз.')
+      console.error('App: забор награды за друга не удался', e)
+      // Состояние могло измениться (забрано со второго устройства) — перечитать.
+      void loadFriends()
+    } finally {
+      setFriendsClaiming(null)
+    }
   }
 
   // Кошелёк из ответа гильдии (30.10.2026): казна, склад, котёл и библиотека
@@ -4679,18 +4746,28 @@ export default function App() {
             )
           })()}
           {activeTab === 'friends' && (() => {
-            const INVITED_FRIENDS: { name: string; level: number; rewarded: boolean }[] = []
-            const REFERRAL_URL = 'https://t.me/RightPlaceGame_bot/game'
+            // Приглашения друзей (12.11.2026, docs/referral.md): ссылка с кодом и
+            // список — от GET /character/friends. Вне Telegram (заглушка) сервера
+            // нет: список пустой, ссылка — без кода.
+            const friends = friendsView?.friends ?? []
+            const referralLink = friendsView?.link || null
+            const readyCount = friends.filter((f) => f.state === 'claim').length
 
             const handleInvite = () => {
               const text = 'Играю в Right Place — roguelike в Telegram. Присоединяйся!'
-              window.open(`https://t.me/share/url?url=${encodeURIComponent(REFERRAL_URL)}&text=${encodeURIComponent(text)}`, '_blank')
+              const url = referralLink ?? 'https://t.me/RightPlaceGame_bot/game'
+              const share = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`
+              // В Telegram — его же методом (window.open в Mini App откроет браузер).
+              if (openTelegramLink.isAvailable()) openTelegramLink(share)
+              else window.open(share, '_blank')
             }
 
             const handleCopyLink = () => {
-              navigator.clipboard.writeText(REFERRAL_URL)
-              setFriendsLinkCopied(true)
-              setTimeout(() => setFriendsLinkCopied(false), 2000)
+              if (referralLink === null) return
+              navigator.clipboard.writeText(referralLink).then(() => {
+                setFriendsLinkCopied(true)
+                setTimeout(() => setFriendsLinkCopied(false), 2000)
+              }, (e) => console.error('App: ссылка-приглашение не скопировалась', e))
             }
 
             return (
@@ -4743,6 +4820,19 @@ export default function App() {
               <div style={sideMenu ? { padding:'0 8px', display:'flex', gap:14, alignItems:'flex-start' } : { padding:'0 8px' }}>
               <div data-friends-col="left" style={sideMenu ? { flex:'3 1 0', minWidth:0 } : { display:'contents' }}>
 
+                {/* Кто позвал меня */}
+                {friendsView?.invitedBy && (
+                  <div style={{
+                    background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10,
+                    padding:'10px 12px', marginBottom:10, fontSize:12, color:C.textMain, lineHeight:1.5, textAlign:'center',
+                  }}>
+                    Тебя позвал <span style={{ color:C.glowCore }}>{friendsView.invitedBy.name}</span>.{' '}
+                    {friendsView.invitedBy.rewardReceived
+                      ? <span style={{ color:C.bone }}>Награда получена</span>
+                      : <span style={{ color:C.textDim }}>Награда — на {REFERRAL_LEVEL} уровне</span>}
+                  </div>
+                )}
+
                 {/* Блок награды */}
                 <div style={{
                   background:C.nicheDeep, border:`1px solid ${C.stoneDark}`,
@@ -4756,18 +4846,18 @@ export default function App() {
                   <div style={{ display:'flex', justifyContent:'center', alignItems:'center', gap:22, marginBottom:14 }}>
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
                       <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={38} height={38} style={{ display:'block', objectFit:'contain' }} />
-                      <div style={{ fontFamily:FONT_DISPLAY, fontSize:22, color:C.glowCore, lineHeight:1, marginTop:6 }}>5 000</div>
+                      <div style={{ fontFamily:FONT_DISPLAY, fontSize:22, color:C.glowCore, lineHeight:1, marginTop:6 }}>{REFERRAL_GOLD.toLocaleString('ru-RU')}</div>
                       <div style={{ fontSize:10, color:C.textDim, marginTop:4 }}>золота</div>
                     </div>
                     <div style={{ width:1, height:56, background:C.stoneDark }} />
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
                       <img src={`${import.meta.env.BASE_URL}assets/icons/icon_rp.png`} alt="RP" width={38} height={38} style={{ display:'block', objectFit:'contain' }} />
-                      <div style={{ fontFamily:FONT_DISPLAY, fontSize:22, color:C.glowCore, lineHeight:1, marginTop:6 }}>5</div>
+                      <div style={{ fontFamily:FONT_DISPLAY, fontSize:22, color:C.glowCore, lineHeight:1, marginTop:6 }}>{REFERRAL_RP.toLocaleString('ru-RU')}</div>
                       <div style={{ fontSize:10, color:C.textDim, marginTop:4 }}>RP</div>
                     </div>
                   </div>
                   <div style={{ textAlign:'center', fontSize:11, color:C.textDim, lineHeight:1.5 }}>
-                    Начисляется обоим, когда друг дойдёт до 3 уровня
+                    Начисляется обоим, когда друг дойдёт до {REFERRAL_LEVEL} уровня
                   </div>
                 </div>
 
@@ -4792,11 +4882,15 @@ export default function App() {
                   marginBottom:18,
                 }}>
                   <div style={{ fontSize:11, color:C.textDim, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {REFERRAL_URL}
+                    {referralLink ?? (friendsStatus === 'loading' ? 'Ссылка загружается…' : friendsStatus === 'error' ? 'Ссылка не загрузилась' : 'Ссылка — в Telegram')}
                   </div>
-                  <div onClick={handleCopyLink} style={{ fontSize:11, color:C.bone, whiteSpace:'nowrap', cursor:'pointer' }}>
-                    {friendsLinkCopied ? 'скопировано' : 'копировать'}
-                  </div>
+                  {referralLink !== null ? (
+                    <div onClick={handleCopyLink} style={{ fontSize:11, color:C.bone, whiteSpace:'nowrap', cursor:'pointer', padding:'6px 0' }}>
+                      {friendsLinkCopied ? 'скопировано' : 'копировать'}
+                    </div>
+                  ) : friendsStatus === 'error' ? (
+                    <div onClick={() => { void loadFriends() }} style={{ fontSize:11, color:C.bone, whiteSpace:'nowrap', cursor:'pointer', padding:'6px 0' }}>повторить</div>
+                  ) : null}
                 </div>
 
               </div>
@@ -4805,10 +4899,27 @@ export default function App() {
                 <div>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
                     <div style={{ fontSize:10, letterSpacing:1.5, color:C.textDim }}>ПРИГЛАШЕНО</div>
-                    <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.textMain }}>{INVITED_FRIENDS.length}</div>
+                    <div style={{ fontFamily:FONT_DISPLAY, fontSize:13, color:C.textMain }}>{friends.length}</div>
                   </div>
 
-                  {INVITED_FRIENDS.length === 0 ? (
+                  {readyCount >= 2 && (
+                    <button
+                      onClick={() => { void handleFriendsClaim(null) }}
+                      disabled={friendsClaiming !== null}
+                      style={{
+                        width:'100%', minHeight:44, marginBottom:8, borderRadius:10, cursor:'pointer',
+                        fontFamily:FONT_DISPLAY, fontSize:14, color:C.glowCore,
+                        background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                        boxShadow:'inset 0 0 14px rgba(209,151,68,0.3)', opacity: friendsClaiming !== null ? 0.55 : 1,
+                      }}>
+                      {friendsClaiming === 'all' ? 'Забираем…' : `Забрать всё (${readyCount})`}
+                    </button>
+                  )}
+                  {friendsClaimError !== null && (
+                    <div style={{ fontSize:11, color:C.danger, textAlign:'center', marginBottom:8, lineHeight:1.4 }}>{friendsClaimError}</div>
+                  )}
+
+                  {friends.length === 0 ? (
                     <div style={{
                       border:`1px dashed ${C.stoneDark}`, borderRadius:10,
                       padding:'26px 14px', textAlign:'center',
@@ -4825,18 +4936,33 @@ export default function App() {
                     </div>
                   ) : (
                     <div>
-                      {INVITED_FRIENDS.map((friend, i) => (
-                        <div key={i} style={{
-                          background:C.nicheDeep, borderRadius:8, padding:'9px 11px',
+                      {friends.map((friend) => (
+                        <div key={friend.id} style={{
+                          background:C.nicheDeep, borderRadius:8, padding:'7px 11px',
                           display:'flex', alignItems:'center', gap:10,
-                          marginBottom:6,
+                          marginBottom:6, minHeight:44,
                         }}>
                           <div style={{ width:28, height:28, flexShrink:0, background:C.outline, borderRadius:'50%' }} />
-                          <div style={{ fontSize:12, color:C.textMain, flex:1 }}>{friend.name}</div>
-                          {friend.rewarded ? (
-                            <div style={{ fontSize:11, color:C.bone }}>награда получена</div>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:12, color:C.textMain, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{friend.name}</div>
+                            <div style={{ fontSize:10, color:C.textDim, marginTop:1 }}>ур. {friend.level}</div>
+                          </div>
+                          {friend.state === 'claimed' ? (
+                            <div style={{ fontSize:11, color:C.bone, whiteSpace:'nowrap' }}>получено</div>
+                          ) : friend.state === 'claim' ? (
+                            <button
+                              onClick={() => { void handleFriendsClaim(friend.id) }}
+                              disabled={friendsClaiming !== null}
+                              style={{
+                                minHeight:36, minWidth:84, borderRadius:8, cursor:'pointer', whiteSpace:'nowrap',
+                                fontFamily:FONT_DISPLAY, fontSize:12, color:C.glowCore,
+                                background:'linear-gradient(180deg, #4a3a22, #2e2416)', border:`1px solid ${C.glowEdge}`,
+                                opacity: friendsClaiming !== null ? 0.55 : 1,
+                              }}>
+                              {friendsClaiming === friend.id ? '…' : 'Забрать'}
+                            </button>
                           ) : (
-                            <div style={{ fontSize:11, color:C.textDim }}>ур. {friend.level}</div>
+                            <div style={{ fontSize:11, color:C.textDim, whiteSpace:'nowrap' }}>до награды {Math.max(1, REFERRAL_LEVEL - friend.level)} ур.</div>
                           )}
                         </div>
                       ))}
@@ -6112,6 +6238,40 @@ export default function App() {
           прошлом забеге (2000): то говорит о штрафе и перекрывать его нечем.
           pointerEvents:'none' — тост ничего не перехватывает, он не нажимается и
           гаснет сам (таймер в showGoldToast). */}
+      {/* Окно «Награда за приглашение» (12.11.2026, docs/referral.md): флаг
+          referralReward входа или финиша. Над окном о прошлом забеге (2000) —
+          оно короткое и закрывается тапом. */}
+      {referralRewardNotice !== null && (
+        <div onClick={() => setReferralRewardNotice(null)} style={{
+          position:'fixed', inset:0, zIndex:2050, background:'rgba(0,0,0,0.6)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          padding:'calc(16px + var(--rp-safe-top, 0px)) calc(16px + var(--rp-safe-right, 0px)) calc(16px + var(--rp-safe-bottom, 0px)) calc(16px + var(--rp-safe-left, 0px))',
+        }}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            width:'min(320px, 100%)', background:C.nicheDeep, border:`1px solid ${C.glowEdge}`, borderRadius:14,
+            padding:'18px 16px', textAlign:'center', boxShadow:'0 6px 24px rgba(0,0,0,0.7), inset 0 0 16px rgba(209,151,68,0.2)',
+          }}>
+            <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.glowCore, marginBottom:6 }}>Награда за приглашение</div>
+            <div style={{ fontSize:12, color:C.textDim, lineHeight:1.5, marginBottom:12 }}>
+              Тебя позвал {referralRewardNotice.inviterName} — ты дошёл до {REFERRAL_LEVEL} уровня.
+            </div>
+            <div style={{ display:'flex', justifyContent:'center', gap:18, marginBottom:14 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={24} height={24} style={{ display:'block', objectFit:'contain' }} />
+                <span style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.glowCore }}>+{REFERRAL_GOLD}</span>
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <img src={`${import.meta.env.BASE_URL}assets/icons/icon_rp.png`} alt="RP" width={24} height={24} style={{ display:'block', objectFit:'contain' }} />
+                <span style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.glowCore }}>+{REFERRAL_RP}</span>
+              </div>
+            </div>
+            <button onClick={() => setReferralRewardNotice(null)} style={{
+              width:'100%', minHeight:44, borderRadius:10, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:14,
+              color:C.glowCore, background:'linear-gradient(180deg, #4a3a22, #2e2416)', border:`1px solid ${C.glowEdge}`,
+            }}>Отлично</button>
+          </div>
+        </div>
+      )}
       {goldToast !== null && (
         <div style={{
           position:'fixed', left:0, right:0, bottom: sideMenu ? 'calc(16px + var(--rp-safe-bottom, 0px))' : 'calc(96px + var(--rp-safe-bottom, 0px))',
@@ -6125,7 +6285,7 @@ export default function App() {
             boxShadow:'0 4px 14px rgba(0,0,0,0.6), inset 0 0 12px rgba(209,151,68,0.22)',
           }}>
             <img src={`${import.meta.env.BASE_URL}assets/icons/icon_gold.png`} alt="Золото" width={18} height={18} style={{ display:'block', objectFit:'contain' }} />
-            <span style={{ fontFamily:FONT_DISPLAY, fontSize:15, color:C.glowCore }}>+{goldToast} золота</span>
+            <span style={{ fontFamily:FONT_DISPLAY, fontSize:15, color:C.glowCore }}>+{goldToast} золота{rpToast !== null && rpToast > 0 ? `, +${rpToast} RP` : ''}</span>
           </div>
         </div>
       )}

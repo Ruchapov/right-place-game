@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { verifyTelegramInitData, parseTelegramUser } from '../auth.js'
+import { parseReferralStartParam } from '../referral.js'
+import { grantInviteeReward } from './friends.js'
 import { energyForClient, calculateLevel, applyStatGrowth, applySkillUsesGrowth, refundEnergy, TROPHY_GOLD_RATE } from '../game.js'
 import {
   type ActiveExploreRun,
@@ -145,6 +147,22 @@ export async function authRoutes(server: FastifyInstance) {
     })
 
     if (!user) {
+      // Приглашение друга (12.11.2026, docs/referral.md): start_param — из
+      // ПОДПИСАННОГО initData (подпись проверена выше), не из тела запроса.
+      // Привязка только здесь, при СОЗДАНИИ игрока: старого не привязать, себя
+      // не пригласить (у нового игрока кода ещё нет). Ссылки g_ (гильдия) сюда
+      // не попадают — parseReferralStartParam берёт только r_<код>.
+      const referralCode = parseReferralStartParam(new URLSearchParams(initData).get('start_param'))
+      let invitedById: number | null = null
+      if (referralCode !== null) {
+        try {
+          const inviter = await prisma.character.findUnique({ where: { referralCode }, select: { id: true } })
+          invitedById = inviter?.id ?? null
+          if (invitedById === null) request.log.warn({ referralCode }, 'login: referral code not found')
+        } catch (e) {
+          request.log.error({ err: e }, 'login: referral lookup failed')
+        }
+      }
       // New player — create user + character
       user = await prisma.user.create({
         data: {
@@ -152,11 +170,12 @@ export async function authRoutes(server: FastifyInstance) {
           firstName: telegramUser.first_name,
           username: telegramUser.username,
           character: {
-            create: {} // All defaults from schema
+            create: invitedById !== null ? { invitedById } : {} // All defaults from schema
           }
         },
         include: { character: true }
       })
+      if (invitedById !== null) request.log.info({ inviterId: invitedById, userId: user.id }, 'login: new player joined by referral')
     }
 
     // Generate JWT token (expires in 7 days)
@@ -484,6 +503,17 @@ export async function authRoutes(server: FastifyInstance) {
       }
     }
 
+    // Награда приглашённому (12.11.2026, docs/referral.md): дорос до порога и
+    // забега нет (брошенный выше уже закрыт) — +золото и RP одной условной
+    // записью. Две строки на поле: золото, RP и отметки — в char из записанного.
+    const referralReward = await grantInviteeReward(char.id, request.log)
+    if (referralReward !== null) {
+      char.gold = referralReward.gold
+      char.rp = referralReward.rp
+      char.inviteeRewardAt = new Date()
+      char.referralReadyAt = char.inviteeRewardAt
+    }
+
     // Энергия и остаток минуты — ОДНИМ вызовом и от ОДНОГО момента: два
     // отдельных расчёта могли бы лечь по разные стороны минутной границы, и
     // клиент получил бы число от одного момента с остатком от другого.
@@ -587,6 +617,8 @@ export async function authRoutes(server: FastifyInstance) {
       // Взаимоисключающе с interruptedRun выше — выставляется только во
       // встречной ветке if/else, оба сразу невозможны.
       ...(abandonedRun ? { abandonedRun } : {}),
+      // Приглашённый получил награду за порог уровня — клиент покажет окно.
+      ...(referralReward ? { referralReward: { inviterName: referralReward.inviterName } } : {}),
     })
   })
 }

@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 import { authRoutes } from './routes/auth.js'
 import { runRoutes } from './routes/run.js'
 import { questRoutes } from './routes/quests.js'
+import { friendRoutes } from './routes/friends.js'
 import { guildRoutes } from './routes/guild.js'
 
 // Load environment variables from .env file
@@ -26,6 +27,7 @@ await server.register(cors, {
 await server.register(authRoutes)
 await server.register(runRoutes)
 await server.register(questRoutes)
+await server.register(friendRoutes)
 await server.register(guildRoutes)
 
 // Health check endpoint

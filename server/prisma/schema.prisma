@@ -218,6 +218,20 @@ model Character {
   runeLuckFound       Int      @default(0)
   runeAttackUsed      Int      @default(0)
   runeArmorUsed       Int      @default(0)
+  // Приглашения друзей (docs/referral.md, миграция 20261112120000_referral_add).
+  // referralCode — код ссылки startapp=r_<код>, 8 знаков, лениво при первом
+  // GET /character/friends. invitedById — кто пригласил (только при создании
+  // нового игрока, из подписанного start_param). inviteeRewardAt — когда сам
+  // приглашённый получил награду (дошёл до REFERRAL_LEVEL); referralReadyAt — та
+  // же отметка для уведомлений бота. inviterClaimedAt — когда пригласивший забрал
+  // награду за этого друга.
+  referralCode        String?  @unique
+  invitedById         Int?
+  invitedBy           Character?  @relation("Referral", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitees            Character[] @relation("Referral")
+  inviteeRewardAt     DateTime?
+  inviterClaimedAt    DateTime?
+  referralReadyAt     DateTime?
   currentRun          Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -226,6 +240,8 @@ model Character {
   guildMember         GuildMember?
   guildRequests       GuildRequest[]
   guildMessages       GuildMessage[]
+
+  @@index([invitedById])
 }
 
 model Item {

@@ -8,6 +8,7 @@ import type { UpgradeCounts, UpgradeKind } from './upgrades'
 import { ENERGY_REGEN_MS } from './energy'
 import { parseQuestId, type QuestId } from './quests'
 import type { HunterStat } from './hunter'
+import type { FriendState } from './referral'
 
 const SERVER_URL = 'https://right-place-game.onrender.com'
 
@@ -239,6 +240,9 @@ export type LoginResponse = {
   // if/else, оба сразу не приходят никогда. Нет открытого забега — нет ни
   // одного из двух.
   abandonedRun?: AbandonedRunSummary
+  // Приглашённый дорос до порога и этим входом получил награду (12.11.2026,
+  // docs/referral.md) — окно «Награда за приглашение». Разбирать readReferralReward.
+  referralReward?: unknown
   // Курс обмена трофеев на золото (server/src/game.ts, TROPHY_GOLD_RATE).
   // ОПЦИОНАЛЬНОЕ намеренно, хотя нынешний сервер его всегда присылает: объявить
   // его `number` значило бы получить `undefined`, типизированный как число, на
@@ -834,6 +838,11 @@ export type RunResultSummary = {
    */
   questCompleted?: QuestCompleted | null
   /**
+   * Этот забег довёл приглашённого до порога, и финиш выдал ему награду за
+   * приглашение (12.11.2026, docs/referral.md). Только у финиша; null — нет.
+   */
+  referralReward?: ReferralReward | null
+  /**
    * Состояние заданий после забега, тот же вид, что у GET /character/quests;
    * null — сервер не назвал (испорченный questState, вход, старый сервер). После
    * повтора финиша вид — на момент ПЕРВОГО финиша: App.tsx всё равно перечитывает
@@ -1083,6 +1092,7 @@ export async function finishRunExplore(
           eliteTrophiesEarned: readCurrencyCount(data.eliteTrophiesEarned),
           questCompleted: readQuestCompleted(data.questCompleted),
           quests: readQuestView(data.quests),
+          referralReward: readReferralReward(data.referralReward),
         }
       } catch (e) {
         clearTimeout(timer)
@@ -3106,4 +3116,85 @@ export async function sendGuildChat(token: string, text: string): Promise<void> 
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   }, GUILD_TIMEOUT_MS)
+}
+
+// --- Приглашения друзей (12.11.2026, docs/referral.md) ---
+
+/** Награда приглашённому за порог уровня — флаг входа и финиша. */
+export type ReferralReward = { inviterName: string }
+
+/** Флаг referralReward из ответа: строго, мусор — null (окна не будет). */
+export function readReferralReward(raw: unknown): ReferralReward | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const name = (raw as { inviterName?: unknown }).inviterName
+  return typeof name === 'string' ? { inviterName: name } : null
+}
+
+export type FriendView = { id: number; name: string; level: number; state: FriendState }
+export type FriendsView = {
+  link: string
+  invitedBy: { name: string; rewardReceived: boolean } | null
+  friends: FriendView[]
+}
+
+/** Вид вкладки «Друзья». Любое отклонение формы — null (вкладка скажет «не загрузилось»). */
+export function readFriendsView(raw: unknown): FriendsView | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.link !== 'string' || !Array.isArray(r.friends)) return null
+  let invitedBy: FriendsView['invitedBy'] = null
+  if (r.invitedBy !== null) {
+    const ib = r.invitedBy as Record<string, unknown> | undefined
+    if (!ib || typeof ib.name !== 'string' || typeof ib.rewardReceived !== 'boolean') return null
+    invitedBy = { name: ib.name, rewardReceived: ib.rewardReceived }
+  }
+  const friends: FriendView[] = []
+  for (const f of r.friends) {
+    const o = f as Record<string, unknown>
+    if (typeof o !== 'object' || o === null) return null
+    if (!Number.isInteger(o.id) || typeof o.name !== 'string' || !Number.isInteger(o.level)) return null
+    if (o.state !== 'progress' && o.state !== 'claim' && o.state !== 'claimed') return null
+    friends.push({ id: o.id as number, name: o.name, level: o.level as number, state: o.state })
+  }
+  return { link: r.link, invitedBy, friends }
+}
+
+const FRIENDS_TIMEOUT_MS = 8000
+
+function friendsOrThrow(path: string, raw: unknown): FriendsView {
+  const v = readFriendsView(raw)
+  if (v === null) {
+    console.error(`api: ${path} — вид друзей не разобран`, raw)
+    throw new RequestError(`${path}: unreadable friends view`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+  }
+  return v
+}
+
+export async function fetchFriends(token: string): Promise<FriendsView> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/character/friends`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, FRIENDS_TIMEOUT_MS)
+  return friendsOrThrow('/character/friends', raw)
+}
+
+export type FriendsClaimResult = { view: FriendsView; gold: number; rp: number; goldGained: number; rpGained: number }
+
+/**
+ * Забрать награду за друга (friendId) или за всех готовых (null). Без повторов:
+ * сервер помечает друга условной записью, и повтор после потерянного ответа
+ * получит 409 «уже забрано» — экран тогда просто перечитывает список.
+ */
+export async function claimFriends(token: string, friendId: number | null): Promise<FriendsClaimResult> {
+  const path = friendId === null ? '/character/friends/claim-all' : '/character/friends/claim'
+  const raw = await requestJson<Record<string, unknown>>(`${SERVER_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(friendId === null ? {} : { friendId }),
+  }, FRIENDS_TIMEOUT_MS)
+  const view = friendsOrThrow(path, raw)
+  const gold = readCurrencyCount(raw.gold), rp = readCurrencyCount(raw.rp)
+  const goldGained = readCurrencyCount(raw.goldGained), rpGained = readCurrencyCount(raw.rpGained)
+  if (gold === null || rp === null || goldGained === null || rpGained === null) {
+    console.error(`api: ${path} — нет золота или RP в ответе`, raw)
+    throw new RequestError(`${path}: no wallet in answer`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
+  }
+  return { view, gold, rp, goldGained, rpGained }
 }
