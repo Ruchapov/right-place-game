@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { rollBreakables, type RunBreakable } from './breakables.js'
 
 // --- Пути ---
 // Считаем от расположения САМОГО этого файла, а не от process.cwd() —
@@ -341,6 +342,8 @@ type SlotsFile = {
   npc?: { smuggler?: unknown; puzzle?: unknown }
   boss?: unknown
   obelisk?: { points?: unknown }
+  /** Кандидаты мест бочек и кувшинов (12.11.2026); поля нет — предметов нет. */
+  breakables?: unknown
 }
 
 function isPointXY(value: unknown): value is [number, number] {
@@ -772,4 +775,28 @@ export function pickStarbloomPoint(mapFile: string, events: RunEvent[]): [number
   const taken = new Set(events.flatMap(eventPointsOf).map(pointKey))
   const free = (slots.reward ?? []).filter(isPointXY).filter((p) => !taken.has(`${p[0]},${p[1]}`))
   return pickRandom(free, 1)[0] ?? null
+}
+
+/**
+ * Бочки и кувшины забега (12.11.2026, общий каталог breakables.ts): из
+ * кандидатов карты (slots.breakables), не занятых клетками событий забега,
+ * Звёздоцветом и патрульными, 6–8 штук; вид и содержимое — броском сразу.
+ * Поля у карты нет — пустой список, без ошибки.
+ */
+export function rollRunBreakables(
+  mapFile: string,
+  events: RunEvent[],
+  starbloom: [number, number] | null,
+  patrols: readonly RunPatrol[],
+  characterLevel: number,
+  maxHp: number,
+): RunBreakable[] {
+  const slots = readSlots(mapFile)
+  const candidates = Array.isArray(slots.breakables) ? slots.breakables.filter(isPointXY) : []
+  const taken: [number, number][] = [
+    ...events.flatMap(eventPointsOf),
+    ...(starbloom ? [starbloom] : []),
+    ...patrols.map((p): [number, number] => [p.x, p.y]),
+  ]
+  return rollBreakables(candidates, taken, characterLevel, maxHp, rollTrophies)
 }

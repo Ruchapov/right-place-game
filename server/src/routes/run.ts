@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, rollRunPatrols, clientRunEvents, pickStarbloomPoint, parseOptInEventKinds, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
+import { rollRunEvents, rollRunPatrols, rollRunBreakables, clientRunEvents, pickStarbloomPoint, parseOptInEventKinds, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
+import type { RunBreakable } from '../breakables.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
@@ -56,6 +57,7 @@ import {
   ringSlotsOf,
   readRunGear,
   readRunPatrols,
+  readRunBreakables,
   type RunGear,
   runesOf, runeStockColumn, runeFoundColumn, type RuneState,
 } from '../runState.js'
@@ -1022,6 +1024,13 @@ function parseKilledPatrolIndices(raw: unknown, patrols: readonly RunPatrol[]): 
   return [...new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < patrols.length))]
 }
 
+// Индексы разбитых бочек и кувшинов (12.11.2026) — те же правила, что у
+// патрульных: целые, в диапазоне списка предметов этого забега, без повторов.
+function parseBrokenBreakableIndices(raw: unknown, breakables: readonly RunBreakable[]): number[] {
+  const list = Array.isArray(raw) ? raw : []
+  return [...new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < breakables.length))]
+}
+
 // Индекс события Контрабандиста в забеге, или -1 если его в этом забеге нет.
 // Событие в розыгрыше одно (см. runEvents.ts), findIndex этого достаточно.
 function smugglerEventIndex(run: ActiveExploreRun): number {
@@ -1150,6 +1159,9 @@ type FinishExploreBody = {
   // closedEvents (parseKilledPatrolIndices): мусор отбрасывается молча. Поля нет
   // (клиент старше) — патрульные трофеи 0.
   killedPatrols?: unknown
+  // Бочки и кувшины (12.11.2026): индексы разбитых в currentRun.breakables.
+  // Разбор как у killedPatrols; поля нет (клиент старше) — их трофеи 0.
+  brokenBreakables?: unknown
 }
 // Body shape for POST /run/sip — один глоток, тир 1..POTION_TIER_COUNT.
 // sipId (15.10.2026) — id ЭТОГО глотка, один на все попытки повтора: глоток,
@@ -1433,6 +1445,10 @@ export async function runRoutes(server: FastifyInstance) {
     // Патрульные (30.10.2026): одиночные враги на группах, не выпавших событием.
     // Не события — в HUD их нет, на конец забега они не влияют.
     const patrols = rollRunPatrols(mapFile, rolledEvents, characterLevel)
+    // Бочки и кувшины (12.11.2026): 6–8 на кандидатах карты, не на событиях,
+    // Звёздоцвете и патрульных; содержимое брошено сразу (общий breakables.ts).
+    // Тоже не события. Здоровье — доля maxHp ЭТОГО забега.
+    const breakables = rollRunBreakables(mapFile, rolledEvents, starbloom, patrols, characterLevel, maxHp)
 
     // confirmed: false — забег создан, но игрок его ещё не видел. Снимет флаг
     // POST /run/ready, когда клиент построит мир (а также первый глоток или
@@ -1495,7 +1511,7 @@ export async function runRoutes(server: FastifyInstance) {
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
-      gear: runGear, starbloom, patrols, guildBuffs,
+      gear: runGear, starbloom, patrols, breakables, guildBuffs,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1600,6 +1616,10 @@ export async function runRoutes(server: FastifyInstance) {
       // Патрульные (30.10.2026): [{x, y, enemyKind, trophyReward}]. Старый клиент
       // поле не читает — патрульных у него просто нет.
       patrols,
+      // Бочки и кувшины (12.11.2026): [{x, y, kind, loot}] — содержимое клиенту
+      // отдаётся (всплывашка при разбивании, как у событий с 30.09.2026).
+      // Старый клиент поле не читает — предметов у него нет.
+      breakables,
     })
   })
 
@@ -3709,6 +3729,18 @@ export async function settleExploreRun(
     const runPatrols = patrolsRead === 'malformed' ? [] : patrolsRead
     const killedPatrols = unconfirmedPenalty ? [] : parseKilledPatrolIndices(body.killedPatrols, runPatrols)
     total += killedPatrols.reduce((sum, i) => sum + runPatrols[i].trophyReward, 0)
+    // Разбитые бочки и кувшины (12.11.2026) — так же, поверх сделки: трофеи
+    // тех, у кого внутри трофеи. Мана и здоровье — уже в бою, на клиенте.
+    const breakablesRead = readRunBreakables(run)
+    if (breakablesRead === 'malformed') {
+      log.error({ userId, breakables: run.breakables }, 'finish-explore: currentRun.breakables is malformed — breakable trophies not counted')
+    }
+    const runBreakables = breakablesRead === 'malformed' ? [] : breakablesRead
+    const brokenBreakables = unconfirmedPenalty ? [] : parseBrokenBreakableIndices(body.brokenBreakables, runBreakables)
+    total += brokenBreakables.reduce((sum, i) => {
+      const loot = runBreakables[i].loot
+      return sum + (loot?.type === 'trophies' ? loot.amount : 0)
+    }, 0)
 
     // ⚠️ Поле smugglerOutcome из тела запроса НЕ ЧИТАЕТСЯ вообще — исход бросает
     // сервер в /run/smuggler-deal и хранит в currentRun.smugglerDeal. Старый
@@ -3779,7 +3811,7 @@ export async function settleExploreRun(
     }
     if (reportedProgress.damageTaken > capped.maxDamageTaken) {
       log.warn(
-        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, charmHealMax: capped.charmHealMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
+        { userId, damageTaken: reportedProgress.damageTaken, maxDamageTaken: capped.maxDamageTaken, classHealMax: capped.classHealMax, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, charmHealMax: capped.charmHealMax, breakableHpMax: capped.breakableHpMax, runMaxHp: run.maxHp, sips: runSipsAllowed(run) },
         'finish-explore: damageTaken exceeded cap, clamped',
       )
     }
@@ -3791,7 +3823,7 @@ export async function settleExploreRun(
     }
     if (reportedProgress.healedAmount > capped.maxHealed) {
       log.warn(
-        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, runMaxHp: run.maxHp },
+        { userId, healedAmount: reportedProgress.healedAmount, maxHealed: capped.maxHealed, healSkillMax: capped.healSkillMax, healUsesMax: capped.healUsesMax, breakableHpMax: capped.breakableHpMax, runMaxHp: run.maxHp },
         'finish-explore: healedAmount exceeded cap, clamped',
       )
     }
@@ -4237,6 +4269,15 @@ export function parseRunCompletion(raw: unknown, run: ActiveExploreRun): RunComp
   if (!Array.isArray(r.killedPatrols)) return { kind: 'malformed', reason: 'killedPatrols' }
   const killed = parseKilledPatrolIndices(r.killedPatrols, patrols)
   if (killed.length !== r.killedPatrols.length) return { kind: 'malformed', reason: 'killedPatrols' }
+  // Бочки и кувшины (12.11.2026): поля нет — клиент старше, разбитых нет.
+  const breakablesRead = readRunBreakables(run)
+  const breakables = breakablesRead === 'malformed' ? [] : breakablesRead
+  let broken: number[] = []
+  if (r.brokenBreakables !== undefined) {
+    if (!Array.isArray(r.brokenBreakables)) return { kind: 'malformed', reason: 'brokenBreakables' }
+    broken = parseBrokenBreakableIndices(r.brokenBreakables, breakables)
+    if (broken.length !== r.brokenBreakables.length) return { kind: 'malformed', reason: 'brokenBreakables' }
+  }
   if (typeof r.charmUsed !== 'boolean') return { kind: 'malformed', reason: 'charmUsed' }
   if (typeof r.starbloomCut !== 'boolean') return { kind: 'malformed', reason: 'starbloomCut' }
   const drunk = r.potionsDrunkByTier
@@ -4251,6 +4292,7 @@ export function parseRunCompletion(raw: unknown, run: ActiveExploreRun): RunComp
   const completion: Record<string, unknown> = {
     closedEvents: closed,
     killedPatrols: killed,
+    brokenBreakables: broken,
     charmUsed: r.charmUsed,
     starbloomCut: r.starbloomCut,
     potionsDrunkByTier: [...drunk],

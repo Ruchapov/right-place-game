@@ -22,6 +22,7 @@ import { bossMaxHpFor, enemyMaxHpByKind, SHADOW_HP_MULT, scaledEnemyMaxHp, SKILL
 import type { RunEvent, RunPatrol, RunEnemyKind } from './runEvents.js'
 import { RUN_ENEMY_KINDS } from './runEvents.js'
 import { ELITE_HP_MULT } from './runExtras.js'
+import { breakablesReserve, parseBreakable, type RunBreakable } from './breakables.js'
 import { runSlotConsumableById, consumableReviveFrac, RUN_CONSUMABLE_SLOTS, type ConsumableId, type SkillBookSkillId } from './consumables.js'
 import type { UpgradeCounts } from './upgrades.js'
 import type { ScrollId } from './scrolls.js'
@@ -91,7 +92,7 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
 // он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
 // (читать через readRunConfirmedAt).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[]; guildBuffs?: { attackPct: number; armorPct: number }; completion?: Record<string, unknown> }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[]; breakables?: RunBreakable[]; guildBuffs?: { attackPct: number; armorPct: number }; completion?: Record<string, unknown> }
 
 /**
  * Снаряжение Мастера на ЭТОТ забег (docs/crafter.md, 29.10.2026) — снимок на
@@ -625,6 +626,13 @@ export type ClampedRunProgress = {
   healUsesMax: number
   /** Сколько из maxDamageTaken — подъём оберегом от смерти; 0 — оберег не взят. */
   charmHealMax: number
+  /**
+   * Бочки и кувшины (12.11.2026): HP и мана всех предметов забега. HP входит и
+   * в maxDamageTaken, и в maxHealed (лечат через healPlayer); мана — в запас
+   * исцеления (больше маны — больше применений).
+   */
+  breakableHpMax: number
+  breakableManaMax: number
   /** Исцеление забега, по которому считался запас ('malformed' — считался как не надетое). */
   runHealSkill: RunHealSkill | null | 'malformed'
   enemyCount: number
@@ -801,12 +809,19 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     + blood.feastHealFrac * runMaxHp * (enemyCount + bossCount)
   const runHealSkill = readRunHealSkill(run)
   const gear = gearReserve(readRunGear(run).effects, runMaxHp, maxDamageDealt, enemyCount, bossCount, runSipsAllowed(run), maxSipHeal)
-  const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, gear.extraMana)
+  // Бочки и кувшины (12.11.2026): здоровье всех предметов забега — лечение
+  // через healPlayer (и в полученный, и в лечение), их мана — лишние
+  // применения исцеления. Все, а не разбитые: на срезе брошенного забега
+  // разбитых сервер не знает, а честный игрок мог разбить все. Испорченный
+  // список — 0, против игрока.
+  const breakablesRead = readRunBreakables(run)
+  const breakable = breakablesReserve(breakablesRead === 'malformed' ? [] : breakablesRead)
+  const heal = healSkillReserve(runHealSkill, runHeroClass === 'malformed' ? 'none' : runHeroClass, enemyCount + bossCount, gear.extraMana + breakable.mana)
   const charmHealMax = charmReserve(run, runMaxHp)
-  const maxDamageTaken = (runMaxHp + sipHealMax) * 1.5 + classHealMax + heal.hp + charmHealMax + gear.healMax + gear.potionHealMax
+  const maxDamageTaken = (runMaxHp + sipHealMax) * 1.5 + classHealMax + heal.hp + charmHealMax + gear.healMax + gear.potionHealMax + breakable.hp
   // С фиксированной частью три глотка на малом maxHp лечат больше самого maxHp
   // (25 + 10% × 80 = 33 за глоток): база потолка лечения — большее из двух.
-  const maxHealed = Math.max(runMaxHp, sipHealMax) + heal.hp + gear.potionHealMax
+  const maxHealed = Math.max(runMaxHp, sipHealMax) + heal.hp + gear.potionHealMax + breakable.hp
 
   return {
     progress: {
@@ -835,6 +850,8 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
     healSkillMax: heal.hp,
     healUsesMax: heal.uses,
     charmHealMax,
+    breakableHpMax: breakable.hp,
+    breakableManaMax: breakable.mana,
     runHealSkill,
     enemyCount,
     bossCount,
@@ -1209,6 +1226,25 @@ export function readRunPatrols(run: ActiveExploreRun): RunPatrol[] | 'malformed'
     if (typeof enemyKind !== 'string' || !(RUN_ENEMY_KINDS as readonly string[]).includes(enemyKind)) return 'malformed'
     if (typeof trophyReward !== 'number' || !Number.isInteger(trophyReward) || trophyReward < 0) return 'malformed'
     out.push({ x: x as number, y: y as number, enemyKind: enemyKind as RunEnemyKind, trophyReward })
+  }
+  return out
+}
+
+/**
+ * Бочки и кувшины забега (12.11.2026, rollRunBreakables). Поля нет — забег
+ * начат раньше, предметов не было: пустой список. Испорчено (не список или хоть
+ * один предмет не разбирается parseBreakable) — 'malformed': финиш их трофеев не
+ * начисляет и пишет log.error, потолки считают без них (против игрока).
+ */
+export function readRunBreakables(run: ActiveExploreRun): RunBreakable[] | 'malformed' {
+  const raw: unknown = run.breakables
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return 'malformed'
+  const out: RunBreakable[] = []
+  for (const item of raw) {
+    const parsed = parseBreakable(item)
+    if (parsed === null) return 'malformed'
+    out.push(parsed)
   }
   return out
 }

@@ -33,7 +33,8 @@ import {
 } from './quests.js'
 import { RUN_MANA_MAX, RUN_MANA_DROP_MAX, SKILL_BOOK_SKILL_IDS } from './game.js'
 import type { SkillBookSkillId } from './consumables.js'
-import { type ActiveExploreRun, readRunPotionsDrunk, readRunConfirmedAt, readRunStartedAt, readRunPatrols } from './runState.js'
+import { type ActiveExploreRun, readRunPotionsDrunk, readRunConfirmedAt, readRunStartedAt, readRunPatrols, readRunBreakables } from './runState.js'
+import { breakablesReserve } from './breakables.js'
 
 // --- Форма ---
 
@@ -389,9 +390,15 @@ export function collectQuestRunFacts(
   const kills = events.reduce((sum, ev) => sum + (ev.kind === 'enemy' ? ev.clusterPoints?.length ?? 0 : ev.kind === 'boss' || ev.kind === 'runner' ? 1 : 0), 0)
     + (patrolsRead === 'malformed' ? 0 : patrolsRead.length)
 
+  // Мана из бочек и кувшинов (12.11.2026) — тоже «собранная»: клиент кладёт её
+  // в manaCollected. Всех предметов забега, а не разбитых: финиш разбитые
+  // знает, вход — нет, а потолок один. Испорченный список — 0, против игрока.
+  const breakablesRead = readRunBreakables(run)
+  const breakableMana = breakablesReserve(breakablesRead === 'malformed' ? [] : breakablesRead).mana
+
   const clamped: string[] = []
   const capped = { ...counters }
-  const collectedMax = RUN_MANA_DROP_MAX * kills
+  const collectedMax = RUN_MANA_DROP_MAX * kills + breakableMana
   if (capped.manaCollected !== null && capped.manaCollected > collectedMax) {
     clamped.push('manaCollected')
     capped.manaCollected = collectedMax
