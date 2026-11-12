@@ -45,9 +45,8 @@ CREATE TABLE): колонки персонажа `botAllowed`, `botBlocked`, `no
 
 `public/bot/<имя>.jpg` (start, energy, quests, guild, friend, comeback, channel),
 адрес `https://ruchapov.github.io/right-place-game/bot/<имя>.jpg`.
-⚠️ 13.11.2026 архива `RightPlace_bot_art.zip` на машине не нашлось — папки нет,
-карточки уходят текстом (`sendCard`), пока картинки не положат и не выполнят
-`npm run deploy`.
+1280×720, всего ≈0.9 МБ, из `RightPlace_bot_art.zip` (13.11.2026). Пропадёт файл — `sendCard`
+отправит карточку текстом.
 
 ## Клиент
 
