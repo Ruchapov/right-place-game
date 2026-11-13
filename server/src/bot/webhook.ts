@@ -279,7 +279,7 @@ async function handleCallback(q: TgCallback, log: FastifyBaseLogger) {
     const on = head === 'yes'
     const s = await setSetting(q.from.id, (st) => { st[key] = on })
     if (!s) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
-    await answerCallbackQuery(q.id, on ? 'Включено' : 'Выключено')
+    await answerCallbackQuery(q.id, on ? 'Включено' : 'Больше не пришлю такое')
     if (q.message) {
       const r = await editMessageReplyMarkup(chatId, q.message.message_id, notificationKeyboard(key, !on))
       if (!r.ok && !isNotModified(r)) log.warn({ description: r.description }, 'bot: notification markup edit failed')

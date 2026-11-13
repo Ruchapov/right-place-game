@@ -2,7 +2,7 @@
 //
 // queueNotification только СТАВИТ запись в BotNotification; отправляет её
 // GET /cron/tick (bot/cron.ts). Так ручки игры не ждут Telegram, а лимиты
-// (25 в секунду, 3 игроку за сутки, «игрок сейчас в игре») решаются в одном месте.
+// (25 в секунду, 2 фоновых звона игроку за сутки, «игрок сейчас в игре») решаются в одном месте.
 // Ошибка постановки наружу не летит — лог и всё: уведомление никогда не ломает
 // ручку, которая его ставит.
 import { PrismaClient, Prisma } from '@prisma/client'
@@ -126,13 +126,13 @@ function guildName(payload: unknown): string {
 
 /**
  * Кнопки уведомления: [⚔️ Играть] [🔕 Не присылать такое]. Нажатие выключает
- * этот тип (callback `no:<настройка>`) и меняет кнопку на «Вернуть» (`yes:<…>`).
+ * этот тип (callback `no:<настройка>`) и меняет кнопку на «↩️ Вернуть» (`yes:<…>`).
  */
 export function notificationKeyboard(setting: NotifySettingKey, muted: boolean): Keyboard {
   return [[
     playButton(),
     muted
-      ? { text: '✅ Больше не пришлю · Вернуть', callback_data: `yes:${setting}` }
+      ? { text: '↩️ Вернуть', callback_data: `yes:${setting}` }
       : { text: '🔕 Не присылать такое', callback_data: `no:${setting}` },
   ]]
 }

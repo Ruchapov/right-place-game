@@ -23,7 +23,13 @@ const COMEBACK_1_MS = 3 * DAY_MS
 const COMEBACK_2_MS = 7 * DAY_MS
 const IN_GAME_MS = 15 * 60_000
 const EXPIRE_MS = 48 * 3600_000
-const MAX_PER_DAY = 3
+/**
+ * Не больше 2 «фоновых» звонов игроку за 24 часа (решение Андрея 13.11.2026):
+ * полная энергия, новые задания, «вернись». Гильдия и друзья — ответ на действие
+ * другого игрока, в лимит не идут и его не тратят.
+ */
+const LIMITED_KINDS: readonly string[] = ['energy', 'quests', 'comeback']
+const MAX_LIMITED_PER_DAY = 2
 const MAX_PER_TICK = 300
 const SEND_GAP_MS = 40 // 25 в секунду
 const RETRY_MS = 5 * 60_000
@@ -107,12 +113,12 @@ async function sendQueue(now: Date, log: FastifyBaseLogger): Promise<QueueCounte
     take: MAX_PER_TICK,
     include: { character: { select: { botAllowed: true, botBlocked: true, notifySettings: true, lastActiveAt: true, user: { select: { telegramId: true } } } } },
   })
-  // Отправленные игроку за сутки: моменты, по персонажу.
+  // Отправленные игроку за сутки звоны из лимита: моменты, по персонажу.
   const sentDay = new Map<number, number[]>()
   const ids = [...new Set(due.map((d) => d.characterId))]
   if (ids.length > 0) {
     const recent = await prisma.botNotification.findMany({
-      where: { characterId: { in: ids }, sentAt: { gte: new Date(now.getTime() - DAY_MS) }, error: null },
+      where: { characterId: { in: ids }, kind: { in: [...LIMITED_KINDS] }, sentAt: { gte: new Date(now.getTime() - DAY_MS) }, error: null },
       select: { characterId: true, sentAt: true },
     })
     for (const r of recent) {
@@ -142,9 +148,10 @@ async function sendQueue(now: Date, log: FastifyBaseLogger): Promise<QueueCounte
       else { await defer(d.id, new Date(c.lastActiveAt.getTime() + IN_GAME_MS)); n.deferred++ }
       continue
     }
+    const limited = LIMITED_KINDS.includes(d.kind)
     const day = (sentDay.get(d.characterId) ?? []).filter((t) => now.getTime() - t < DAY_MS).sort((a, b) => a - b)
-    if (day.length >= MAX_PER_DAY) {
-      await defer(d.id, new Date(day[day.length - MAX_PER_DAY] + DAY_MS))
+    if (limited && day.length >= MAX_LIMITED_PER_DAY) {
+      await defer(d.id, new Date(day[day.length - MAX_LIMITED_PER_DAY] + DAY_MS))
       n.deferred++
       continue
     }
@@ -154,8 +161,10 @@ async function sendQueue(now: Date, log: FastifyBaseLogger): Promise<QueueCounte
     const res = await sendCard(c.user.telegramId.toString(), view.photo, view.caption, view.keyboard)
     if (res.ok) {
       await prisma.botNotification.update({ where: { id: d.id }, data: { sentAt: new Date(), error: null } })
-      day.push(Date.now())
-      sentDay.set(d.characterId, day)
+      if (limited) {
+        day.push(Date.now())
+        sentDay.set(d.characterId, day)
+      }
       n.sent++
     } else if (res.status === 403) {
       await close(d.id, `blocked: ${res.description}`.slice(0, 500))
