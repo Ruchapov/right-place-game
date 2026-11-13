@@ -163,7 +163,7 @@
   ],
   "hazard": [
     [
-      16,
+      15,
       15
     ],
     [
@@ -207,7 +207,7 @@
       23
     ],
     [
-      74,
+      75,
       23
     ]
   ],
@@ -271,5 +271,14 @@
       76,
       23
     ]
-  ]
+  ],
+  "gargoyles": [],
+  "stalactites": [],
+  "saws": [],
+  "trapsPerRun": {
+    "spikes": 10,
+    "stalactites": 0,
+    "gargoyles": 0,
+    "saws": 0
+  }
 }

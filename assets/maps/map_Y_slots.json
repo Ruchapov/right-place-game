@@ -299,5 +299,14 @@
       69,
       28
     ]
-  ]
+  ],
+  "gargoyles": [],
+  "stalactites": [],
+  "saws": [],
+  "trapsPerRun": {
+    "spikes": 8,
+    "stalactites": 0,
+    "gargoyles": 0,
+    "saws": 0
+  }
 }
