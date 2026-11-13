@@ -14,7 +14,18 @@ Read-only, ничего не чинит. Печатает таблицу по к
      старта (по прямой); враг, сундук, NPC и босс не на ловушке и не вплотную к
      ней (x±1, тот же ряд); ловушка не ближе 2 тайлов к краю площадки; рядом с
      сундуком есть клетка стояния без ловушки (не щель в 1 тайл);
-  e) сколько точек врагов на каждом ряду.
+  e) сколько точек врагов на каждом ряду;
+  f) (13.11.2026) ловушки: пулы gargoyles / stalactites / saws и trapsPerRun —
+     правила расстановки и геометрия (tools/trap_rules.py, общие с
+     place_traps.py), декор в зоне каждой ловушки, включая шипы hazard, и волны
+     (штатная и строгая) со ВСЕМИ ловушками на месте: ни одна клетка, достижимая
+     без ловушек, не теряется.
+
+Принятые до 13.11.2026 нарушения (ACCEPTED ниже) печатаются строкой «принято» и
+проверку не роняют: подъём на 3 тайла на A, C, E (решение Андрея 10.11.2026) и
+враги вплотную к шипам и сундуки в щели на B2, C2 (так с 29.10.2026). Ловушки
+13.11.2026 проверяет 4f относительно волн БЕЗ ловушек — она этими исключениями
+не прикрыта.
 
 Обязательный подъём ловушкой не перекрыт, если c) прошёл: с '^' волны те же 100%.
 """
@@ -26,6 +37,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import map_tools as mt  # noqa: E402
+import trap_rules as R  # noqa: E402
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+# Нарушения, принятые до ловушек 13.11.2026 (см. шапку): буква → пункты.
+ACCEPTED = {
+    'A': {'4a', '4b', '4c'}, 'C': {'4a', '4b', '4c'}, 'E': {'4a', '4b', '4c'},
+    'B2': {'4d'}, 'C2': {'4d'},
+}
 
 ROOT = Path(__file__).resolve().parent.parent
 MAPS = ROOT / 'public' / 'assets' / 'maps'
@@ -120,6 +141,10 @@ def check(letter):
     if d:
         fails.append('4d: ' + '; '.join(d))
 
+    f_bad = check_traps(letter, txts[0], g, slots, start)
+    if f_bad:
+        fails.append('4f: ' + '; '.join(f_bad))
+
     rows = sorted(Counter(p[1] for p in enemies).items())
     print(f'== {letter} ({txts[0].name}, {len(g[0])}×{len(g)}, старт {list(start)})')
     print(f"  4a validate: {'ок' if a['validate'] else 'НЕТ ' + str(a['problems'])}; клеток стояния {a['strict'][2]}")
@@ -133,7 +158,54 @@ def check(letter):
     for line in d:
         print(f'     - {line}')
     print(f"  4e враги по рядам: {', '.join(f'ряд {y}: {n}' for y, n in rows)}")
-    return fails
+    pools = {k: len(slots.get(k) or []) for k in ('gargoyles', 'stalactites', 'saws')}
+    print(f"  4f ловушки: шипов {len(hazards)}, горгулий {pools['gargoyles']}, сталактитов {pools['stalactites']}, "
+          f"пил {pools['saws']}; за забег {slots.get('trapsPerRun')}; " + ('ок' if not f_bad else f'НАРУШЕНИЙ {len(f_bad)}'))
+    for line in f_bad:
+        print(f'     - {line}')
+    acc = ACCEPTED.get(letter, set())
+    kept = [f for f in fails if f[:2] not in acc]
+    took = [f[:2] for f in fails if f[:2] in acc]
+    if took:
+        print(f"  принято до 13.11.2026: {', '.join(sorted(set(took)))}")
+    return kept
+
+
+def check_traps(letter, txt, g, slots, start):
+    """4f — ловушки (правила — tools/trap_rules.py)."""
+    bad = []
+    S, _ = mt.build(g)
+    decor = R.decor_mask(txt, g)
+    ctx = {'grid': g, 'S': S, 'start': start, 'points': R.slot_points(slots), 'decor': decor}
+    traps = [(k, tuple(t) if k == 'hazard' else t) for k, t in R.all_traps(slots)]
+    for i, (k, t) in enumerate(traps):
+        if k == 'hazard':
+            x, y = t
+            if decor[y][x] is not None and decor[y][x] > R.DECOR_TOL:
+                bad.append(f'декор в клетке шипа {list(t)}: {decor[y][x]} px')
+            continue
+        others = traps[:i] + traps[i + 1:]
+        for b in R.check_trap(k, t, ctx, others):
+            bad.append(f'{k} {R.footprint(k, t)[0]}: {b}')
+    base = R.waves_with(g, start, [], mt)
+    now = R.waves_with(g, start, traps, mt)
+    lost = R.waves_lost(base, now)
+    if lost:
+        bad.append(f'ловушки перекрыли путь: теряются {sorted(lost)[:10]}')
+    per = slots.get('trapsPerRun')
+    if traps and len(traps) > len(slots.get('hazard') or []) or per is not None:
+        if not isinstance(per, dict):
+            bad.append('нет trapsPerRun')
+        else:
+            if per.get('spikes', -1) > len(slots.get('hazard') or []) or per.get('spikes', -1) < 0:
+                bad.append(f"trapsPerRun.spikes {per.get('spikes')} больше пула шипов")
+            for k in ('gargoyles', 'stalactites', 'saws'):
+                n = per.get(k)
+                if not isinstance(n, int) or n < 0 or n > len(slots.get(k) or []):
+                    bad.append(f'trapsPerRun.{k} {n} больше пула {len(slots.get(k) or [])}')
+            if per.get('gargoyles', 0) > R.GARGOYLE_MAX or per.get('saws', 0) > R.SAW_MAX:
+                bad.append('горгулий или пил за забег больше 3')
+    return bad
 
 
 def main():
