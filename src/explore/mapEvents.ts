@@ -143,3 +143,43 @@ export function devPlaceRunner(slots: unknown, pool: EventCandidate[], chosen: E
   const swap = devReplacement(pool, others)
   return swap ? [...others.slice(0, i), swap, ...others.slice(i)] : others
 }
+
+// --- Ловушки (13.11.2026): пулы слот-файла и trapsPerRun (tools/place_traps.py) ---
+
+export type TrapsPerRun = { spikes: number; gargoyles: number; stalactites: number; saws: number }
+
+function count(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : fallback
+}
+
+/**
+ * Сколько ловушек каждого вида за забег. Нет поля (слот-файл старше 13.11.2026)
+ * — прежние HAZARD_SPIKES_PER_RUN шипов и ни одной новой ловушки, а не ошибка:
+ * у такой карты пулов новых ловушек нет вовсе.
+ */
+export function readTrapsPerRun(raw: unknown): TrapsPerRun {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    spikes: count(r.spikes, C.HAZARD_SPIKES_PER_RUN),
+    gargoyles: count(r.gargoyles, 0),
+    stalactites: count(r.stalactites, 0),
+    saws: count(r.saws, 0),
+  }
+}
+
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
+
+export function isGargoyleSlot(v: unknown): v is { x: number; y: number; dir: 1 | -1; plate: [number, number] } {
+  const o = v as Record<string, unknown> | null
+  return !!o && isInt(o.x) && isInt(o.y) && (o.dir === 1 || o.dir === -1) && isPointXY(o.plate)
+}
+
+export function isStalactiteSlot(v: unknown): v is { x: number; y: number; ceil: number } {
+  const o = v as Record<string, unknown> | null
+  return !!o && isInt(o.x) && isInt(o.y) && isInt(o.ceil)
+}
+
+export function isSawSlot(v: unknown): v is { x0: number; x1: number; y: number } {
+  const o = v as Record<string, unknown> | null
+  return !!o && isInt(o.x0) && isInt(o.x1) && isInt(o.y) && o.x1 > o.x0
+}

@@ -83,6 +83,7 @@ export type RunTipId =
   | 'run_obelisk' | 'run_smuggler' | 'run_starbloom' | 'run_flame' | 'run_runner'
   | 'run_fencer' | 'run_gravedigger' | 'run_crossbowman' | 'run_stoker' | 'run_beetle'
   | 'run_shadow' | 'run_noticed'
+  | 'run_gargoyle' | 'run_stalactite' | 'run_saw'
   | 'run_boss_werewolf' | 'run_boss_abbot' | 'run_boss_serpent' | 'run_boss_crowking'
 export const RUN_TIPS: Record<RunTipId, TutorialTip> = {
   run_zvonar: { id: 'run_zvonar', title: 'Звонарь', text: 'Его звон слышно раньше, чем видно.\nВолна летит далеко — перепрыгни её.', icon: 'event_enemy.png' },
@@ -101,6 +102,10 @@ export const RUN_TIPS: Record<RunTipId, TutorialTip> = {
   run_stoker: { id: 'run_stoker', title: 'Кочегар', text: 'Кочерга раскалена докрасна.\nЗацепит — будешь гореть, и броня не спасёт.', icon: 'event_enemy.png' },
   run_beetle: { id: 'run_beetle', title: 'Навозник', text: 'Кидается грязью. Попадёт — ноги станут тяжёлыми.\nДержись подальше от его комьев.', icon: 'event_enemy.png' },
   run_shadow: { id: 'run_shadow', title: 'Тень', text: 'Из сундука поднялся ты сам — только темнее.\nОна бьёт как ты. Победишь — сундук отдаст больше.', icon: 'event_chest.png' },
+  // Ловушки (13.11.2026, entities/traps.ts).
+  run_gargoyle: { id: 'run_gargoyle', title: 'Горгулья', text: 'Наступишь на плиту — из пасти полетит огонь.\nОтбей его или перепрыгни. Враги тоже горят.', icon: 'trap_gargoyle.png' },
+  run_stalactite: { id: 'run_stalactite', title: 'Сталактит', text: 'Задрожал — значит, сейчас упадёт.\nУбеги из-под него или подведи туда врага.', icon: 'trap_stalactite.png' },
+  run_saw: { id: 'run_saw', title: 'Пила', text: 'Диск ездит по рельсу туда-сюда.\nПерепрыгни его — или затолкай туда врага.', icon: 'trap_saw.png' },
   run_noticed: { id: 'run_noticed', title: 'Тебя заметили', text: 'Твари смотрят только вперёд и сквозь стены не видят.\nЗайди со спины — ударишь первым.', icon: 'event_enemy.png' },
   run_boss_werewolf: { id: 'run_boss_werewolf', title: 'Тварь', text: 'Следи за замахом.\nОтбитый удар собьёт его с ног.', icon: 'event_boss.png' },
   run_boss_abbot: { id: 'run_boss_abbot', title: 'Настоятель', text: 'Он не дерётся один.\nНе дай его свите окружить тебя.', icon: 'event_boss.png' },

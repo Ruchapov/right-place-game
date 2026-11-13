@@ -212,7 +212,7 @@ export type GatekeeperState = {
  * причине, что sourceX: забытый источник молча считался бы «мечом» или
  * «навыком», и дверь работала бы не так, как написано.
  */
-export type DamageVia = 'sword' | 'skill' | 'tick'
+export type DamageVia = 'sword' | 'skill' | 'tick' | 'trap'
 
 // Плавающий попап награды над объектом (Explore офлайн — НИКАКОГО начисления
 // player.gold/trophies/crystals, только визуал поверх мира, см. spawnRewardFloat
@@ -366,6 +366,12 @@ export type Enemy = {
    */
   knockMs?: number
   knockDir?: 1 | -1
+  /**
+   * «Втолкнут» (13.11.2026, entities/shove.ts): мс, пока ЛЮБАЯ ловушка, куда он
+   * влетел, ранит его (Таран, Телекинез). Нет поля или 0 — ловушки решают по
+   * его состоянию (patrol / погоня), см. entities/traps.ts.
+   */
+  trapExposedMs?: number
   // >0 — идёт hurt (хитстан от урона игрока), в мс, тикает вниз в ticker'е.
   // Главнее attack (перебивает/отменяет замах, см. applyAttackHit) и
   // блокирует новый windup/движение, пока не истечёт — см. приоритет в

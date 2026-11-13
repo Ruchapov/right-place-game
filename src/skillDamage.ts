@@ -90,6 +90,8 @@ function skillBaseValue(skillId: SkillBookSkillId, s: SkillStats): number {
     // ЗА ИМПУЛЬС. Выносливость — она же задаёт maxHp (HP_PER_ENDURANCE), так
     // что доля вылеченного от полного здоровья остаётся примерно постоянной.
     case 'heal': return 0.8 * s.endurance
+    // Телекинез (13.11.2026): 5% обычного удара — навык толкает, а не бьёт.
+    case 'telekinesis': return 0.05 * s.attack
   }
 }
 
@@ -105,5 +107,9 @@ function skillBaseValue(skillId: SkillBookSkillId, s: SkillStats): number {
  * лишний HP из округления герою не достаётся.
  */
 export function skillValue(skillId: SkillBookSkillId, s: SkillStats, level: number): number {
-  return Math.floor(skillBaseValue(skillId, s) * skillPowerMult(level))
+  const v = Math.floor(skillBaseValue(skillId, s) * skillPowerMult(level))
+  // Телекинез: 5% удара у новичка — меньше единицы, и floor дал бы 0: волна не
+  // ранила бы никого, а применение не засчитывалось бы для роста уровня.
+  if (skillId === 'telekinesis') return Math.max(1, v)
+  return v
 }

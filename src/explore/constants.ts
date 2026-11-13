@@ -788,6 +788,8 @@ export const MANA_MAX = 10
 // Record<SkillId, number>, и шестой навык без цены не соберётся.
 export const SKILL_MANA_COST = {
   dash: 2,
+  // Телекинез (13.11.2026) — мана и перезарядка как у Тарана (dash).
+  telekinesis: 2,
   iceball: 3,
   fireball: 2,
   slash: 2,
@@ -2572,3 +2574,83 @@ export const BOSS_INTRO_ZONE_TILES_X = 7
 export const BOSS_INTRO_ZONE_TILES_Y = 3
 // После заставки у босса столько мс до первого удара/призыва (таймеры «с начала»).
 export const BOSS_INTRO_GRACE_MS = 1500
+
+// =============================================================================
+// ЛОВУШКИ (13.11.2026, entities/traps.ts; docs/explore-features.md, «Ловушки»)
+// =============================================================================
+// Точки — пулы слот-файла (hazard, gargoyles, stalactites, saws), сколько за
+// забег — trapsPerRun (их пишет tools/place_traps.py).
+//
+// Урон по ВРАГУ от любой ловушки — доля его maxHp (вверх), потом окно, в которое
+// ловушки его не ранят. Невосприимчивы — боссы, Звонарь, Привратник, вызванные
+// Настоятелем и Беглец (isTrapImmune в traps.ts).
+export const TRAP_ENEMY_DAMAGE_FRAC = 0.15
+export const TRAP_ENEMY_IFRAME_MS = 1000
+// Герой: неуязвимость к ловушкам после удара (одна на все ловушки).
+export const TRAP_HERO_IFRAME_MS = 1000
+
+// Выдвижные шипы — цикл: спрятаны → предупреждение (выглядывают и дрожат) →
+// выезд → выдвинуты → уход. Фаза — своя у каждой группы соседних шипов.
+export const SPIKE_HIDDEN_MS = 2000
+export const SPIKE_WARN_MS = 500
+export const SPIKE_EXTENDED_MS = 1500
+export const SPIKE_MOVE_MS = 120 // выезд и уход (входят в EXTENDED_MS)
+export const SPIKE_WARN_PEEK = 0.22 // насколько выглядывают в предупреждении
+export const SPIKE_WARN_JITTER_PX = 1.5
+export const SPIKE_CYCLE_MS = SPIKE_HIDDEN_MS + SPIKE_WARN_MS + SPIKE_EXTENDED_MS
+
+// Горгулья и нажимная плита.
+export const GARGOYLE_FIRE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.png`
+export const GARGOYLE_FIRE_JSON = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.json`
+export const GARGOYLE_FIREBALL_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fireball.png`
+export const PLATE_UP_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Up.png`
+export const PLATE_DOWN_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Down.png`
+export const GARGOYLE_SCALE = 0.5 // кадр 277×254 → голова на 2×2 клетки у стены
+export const GARGOYLE_FIRE_DAMAGE_FRAC = 0.3 // героя; парируется
+export const GARGOYLE_FIREBALL_SPEED = 600 // px/с
+export const GARGOYLE_FIREBALL_SCALE = 0.25
+export const GARGOYLE_FIREBALL_R = 16 // радиус попадания
+export const GARGOYLE_FIREBALL_MAX_PX = 40 * 64
+export const PLATE_SCALE = 0.4 // 320 px → две клетки
+export const PLATE_PRESS_MS = 100
+export const PLATE_RECHARGE_MS = 3000
+
+// Сталактит.
+export const STALACTITE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Stalactite_Full.png`
+export const STALACTITE_RUBBLE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Stalactite_Rubble.png`
+export const STALACTITE_SHAKE_MS = 600
+export const STALACTITE_SHAKE_PX = 2
+export const STALACTITE_GRAVITY = 2600 // px/с²
+export const STALACTITE_DAMAGE_FRAC = 0.4
+
+// Пила на рельсе.
+export const SAW_BLADE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Saw_Blade.png`
+export const SAW_RAIL_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Saw_Rail.png`
+export const SAW_SPEED = 120 // px/с
+export const SAW_RADIUS = 28 // радиус попадания (диск ≈ клетка)
+export const SAW_CENTER_ABOVE_FLOOR = 6 // центр диска над полом: наполовину в рельсе
+export const SAW_DAMAGE_FRAC = 0.3
+export const SAW_CHASE_WAIT_PX = 2 * 64 // враг в погоне ждёт, пока диск ближе 2 клеток
+
+// =============================================================================
+// ТАРАН (переделка рывка, id 'dash') и ТЕЛЕКИНЕЗ (id 'telekinesis') — 13.11.2026
+// =============================================================================
+// Таран: первый враг на пути летит вперёд с героем, врезавшиеся в него — по
+// цепочке, с половиной урона; удар о стену +25% урона Тарана. Толкание ведёт
+// entities/shove.ts.
+export const RAM_CARRY_PX = 3 * 64
+export const RAM_SHOVE_SPEED = 560 // px/с — чуть быстрее рывка (≈510): цель летит впереди героя
+export const RAM_CHAIN_FRAC = 0.5
+export const RAM_WALL_BONUS_FRAC = 0.25
+// Сколько после толчка враг остаётся «втолкнутым» — ранится любой ловушкой.
+export const SHOVE_EXPOSED_MS = 600
+// Телекинез: волна летит перед героем, отбрасывает врагов.
+export const TELEKINESIS_WAVE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Telekinesis_Wave.png`
+export const TELEKINESIS_COOLDOWN_MS = 5000 // как DASH_COOLDOWN_MS
+export const TELEKINESIS_RANGE_PX = 4 * 64
+export const TELEKINESIS_TRAVEL_MS = 300
+export const TELEKINESIS_PUSH_PX = 3 * 64 // × skillPowerMult уровня
+export const TELEKINESIS_BOSS_PUSH_PX = 32 // босс, Звонарь, Привратник — не дальше полклетки
+export const TELEKINESIS_SHOVE_SPEED = 640
+export const TELEKINESIS_WAVE_H = 150 // высота волны в конце полёта, px мира
+export const TELEKINESIS_DAMAGE_FRAC = 0.05 // доля обычного удара героя

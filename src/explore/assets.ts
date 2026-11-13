@@ -702,3 +702,60 @@ export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets
   const serpentWave = await waveLoad
   return { beast, zvonar, gatekeeper, chest, smuggler, obelisk, boss, abbot, nc, serpentWave }
 }
+
+// --- Ловушки (13.11.2026, entities/traps.ts) ---
+// Только то, что встало в этот забег (шипы — своя клетка из mapRenderer).
+// Не нужное — Texture.EMPTY: системе его не дадут нарисовать (у вида нет точек).
+export type TrapArt = {
+  textures: {
+    gargoyleFrames: Texture[]
+    fireball: Texture
+    plateUp: Texture
+    plateDown: Texture
+    stalactite: Texture
+    rubble: Texture
+    sawBlade: Texture
+    sawRail: Texture
+  }
+  gargoyle: { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number }
+}
+
+export async function loadTrapArt(gargoyles: boolean, stalactites: boolean, saws: boolean): Promise<TrapArt> {
+  const E = Texture.EMPTY
+  const load = (on: boolean, src: string) => (on ? Assets.load(src) as Promise<Texture> : Promise.resolve(E))
+  const metaP: Promise<TrapArt['gargoyle'] | null> = gargoyles
+    ? fetch(C.GARGOYLE_FIRE_JSON).then((r) => {
+      if (!r.ok) throw new Error(`Gargoyle_Fire.json: HTTP ${r.status}`)
+      return r.json()
+    }).then((j: Record<string, unknown>) => {
+      const n = (k: string) => {
+        const v = j[k]
+        if (typeof v !== 'number') throw new Error(`Gargoyle_Fire.json: нет числа «${k}»`)
+        return v
+      }
+      return { frames: n('frames'), fps: n('fps'), eyesLitFrame: n('eyesLitFrame'), mouthOpenFrame: n('mouthOpenFrame'), mouthX: n('mouthX'), mouthY: n('mouthY'), frameW: n('frameWidth'), frameH: n('frameHeight') }
+    })
+    : Promise.resolve(null)
+  const [fire, fireball, plateUp, plateDown, stal, rubble, blade, rail, meta] = await Promise.all([
+    load(gargoyles, C.GARGOYLE_FIRE_SRC), load(gargoyles, C.GARGOYLE_FIREBALL_SRC),
+    load(gargoyles, C.PLATE_UP_SRC), load(gargoyles, C.PLATE_DOWN_SRC),
+    load(stalactites, C.STALACTITE_SRC), load(stalactites, C.STALACTITE_RUBBLE_SRC),
+    load(saws, C.SAW_BLADE_SRC), load(saws, C.SAW_RAIL_SRC), metaP,
+  ])
+  const gm = meta ?? { frames: 1, fps: 18, eyesLitFrame: 0, mouthOpenFrame: 0, mouthX: 0, mouthY: 0, frameW: 1, frameH: 1 }
+  const frames: Texture[] = []
+  if (meta) {
+    if (fire.width !== meta.frameW * meta.frames || fire.height !== meta.frameH) {
+      throw new Error(`Gargoyle_Fire.png: ${fire.width}×${fire.height}, ожидалось ${meta.frameW * meta.frames}×${meta.frameH}`)
+    }
+    for (let i = 0; i < meta.frames; i++) {
+      frames.push(new Texture({ source: fire.source, frame: new Rectangle(i * meta.frameW, 0, meta.frameW, meta.frameH) }))
+    }
+  } else {
+    frames.push(E)
+  }
+  return {
+    textures: { gargoyleFrames: frames, fireball, plateUp, plateDown, stalactite: stal, rubble, sawBlade: blade, sawRail: rail },
+    gargoyle: gm,
+  }
+}

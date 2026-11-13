@@ -31,13 +31,13 @@
 // Цена здесь ровно одна, и она про ВЫКУП (см. SCROLL_SELL_PRICE).
 
 /**
- * id страниц. По странице на каждый навык, как и книг: пять и пять.
+ * id страниц. По странице на каждый навык, как и книг: шесть и шесть (с 13.11.2026 — Телекинез).
  *
  * Рантайм-список рядом с типом (а не только тип) — по нему работает
  * parseScrollId ниже: тип в рантайме не существует, а проверять id из тела
  * запроса надо именно там.
  */
-export const SCROLL_IDS = ['scroll_fire', 'scroll_ice', 'scroll_bleed', 'scroll_heal', 'scroll_dash'] as const
+export const SCROLL_IDS = ['scroll_fire', 'scroll_ice', 'scroll_bleed', 'scroll_heal', 'scroll_dash', 'scroll_telekinesis'] as const
 export type ScrollId = typeof SCROLL_IDS[number]
 
 /**
@@ -45,7 +45,7 @@ export type ScrollId = typeof SCROLL_IDS[number]
  * (src/consumables.ts) — см. шапку файла: импортировать сюда нельзя, копии
  * обязаны быть байт-в-байт.
  */
-export type ScrollBookId = 'book_fire' | 'book_ice' | 'book_bleed' | 'book_heal' | 'book_dash'
+export type ScrollBookId = 'book_fire' | 'book_ice' | 'book_bleed' | 'book_heal' | 'book_dash' | 'book_telekinesis'
 
 export type Scroll = {
   id: ScrollId
@@ -133,10 +133,18 @@ export const SCROLLS: Scroll[] = [
   },
   {
     id: 'scroll_dash',
-    nameRu: 'Страница рывка',
+    nameRu: 'Страница Тарана',
     icon: 'scroll_dash.png',
     bookId: 'book_dash',
     desc: 'Лежит неспокойно — так и норовит выскользнуть из рук.',
+    takesCell: false,
+  },
+  {
+    id: 'scroll_telekinesis',
+    nameRu: 'Страница Телекинеза',
+    icon: 'scroll_telekinesis.png',
+    bookId: 'book_telekinesis',
+    desc: 'Не лежит на ладони — висит над ней на волос.',
     takesCell: false,
   },
 ]

@@ -3046,7 +3046,7 @@ export default function App() {
               fontSize:10, letterSpacing:1, color:C.textDim, marginBottom:7, fontFamily:FONT_DISPLAY,
             }
             const HERO_SKILL_NAMES: Record<string, string> = {
-              heal:'Лечение', dash:'Рывок-удар', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар',
+              heal:'Лечение', dash:'Таран', fireball:'Огненный шар', slash:'Разрез', iceball:'Ледяной шар', telekinesis:'Телекинез',
             }
             // Гнёзда навыков: MAX_EQUIPPED_SKILLS позиций из общего каталога, а
             // не литеральные [0, 1] — число слотов проверяет ещё и сервер, и двум

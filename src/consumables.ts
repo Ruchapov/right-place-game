@@ -34,7 +34,7 @@
  * parseSkillBookId ниже: тип в рантайме не существует, а проверять id из тела
  * запроса надо именно там.
  */
-export const SKILL_BOOK_IDS = ['book_fire', 'book_ice', 'book_bleed', 'book_heal', 'book_dash'] as const
+export const SKILL_BOOK_IDS = ['book_fire', 'book_ice', 'book_bleed', 'book_heal', 'book_dash', 'book_telekinesis'] as const
 export type SkillBookId = typeof SKILL_BOOK_IDS[number]
 
 /** Идентификаторы расходников. Новый расходник — новый вариант здесь. */
@@ -53,7 +53,7 @@ export type ConsumableId =
  * Дубль не молчаливый: клиентский src/skillBooks.ts сводит оба типа в одном
  * Record, и расхождение ловится СБОРКОЙ (см. комментарий там).
  */
-export type SkillBookSkillId = 'fireball' | 'iceball' | 'slash' | 'heal' | 'dash'
+export type SkillBookSkillId = 'fireball' | 'iceball' | 'slash' | 'heal' | 'dash' | 'telekinesis'
 
 /**
  * В какой вкладке магазина стоит товар. Книг пять, и в общем ряду «Расходники»
@@ -275,7 +275,7 @@ export const CONSUMABLES: Consumable[] = [
   },
   {
     id: 'book_dash',
-    nameRu: 'Книга рывка',
+    nameRu: 'Книга Тарана',
     icon: 'book_dash.png',
     price: 1000,
     levelRequired: 1,
@@ -285,6 +285,20 @@ export const CONSUMABLES: Consumable[] = [
     spendAt: 'apply',
     effect: { kind: 'skillBook', skillId: 'dash' },
     desc: 'Страницы перелистываются сами — будто торопятся.',
+  },
+  {
+    // Телекинез (13.11.2026): цена и уровень — как у книги Тарана (dash).
+    id: 'book_telekinesis',
+    nameRu: 'Книга Телекинеза',
+    icon: 'book_telekinesis.png',
+    price: 1000,
+    levelRequired: 1,
+    runSlot: false,
+    takesCell: true,
+    shopTab: 'Книги',
+    spendAt: 'apply',
+    effect: { kind: 'skillBook', skillId: 'telekinesis' },
+    desc: 'Буквы на странице дрожат и отползают от пальца.',
   },
 ]
 

@@ -1,6 +1,6 @@
 import type { MutableRefObject } from 'react'
-import { AnimatedSprite } from 'pixi.js'
-import type { Container, Texture } from 'pixi.js'
+import { AnimatedSprite, Sprite, Texture } from 'pixi.js'
+import type { Container } from 'pixi.js'
 import type { Grid } from '../types'
 import type { PlayerPhysics, Enemy, Boss, DamageVia } from '../types'
 import * as C from '../constants'
@@ -19,7 +19,7 @@ import { bossBox as bossBoxOf } from './boss'
 // Heal_Aura, Slash_Streak, Dash_Strike и по паре Projectile/Impact у fireball
 // и iceball (см. loadCommonAssets в ../assets.ts). Не грузится один —
 // Bleeding_Loop (визуал снят намеренно, см. updateBleeds).
-export type SkillId = 'heal' | 'fireball' | 'iceball' | 'slash' | 'dash'
+export type SkillId = 'heal' | 'fireball' | 'iceball' | 'slash' | 'dash' | 'telekinesis'
 
 export type SkillsDeps = {
   // Герой — phys/getPlayerCombatBox читаются, не пересоздаются: phys это
@@ -274,6 +274,19 @@ export type SkillsDeps = {
    * (бросок — в paySkill, один на применение). 0 — механики нет.
    */
   freeSkillChance: number
+
+  // --- Таран и Телекинез (13.11.2026, entities/shove.ts) ---
+  /**
+   * Толкнуть врага (общая система толкания). heavyLimitPx — сколько можно
+   * Звонарю и Привратнику (0 — не двигать). true — враг сдвинется.
+   */
+  shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number) => boolean
+  /** Можно ли толкать врага Тараном (не Беглец, не Звонарь, не Привратник). */
+  canCarry: (enemy: Enemy) => boolean
+  /** Волна Телекинеза — один кадр (Telekinesis_Wave.png); null — не загружена. */
+  telekinesisWave: MutableRefObject<Texture | null>
+  /** Множитель уровня Телекинеза (skillPowerMult): дальность отброса × это. */
+  telekinesisPushMult: number
 }
 
 // Сколько заморозки оставляет Таяние — доля миллисекунды, а не ноль: снимает
@@ -290,7 +303,7 @@ const MANA_COST: Record<SkillId, number> = C.SKILL_MANA_COST
 // клиента и сервера, и об этом надо сказать вслух. Это НЕ сужение
 // deps.equipped до SkillId (см. комментарий у поля) — id отсюда никуда не
 // подставляется, только сверяется.
-const KNOWN_SKILL_IDS: readonly string[] = ['heal', 'fireball', 'iceball', 'slash', 'dash']
+const KNOWN_SKILL_IDS: readonly string[] = ['heal', 'fireball', 'iceball', 'slash', 'dash', 'telekinesis']
 
 // Одно активное кровотечение. enemy === null означает, что цель — босс (он в
 // забеге один, берётся из deps.boss). maxHp снимается в момент наложения:
@@ -382,6 +395,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
   let slashCdMs = 0
   // Кулдаун dash — там же и так же (см. healCdMs выше).
   let dashCdMs = 0
+  // Таран (13.11.2026): враг, которого несёт ТЕКУЩИЙ рывок, — первый задетый
+  // толкаемый. Один на рывок, сбрасывается там же, где dashHitTargets.
+  let ramCarried = false
+  // Телекинез (13.11.2026): кулдаун и летящие волны.
+  let tkCdMs = 0
+  type TkWave = { sprite: Sprite; t: number; originX: number; centerY: number; dir: 1 | -1; hit: Set<Enemy | Boss>; counted: boolean }
+  const tkWaves: TkWave[] = []
   // Спеки снарядных скиллов. Объявлены ЗДЕСЬ, а не в модульной области, —
   // держат рефы кадров из deps, которые появляются только с системой.
   const FIREBALL_SPEC: ProjectileSpec = {
@@ -1182,6 +1202,12 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // Explore.tsx). Ровно один раз за рывок на цель: дедуп тот же
       // dashHitTargets, что и у урона — цель добавлена в набор строкой выше.
       if (!died) deps.applyEnemyHitReaction(enemy)
+      // ТАРАН (13.11.2026): первый толкаемый враг на пути летит вперёд с героем
+      // RAM_CARRY_PX; врезавшиеся в него — цепочкой (entities/shove.ts). Беглеца,
+      // Звонаря и Привратника не несёт — только бьёт. Босса — тоже (он ниже).
+      if (!died && !ramCarried && deps.canCarry(enemy)) {
+        ramCarried = deps.shove(enemy, deps.facing.current, C.RAM_CARRY_PX, C.RAM_SHOVE_SPEED, deps.skillDamage.dash, 'ram', 0)
+      }
     }
 
     const boss = deps.boss.current
@@ -1350,7 +1376,19 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // Там же, где список задетых, и по той же причине: право засчитать
         // применение принадлежит ОДНОМУ рывку.
         dashUseCounted = false
+        ramCarried = false
       }
+      return
+    }
+    if (id === 'telekinesis') {
+      if (tkCdMs > 0) return
+      // Жест — анимация каста героя; волна выходит сразу, на нажатии (у неё нет
+      // кадра вылета, как у шаров). Не начался каст (мёртв, хитстан, пьёт,
+      // идёт замах или рывок) — ни волны, ни перезарядки, ни маны.
+      if (!deps.startPlayerCast()) return
+      tkCdMs = C.TELEKINESIS_COOLDOWN_MS
+      payOnPress('telekinesis')
+      spawnTkWave()
       return
     }
     // Оба снарядных скилла — ОДНА ветка: отличает их только спека (текстуры,
@@ -1392,6 +1430,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (id === 'heal') { out.leftMs = healCdMs; out.totalMs = C.HEAL_COOLDOWN_MS; return true }
     if (id === 'slash') { out.leftMs = slashCdMs; out.totalMs = C.SLASH_COOLDOWN_MS; return true }
     if (id === 'dash') { out.leftMs = dashCdMs; out.totalMs = C.DASH_COOLDOWN_MS; return true }
+    if (id === 'telekinesis') { out.leftMs = tkCdMs; out.totalMs = C.TELEKINESIS_COOLDOWN_MS; return true }
     if (id === 'fireball') { out.leftMs = projectileCdMs.fireball; out.totalMs = FIREBALL_SPEC.cooldownMs; return true }
     if (id === 'iceball') { out.leftMs = projectileCdMs.iceball; out.totalMs = ICEBALL_SPEC.cooldownMs; return true }
     // Досюда можно дойти только если KNOWN_SKILL_IDS разошёлся с ветками выше.
@@ -1437,6 +1476,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     healCdMs = Math.max(0, healCdMs - dt)
     slashCdMs = Math.max(0, slashCdMs - dt)
     dashCdMs = Math.max(0, dashCdMs - dt)
+    tkCdMs = Math.max(0, tkCdMs - dt)
     projectileCdMs.fireball = Math.max(0, projectileCdMs.fireball - dt)
     projectileCdMs.iceball = Math.max(0, projectileCdMs.iceball - dt)
 
@@ -1477,6 +1517,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Explore.tsx, отсюда чтение через deps.dashing.
     if (deps.dashing.current) applyDashHits()
 
+    // Волны Телекинеза: полёт, отброс, угасание.
+    updateTkWaves(dt)
+
     // Дуга взмаха: тянется за героем и живёт до последнего кадра (разовая).
     if (slashStreak) {
       positionSlashStreak(slashStreak)
@@ -1514,6 +1557,86 @@ export function createSkillsSystem(deps: SkillsDeps) {
     }
   }
 
+  // --- Телекинез (13.11.2026) ---
+  // Волна выходит перед героем и за TELEKINESIS_TRAVEL_MS проходит
+  // TELEKINESIS_RANGE_PX, растёт и тает. Каждого врага, которого накрыла, — один
+  // раз за волну: урон (5% обычного удара × уровень, skillDamage.telekinesis) и
+  // отброс на TELEKINESIS_PUSH_PX × уровень (entities/shove.ts: стена — стоп, с
+  // платформы — падает). Звонаря, Привратника и босса — не дальше полклетки,
+  // Беглеца не двигает. Применение засчитывается, если задета хоть одна цель.
+  function spawnTkWave() {
+    const tex = deps.telekinesisWave.current
+    if (!tex) console.error('skills: Telekinesis_Wave не загружена — волна сработает без картинки')
+    const sprite = new Sprite(tex ?? Texture.EMPTY)
+    sprite.anchor.set(0.75, 0.5)
+    const dir = deps.facing.current
+    const originX = deps.phys.x + C.PLAYER_WIDTH / 2 + dir * C.PLAYER_WIDTH / 2
+    const centerY = deps.phys.y + C.PLAYER_HEIGHT * 0.55
+    sprite.x = originX
+    sprite.y = centerY
+    deps.worldContainer.addChild(sprite)
+    tkWaves.push({ sprite, t: 0, originX, centerY, dir, hit: new Set(), counted: false })
+  }
+
+  function updateTkWaves(dt: number) {
+    for (let i = tkWaves.length - 1; i >= 0; i--) {
+      const w = tkWaves[i]
+      w.t += dt
+      const p = Math.min(1, w.t / C.TELEKINESIS_TRAVEL_MS)
+      const frontX = w.originX + w.dir * C.TELEKINESIS_RANGE_PX * p
+      const h = C.TELEKINESIS_WAVE_H * (0.45 + 0.55 * p)
+      const tex = w.sprite.texture
+      const sc = tex.height > 1 ? h / tex.height : 1
+      w.sprite.scale.set(sc * w.dir, sc)
+      w.sprite.x = frontX
+      w.sprite.alpha = p < 0.6 ? 1 : Math.max(0, 1 - (p - 0.6) / 0.4)
+      const x0 = Math.min(w.originX, frontX)
+      const x1 = Math.max(w.originX, frontX)
+      const y0 = w.centerY - h / 2
+      const y1 = w.centerY + h / 2
+      const push = C.TELEKINESIS_PUSH_PX * deps.telekinesisPushMult
+      for (const e of deps.enemies.current) {
+        if (e.dead || w.hit.has(e)) continue
+        if (!(e.x < x1 && e.x + e.width > x0 && e.y < y1 && e.y + e.height > y0)) continue
+        w.hit.add(e)
+        if (!w.counted) { w.counted = true; deps.onSkillUse('telekinesis') }
+        const died = deps.damageEnemy(e, deps.skillDamage.telekinesis, deps.skillDamageDealt, w.originX, 'skill')
+        if (!died) {
+          deps.applyEnemyHitReaction(e)
+          deps.shove(e, w.dir, push, C.TELEKINESIS_SHOVE_SPEED, deps.skillDamage.telekinesis, 'tk', C.TELEKINESIS_BOSS_PUSH_PX)
+        }
+      }
+      const boss = deps.boss.current
+      if (boss && !boss.dead && !w.hit.has(boss)) {
+        const bb = bossBoxOf(boss)
+        if (bb.x < x1 && bb.x + bb.w > x0 && bb.y < y1 && bb.y + bb.h > y0) {
+          w.hit.add(boss)
+          if (!w.counted) { w.counted = true; deps.onSkillUse('telekinesis') }
+          const died = deps.damageBoss(deps.skillDamage.telekinesis, deps.skillDamageDealt, w.originX)
+          if (!died) nudgeBoss(boss, w.dir)
+        }
+      }
+      if (p >= 1) {
+        w.sprite.destroy()
+        tkWaves.splice(i, 1)
+      }
+    }
+  }
+
+  // Босса волна сдвигает не дальше полклетки и не в стену.
+  function nudgeBoss(boss: Boss, dir: 1 | -1) {
+    const bb = bossBoxOf(boss)
+    const T = deps.tileSize
+    let moved = 0
+    while (moved < C.TELEKINESIS_BOSS_PUSH_PX) {
+      const step = Math.min(4, C.TELEKINESIS_BOSS_PUSH_PX - moved)
+      const lead = dir > 0 ? bb.x + bb.w + moved + step : bb.x - moved - step
+      if (deps.isSolid(deps.grid, T, lead, bb.y + 2) || deps.isSolid(deps.grid, T, lead, bb.y + bb.h / 2) || deps.isSolid(deps.grid, T, lead, bb.y + bb.h - 2)) break
+      moved += step
+    }
+    boss.x += dir * moved
+  }
+
   function dispose() {
     // Узлы, которые эта система добавляет в worldContainer; Explore.tsx о них
     // не знает, поэтому чистим здесь.
@@ -1527,6 +1650,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
       fb.sprite.destroy()
     }
     projectiles = []
+    for (const w of tkWaves) w.sprite.destroy()
+    tkWaves.length = 0
     bleeds.length = 0
     // Ссылки на Enemy/Boss — чтобы размонтированная сцена не держала их
     // живыми (сам набор чистится на старте каждого рывка, см. pressSlot).

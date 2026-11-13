@@ -36,6 +36,13 @@ export function redrawEnemyHpBar(enemy: Enemy) {
 // Explore.tsx мутирует те же объекты Enemy через тот же enemiesRef, эта
 // система его не подменяет, просто ещё один держатель того же рефа.
 export type EnemyDeps = {
+  /**
+   * Ловушки как стена (13.11.2026, entities/traps.ts → blocksStep): шаг, чей
+   * передний край leadX упирается в ловушку, не делается. Правило «спокойный —
+   * любая ловушка стена, в погоне — только выдвинутые шипы и пила рядом» живёт
+   * там, одной копией на все модули врагов.
+   */
+  trapBlocks?: (enemy: Enemy, leadX: number, feetY: number) => boolean
   phys: PlayerPhysics
   getPlayerCombatBox: () => { x: number; y: number; w: number; h: number }
   pushPlayerOutX: (
@@ -549,6 +556,7 @@ export function createEnemySystem(deps: EnemyDeps) {
                 (enemy.vy !== 0 &&
                   isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT + Math.max(0, enemy.vy) * dt + 1))
               if (hitWall) return false
+              if (enemy.vy === 0 && deps.trapBlocks?.(enemy, leadingX, enemyFeetY)) return false
               if (!allowDrop && enemy.vy === 0) {
                 const footCx = Math.floor(leadingX / C.TILE_SIZE)
                 const footCy = Math.floor(enemyFeetY / C.TILE_SIZE)
@@ -631,7 +639,8 @@ export function createEnemySystem(deps: EnemyDeps) {
               // полёте просто продолжает идти к ней.
               const targetBelow = searchTargetBelow(enemy, enemy.y + C.ENEMY_HEIGHT)
               const canDrop = targetBelow || enemy.vy !== 0
-              if (hitWall || (noFloorAhead && !canDrop)) {
+              const trapAhead = enemy.vy === 0 && (deps.trapBlocks?.(enemy, leadingX, enemy.y + C.ENEMY_HEIGHT) ?? false)
+              if (hitWall || trapAhead || (noFloorAhead && !canDrop)) {
                 // Дальше хода нет — точка недостижима (стреляли с другого
                 // этажа/через пропасть). Не топчемся у препятствия: тот же
                 // переход в паузу, что и по приходу.
@@ -670,13 +679,14 @@ export function createEnemySystem(deps: EnemyDeps) {
             const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
             const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
 
-            if (reachedBound || hitWall || noFloorAhead) {
+            const trapAhead = enemy.vy === 0 && (deps.trapBlocks?.(enemy, leadingX, enemy.y + C.ENEMY_HEIGHT) ?? false)
+            if (reachedBound || hitWall || noFloorAhead || trapAhead) {
               // Погоня увела зверя со своего участка (спрыгнул вниз — обратно
               // ему не подняться), и путь к дому закрыт стеной или краем:
               // дом переезжает сюда. Иначе он дёргался бы на месте между
               // границей патруля и препятствием.
               const headingHome = (dir < 0 && enemy.x > patrolRightBound) || (dir > 0 && enemy.x < patrolLeftBound)
-              if (headingHome && (hitWall || noFloorAhead)) enemy.spawnX = enemy.x
+              if (headingHome && (hitWall || noFloorAhead || trapAhead)) enemy.spawnX = enemy.x
               enemy.patrolDir = dir > 0 ? -1 : 1
             } else {
               enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)

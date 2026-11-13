@@ -39,6 +39,8 @@ export type NcAssets = {
 }
 
 export type NcEnemyDeps = {
+  /** Ловушки как стена (13.11.2026) — см. EnemyDeps.trapBlocks в enemy.ts. */
+  trapBlocks?: (enemy: Enemy, leadX: number, feetY: number) => boolean
   phys: PlayerPhysics
   getPlayerCombatBox: () => { x: number; y: number; w: number; h: number }
   pushPlayerOutX: (
@@ -218,6 +220,7 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
       isSolid(deps.grid, C.TILE_SIZE, leadingX, e.y + e.height / 2) ||
       isSolid(deps.grid, C.TILE_SIZE, leadingX, e.y + e.height - 1)
     if (hitWall) return false
+    if (e.vy === 0 && deps.trapBlocks?.(e, leadingX, e.y + e.height)) return false
     if (!allowDrop && e.vy === 0) {
       const footCx = Math.floor(leadingX / C.TILE_SIZE)
       const footCy = Math.floor((e.y + e.height) / C.TILE_SIZE)
@@ -546,7 +549,15 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
           const dir = e.patrolDir
           const nextX = e.x + dir * C.ENEMY_PATROL_SPEED * dt
           const reachedBound = dir > 0 ? nextX > right : nextX < left
-          if (reachedBound || !stepX(e, dir, C.ENEMY_PATROL_SPEED, dt, false)) e.patrolDir = dir > 0 ? -1 : 1
+          const blocked = !reachedBound && !stepX(e, dir, C.ENEMY_PATROL_SPEED, dt, false)
+          if (reachedBound || blocked) {
+            // Как у зверя (enemy.ts): погоня увела его со своего участка, а путь
+            // к дому закрыт стеной, краем или ловушкой (13.11.2026) — дом
+            // переезжает сюда. Иначе он дёргался бы между границей и препятствием.
+            const headingHome = (dir < 0 && e.x > right) || (dir > 0 && e.x < left)
+            if (blocked && headingHome) e.spawnX = e.x
+            e.patrolDir = dir > 0 ? -1 : 1
+          }
           e.facing = e.patrolDir
         }
       }

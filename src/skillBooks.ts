@@ -18,7 +18,10 @@ import {
   BLEED_TICK_MS, BLEED_DURATION_MS, SLASH_COOLDOWN_MS,
   HEAL_PULSE_COUNT, HEAL_COOLDOWN_MS,
   DASH_COOLDOWN_MS,
+  RAM_CARRY_PX, TILE_SIZE,
+  TELEKINESIS_COOLDOWN_MS, TELEKINESIS_RANGE_PX, TELEKINESIS_PUSH_PX,
 } from './explore/constants'
+import { skillPowerMult } from './skillLevels'
 import type { SkillId } from './explore/entities/skills'
 import { consumableEffectLine, consumableSkillBook, type Consumable, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
@@ -101,9 +104,16 @@ const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, (level: number | null
   heal: (level, stats) =>
     `Восстанавливает ${valueAt('heal', level, stats, HEAL_PULSE_COUNT)} здоровья героя. `
     + `Перезарядка ${sec(HEAL_COOLDOWN_MS)} с.`,
+  // Таран (13.11.2026) — переделанный рывок, id прежний.
   dash: (level, stats) =>
-    `Рывок вперёд сквозь врагов. Урон: ${valueAt('dash', level, stats)} каждому задетому. `
-    + `Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
+    `Таран: рывок вперёд, урон ${valueAt('dash', level, stats)} каждому задетому. `
+    + `Первого врага несёт с собой на ${RAM_CARRY_PX / TILE_SIZE} клетки: врезавшиеся в него получают половину урона и тоже отлетают, `
+    + `удар о стену — сильнее. Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
+  // Дальность отброса растёт с уровнем — тем же множителем, что урон.
+  telekinesis: (level, stats) =>
+    `Волна перед героем на ${TELEKINESIS_RANGE_PX / TILE_SIZE} клетки отбрасывает врагов на `
+    + `${level === null ? '—' : (Math.round(TELEKINESIS_PUSH_PX / TILE_SIZE * skillPowerMult(level) * 10) / 10).toString().replace('.', ',')} клетки `
+    + `и ранит на ${valueAt('telekinesis', level, stats)}. Босса сдвигает едва-едва. Перезарядка ${sec(TELEKINESIS_COOLDOWN_MS)} с.`,
 }
 
 /**
@@ -124,6 +134,7 @@ const SKILL_SEAL_FILE: Record<SkillBookSkillId & SkillId, string> = {
   slash: 'skill_bleed.png',
   heal: 'skill_heal.png',
   dash: 'skill_dash.png',
+  telekinesis: 'skill_telekinesis.png',
 }
 
 /** Путь к печати навыка. BASE_URL обязателен — сайт живёт в подкаталоге. */

@@ -36,6 +36,8 @@ export type ShadowFrames = {
 }
 
 export type ShadowDeps = {
+  /** Ловушки как стена (13.11.2026) — см. EnemyDeps.trapBlocks в enemy.ts. */
+  trapBlocks?: (enemy: Enemy, leadX: number, feetY: number) => boolean
   phys: PlayerPhysics
   getPlayerCombatBox: () => { x: number; y: number; w: number; h: number }
   pushPlayerOutX: (
@@ -184,6 +186,7 @@ export function createShadowSystem(deps: ShadowDeps) {
     const nextX = e.x + dir * SHADOW_SPEED * dt
     const lead = dir > 0 ? nextX + e.width : nextX
     if (isSolid(deps.grid, C.TILE_SIZE, lead, e.y + 1) || isSolid(deps.grid, C.TILE_SIZE, lead, e.y + e.height / 2) || isSolid(deps.grid, C.TILE_SIZE, lead, e.y + e.height - 1)) return false
+    if (e.vy === 0 && deps.trapBlocks?.(e, lead, e.y + e.height)) return false
     if (!allowDrop && e.vy === 0 && cellFootBlockTop(deps.grid, C.TILE_SIZE, Math.floor(lead / C.TILE_SIZE), Math.floor((e.y + e.height) / C.TILE_SIZE)) === null) return false
     e.x = clamp(nextX, 0, worldWidthPx - e.width)
     return true

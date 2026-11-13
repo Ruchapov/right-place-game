@@ -33,20 +33,19 @@ import {
   isSolid,
   isPlatformBandBlocking,
   isOverlappingPlatformBand,
-  isTouchingSpikes,
   cellFootBlockTop,
   sweepHeadBlock,
   isOverlappingAtFrameStart,
   sweepFootBlock,
 } from './explore/collision'
-import { backdropForMap, slotsFileForMap, isPointXY, buildEventCandidates, devPlaceFlame, devPlaceRunner, eventCells } from './explore/mapEvents'
+import { backdropForMap, slotsFileForMap, isPointXY, readTrapsPerRun, isGargoyleSlot, isStalactiteSlot, isSawSlot, buildEventCandidates, devPlaceFlame, devPlaceRunner, eventCells } from './explore/mapEvents'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier, potionHealAmount } from './potions'
 import { clamp, isLowLandscape, pickRandom, worldScaleFor } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets } from './explore/assets'
+import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets, loadTrapArt } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -95,6 +94,8 @@ import { loadSheetFrames } from './explore/spriteLoader'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
+import { createTrapsSystem, type GargoyleSlot, type StalactiteSlot, type SawSlot } from './explore/entities/traps'
+import { createShoveSystem, isHeavy } from './explore/entities/shove'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
@@ -104,6 +105,7 @@ import { dropView } from './ui/dropView'
 import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ui/ResultsFrame'
 import { consumableById, consumableReviveFrac, consumableReflectsFirstHit, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
+import { skillPowerMult } from './skillLevels'
 // Каталог страниц и иконки предметов — только ради блока «ДОБЫЧА» на экране
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import * as CR from './crafter'
@@ -608,7 +610,8 @@ const TEMP_DEV_GATEKEEPER_CHANCE = 0.25
 
 /**
  * Параметры адреса для проверки нового контента (09.11.2026) — ТОЛЬКО в
- * офлайн-заглушке (вне Telegram): ?enemy=fencer|gravedigger|crossbowman|
+ * офлайн-заглушке (вне Telegram): ?traps=all — все ловушки пулов (13.11.2026);
+ * ?enemy=fencer|gravedigger|crossbowman|
  * stoker|beetle — все группы этого вида; ?boss=serpent|crowking — босс в
  * каждом забеге с местом босса; ?chest=shadow — каждый сундук с Тенью. В
  * Telegram-сборке забег идёт с сервера, и эти параметры не читаются вовсе.
@@ -632,6 +635,7 @@ const DEV_THEME_WEIGHTS: Record<string, Partial<Record<EnemyKind, number>>> = {
 function devEnemyKind(mapFile = ''): EnemyKind {
   const forced = devUrlParam('enemy')
   if (forced && (DEV_NC_ENEMIES as readonly string[]).includes(forced)) return forced as EnemyKind
+  if (forced === 'beast') return 'beast'
   if (TEMP_DEV_GATEKEEPER_GROUPS === 'roll' && TEMP_DEV_ZVONAR_GROUPS === 'roll' && mapFile) {
     const weights = DEV_THEME_WEIGHTS[backdropForMap(mapFile)] ?? DEV_THEME_WEIGHTS.graveyard
     const kinds = (Object.keys(weights) as EnemyKind[]).filter((k) => k !== 'gatekeeper' || C.PLAYER_LEVEL_FALLBACK >= GATEKEEPER_MIN_LEVEL)
@@ -1665,7 +1669,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   // Тик горения от кочерги Кочегара (09.11.2026): без брони и без хитстана —
   // иначе огонь держал бы героя в хитстане все 3 с, и ударить в ответ было бы нельзя.
   const takeBurnDamageRef = useRef<(amount: number) => void>(() => {})
-  // Искра на клинке в момент отбива. Ref с замыканием, как applySpikeDamageRef
+  // Искра на клинке в момент отбива. Ref с замыканием, как trapHurtRef
   // ниже, и по той же причине: спрайт рождается в worldContainer, который живёт
   // ВНУТРИ setup(), а зовёт её takeDamage — она объявлена на уровне компонента.
   const spawnParrySparkRef = useRef<() => void>(() => {})
@@ -1701,13 +1705,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   const iceballProjectileFramesRef = useRef<Texture[] | null>(null)
   const iceballImpactFramesRef = useRef<Texture[] | null>(null)
 
-  // Готовый вызов "нанести урон шипов" с уже посчитанной дозой (maxHp * ratio).
-  // Обновляется тем же эффектом, что и takeDamageRef — так основной ticker-эффект
-  // (mount-once, deps []) не должен напрямую читать maxHp из тела компонента.
-  const applySpikeDamageRef = useRef<() => void>(() => {})
-  // Остаток неуязвимости после касания шипов, мс. Тикает в ticker'е по
-  // ticker.deltaMS (реальное время), не по dt-кадрам — 1 секунда буквально.
-  const spikeIframeRef = useRef(0)
+  // Непарируемый урон ловушек (шипы, сталактит, пила; 13.11.2026 — раньше только
+  // шипы). Обновляется тем же эффектом, что и takeDamageRef — тикер-эффект
+  // (mount-once, deps []) обязан звать актуальную takeDamageUnblockable.
+  const trapHurtRef = useRef<(amount: number) => void>(() => {})
 
   // dirRef (см. выше) — только МГНОВЕННЫЙ ввод, сбрасывается в 0 при отпускании
   // кнопки, а не "куда смотрит игрок" — такого флага в файле раньше не было.
@@ -2365,7 +2366,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   }
 
   // Единая точка "игрок получает урон" — вызывается и шипами
-  // (applySpikeDamageRef), и атакой зверя (takeDamageRef в ticker'е).
+  // (trapHurtRef), и атакой зверя (takeDamageRef в ticker'е).
   // Смерть (hp <= 0) запускает death (triggerDeath) вместо мгновенного
   // abandon — сам abandon (onClose) переехал в тикер, см. triggerDeath.
   /**
@@ -2645,7 +2646,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     payHpForManaRef.current = payHpForMana
     // Шипы карты НЕ ПАРИРУЮТСЯ (решение дизайнера) — отсюда и unblockable:
     // от них уклоняются прыжком, а не блоком.
-    applySpikeDamageRef.current = () => takeDamageUnblockable(maxHp * C.SPIKE_DAMAGE_RATIO * gearRef.current.spikeMult)
+    trapHurtRef.current = (amount: number) => takeDamageUnblockable(amount)
     onRunCompleteRef.current = onRunComplete ?? (() => {})
     characterLevelRef.current = characterLevel
     armorRef.current = armor ?? 0
@@ -2788,6 +2789,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let ashTrailSystem: ReturnType<typeof createAshTrailSystem> | null = null
     let starbloomSystem: ReturnType<typeof createStarbloomSystem> | null = null
     let breakablesSystem: ReturnType<typeof createBreakablesSystem> | null = null
+    // Ловушки (13.11.2026, entities/traps.ts) и толкание Тараном/Телекинезом
+    // (entities/shove.ts). Ловушки — после загрузки слоя; модули врагов зовут
+    // trapsSystem через замыкание (blocksStep), пока его нет — ловушек нет.
+    let trapsSystem: ReturnType<typeof createTrapsSystem> | null = null
+    let shoveSystem: ReturnType<typeof createShoveSystem> | null = null
+    const telekinesisWaveRef: { current: Texture | null } = { current: null }
     let atmosphereSystem: ReturnType<typeof createAtmosphereSystem> | null = null
     // Камыш и осока болота (entities/swayDecor.ts) и их собственные текстуры —
     // их уничтожает cleanup, иначе они остались бы в видеопамяти после смены карты.
@@ -2888,6 +2895,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         skillDamage[skillId] = skillValue(skillId, skillStats, skillLevels === undefined ? 1 : skillLevels[skillId])
       }
       console.log('Explore: урон навыков', skillDamage)
+      // Телекинез: дальность отброса растёт с уровнем навыка (× skillPowerMult).
+      const telekinesisPushMult = skillPowerMult(skillLevels === undefined ? 1 : skillLevels.telekinesis)
 
       // Сервер разыгрывает тройку событий (POST /run/start-explore, см.
       // src/api.ts) — вызывается здесь и/или ниже, и его ответ ТЕПЕРЬ
@@ -3252,13 +3261,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // рабочую сетку, ДО расстановки спрайтов шипов и ДО первого кадра физики:
       // коллизия и шипы читают один и тот же grid, значит '^' должен
       // попасть именно сюда, а не в отдельную структуру.
+      // С 13.11.2026 шипы — выдвижные (entities/traps.ts): в сетку '^' больше не
+      // пишется, касание шипа решает система ловушек по его фазе. Сколько ставить
+      // за забег — trapsPerRun слот-файла (tools/place_traps.py); старого поля нет —
+      // прежние HAZARD_SPIKES_PER_RUN шипов и ни одной новой ловушки.
       const hazardPool: [number, number][] = Array.isArray(slots.hazard) ? slots.hazard.filter(isPointXY) : []
-      const chosenHazards = pickRandom(hazardPool, C.HAZARD_SPIKES_PER_RUN)
-      for (const [hx, hy] of chosenHazards) {
-        if (grid[hy] && hx >= 0 && hx < grid[hy].length) {
-          grid[hy][hx] = '^'
-        }
+      const trapsPerRun = readTrapsPerRun(slots.trapsPerRun)
+      // ?traps=all — ТОЛЬКО офлайн-заглушка (для замеров): все точки пулов разом.
+      if (!token && devUrlParam('traps') === 'all') {
+        const n = (v: unknown) => (Array.isArray(v) ? v.length : 0)
+        trapsPerRun.spikes = n(slots.hazard)
+        trapsPerRun.gargoyles = n(slots.gargoyles)
+        trapsPerRun.stalactites = n(slots.stalactites)
+        trapsPerRun.saws = n(slots.saws)
       }
+      const chosenHazards = pickRandom(hazardPool, trapsPerRun.spikes)
+      const poolOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+      const chosenGargoyles: GargoyleSlot[] = pickRandom(poolOf(slots.gargoyles).filter(isGargoyleSlot), trapsPerRun.gargoyles)
+      const chosenStalactites: StalactiteSlot[] = pickRandom(poolOf(slots.stalactites).filter(isStalactiteSlot), trapsPerRun.stalactites)
+      const chosenSaws: SawSlot[] = pickRandom(poolOf(slots.saws).filter(isSawSlot), trapsPerRun.saws)
 
       setLocalEventFallback(false) // сброс на случай повторного запуска setup() (напр. debug-переключатель карт)
 
@@ -3526,9 +3547,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Шипы (их вставили в сетку выше) — поверх готового слоя: отдельными
       // спрайтами одной клетки, см. ниже.
       let spikeTile: Awaited<ReturnType<typeof renderSpikeTile>> | null = null
-      const spikeCells: [number, number][] = []
-      for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) if (grid[y][x] === '^') spikeCells.push([x, y])
-      if (spikeCells.length > 0) spikeTile = await renderSpikeTile(C.TILE_SIZE)
+      if (chosenHazards.length > 0) spikeTile = await renderSpikeTile(C.TILE_SIZE)
+      // Арт новых ловушек — только тем, что встали в этот забег.
+      // Волна Телекинеза — только если навык надет.
+      if ((equippedSkills ?? []).includes('telekinesis')) {
+        telekinesisWaveRef.current = await Assets.load(C.TELEKINESIS_WAVE_SRC) as Texture
+      }
+      const trapArt = await loadTrapArt(chosenGargoyles.length > 0, chosenStalactites.length > 0, chosenSaws.length > 0)
 
       if (cancelled || !containerRef.current) {
         // Всё ещё ДО init() — по той же причине ничего не разрушаем.
@@ -3738,34 +3763,52 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const chainTexture = await Assets.load(`${base}${CHAIN_TEXTURE}`) as Texture
         chainSwaySystem = createChainSwaySystem(worldContainer, chainPoints.map((c) => ({ ...c, texture: chainTexture })))
       }
-      // Шипы — поверх слоя: одна текстура клетки, по спрайту на шип.
-      // Блик (29.10.2026, docs/maps.md, «Шипы») — тоже одна текстура клетки и по
-      // спрайту на шип, все в ОДНОМ контейнере над шипами: синхронность и одна
-      // фаза держатся тем, что тикер пишет прозрачность контейнера, а не спрайтов.
-      // Своего таймера у шипа нет. При «уменьшении движения» блика нет.
-      let spikeGlintLayer: Container | null = null
-      let spikeGlintTimeS = 0
-      if (spikeTile) {
-        const spikeTexture = Texture.from(spikeTile.spike)
-        for (const [sx, sy] of spikeCells) {
-          const spike = new Sprite(spikeTexture)
-          spike.x = sx * C.TILE_SIZE
-          spike.y = sy * C.TILE_SIZE
-          worldContainer.addChild(spike)
-        }
-        if (spikeTile.glint && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches !== true) {
-          const glintTexture = Texture.from(spikeTile.glint)
-          spikeGlintLayer = new Container()
-          spikeGlintLayer.label = 'spike-glint'
-          spikeGlintLayer.visible = false
-          for (const [sx, sy] of spikeCells) {
-            const glint = new Sprite(glintTexture)
-            glint.x = sx * C.TILE_SIZE
-            glint.y = sy * C.TILE_SIZE
-            spikeGlintLayer.addChild(glint)
-          }
-          worldContainer.addChild(spikeGlintLayer)
-        }
+      // Ловушки (13.11.2026) — поверх слоя и живого декора: узел встаёт сейчас,
+      // герой, враги и предметы добавляются в мир ПОЗЖЕ и рисуются над ним.
+      // Блик шипов — по образцу 29.10.2026 (spikeGlintAlpha), одна фаза на все.
+      const trapsReduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+      const trapsLayerIndex = worldContainer.children.length
+      // Урон ловушек по врагу — не урон героя: ни силу, ни ловкость он не растит
+      // и в потолок нанесённого урона сервера не идёт. Аккумулятор-сток.
+      const trapDamageSink = { current: 0 }
+      const createTraps = () => {
+        if (chosenHazards.length + chosenGargoyles.length + chosenStalactites.length + chosenSaws.length === 0) return
+        trapsSystem = createTrapsSystem({
+          parent: worldContainer,
+          index: trapsLayerIndex,
+          grid,
+          spikes: chosenHazards,
+          gargoyles: chosenGargoyles,
+          stalactites: chosenStalactites,
+          saws: chosenSaws,
+          textures: {
+            spike: spikeTile ? Texture.from(spikeTile.spike) : Texture.EMPTY,
+            spikeGlint: spikeTile?.glint ? Texture.from(spikeTile.glint) : null,
+            ...trapArt.textures,
+          },
+          gargoyle: trapArt.gargoyle,
+          enemies: enemiesRef,
+          heroBox: () => getPlayerCombatBox(),
+          heroSpikeBody: () => ({
+            x: phys.x, w: C.PLAYER_WIDTH,
+            // Верх ТЕЛА для шипов — замеренная макушка спрайта, не верх бокса
+            // (SPIKE_BODY_TOP_GROUND/SPIKE_BODY_TOP_AIR в constants.ts).
+            top: phys.y + (phys.onGround ? C.SPIKE_BODY_TOP_GROUND : C.SPIKE_BODY_TOP_AIR),
+            bottom: phys.y + C.PLAYER_HEIGHT,
+          }),
+          heroOnGround: () => phys.onGround,
+          heroMaxHp: maxHp,
+          spikeMult: gearRef.current.spikeMult,
+          heroDead: () => deathRef.current,
+          hurtHero: (amount) => trapHurtRef.current(amount),
+          hurtHeroParryable: (amount) => takeDamageRef.current(amount),
+          // «Тихий шаг»: удар шипов карты — тот же, что запускает окно неуязвимости.
+          onHeroSpikeHit: () => { questCountersRef.current.spikeHits += 1 },
+          damageEnemy: (enemy, amount, sourceX) => damageEnemy(enemy, amount, trapDamageSink, sourceX, 'trap'),
+          hitReaction: (enemy) => applyEnemyHitReaction(enemy),
+          reduceMotion: trapsReduceMotion,
+          glintAlpha: spikeGlintAlpha,
+        })
       }
       const phys = physicsRef.current
       phys.x = start.x * C.TILE_SIZE
@@ -3856,6 +3899,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // /run/start-explore) и приёмник результативных применений. Второе
         // пишет в тот же реф, что уезжает в срезе и финише.
         skillDamage,
+        // Таран и Телекинез (13.11.2026): толкание — общая система shove.ts.
+        shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx) =>
+          shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx) ?? false,
+        canCarry: (enemy) => !enemy.runner && !isHeavy(enemy),
+        telekinesisWave: telekinesisWaveRef,
+        telekinesisPushMult,
         onSkillUse: (skillId) => { skillUsesRef.current[skillId] += 1 },
         // Мана: модуль читает запас сам (хватает ли на навык), а списывает
         // через setMana — единственную запись в запас, она же гасит гнёзда.
@@ -3925,6 +3974,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       enemySystem = createEnemySystem({
         phys,
         getPlayerCombatBox,
+        trapBlocks: (e, leadX, feetY) => trapsSystem?.blocksStep(e, leadX, feetY) ?? false,
         // Не сама pushPlayerOutX — обёртка, пропускающая героя сквозь тело
         // на время рывка (см. её объявление ниже по setup).
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
@@ -4432,7 +4482,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
       // Искра отбива. Через ref с замыканием, потому что зовёт её takeDamage —
       // она объявлена на уровне компонента, а worldContainer и кадры живут
-      // здесь (тот же приём, что у applySpikeDamageRef).
+      // здесь (тот же приём, что у trapHurtRef).
       //
       // Разовый спрайт, который сам себя убирает: 11 кадров за PARRY_SPARK_MS,
       // потом removeChild + destroy. Своего списка, как у rewardFloatsRef, он не
@@ -4766,6 +4816,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         slowHero: () => { slowMsLeft = N.SLOW_MS },
       })
       const ncDeps: NcEnemyDeps = {
+        trapBlocks: (e, leadX, feetY) => trapsSystem?.blocksStep(e, leadX, feetY) ?? false,
         phys,
         getPlayerCombatBox,
         pushPlayerOutX: pushPlayerOutXUnlessDashing,
@@ -4820,6 +4871,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         shadowSystem = createShadowSystem({
           phys,
           getPlayerCombatBox,
+          trapBlocks: (e, leadX, feetY) => trapsSystem?.blocksStep(e, leadX, feetY) ?? false,
           pushPlayerOutX: pushPlayerOutXUnlessDashing,
           findGroundSurfaceY,
           closeEvent,
@@ -5557,6 +5609,11 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           && inView(e.x + e.width / 2, e.y + e.height / 2))) return 'run_runner'
         if (want('run_starbloom') && starbloomSystem !== null && starbloomTile !== null && !starbloomCutRef.current
           && inView((starbloomTile[0] + 0.5) * C.TILE_SIZE, (starbloomTile[1] + 0.5) * C.TILE_SIZE)) return 'run_starbloom'
+        // Ловушки (13.11.2026): первая в кадре.
+        const T = C.TILE_SIZE
+        if (want('run_gargoyle') && chosenGargoyles.some((g) => inView((g.x + 0.5) * T, g.y * T))) return 'run_gargoyle'
+        if (want('run_stalactite') && chosenStalactites.some((t) => inView((t.x + 1) * T, (t.ceil + 2) * T))) return 'run_stalactite'
+        if (want('run_saw') && chosenSaws.some((w) => inView((w.x0 + w.x1 + 1) / 2 * T, w.y * T))) return 'run_saw'
         return null
       }
 
@@ -5884,7 +5941,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       let returnRefund = 0
       const hasReturnRing = gearRef.current.rings.includes('ring_return')
       function refundOnSkillKill(via: DamageVia): void {
-        if (!hasReturnRing || via === 'sword' || returnRefund <= 0) return
+        if (!hasReturnRing || via === 'sword' || via === 'trap' || returnRefund <= 0) return
         setMana(manaRef.current + returnRefund)
         returnRefund = 0
       }
@@ -6551,6 +6608,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         enemyFreezeSystem?.update(deltaMS)
       }
 
+      createTraps()
+      shoveSystem = createShoveSystem({
+        grid,
+        worldWidthPx,
+        enemies: enemiesRef,
+        damageEnemy: (enemy, amount, sourceX) => damageEnemy(enemy, amount, skillDamageDealtRef, sourceX, 'skill'),
+        hitReaction: (enemy) => applyEnemyHitReaction(enemy),
+      })
       app.ticker.add((ticker) => {
         // Заставка босса идёт — логика забега стоит (как при подсказке обучения):
         // босс и герой не двигаются, урона нет, ввод не обрабатывается; живёт только
@@ -6885,27 +6950,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // На опоре окно не нужно и копиться не должно.
         if (phys.onGround) coyoteRef.current = 0
 
-        // Шипы: неуязвимость тикает каждый кадр независимо от касания;
-        // урон только когда истекла и хитбокс реально пересекает '^'.
-        spikeIframeRef.current = Math.max(0, spikeIframeRef.current - ticker.deltaMS)
-        // Верх ТЕЛА для шипов — замеренная макушка спрайта, не верх бокса
-        // (см. SPIKE_BODY_TOP_GROUND/SPIKE_BODY_TOP_AIR в constants.ts).
-        // Выбор по phys.onGround: в полёте ноги поджаты и фигура рисуется
-        // ниже. НИЗ намеренно остаётся phys.y + PLAYER_HEIGHT — шипы под
-        // ногами ловятся ступнями и их поведение не меняется.
-        const spikeBodyTop =
-          phys.y + (phys.onGround ? C.SPIKE_BODY_TOP_GROUND : C.SPIKE_BODY_TOP_AIR)
-
-        if (
-          spikeIframeRef.current <= 0 &&
-          isTouchingSpikes(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, spikeBodyTop, phys.y + C.PLAYER_HEIGHT)
-        ) {
-          spikeIframeRef.current = C.SPIKE_IFRAME_MS
-          // «Тихий шаг»: удар шипов карты — тот же, что запускает их окно
-          // неуязвимости, поэтому одно касание не считается каждый кадр.
-          questCountersRef.current.spikeHits += 1
-          applySpikeDamageRef.current()
-        }
+        // Шипы и остальные ловушки (13.11.2026) — entities/traps.ts, ниже, после
+        // систем врагов: там и урон герою, и его окно неуязвимости.
 
         // "3 события за забег" — временное закрытие простым касанием хитбокса.
         // enemy-события сюда НЕ попадают — они закрываются убийством кластера
@@ -7192,6 +7238,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         serpentSystem?.update(dt, ticker.deltaMS)
         crowKingSystem?.update(dt, ticker.deltaMS)
         ncProjectiles?.update(ticker.deltaMS)
+        // Толчки Тарана и Телекинеза, потом ловушки (13.11.2026): после систем
+        // врагов — враг, влетевший в ловушку в этом кадре, ранится в нём же.
+        shoveSystem?.update(ticker.deltaMS)
+        trapsSystem?.update(ticker.deltaMS)
         updateHeroStatus(ticker.deltaMS)
 
         // Шары маны — ПОСЛЕ всех трёх систем врагов: выпадение случается
@@ -7755,12 +7805,6 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           }
         }
         // Блик шипов: одна фаза на все шипы карты, по игровому времени.
-        if (spikeGlintLayer !== null) {
-          spikeGlintTimeS += ticker.deltaMS / 1000
-          const glintAlpha = spikeGlintAlpha(spikeGlintTimeS)
-          spikeGlintLayer.visible = glintAlpha > 0
-          spikeGlintLayer.alpha = glintAlpha
-        }
         // Атмосфера — после камеры: рамка частиц — тот кадр, что будет нарисован.
         if (atmosphereSystem !== null) {
           atmosphereView.left = -worldContainer.x / viewScale
@@ -7868,6 +7912,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       ashTrailSystem?.dispose()
       starbloomSystem?.dispose()
       breakablesSystem?.dispose()
+      trapsSystem?.dispose()
+      trapsSystem = null
+      shoveSystem?.dispose()
+      shoveSystem = null
       // Реф переживает размонтирование эффекта — пустышка, чтобы он не звал
       // систему уже уничтоженной сцены (тот же приём, что clearManaOrbsRef ниже).
       classHealFlashRef.current = () => {}
