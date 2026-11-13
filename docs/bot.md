@@ -25,7 +25,7 @@ Render Free. Ответ — JSON со счётчиками (`queued`, `queue.sen
 |---|---|
 | `bot/telegram.ts` | `call()` (429 — ждать `retry_after` и один повтор; 403 — `botBlocked=true`), обёртки, кнопки (`style` Bot API 9.4), `sendCard` — фото, а если Telegram не взял картинку, тот же текст сообщением |
 | `bot/notify.ts` | `queueNotification(characterId, kind, payload?)` — только ставит в `BotNotification`; не ставит при выключенном типе, `botAllowed=false`, `botBlocked`. Тихие часы 23:00–09:00 МСК → ближайшие 09:00. Тексты и картинки уведомлений |
-| `bot/webhook.ts` | `POST /bot/webhook`: `/start [параметр]` (карточка start.jpg с эффектом 🔥; «Играть» ведёт на `startapp=<параметр>`), `/play`, `/notify` (переключатели правят кнопки того же сообщения), `/help`. На обычный текст и файлы молчит. Любое сообщение — `botAllowed=true, botBlocked=false` |
+| `bot/webhook.ts` | `POST /bot/webhook`. **Одна карточка** (13.11.2026, вечер): `/start`, `/play`, `/notify`, `/friends`, `/help` шлют одну карточку-фото; кнопки меню меняют её же (`editMessageMedia`), карточка старше 47 ч или правка не прошла — новая. Экраны: главный (start.jpg; [Играть] / [Уведомления] [Друзья] / [Канал: +50 RP] [Как играть]), уведомления (energy.jpg, переключатели меняют кнопки на месте), друзья (friend.jpg: позвано, наград ждёт, `copy_text` со ссылкой, «Отправить другу»), канал (channel.jpg), как играть (quests.jpg); в разделах — [Играть] [‹ Назад]. callback_data — латиница ≤ 64 байт (схема — в шапке файла), параметр /start (≤ 48 знаков) едет во всех кнопках. Эффект 🔥 — только при первом /start (флаг `botStarted` в `notifySettings`; без персонажа — в памяти до перезапуска). Обычный текст — «Я понимаю только кнопки 🙂» и главный экран, не чаще раза в 10 мин. Ошибка — «Колокол сбился…», детали в лог. Любое сообщение — `botAllowed=true, botBlocked=false` |
 | `bot/cron.ts` | `GET /cron/tick`: полная энергия, новый набор заданий, «вернись» на 3 и 7 день (`lastSeenAt`, `comebackStage`), отправка очереди: 25/с, до 300 за вызов, игрок в игре (`lastActiveAt` < 15 мин) — energy/quests гасятся, остальное ждёт; не больше 3 игроку за сутки; старше 48 ч — `expired` |
 | `bot/routes.ts` | `GET/POST /character/notify-settings`, `POST /character/bot-allowed`, `POST /character/channel-reward` (400 `not_subscribed`, 409 `already`, 503 `check_failed`), хук `lastActiveAt` (раз в минуту, не ломает запрос) |
 
@@ -55,3 +55,7 @@ CREATE TABLE): колонки персонажа `botAllowed`, `botBlocked`, `no
 всплывает «+50 RP» и RP в шапке растёт. «Персонаж» внизу — «🔔 Уведомления»
 (`src/ui/NotifySettingsSheet.tsx`): пять переключателей, без разрешения —
 «Разрешить сообщения от бота» (`requestWriteAccess`).
+
+## Кнопки под уведомлением
+
+[⚔️ Играть] [🔕 Не присылать такое] — нажатие выключает этот тип (`no:<настройка>`) и меняет кнопку на «✅ Больше не пришлю · Вернуть» (`yes:<настройка>` включает обратно).

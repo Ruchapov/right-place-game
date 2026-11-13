@@ -56,7 +56,7 @@ export async function botPlayerRoutes(server: FastifyInstance) {
     const c = await prisma.character.findUnique({ where: { userId }, select: { id: true, notifySettings: true } })
     if (!c) return reply.status(404).send({ error: 'Character not found' })
     const next = { ...readNotifySettings(c.notifySettings), ...(patch as Record<string, boolean>) }
-    await prisma.character.update({ where: { id: c.id }, data: { notifySettings: notifySettingsJson(next) } })
+    await prisma.character.update({ where: { id: c.id }, data: { notifySettings: notifySettingsJson(next, c.notifySettings) } })
     return reply.send(await settingsView(userId))
   })
 

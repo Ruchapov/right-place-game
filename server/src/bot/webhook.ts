@@ -5,46 +5,84 @@
 // без переменной вебхук отвечает 401 всем. Ответ всегда 200 после проверки
 // секрета: иначе Telegram повторял бы одно и то же обновление.
 //
-// Любое сообщение игрока — botAllowed=true, botBlocked=false (он написал сам —
-// значит, писать ему можно). На обычный текст и файлы бот НЕ отвечает: только
-// команды /start /play /notify /help и кнопки.
+// ОДНА КАРТОЧКА (13.11.2026, вечер). /start, /play, /notify, /friends и /help
+// присылают одну карточку-фото; кнопки меню МЕНЯЮТ её же (editMessageMedia:
+// картинка + подпись + кнопки), новых сообщений не шлют. В каждом разделе —
+// «‹ Назад» на главный экран. Карточка старше 47 часов или правка не прошла —
+// присылается новая. На каждый callback — answerCallbackQuery.
+//
+// callback_data (латиница, ≤ 64 байт):
+//   m | n | f | c | h  [:<параметр>]  — экран: главный, уведомления, друзья, канал, как играть
+//   t:<настройка>[:<параметр>]        — переключатель на экране уведомлений
+//   off[:<параметр>]                  — «Выключить все»
+//   no:<настройка> / yes:<настройка>  — «Не присылать такое» / «Вернуть» под уведомлением
+//   notify / help                     — кнопки карточек до 13.11.2026 вечера
+// <параметр> — параметр /start (r_<код>, g_<код>): «Играть» везёт его в игру
+// на любом экране; длина не больше START_PARAM_MAX, чтобы влез в 64 байта.
+//
+// Любое сообщение игрока — botAllowed=true, botBlocked=false (он написал сам).
+// На обычный текст и файлы — «Я понимаю только кнопки 🙂» и главный экран, не
+// чаще раза в 10 минут на игрока. Игроку — понятные слова, детали — в лог.
 import type { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import { PrismaClient } from '@prisma/client'
-import { referralUrl } from '../referral.js'
+import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP, friendState, referralUrl } from '../referral.js'
 import { ensureReferralCode } from '../routes/friends.js'
+import { calculateLevel } from '../game.js'
 import {
-  answerCallbackQuery, botArt, call, editMessageReplyMarkup, FIRE_EFFECT_ID, GAME_LINK, newsButton, playButton,
-  sendCard, sendMessage, type InlineButton, type Keyboard,
+  answerCallbackQuery, backButton, botArt, call, CHANNEL_URL, editMessageMedia, editMessageReplyMarkup, FIRE_EFFECT_ID,
+  isNotModified, playButton, sendCard, sendMessage, type InlineButton, type Keyboard,
 } from './telegram.js'
-import { NOTIFY_SETTING_KEYS, NOTIFY_SETTING_LABELS, notifySettingsJson, readNotifySettings, type NotifySettingKey, type NotifySettings } from './notify.js'
+import {
+  NOTIFY_SETTING_KEYS, NOTIFY_SETTING_LABELS, notificationKeyboard, notifySettingsJson, parseNotifySettingKey,
+  readBotStarted, readNotifySettings, type NotifySettings,
+} from './notify.js'
 
 const prisma = new PrismaClient()
 
+const START_PARAM_MAX = 48
+/** Карточку старше этого не правим — шлём новую (Telegram не даёт править старые). */
+const CARD_EDIT_MAX_AGE_S = 47 * 3600
+const PLAIN_TEXT_REPLY_GAP_MS = 10 * 60_000
+
+type Screen = 'main' | 'notify' | 'friends' | 'channel' | 'help'
+const SCREEN_OF_CODE: Record<string, Screen> = { m: 'main', n: 'notify', f: 'friends', c: 'channel', h: 'help' }
+const CODE_OF_SCREEN: Record<Screen, string> = { main: 'm', notify: 'n', friends: 'f', channel: 'c', help: 'h' }
+
 const START_CAPTION =
-  '🔔 Колокол Убежища звонит для тебя, странник.\n\n' +
-  'Впереди подземелья, болота и боссы. Собирай трофеи, расти героя, вступай в гильдию.\n\n' +
-  'Я позову, когда энергия полна и на доске новые задания.'
+  '🔔 Колокол Убежища звонит для тебя, странник.\n' +
+  'Подземелья, болота и боссы ждут. Собирай трофеи, расти героя, зови друзей.'
 
-const NOTIFY_TEXT = '🔔 О чём звонить Колоколу? Ночью (23:00–9:00) молчу, всё приходит утром.'
+const NOTIFY_CAPTION = '🔔 О чём звонить Колоколу?\nНочью (23:00–9:00) молчу — всё приходит утром.'
 
-const HELP_TEXT =
-  '📖 Как играть в Right Place\n\n' +
-  '⚔️ Вылазки — карта с тремя событиями: враги, сундуки, боссы. Энергия тратится на старт.\n' +
-  '💀 Трофеи копятся между вылазками, но сгорают при смерти — меняй их на золото вовремя.\n' +
-  '🏚 Убежище — Торговец, Кузнец, Отшельник и Ловчий: зелья, закалки, книги навыков, статы.\n' +
-  '📜 Задания — доска в Убежище с 5 уровня: награда золотом, значками и RP.\n' +
-  '🛡 Гильдии — казна, здания, молитвы алтаря и общий склад.\n' +
-  '👥 Друзья — позови друга: на 3 уровне вам обоим 5000 золота и 100 RP.'
+const HELP_CAPTION =
+  '📖 Как играть\n' +
+  '⚔️ Вылазка — карта с тремя задачами: враги, сундуки, боссы.\n' +
+  '💀 Трофеи копятся, но сгорают при смерти — вовремя меняй их на золото.\n' +
+  '🏚 В Убежище — зелья, закалки и книги навыков.\n' +
+  '📜 С 5 уровня — задания на доске Убежища.\n' +
+  '🛡 Гильдии и друзья — вместе сильнее.'
 
 const SHARE_TEXT = 'Пойдём в Right Place: за меня дадут 5000 золота и 100 RP'
+const ONLY_BUTTONS_TEXT = 'Я понимаю только кнопки 🙂'
+const BROKEN_TEXT = 'Колокол сбился. Попробуй ещё раз через минуту.'
 
 type TgUser = { id: number }
-type TgMessage = { message_id: number; chat: { id: number; type: string }; from?: TgUser; text?: string }
-type TgCallback = { id: string; from: TgUser; data?: string; message?: { message_id: number; chat: { id: number } } }
+type TgMessage = { message_id: number; date: number; chat: { id: number; type: string }; from?: TgUser; text?: string }
+type TgCallback = { id: string; from: TgUser; data?: string; message?: { message_id: number; date: number; chat: { id: number } } }
 type TgUpdate = { message?: TgMessage; callback_query?: TgCallback }
 
-async function characterOf(telegramId: number) {
-  return prisma.character.findFirst({ where: { user: { telegramId: BigInt(telegramId) } }, select: { id: true, notifySettings: true } })
+type Card = { photo: string; caption: string; keyboard: Keyboard }
+
+/** Кому уже слали первое приветствие, хотя персонажа нет (живёт до перезапуска). */
+const greetedWithoutCharacter = new Set<number>()
+/** Когда последний раз отвечали на обычный текст. */
+const lastPlainReplyAt = new Map<number, number>()
+
+async function playerOf(telegramId: number) {
+  return prisma.character.findFirst({
+    where: { user: { telegramId: BigInt(telegramId) } },
+    select: { id: true, notifySettings: true, channelRewardAt: true },
+  })
 }
 
 /** Игрок написал боту сам — писать ему можно. */
@@ -52,95 +90,203 @@ async function markAllowed(telegramId: number): Promise<void> {
   await prisma.character.updateMany({ where: { user: { telegramId: BigInt(telegramId) } }, data: { botAllowed: true, botBlocked: false } })
 }
 
-async function inviteButton(telegramId: number): Promise<InlineButton> {
-  let link = GAME_LINK
-  const c = await characterOf(telegramId)
-  if (c) link = referralUrl(await ensureReferralCode(c.id))
-  const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(SHARE_TEXT)}`
-  return { text: '👥 Позвать друга', url }
-}
-
-function notifyKeyboard(s: NotifySettings): Keyboard {
-  const rows: Keyboard = NOTIFY_SETTING_KEYS.map((k) => [{ text: `${s[k] ? '✅' : '❌'} ${NOTIFY_SETTING_LABELS[k]}`, callback_data: `t:${k}` }])
-  rows.push([{ text: '🔕 Выключить все', style: 'danger', callback_data: 'off' }])
-  return rows
-}
-
 /** Параметр /start: только безопасные знаки startapp (r_…, g_… и т.п.). */
 function startParamOf(text: string): string | null {
   const arg = text.trim().split(/\s+/)[1]
-  return arg && /^[A-Za-z0-9_-]{1,64}$/.test(arg) ? arg : null
+  return cleanParam(arg)
 }
 
-async function sendStart(chatId: number, telegramId: number, param: string | null) {
-  const keyboard: Keyboard = [
-    [playButton(param)],
-    [newsButton, await inviteButton(telegramId)],
-    [{ text: '🔔 Уведомления', callback_data: 'notify' }, { text: '📖 Как играть', callback_data: 'help' }],
-  ]
-  return sendCard(chatId, botArt('start'), START_CAPTION, keyboard, FIRE_EFFECT_ID)
+function cleanParam(raw: string | undefined): string | null {
+  return raw && new RegExp(`^[A-Za-z0-9_-]{1,${START_PARAM_MAX}}$`).test(raw) ? raw : null
 }
 
-async function sendNotifyMenu(chatId: number, telegramId: number) {
-  const c = await characterOf(telegramId)
-  if (!c) return sendMessage(chatId, 'Сначала зайди в игру — тогда Колокол узнает, о чём звонить.', [[playButton()]])
-  return sendMessage(chatId, NOTIFY_TEXT, notifyKeyboard(readNotifySettings(c.notifySettings)))
+function nav(screen: Screen, param: string | null): string {
+  return param ? `${CODE_OF_SCREEN[screen]}:${param}` : CODE_OF_SCREEN[screen]
+}
+
+/** Нижний ряд каждого раздела: [⚔️ Играть] [‹ Назад]. */
+function footer(param: string | null): InlineButton[] {
+  return [playButton(param), backButton(param)]
+}
+
+function notifyKeyboard(s: NotifySettings, param: string | null): Keyboard {
+  const suffix = param ? `:${param}` : ''
+  const rows: Keyboard = NOTIFY_SETTING_KEYS.map((k) => [{ text: `${s[k] ? '✅' : '❌'} ${NOTIFY_SETTING_LABELS[k]}`, callback_data: `t:${k}${suffix}` }])
+  rows.push([{ text: '🔕 Выключить все', style: 'danger', callback_data: `off${suffix}` }])
+  rows.push(footer(param))
+  return rows
+}
+
+async function renderScreen(screen: Screen, telegramId: number, param: string | null): Promise<Card> {
+  switch (screen) {
+    case 'main':
+      return {
+        photo: botArt('start'),
+        caption: START_CAPTION,
+        keyboard: [
+          [playButton(param)],
+          [{ text: '🔔 Уведомления', callback_data: nav('notify', param) }, { text: '👥 Друзья', callback_data: nav('friends', param) }],
+          [{ text: '📣 Канал: +50 RP', style: 'primary', callback_data: nav('channel', param) }, { text: '📖 Как играть', callback_data: nav('help', param) }],
+        ],
+      }
+    case 'notify': {
+      const p = await playerOf(telegramId)
+      if (!p) return { photo: botArt('energy'), caption: '🔔 Сначала зайди в игру — тогда Колокол узнает, о чём звонить.', keyboard: [footer(param)] }
+      return { photo: botArt('energy'), caption: NOTIFY_CAPTION, keyboard: notifyKeyboard(readNotifySettings(p.notifySettings), param) }
+    }
+    case 'friends': {
+      const p = await playerOf(telegramId)
+      if (!p) return { photo: botArt('friend'), caption: '👥 Сначала зайди в игру — там появится твоя ссылка для друзей.', keyboard: [footer(param)] }
+      const link = referralUrl(await ensureReferralCode(p.id))
+      const rows = await prisma.character.findMany({
+        where: { invitedById: p.id },
+        select: { strength: true, agility: true, endurance: true, bonusLevels: true, inviterClaimedAt: true },
+      })
+      const waiting = rows.filter((r) => friendState(calculateLevel(r.strength, r.agility, r.endurance, r.bonusLevels), r.inviterClaimedAt !== null) === 'claim').length
+      const caption = rows.length === 0
+        ? `👥 Ты ещё никого не позвал.\nОтправь ссылку — на ${REFERRAL_LEVEL} уровне друга вам обоим ${REFERRAL_GOLD} золота и ${REFERRAL_RP} RP.`
+        : `👥 Позвано странников: ${rows.length}.\n` + (waiting > 0
+          ? `Наград ждёт: ${waiting} — забери в игре: Сообщество → Друзья.`
+          : `Наград пока нет — они приходят, когда друг дойдёт до ${REFERRAL_LEVEL} уровня.`)
+      const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(SHARE_TEXT)}`
+      return {
+        photo: botArt('friend'),
+        caption,
+        keyboard: [
+          [{ text: '📋 Скопировать ссылку', copy_text: { text: link } }],
+          [{ text: '📤 Отправить другу', url: share }],
+          footer(param),
+        ],
+      }
+    }
+    case 'channel': {
+      const p = await playerOf(telegramId)
+      const caption = p?.channelRewardAt
+        ? '📣 Канал Убежища: новости, новые карты и подарки.\nНаграда за канал получена ✅'
+        : '📣 Новости, новые карты и подарки.\nПодпишись и забери 50 RP в игре: Сообщество → Канал.'
+      return { photo: botArt('channel'), caption, keyboard: [[{ text: '📣 Открыть канал', url: CHANNEL_URL }], footer(param)] }
+    }
+    case 'help':
+      return { photo: botArt('quests'), caption: HELP_CAPTION, keyboard: [footer(param)] }
+  }
+}
+
+/**
+ * Показать карточку: поправить ту же (если она есть и моложе 47 ч), иначе —
+ * прислать новую. Правка «не изменилось» — успех.
+ */
+async function showCard(chatId: number, card: Card, log: FastifyBaseLogger, existing?: { messageId: number; date: number }, effectId?: string) {
+  if (existing && Date.now() / 1000 - existing.date < CARD_EDIT_MAX_AGE_S) {
+    const r = await editMessageMedia(chatId, existing.messageId, card.photo, card.caption, card.keyboard)
+    if (r.ok || isNotModified(r)) return
+    log.warn({ status: r.status, description: r.description }, 'bot: card edit failed, sending a new one')
+  }
+  const r = await sendCard(chatId, card.photo, card.caption, card.keyboard, effectId)
+  if (!r.ok) log.warn({ status: r.status, description: r.description }, 'bot: card send failed')
+}
+
+/** /start: главный экран; эффект 🔥 — только при самом первом /start игрока. */
+async function handleStart(chatId: number, telegramId: number, param: string | null, log: FastifyBaseLogger) {
+  const p = await playerOf(telegramId)
+  let first: boolean
+  if (p) {
+    first = !readBotStarted(p.notifySettings)
+    if (first) {
+      await prisma.character.update({
+        where: { id: p.id },
+        data: { notifySettings: notifySettingsJson(readNotifySettings(p.notifySettings), p.notifySettings, true) },
+      })
+    }
+  } else {
+    first = !greetedWithoutCharacter.has(telegramId)
+    greetedWithoutCharacter.add(telegramId)
+  }
+  await showCard(chatId, await renderScreen('main', telegramId, param), log, undefined, first ? FIRE_EFFECT_ID : undefined)
 }
 
 async function handleMessage(m: TgMessage, log: FastifyBaseLogger) {
   if (m.chat.type !== 'private' || !m.from) return
   await markAllowed(m.from.id)
-  const text = m.text
-  if (typeof text !== 'string' || !text.startsWith('/')) return // обычный текст и файлы — молчим
-  const cmd = text.trim().split(/\s+/)[0].split('@')[0].toLowerCase()
-  let r
+  const text = typeof m.text === 'string' ? m.text.trim() : ''
+  const cmd = text.startsWith('/') ? text.split(/\s+/)[0].split('@')[0].toLowerCase() : null
   switch (cmd) {
-    case '/start': r = await sendStart(m.chat.id, m.from.id, startParamOf(text)); break
-    case '/play': r = await sendMessage(m.chat.id, '⚔️ Вылазка ждёт.', [[playButton()]]); break
-    case '/notify': r = await sendNotifyMenu(m.chat.id, m.from.id); break
-    case '/help': r = await sendMessage(m.chat.id, HELP_TEXT, [[playButton()]]); break
-    default: return
+    case '/start': return handleStart(m.chat.id, m.from.id, startParamOf(text), log)
+    case '/play': return showCard(m.chat.id, await renderScreen('main', m.from.id, null), log)
+    case '/notify': return showCard(m.chat.id, await renderScreen('notify', m.from.id, null), log)
+    case '/friends': return showCard(m.chat.id, await renderScreen('friends', m.from.id, null), log)
+    case '/help': return showCard(m.chat.id, await renderScreen('help', m.from.id, null), log)
   }
-  if (!r.ok) log.warn({ cmd, status: r.status, description: r.description }, 'bot: reply failed')
+  // Обычный текст, файлы, незнакомые команды — короткий ответ и главный экран,
+  // не чаще раза в 10 минут: на поток сообщений бот не отвечает потоком.
+  const now = Date.now()
+  if (now - (lastPlainReplyAt.get(m.from.id) ?? 0) < PLAIN_TEXT_REPLY_GAP_MS) return
+  lastPlainReplyAt.set(m.from.id, now)
+  const r = await sendMessage(m.chat.id, ONLY_BUTTONS_TEXT)
+  if (!r.ok) log.warn({ status: r.status, description: r.description }, 'bot: plain reply failed')
+  await showCard(m.chat.id, await renderScreen('main', m.from.id, null), log)
+}
+
+/** Поменять одну настройку игрока; null — персонажа нет. */
+async function setSetting(telegramId: number, change: (s: NotifySettings) => void): Promise<NotifySettings | null> {
+  const p = await playerOf(telegramId)
+  if (!p) return null
+  const s = readNotifySettings(p.notifySettings)
+  change(s)
+  await prisma.character.update({ where: { id: p.id }, data: { notifySettings: notifySettingsJson(s, p.notifySettings) } })
+  return s
 }
 
 async function handleCallback(q: TgCallback, log: FastifyBaseLogger) {
   await markAllowed(q.from.id)
   const data = q.data ?? ''
-  const chatId = q.message?.chat.id
-  if (data === 'notify') {
+  const [head, arg1, arg2] = data.split(':')
+  const chatId = q.message?.chat.id ?? q.from.id
+  const existing = q.message ? { messageId: q.message.message_id, date: q.message.date } : undefined
+
+  // Навигация по экранам карточки (и кнопки старых карточек: notify, help).
+  const legacy = head === 'notify' ? 'notify' : head === 'help' ? 'help' : null
+  const screen = legacy ?? SCREEN_OF_CODE[head]
+  if (screen && (legacy !== null || arg2 === undefined)) {
     await answerCallbackQuery(q.id)
-    if (chatId !== undefined) await sendNotifyMenu(chatId, q.from.id)
+    await showCard(chatId, await renderScreen(screen, q.from.id, legacy ? null : cleanParam(arg1)), log, existing)
     return
   }
-  if (data === 'help') {
-    await answerCallbackQuery(q.id)
-    if (chatId !== undefined) await sendMessage(chatId, HELP_TEXT, [[playButton()]])
-    return
-  }
-  if (data === 'off' || data.startsWith('t:')) {
-    const c = await characterOf(q.from.id)
-    if (!c) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
-    const s = readNotifySettings(c.notifySettings)
-    let toast: string
-    if (data === 'off') {
-      for (const k of NOTIFY_SETTING_KEYS) s[k] = false
-      toast = '🔕 Колокол молчит'
-    } else {
-      const key = data.slice(2) as NotifySettingKey
-      if (!(NOTIFY_SETTING_KEYS as readonly string[]).includes(key)) { await answerCallbackQuery(q.id); return }
-      s[key] = !s[key]
-      toast = `${NOTIFY_SETTING_LABELS[key]}: ${s[key] ? 'включено' : 'выключено'}`
+
+  // Переключатели на экране уведомлений: меняются кнопки той же карточки.
+  if (head === 't' || head === 'off') {
+    const key = head === 't' ? parseNotifySettingKey(arg1) : null
+    if (head === 't' && key === null) { await answerCallbackQuery(q.id); return }
+    const param = cleanParam(head === 't' ? arg2 : arg1)
+    let on = false
+    const s = await setSetting(q.from.id, (st) => {
+      if (key) { st[key] = !st[key]; on = st[key] } else for (const k of NOTIFY_SETTING_KEYS) st[k] = false
+    })
+    if (!s) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
+    await answerCallbackQuery(q.id, on ? 'Включено' : 'Выключено')
+    if (q.message && Date.now() / 1000 - q.message.date < CARD_EDIT_MAX_AGE_S) {
+      const r = await editMessageReplyMarkup(chatId, q.message.message_id, notifyKeyboard(s, param))
+      if (r.ok || isNotModified(r)) return
+      log.warn({ description: r.description }, 'bot: notify markup edit failed, sending a new card')
     }
-    await prisma.character.update({ where: { id: c.id }, data: { notifySettings: notifySettingsJson(s) } })
-    await answerCallbackQuery(q.id, toast)
+    await showCard(chatId, await renderScreen('notify', q.from.id, param), log)
+    return
+  }
+
+  // «Не присылать такое» / «Вернуть» под уведомлением.
+  if (head === 'no' || head === 'yes') {
+    const key = parseNotifySettingKey(arg1)
+    if (key === null) { await answerCallbackQuery(q.id); return }
+    const on = head === 'yes'
+    const s = await setSetting(q.from.id, (st) => { st[key] = on })
+    if (!s) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
+    await answerCallbackQuery(q.id, on ? 'Включено' : 'Выключено')
     if (q.message) {
-      const r = await editMessageReplyMarkup(q.message.chat.id, q.message.message_id, notifyKeyboard(s))
-      // «message is not modified» — то же состояние, не ошибка
-      if (!r.ok && !r.description.includes('not modified')) log.warn({ description: r.description }, 'bot: edit markup failed')
+      const r = await editMessageReplyMarkup(chatId, q.message.message_id, notificationKeyboard(key, !on))
+      if (!r.ok && !isNotModified(r)) log.warn({ description: r.description }, 'bot: notification markup edit failed')
     }
     return
   }
+
   await answerCallbackQuery(q.id)
 }
 
@@ -155,7 +301,14 @@ export async function botWebhookRoutes(server: FastifyInstance) {
       if (update?.message) await handleMessage(update.message, request.log)
       else if (update?.callback_query) await handleCallback(update.callback_query, request.log)
     } catch (e) {
+      // Детали — в лог; игроку — понятные слова.
       request.log.error({ err: e }, 'bot: webhook update failed')
+      try {
+        if (update?.callback_query) await answerCallbackQuery(update.callback_query.id, BROKEN_TEXT)
+        else if (update?.message?.chat.type === 'private') await sendMessage(update.message.chat.id, BROKEN_TEXT)
+      } catch {
+        // лучшим усилием
+      }
     }
     return reply.send({ ok: true })
   })
@@ -179,6 +332,7 @@ export async function registerBotWebhook(log: FastifyBaseLogger): Promise<void> 
         { command: 'start', description: 'Колокол Убежища' },
         { command: 'play', description: 'Играть' },
         { command: 'notify', description: 'Уведомления' },
+        { command: 'friends', description: 'Друзья' },
         { command: 'help', description: 'Как играть' },
       ],
     })
@@ -188,3 +342,4 @@ export async function registerBotWebhook(log: FastifyBaseLogger): Promise<void> 
     log.error({ err: e }, 'bot: webhook registration failed')
   }
 }
+

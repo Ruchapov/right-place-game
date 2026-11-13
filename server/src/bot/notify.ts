@@ -7,7 +7,7 @@
 // ручку, которая его ставит.
 import { PrismaClient, Prisma } from '@prisma/client'
 import type { FastifyBaseLogger } from 'fastify'
-import { botArt, playButton, settingsButton, type Keyboard } from './telegram.js'
+import { botArt, playButton, type Keyboard } from './telegram.js'
 
 const prisma = new PrismaClient()
 
@@ -27,7 +27,7 @@ export const NOTIFY_SETTING_LABELS: Record<NotifySettingKey, string> = {
   comeback: 'Убежище ждёт',
 }
 
-const SETTING_OF_KIND: Record<NotifyKind, NotifySettingKey> = {
+export const SETTING_OF_KIND: Record<NotifyKind, NotifySettingKey> = {
   energy: 'energy',
   quests: 'quests',
   friend_joined: 'friends',
@@ -50,8 +50,22 @@ export function readNotifySettings(raw: unknown): NotifySettings {
   return out
 }
 
-export function notifySettingsJson(s: NotifySettings): Prisma.InputJsonObject {
-  return { ...s }
+export function parseNotifySettingKey(raw: unknown): NotifySettingKey | null {
+  return typeof raw === 'string' && (NOTIFY_SETTING_KEYS as readonly string[]).includes(raw) ? (raw as NotifySettingKey) : null
+}
+
+/**
+ * В той же колонке лежит флаг `botStarted` — игрок уже получал приветствие
+ * /start (эффект 🔥 — только в первый раз). Запись настроек его сохраняет:
+ * `prevRaw` — прежнее значение колонки.
+ */
+export function notifySettingsJson(s: NotifySettings, prevRaw?: unknown, started?: boolean): Prisma.InputJsonObject {
+  const wasStarted = readBotStarted(prevRaw)
+  return { ...s, ...(started || wasStarted ? { botStarted: true } : {}) }
+}
+
+export function readBotStarted(raw: unknown): boolean {
+  return !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).botStarted === true
 }
 
 // --- Тихие часы: 23:00–09:00 МСК (UTC+3, без перехода на летнее время) ---
@@ -110,11 +124,24 @@ function guildName(payload: unknown): string {
   return typeof name === 'string' && name.length > 0 ? name : 'гильдия'
 }
 
+/**
+ * Кнопки уведомления: [⚔️ Играть] [🔕 Не присылать такое]. Нажатие выключает
+ * этот тип (callback `no:<настройка>`) и меняет кнопку на «Вернуть» (`yes:<…>`).
+ */
+export function notificationKeyboard(setting: NotifySettingKey, muted: boolean): Keyboard {
+  return [[
+    playButton(),
+    muted
+      ? { text: '✅ Больше не пришлю · Вернуть', callback_data: `yes:${setting}` }
+      : { text: '🔕 Не присылать такое', callback_data: `no:${setting}` },
+  ]]
+}
+
 /** Картинка и подпись уведомления; null — тип или payload не узнан. */
 export function renderNotification(kind: string, payload: unknown): { photo: string; caption: string; keyboard: Keyboard } | null {
-  const keyboard: Keyboard = [[playButton(), settingsButton]]
   const k = parseNotifyKind(kind)
   if (k === null) return null
+  const keyboard = notificationKeyboard(SETTING_OF_KIND[k], false)
   switch (k) {
     case 'energy':
       return { photo: botArt('energy'), caption: '🔔 Энергия полна: 100/100. Костёр горит, вылазка ждёт.', keyboard }

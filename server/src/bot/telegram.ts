@@ -29,6 +29,8 @@ export type InlineButton = {
   url?: string
   web_app?: { url: string }
   callback_data?: string
+  /** Bot API 7.11: кнопка кладёт текст в буфер обмена. */
+  copy_text?: { text: string }
 }
 export type Keyboard = InlineButton[][]
 
@@ -121,6 +123,21 @@ export function editMessageReplyMarkup(chatId: number | string, messageId: numbe
   return call('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: keyboard } })
 }
 
+/** Заменить картинку, подпись и кнопки у той же карточки. */
+export function editMessageMedia(chatId: number | string, messageId: number, photoUrl: string, caption: string, keyboard: Keyboard) {
+  return call('editMessageMedia', {
+    chat_id: chatId,
+    message_id: messageId,
+    media: { type: 'photo', media: photoUrl, caption },
+    reply_markup: { inline_keyboard: keyboard },
+  })
+}
+
+/** «message is not modified» — то же состояние, не ошибка. */
+export function isNotModified(r: CallResult): boolean {
+  return !r.ok && /not modified/i.test(r.description)
+}
+
 export function answerCallbackQuery(callbackQueryId: string, text?: string) {
   return call('answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) })
 }
@@ -136,5 +153,7 @@ export function playButton(startParam?: string | null): InlineButton {
   if (startParam) return { text: '⚔️ Играть', style: 'success', url: `${GAME_LINK}?startapp=${encodeURIComponent(startParam)}` }
   return { text: '⚔️ Играть', style: 'success', web_app: { url: GAME_WEB_URL } }
 }
-export const newsButton: InlineButton = { text: '📣 Новости: +50 RP', style: 'primary', url: CHANNEL_URL }
-export const settingsButton: InlineButton = { text: '⚙️ Уведомления', callback_data: 'notify' }
+/** «‹ Назад» — на главный экран карточки. */
+export function backButton(startParam?: string | null): InlineButton {
+  return { text: '‹ Назад', callback_data: startParam ? `m:${startParam}` : 'm' }
+}
