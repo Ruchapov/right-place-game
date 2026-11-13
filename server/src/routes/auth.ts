@@ -434,11 +434,13 @@ export async function authRoutes(server: FastifyInstance) {
       char.skillLevelSlash = skillGrowth.levels.slash
       char.skillLevelHeal = skillGrowth.levels.heal
       char.skillLevelDash = skillGrowth.levels.dash
+      char.skillLevelTelekinesis = skillGrowth.levels.telekinesis
       char.skillUsesFireball = skillGrowth.uses.fireball
       char.skillUsesIceball = skillGrowth.uses.iceball
       char.skillUsesSlash = skillGrowth.uses.slash
       char.skillUsesHeal = skillGrowth.uses.heal
       char.skillUsesDash = skillGrowth.uses.dash
+      char.skillUsesTelekinesis = skillGrowth.uses.telekinesis
 
       interruptedRun = {
         interrupted: true,

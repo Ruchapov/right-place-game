@@ -73,6 +73,7 @@ model Character {
   bookBleed           Int      @default(0)
   bookHeal            Int      @default(0)
   bookDash            Int      @default(0)
+  bookTelekinesis     Int      @default(0)
   // Страницы книг — по колонке на страницу, пять на пять навыков (каталог
   // src/scrolls.ts / server/src/scrolls.ts, id scroll_*). Три страницы
   // складываются в книгу (POST /character/assemble-book), одна продаётся за
@@ -90,6 +91,7 @@ model Character {
   scrollBleed         Int      @default(0)
   scrollHeal          Int      @default(0)
   scrollDash          Int      @default(0)
+  scrollTelekinesis   Int      @default(0)
   // Предметы классов (каталог src/classItems.ts / server/src/classItems.ts,
   // миграция 20261018120000_class_item_stock_add). Растут ТОЛЬКО дропом на
   // финише забега: в «Убежище» их нет. Убывают только продажей
@@ -171,6 +173,7 @@ model Character {
   skillLevelSlash     Int      @default(1)
   skillLevelHeal      Int      @default(1)
   skillLevelDash      Int      @default(1)
+  skillLevelTelekinesis Int    @default(1)
   // Результативные применения навыка, накопленные в счёт СЛЕДУЮЩЕГО уровня
   // (миграция 20261002120000_skill_uses_add). Порог — skillUsesThreshold
   // (общая пара skillLevels.ts), при его пересечении уровень +1, а порог
@@ -184,6 +187,7 @@ model Character {
   skillUsesSlash      Int      @default(0)
   skillUsesHeal       Int      @default(0)
   skillUsesDash       Int      @default(0)
+  skillUsesTelekinesis Int     @default(0)
   equippedSkills      String[] @default([])
   // Гильдии (docs/guilds.md, миграция 20261030120000_guilds_add).
   // eliteTrophies — элитные трофеи, личная валюта: +1 за каждое закрытое событие

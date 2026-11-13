@@ -389,6 +389,8 @@ export function consumableStockIncrement(id: ConsumableId, count: number): Prism
       return { bookHeal: { increment: count } }
     case 'book_dash':
       return { bookDash: { increment: count } }
+    case 'book_telekinesis':
+      return { bookTelekinesis: { increment: count } }
   }
 }
 
@@ -406,6 +408,7 @@ function bookStockFilter(id: SkillBookId, count: number): Prisma.CharacterWhereI
     case 'book_bleed': return { bookBleed: { gte: count } }
     case 'book_heal': return { bookHeal: { gte: count } }
     case 'book_dash': return { bookDash: { gte: count } }
+    case 'book_telekinesis': return { bookTelekinesis: { gte: count } }
   }
 }
 
@@ -416,6 +419,7 @@ function bookStockDecrement(id: SkillBookId, count: number): Prisma.CharacterUpd
     case 'book_bleed': return { bookBleed: { decrement: count } }
     case 'book_heal': return { bookHeal: { decrement: count } }
     case 'book_dash': return { bookDash: { decrement: count } }
+    case 'book_telekinesis': return { bookTelekinesis: { decrement: count } }
   }
 }
 
@@ -436,6 +440,7 @@ function scrollStockFilter(id: ScrollId, min: number): Prisma.CharacterWhereInpu
     case 'scroll_bleed': return { scrollBleed: { gte: min } }
     case 'scroll_heal': return { scrollHeal: { gte: min } }
     case 'scroll_dash': return { scrollDash: { gte: min } }
+    case 'scroll_telekinesis': return { scrollTelekinesis: { gte: min } }
   }
 }
 
@@ -446,6 +451,7 @@ function scrollStockDecrement(id: ScrollId, count: number): Prisma.CharacterUpda
     case 'scroll_bleed': return { scrollBleed: { decrement: count } }
     case 'scroll_heal': return { scrollHeal: { decrement: count } }
     case 'scroll_dash': return { scrollDash: { decrement: count } }
+    case 'scroll_telekinesis': return { scrollTelekinesis: { decrement: count } }
   }
 }
 
@@ -456,6 +462,7 @@ function scrollStockIncrement(id: ScrollId, count: number): Prisma.CharacterUpda
     case 'scroll_bleed': return { scrollBleed: { increment: count } }
     case 'scroll_heal': return { scrollHeal: { increment: count } }
     case 'scroll_dash': return { scrollDash: { increment: count } }
+    case 'scroll_telekinesis': return { scrollTelekinesis: { increment: count } }
   }
 }
 
@@ -485,6 +492,7 @@ function skillLevelIncrement(skillId: SkillBookSkillId, count: number): Prisma.C
     case 'slash': return { skillLevelSlash: { increment: count } }
     case 'heal': return { skillLevelHeal: { increment: count } }
     case 'dash': return { skillLevelDash: { increment: count } }
+    case 'telekinesis': return { skillLevelTelekinesis: { increment: count } }
   }
 }
 

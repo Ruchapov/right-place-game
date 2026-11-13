@@ -161,7 +161,7 @@ function isSkillUseValue(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0
 }
 
-// СТРОГО: либо все пять навыков названы годными числами, либо null. Так читается
+// СТРОГО: либо все навыки названы годными числами (кроме LATE_SKILL_IDS — их может не быть), либо null. Так читается
 // присланный срез и то, что мы сами положили в currentRun.
 function parseSkillUses(raw: unknown): Record<SkillBookSkillId, number> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
@@ -169,11 +169,19 @@ function parseSkillUses(raw: unknown): Record<SkillBookSkillId, number> | null {
   const out = emptySkillUses()
   for (const id of SKILL_BOOK_SKILL_IDS) {
     const v = record[id]
+    // Навык, появившийся позже (Телекинез, 13.11.2026): его ключа нет у
+    // клиента старше и у забега, начатого старым сервером, — это честный ноль,
+    // а не испорченный срез (иначе /run/progress отвечал бы 400 старому бандлу
+    // из кэша Telegram). Ключ есть, но мусор — по-прежнему null.
+    if (v === undefined && LATE_SKILL_IDS.includes(id)) continue
     if (!isSkillUseValue(v)) return null
     out[id] = v
   }
   return out
 }
+
+/** Навыки, добавленные после появления среза skillUses: их ключ необязателен. */
+const LATE_SKILL_IDS: readonly SkillBookSkillId[] = ['telekinesis']
 
 // МЯГКО, поэлементно — для тела финиша, где каждое поле необязательное.
 function coerceSkillUses(raw: unknown): Record<SkillBookSkillId, number> {
@@ -1037,6 +1045,7 @@ export type ConsumableColumns = {
   bookBleed: number
   bookHeal: number
   bookDash: number
+  bookTelekinesis: number
 }
 
 /**
@@ -1058,6 +1067,7 @@ export function consumableStockOf(character: ConsumableColumns): Record<Consumab
     book_bleed: character.bookBleed,
     book_heal: character.bookHeal,
     book_dash: character.bookDash,
+    book_telekinesis: character.bookTelekinesis,
   }
 }
 
@@ -1080,6 +1090,7 @@ export type ScrollColumns = {
   scrollBleed: number
   scrollHeal: number
   scrollDash: number
+  scrollTelekinesis: number
 }
 
 /**
@@ -1101,6 +1112,7 @@ export function scrollStockOf(character: ScrollColumns): Record<ScrollId, number
     scroll_bleed: character.scrollBleed,
     scroll_heal: character.scrollHeal,
     scroll_dash: character.scrollDash,
+    scroll_telekinesis: character.scrollTelekinesis,
   }
 }
 
@@ -1293,13 +1305,14 @@ export type SkillLevelColumns = {
   skillLevelSlash: number
   skillLevelHeal: number
   skillLevelDash: number
+  skillLevelTelekinesis: number
 }
 
 /**
  * Уровни навыков объектом по id навыка — форма ответов клиенту (логин, профиль,
  * все четыре ручки книг).
  *
- * ⚠️ Отдавать НУЖНО ВСЕ пять: клиентский readSkillLevels требует их все и на
+ * ⚠️ Отдавать НУЖНО ВСЕ (шесть с 13.11.2026): клиентский readSkillLevels требует их все и на
  * неполном объекте возвращает null, то есть «уровни неизвестны» — прочерк вместо
  * числа в карточке навыка. Та же дисциплина, что у consumableStockOf выше.
  */
@@ -1310,6 +1323,7 @@ export function skillLevelsOf(character: SkillLevelColumns): Record<SkillBookSki
     slash: character.skillLevelSlash,
     heal: character.skillLevelHeal,
     dash: character.skillLevelDash,
+    telekinesis: character.skillLevelTelekinesis,
   }
 }
 
@@ -1325,6 +1339,7 @@ function skillLevelColumnOf(skillId: SkillBookSkillId): keyof SkillLevelColumns 
     case 'slash': return 'skillLevelSlash'
     case 'heal': return 'skillLevelHeal'
     case 'dash': return 'skillLevelDash'
+    case 'telekinesis': return 'skillLevelTelekinesis'
   }
 }
 
@@ -1375,6 +1390,7 @@ export type SkillUsesColumns = {
   skillUsesSlash: number
   skillUsesHeal: number
   skillUsesDash: number
+  skillUsesTelekinesis: number
 }
 
 /** Применения объектом по id навыка — форма ответов (логин, профиль, финиш). */
@@ -1385,6 +1401,7 @@ export function skillUsesOf(character: SkillUsesColumns): Record<SkillBookSkillI
     slash: character.skillUsesSlash,
     heal: character.skillUsesHeal,
     dash: character.skillUsesDash,
+    telekinesis: character.skillUsesTelekinesis,
   }
 }
 
@@ -1400,6 +1417,7 @@ export function skillUsesToColumns(uses: Record<SkillBookSkillId, number>): Skil
     skillUsesSlash: uses.slash,
     skillUsesHeal: uses.heal,
     skillUsesDash: uses.dash,
+    skillUsesTelekinesis: uses.telekinesis,
   }
 }
 

@@ -102,6 +102,7 @@ const CONSUMABLE_COLUMN: Record<ConsumableId, keyof ConsumableColumns> = {
   book_bleed: 'bookBleed',
   book_heal: 'bookHeal',
   book_dash: 'bookDash',
+  book_telekinesis: 'bookTelekinesis',
 }
 
 const POTION_COLUMNS = ['potionT1', 'potionT2', 'potionT3', 'potionT4', 'potionT5'] as const
