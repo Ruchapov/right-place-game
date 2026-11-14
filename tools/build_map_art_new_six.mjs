@@ -270,3 +270,7 @@ fs.writeFileSync(decorPath, decorTs)
 console.log('\nЗаписано:')
 for (const m of built) console.log(`  ${m.file}: ${m.slices.length} част., всего ${mb(m.total)}`)
 console.log('  src/explore/mapArtManifestNewSix.ts, src/explore/liveDecorManifest.ts')
+
+// Ловушки (14.11.2026): слой только что собран заново — декор в зонах ловушек
+// вернулся. Чистка — отдельный повторяемый шаг, tools/clean_trap_decor.py.
+console.log("\n⚠️ Слои пересобраны: запусти python tools/clean_trap_decor.py (декор в зонах ловушек), потом python tools/check_map_slots.py")

@@ -95,6 +95,13 @@ import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClas
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
 import { createTrapsSystem, type GargoyleSlot, type StalactiteSlot, type SawSlot } from './explore/entities/traps'
+import { CLEARED_FLAMES, CLEARED_SWAY, CLEARED_CHAINS } from './explore/trapDecorCleared'
+
+/** Точки живого декора без стёртых чисткой зон ловушек (по x, y). */
+function withoutCleared<P extends { x: number; y: number }>(points: P[], cleared: [number, number][] | undefined): P[] {
+  if (!cleared || cleared.length === 0) return points
+  return points.filter((p) => !cleared.some(([x, y]) => Math.abs(p.x - x) < 0.01 && Math.abs(p.y - y) < 0.01))
+}
 import { createShoveSystem, isHeavy } from './explore/entities/shove'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
@@ -3739,12 +3746,14 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Камыш и осока — поверх слоя (как лежали в нём) и под шипами. Качаются
       // только вместе с атмосферой: без WebGL и при «уменьшении движения» стоят
       // на своём месте обычными спрайтами.
-      if (mapArt.sway.length > 0) {
+      // Стебли в зонах ловушек стёрты (trapDecorCleared.ts) — их не создаём.
+      const swayItems = withoutCleared(mapArt.sway, CLEARED_SWAY[resolvedMapFile])
+      if (swayItems.length > 0) {
         const look = C.ATMOSPHERE[mapTheme]
         swayDecorAnimate = !onCanvasRenderer && !reduceMotion && look !== null
         swayDecorSystem = createSwayDecorSystem({
           parent: worldContainer,
-          items: mapArt.sway.map((v) => ({ texture: loadedSway.get(v.src)!, x: v.x, y: v.y, w: v.w, h: v.h, phase: v.phase })),
+          items: swayItems.map((v) => ({ texture: loadedSway.get(v.src)!, x: v.x, y: v.y, w: v.w, h: v.h, phase: v.phase })),
           sway: look?.sway ?? 0,
           animate: swayDecorAnimate,
         })
@@ -3752,13 +3761,15 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // Живые свечи и огонёк в нише колонны (12.11.2026, entities/candleFlames.ts):
       // нарисованное пламя стёрто со слоя при сборке, огонь — шейдером от фитилей.
       // Поверх слоя и под шипами, врагами и героем.
-      const flamePoints = LIVE_DECOR_FLAMES[resolvedMapFile] ?? []
+      // Минус стёртые чисткой зон ловушек (14.11.2026, trapDecorCleared.ts): их
+      // свеча стёрта из слоя — огня без свечи быть не должно.
+      const flamePoints = withoutCleared(LIVE_DECOR_FLAMES[resolvedMapFile] ?? [], CLEARED_FLAMES[resolvedMapFile])
       if (flamePoints.length > 0) {
         candleFlameSystem = createCandleFlameSystem({ parent: worldContainer, points: flamePoints, webgl: !onCanvasRenderer })
         console.info(`Explore: живой огонь — ${flamePoints.length} фитилей`)
       }
       // Висячие цепи-маятники (entities/chainSway.ts) — на картах пока нет ни одной.
-      const chainPoints = CHAINS[resolvedMapFile] ?? []
+      const chainPoints = withoutCleared(CHAINS[resolvedMapFile] ?? [], CLEARED_CHAINS[resolvedMapFile])
       if (chainPoints.length > 0) {
         const chainTexture = await Assets.load(`${base}${CHAIN_TEXTURE}`) as Texture
         chainSwaySystem = createChainSwaySystem(worldContainer, chainPoints.map((c) => ({ ...c, texture: chainTexture })))

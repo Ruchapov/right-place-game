@@ -30,22 +30,27 @@ MAPS = ROOT / 'public' / 'assets' / 'maps'
 ART = MAPS / 'art'
 TS = 64
 
-# Числа — решение 13.11.2026: правила из задачи (шаг 6, враги 4, край 2, старт 10,
-# окно 2/14, декор 0 px) на картах A–F, B2, C2, W, Y не оставляли мест почти ни
-# одной новой ловушке (замер place_traps.py: 1 из 50 за забег). Андрей: «делай
-# меньше ловушек, найди оптимальный вариант». Перебором выбран этот набор — 27 из
-# 50: ловушка рисуется ПОВЕРХ слоя и видна целиком, декор под ней терпим, пока его
-# не больше четверти клетки (трава, камешки — да; надгробие, свеча — нет).
-SPACING = 4           # между ловушками на одном ряду, клеток
-WINDOW, WINDOW_MAX = 14, 3   # не больше 3 ловушек на 14 клеток ряда
-START_MIN = 8         # от старта
-ENEMY_MIN = 2         # от точек врагов
-POINT_MIN = 3         # от сундуков, NPC, босса, обелиска
-BREAKABLE_MIN = 1     # от бочек и кувшинов (не на той же клетке)
-EDGE_MIN = 1          # от края площадки (новые ловушки; шипы — 2, check_map_slots.py)
+# Числа (14.11.2026) — правила задачи, строгие. Декор расстановку больше не
+# ограничивает: он стирается из слоя в зонах ловушек при сборке
+# (tools/clean_trap_decor.py), а проверка считает декор по уже очищенному слою
+# с допуском 0. Ослаблять можно ТОЛЬКО шаг между ловушками — до SPACING_FALLBACK,
+# на карте, где иначе не набирается цель (place_traps.py пишет, где).
+SPACING = 6           # между ловушками на одном ряду, клеток
+SPACING_FALLBACK = 5
+WINDOW, WINDOW_MAX = 14, 2   # не больше 2 ловушек на 14 клеток ряда
+START_MIN = 10        # от старта
+ENEMY_MIN = 4         # от точек врагов
+POINT_MIN = 4         # от сундуков, NPC, босса, обелиска
+BREAKABLE_MIN = 2     # от бочек и кувшинов
+EDGE_MIN = 2          # от края площадки (у горгульи — для плиты)
 HAZARD_EDGE_MIN = 2   # шипы, как в check_map_slots.py (TRAP_EDGE_MIN)
 DECOR_ALPHA = 32      # пиксель декора — альфа больше этого
-DECOR_TOL = 1024      # сколько пикселей декора терпимо в одной клетке зоны (¼ клетки)
+DECOR_TOL = 0         # пикселей декора в клетке зоны (на очищенном слое)
+SWAMP_GRASS_PX = 6    # болото: кромка травы над полом, которую чистка оставляет
+SWAMP_MAPS = ('B2', 'C2', 'W', 'Y')
+# Сколько ловушек за забег — цель задачи (14.11.2026). 10 шипов (на W и Y —
+# сколько есть в пуле), остальное — сталактиты, горгульи, пилы.
+TARGETS = {'A': 12, 'B': 17, 'C': 16, 'D': 20, 'E': 13, 'F': 18, 'B2': 10, 'C2': 15, 'W': 16, 'Y': 11}
 GARGOYLE_FLOOR = 6    # ровный пол от горгульи
 PLATE_DIST = (4, 8)   # плита от горгульи
 STAL_H = (3, 6)       # высота потолка над полом
@@ -108,30 +113,111 @@ def _entry_line(txt_name):
     return m.group(1)
 
 
-def decor_mask(txt_path, grid):
-    """Число пикселей декора в каждой ПУСТОЙ клетке (не '#', не '='): непрозрачные
-    пиксели слоя карты + прямоугольники живого декора (качающийся камыш и осока,
-    пламя свечей, огонёк в нише). Твердь — None (там камень, а не декор)."""
+def map_letter(txt_path):
+    return Path(txt_path).name.split('_')[1]
+
+
+def grass_band(grid, letter):
+    """Болото: нижние SWAMP_GRASS_PX пикселей пустой клетки над твердью — кромка
+    травы пола, не декор (чистка её оставляет). У прочих карт — пусто."""
+    import numpy as np
+    H, W = len(grid), len(grid[0])
+    band = np.zeros((H * TS, W * TS), bool)
+    if letter not in SWAMP_MAPS:
+        return band
+    for y in range(H - 1):
+        for x in range(W):
+            if grid[y][x] not in '#=' and grid[y + 1][x] in '#=':
+                band[(y + 1) * TS - SWAMP_GRASS_PX:(y + 1) * TS, x * TS:(x + 1) * TS] = True
+    return band
+
+
+def layer_rgba(txt_path, grid, art_dir=None):
+    """Слой карты целиком (RGBA, numpy) из частей манифеста."""
     from PIL import Image
     import numpy as np
     H, W = len(grid), len(grid[0])
-    alpha = np.zeros((H * TS, W * TS), np.uint8)
-    line = _entry_line(txt_path.name)
-    for f, x, _w in re.findall(r"\{ file: '([^']+)', x: (\d+), width: (\d+) \}", line):
-        a = np.array(Image.open(ART / f).convert('RGBA'))[:, :, 3]
-        alpha[:a.shape[0], int(x):int(x) + a.shape[1]] = a
-    px = (alpha > DECOR_ALPHA).astype(np.uint8)
-    # Живой декор: качание (sway в манифесте слоя).
-    for sx, sy, sw, sh in re.findall(r"sprite: '[a-z]+', x: (-?[\d.]+), y: (-?[\d.]+), w: ([\d.]+), h: ([\d.]+)", line):
-        x0, y0 = float(sx) - float(sw) / 2, float(sy) - float(sh)
-        _mark(px, x0, y0, float(sw), float(sh))
-    # Пламя свечей и огонёк в нише (liveDecorManifest.ts): точка — низ пламени.
+    rgba = np.zeros((H * TS, W * TS, 4), np.uint8)
+    for f, x, _w in slices_of(txt_path):
+        a = np.array(Image.open((art_dir or ART) / f).convert('RGBA'))
+        rgba[:a.shape[0], int(x):int(x) + a.shape[1]] = a
+    return rgba
+
+
+def slices_of(txt_path):
+    return re.findall(r"\{ file: '([^']+)', x: (\d+), width: (\d+) \}", _entry_line(Path(txt_path).name))
+
+
+def sway_items(txt_path):
+    """Качающиеся стебли манифеста слоя: (x, y, w, h) — левый верх и размер."""
+    return [tuple(float(v) for v in t) for t in re.findall(
+        r"sprite: '[a-z]+', x: (-?[\d.]+), y: (-?[\d.]+), w: ([\d.]+), h: ([\d.]+)", _entry_line(Path(txt_path).name))]
+
+
+def flame_points(txt_path):
+    """Фитили живого огня (liveDecorManifest.ts): (x, y, w, h) — низ пламени и пятно."""
     live = (ROOT / 'src' / 'explore' / 'liveDecorManifest.ts').read_text(encoding='utf-8')
-    m = re.search(r"'" + re.escape(txt_path.name) + r"': \[(.*?)\],?\r?\n", live)
-    if m:
-        for fx, fy, fw, fh in re.findall(r"x: ([\d.]+), y: ([\d.]+), w: ([\d.]+), h: ([\d.]+)", m.group(1)):
-            w, h = float(fw) * 3, float(fh) * 3   # живое пламя выше и шире стёртого пятна
-            _mark(px, float(fx) - w / 2, float(fy) - h, w, h)
+    m = re.search(r"'" + re.escape(Path(txt_path).name) + r"': \[(.*?)\],?\r?\n", live)
+    if not m:
+        return []
+    return [tuple(float(v) for v in t) for t in re.findall(r"x: ([\d.]+), y: ([\d.]+), w: ([\d.]+), h: ([\d.]+)", m.group(1))]
+
+
+def flame_rect(f):
+    x, y, w, h = f
+    w3, h3 = w * 3, h * 3   # живое пламя выше и шире стёртого пятна
+    return (x - w3 / 2, y - h3, w3, h3)
+
+
+def cleared_live(txt_path):
+    """Живой декор, стёртый чисткой (src/explore/trapDecorCleared.ts):
+    {'flames': {(x, y)}, 'sway': {(x, y)}, 'chains': {(x, y)}}."""
+    p = ROOT / 'src' / 'explore' / 'trapDecorCleared.ts'
+    out = {'flames': set(), 'sway': set(), 'chains': set()}
+    if not p.exists():
+        return out
+    t = p.read_text(encoding='utf-8')
+    name = "'" + Path(txt_path).name + "': ["
+    for kind, key in (('flames', 'CLEARED_FLAMES'), ('sway', 'CLEARED_SWAY'), ('chains', 'CLEARED_CHAINS')):
+        i = t.find('export const ' + key)
+        if i < 0:
+            continue
+        block = t[i:t.find('\n}', i)]
+        for line in block.splitlines():
+            if line.strip().startswith(name):
+                for x, y in re.findall(r"\[(-?[\d.]+), (-?[\d.]+)\]", line[line.index(': [') + 2:]):
+                    out[kind].add((float(x), float(y)))
+    return out
+
+
+def decor_pixels(txt_path, grid):
+    """Маска пикселей декора (numpy bool, H*TS × W*TS): непрозрачные (альфа >
+    DECOR_ALPHA) пиксели слоя в ПУСТЫХ клетках сетки, кроме кромки травы болота,
+    плюс прямоугольники живого декора (стебли, пламя), которых чистка не стёрла."""
+    import numpy as np
+    H, W = len(grid), len(grid[0])
+    rgba = layer_rgba(txt_path, grid)
+    px = rgba[:, :, 3] > DECOR_ALPHA
+    empty = np.zeros((H, W), bool)
+    for y in range(H):
+        for x in range(W):
+            empty[y, x] = grid[y][x] not in '#='
+    px &= np.repeat(np.repeat(empty, TS, 0), TS, 1)
+    px &= ~grass_band(grid, map_letter(txt_path))
+    gone = cleared_live(txt_path)
+    for (x, y, w, h) in sway_items(txt_path):
+        if (x, y) not in gone['sway']:
+            _mark(px, x, y, w, h)
+    for f in flame_points(txt_path):
+        if (f[0], f[1]) not in gone['flames']:
+            _mark(px, *flame_rect(f))
+    return px
+
+
+def decor_mask(txt_path, grid):
+    """Число пикселей декора в каждой ПУСТОЙ клетке (decor_pixels); твердь — None."""
+    px = decor_pixels(txt_path, grid)
+    H, W = len(grid), len(grid[0])
     out = [[None] * W for _ in range(H)]
     for y in range(H):
         for x in range(W):
@@ -254,9 +340,9 @@ def check_trap(kind, t, ctx, others):
             bad.append(f'клетка {list(c)} не клетка стояния')
     for c in zone_cells(kind, t):
         x, y = c
-        if not (0 <= y < len(g) and 0 <= x < len(g[0])) or decor[y][x] is None:
+        if not (0 <= y < len(g) and 0 <= x < len(g[0])) or g[y][x] in '#=':
             bad.append(f'клетка зоны {list(c)} — твердь или вне карты')
-        elif decor[y][x] > DECOR_TOL:
+        elif decor is not None and decor[y][x] > DECOR_TOL:
             bad.append(f'декор в зоне {list(c)}: {decor[y][x]} px')
     for c in fp:
         if dist(c, start) < START_MIN:

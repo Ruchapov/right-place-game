@@ -645,3 +645,7 @@ for (const m of swamps) for (const s of m.slices) console.log(`  public/assets/m
 for (const b of swampBgs) console.log(`  public/assets/maps/backgrounds/bg_swamp_${b.name}.webp  ${b.width}×${b.height}  ${kb(b.buf.length)}  сжатие: ${b.quality}`)
 console.log('  src/explore/mapArtManifest.ts')
 console.log(`  слои без потерь и сверка: ${EXPORT}, ${ART}/game-export/swamp`)
+
+// Ловушки (14.11.2026): слой только что собран заново — декор в зонах ловушек
+// вернулся. Чистка — отдельный повторяемый шаг, tools/clean_trap_decor.py.
+console.log("\n⚠️ Слои пересобраны: запусти python tools/clean_trap_decor.py (декор в зонах ловушек), потом python tools/check_map_slots.py")
