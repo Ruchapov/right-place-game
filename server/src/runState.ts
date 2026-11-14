@@ -16,6 +16,8 @@
 // двух видах — снимок ПО ТИРАМ внутри currentRun и пять колонок Character, —
 // и обоим эндпоинтам нужны оба. Держать их порознь значило бы развести
 // соответствие "индекс массива ↔ номер колонки" по трём файлам.
+import { cloakBonus } from './skins.js'
+import { readRunSkins } from './skinState.js'
 import type { RuneCounts, RuneKind } from './runes.js'
 import { MAX_SIPS_PER_RUN, POTION_TIER_COUNT, POTION_TIERS, emptyPotionStock, potionHealAmount } from './potions.js'
 import { bossMaxHpFor, enemyMaxHpByKind, SHADOW_HP_MULT, scaledEnemyMaxHp, SKILL_BOOK_SKILL_IDS, RUN_MANA_MAX, RUN_MANA_DROP_MAX, HEAL_MANA_COST, healSkillPerUse } from './game.js'
@@ -92,7 +94,7 @@ import { parseHeroClassId, parseHeroClassTier, parseHeroClassWire, heroClassToWi
 // меряют вылазку до финиша. Поля нет — забег подтвердили глотком или срезом (или
 // он начат раньше): тогда меряют от startedAt, это всегда дольше — против игрока
 // (читать через readRunConfirmedAt).
-export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[]; breakables?: RunBreakable[]; guildBuffs?: { attackPct: number; armorPct: number }; completion?: Record<string, unknown> }
+export type ActiveExploreRun = { mode: 'explore'; mapFile: string; events: RunEvent[]; hp: number; maxHp: number; potions: number[]; sips: number; potionsDrunk?: number[]; progress?: RunProgress; confirmed?: boolean; confirmedAt?: number; spentEnergy?: number; smugglerDeal?: SmugglerDeal; consumablesUsed?: ConsumableId[]; runId?: string; startedAt?: number; sipIds?: string[]; heroClass?: { id: HeroClassId; tier: HeroClassTier } | null; healSkill?: RunHealSkill | null; gear?: RunGear; starbloom?: [number, number] | null; patrols?: RunPatrol[]; breakables?: RunBreakable[]; guildBuffs?: { attackPct: number; armorPct: number }; skins?: unknown; completion?: Record<string, unknown> }
 
 /**
  * Снаряжение Мастера на ЭТОТ забег (docs/crafter.md, 29.10.2026) — снимок на
@@ -806,7 +808,14 @@ export function clampRunProgress(raw: RunProgress, run: ActiveExploreRun, charac
   // Самое большое лечение ОДНОГО глотка при maxHp забега (08.11.2026): глоток
   // лечит фикс + процент (potionHealAmount), и сильнейший тир по процентам —
   // не обязательно сильнейший по сумме, поэтому максимум по всем тирам.
-  const maxSipHeal = Math.max(...POTION_TIERS.map((t) => potionHealAmount(t, runMaxHp)))
+  // Плащ Латник (Портной, 14.11.2026) лечит зельями сильнее: +10% + 2% за
+  // уровень. Снимок облика — из currentRun.skins (пишет старт); нет поля
+  // (забег старше Портного) — прибавки нет; испорчено — тоже нет (против
+  // игрока, как у всех потолков). Клеймо брони поднимает maxHp — оно уже внутри
+  // run.maxHp, его считает старт.
+  const runSkins = readRunSkins(run)
+  const potionBonus = runSkins === null || runSkins === 'malformed' ? 0 : cloakBonus(runSkins.cloak, runSkins.cloakLevel).potionHealBonusFrac
+  const maxSipHeal = Math.max(...POTION_TIERS.map((t) => potionHealAmount(t, runMaxHp))) * (1 + potionBonus)
   const sipHealMax = runSipsAllowed(run) * maxSipHeal
   // Испорченный класс забега — как без класса: запас меньше, то есть трактовка
   // против игрока, как у всех потолков. Вызывающий видит это по runHeroClass.

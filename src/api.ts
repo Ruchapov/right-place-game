@@ -1,4 +1,5 @@
 import { RUNE_KINDS, parseRuneKind, type RuneCounts, type RuneKind } from './runes'
+import { parseSkinState, type SkinState, type TailorItemId, type UpgradeTarget, type CloakId, type ArmorSkinId, type SlashSkinId } from './skins'
 import { CONSUMABLES, consumableSkillBook, parseSkillBookSkillId, type ConsumableId, type SkillBookId, type SkillBookSkillId } from './consumables'
 import { SCROLLS, type ScrollId } from './scrolls'
 import { CLASS_ITEMS, type ClassItemId } from './classItems'
@@ -230,6 +231,9 @@ export type LoginResponse = {
     rp?: unknown
     // Элитные трофеи (30.10.2026, гильдии). Разбирать через readCurrencyCount.
     eliteTrophies?: unknown
+    // Портной (14.11.2026): облик, удар, плащ, уровни, нашивки и клейма.
+    // Разбирать ТОЛЬКО через readSkinState.
+    skins?: unknown
   }
   // Present only if the server found a stale map-based Explore run (mode:
   // 'explore') still open from a previous session and closed it as a death
@@ -515,6 +519,8 @@ export type StartExploreEvent = {
   extraDrop?: RunDrop | null
   /** Руна (09.11.2026) — третий отдельный бросок; null — не выпало. Через readEventReward. */
   runeDrop?: RunDrop | null
+  /** Нашивка и клеймо (14.11.2026) — свои броски; [] — не выпало. Через readEventReward. */
+  tailorDrops?: RunDrop[]
 }
 
 // Response shape of POST /run/start-explore (server/src/routes/run.ts; форму
@@ -589,6 +595,12 @@ export type StartExploreResult = {
    * ТОЛЬКО через readGuildBuffs.
    */
   guildBuffs?: unknown
+  /**
+   * Облик на этот забег (Портной, 14.11.2026) — снимок, по которому сервер
+   * держит запас в потолках. Поля нет — сервер старше Портного. Разбирать
+   * через parseRunSkins (skins.ts).
+   */
+  skins?: unknown
 }
 
 /** Баффы гильдии из ответа старта; мусор и отсутствие — нули (баффа нет). */
@@ -755,6 +767,8 @@ export type RunDrop =
   | { category: 'crafter'; id: string }
   // Руны (09.11.2026): вид — из общего каталога runes.ts.
   | { category: 'rune'; kind: RuneKind }
+  // Портной (14.11.2026): нашивка и клеймо, имя и иконка — каталог skins.ts.
+  | { category: 'tailor'; id: TailorItemId }
 
 export type RunResultSummary = {
   interrupted: boolean
@@ -855,6 +869,8 @@ export type RunResultSummary = {
    */
   eliteTrophies?: number | null
   eliteTrophiesEarned?: number | null
+  /** Нашивки и клейма после забега (Портной, 14.11.2026); нет поля — старый сервер. */
+  tailorItems?: { patch: number; brand: number } | null
   /**
    * Задание, выполненное этой вылазкой, и награда за него; null — не выполнено
    * ни одно. Опциональное: вход (interruptedRun) и старый сервер его не
@@ -1117,6 +1133,7 @@ export async function finishRunExplore(
           rp: readCurrencyCount(data.rp),
           eliteTrophies: readCurrencyCount(data.eliteTrophies),
           eliteTrophiesEarned: readCurrencyCount(data.eliteTrophiesEarned),
+          tailorItems: readTailorItems(data.tailorItems),
           questCompleted: readQuestCompleted(data.questCompleted),
           quests: readQuestView(data.quests),
           referralReward: readReferralReward(data.referralReward),
@@ -1642,6 +1659,8 @@ export type ProfileResult = {
   runes: RuneState | null
   /** Своя удача героя; null — сервер не назвал. */
   luck: number | null
+  /** Портной (14.11.2026); null — сервер старше Портного или мусор. */
+  skins: SkinState | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1681,6 +1700,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     level?: unknown
     runes?: unknown
     luck?: unknown
+    skins?: unknown
     appliedRequestIds?: unknown
   }>(
     `${SERVER_URL}/character/profile${query}`,
@@ -1717,6 +1737,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     level: readCurrencyCount(raw.level),
     runes: readRunes(raw.runes),
     luck: readCurrencyCount(raw.luck),
+    skins: readSkinState(raw.skins),
   }
 }
 
@@ -2056,9 +2077,29 @@ export function readRunDrops(raw: unknown): RunDrop[] {
       const kind = parseRuneKind(e.kind)
       if (kind === null) continue
       out.push({ category: 'rune', kind })
+    } else if (e.category === 'tailor') {
+      if (e.id !== 'patch' && e.id !== 'brand') continue
+      out.push({ category: 'tailor', id: e.id })
     }
   }
   return out
+}
+
+/** Нашивки и клейма из ответа финиша; мусор и отсутствие — null (мержить нечего). */
+export function readTailorItems(raw: unknown): { patch: number; brand: number } | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const patch = readCurrencyCount(r.patch)
+  const brand = readCurrencyCount(r.brand)
+  return patch === null || brand === null ? null : { patch, brand }
+}
+
+/** Состояние Портного из ответа (вход, профиль, ручки /skins/*); null — не названо. */
+export function readSkinState(raw: unknown): SkinState | null {
+  if (raw === undefined) return null
+  const parsed = parseSkinState(raw)
+  if (parsed === null) console.error('api: состояние Портного не разобралось', raw)
+  return parsed
 }
 
 /**
@@ -2154,7 +2195,8 @@ export function readEventReward(raw: unknown): { trophies: number | null; drops:
   const trophies = typeof t === 'number' && Number.isInteger(t) && t >= 0 ? t : null
   // Обе добычи разбираем тем же валидатором, что список на экране итогов —
   // завернув в массив: второй разбор той же формы разошёлся бы с первым.
-  const listed = [e.drop, e.extraDrop, e.runeDrop].filter((d) => d !== undefined && d !== null)
+  const tailor = Array.isArray(e.tailorDrops) ? e.tailorDrops : []
+  const listed = [e.drop, e.extraDrop, e.runeDrop, ...tailor].filter((d) => d !== undefined && d !== null)
   return { trophies, drops: readRunDrops(listed) }
 }
 
@@ -2767,6 +2809,64 @@ export async function buyHunterStat(token: string, stat: HunterStat): Promise<Bu
   return {
     stats: strength !== null && agility !== null && endurance !== null && level !== null ? { strength, agility, endurance, level } : null,
     hunterBadges: readCurrencyCount(raw.hunterBadges),
+    replayed: raw.replayed === true,
+  }
+}
+
+// --- ПОРТНОЙ (14.11.2026, docs/shop.md, «ПОРТНОЙ») ---
+
+/** Ответ ручек Портного: состояние облика и RP, перечитанные сервером. null — не названо. */
+export type SkinActionResult = { skins: SkinState | null; rp: number | null }
+
+function readSkinAction(raw: Record<string, unknown>): SkinActionResult {
+  return { skins: readSkinState(raw.skins), rp: readCurrencyCount(raw.rp) }
+}
+
+/**
+ * Купить облик тела или цвет удара за RP. Повтор безопасен и без ключа:
+ * сервер не продаёт уже купленное (400 Already owned), поэтому ключа у ручки нет.
+ */
+export async function buySkin(token: string, kind: 'armor' | 'slash', id: ArmorSkinId | SlashSkinId): Promise<SkinActionResult> {
+  const raw = await requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/skins/buy`,
+    { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, id }) },
+    SHOP_TIMEOUT_MS,
+  )
+  return readSkinAction(raw)
+}
+
+/** Надеть облик, удар и/или плащ. Повтор безопасен — надевание то же самое. */
+export async function equipSkins(token: string, what: { armor?: ArmorSkinId; slash?: SlashSkinId; cloak?: CloakId }): Promise<SkinActionResult> {
+  const raw = await requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/skins/equip`,
+    { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(what) },
+    SHOP_TIMEOUT_MS,
+  )
+  return readSkinAction(raw)
+}
+
+export type SkinPatchResult = SkinActionResult & { success: boolean | null; newLevel: number | null; replayed: boolean }
+
+/**
+ * Нашивка (плащ) или клеймо (броня, оружие): попытка +1, шанс 50%, бросает
+ * сервер. С ключом идемпотентности (keyedPurchase): после потерянного ответа
+ * повторное нажатие несёт тот же ключ, и сервер отвечает ТЕМ ЖЕ исходом, не
+ * тратя второй предмет.
+ */
+export async function patchSkin(token: string, target: UpgradeTarget, cloakId?: CloakId): Promise<SkinPatchResult> {
+  const raw = await keyedPurchase(`skins-patch:${target}:${cloakId ?? ''}`, (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/skins/patch`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, ...(cloakId ? { cloakId } : {}), requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  return {
+    ...readSkinAction(raw),
+    success: typeof raw.success === 'boolean' ? raw.success : null,
+    newLevel: readCurrencyCount(raw.newLevel),
     replayed: raw.replayed === true,
   }
 }

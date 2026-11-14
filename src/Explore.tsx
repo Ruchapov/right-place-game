@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, Ticker, TilingSprite } from 'pixi.js'
+import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, Ticker, TilingSprite, type RenderTexture } from 'pixi.js'
+import { ARMOR_SKINS, BRAND_CRIT_MULT, CLOAKS, DEFAULT_RUN_SKINS, PARRY_STRIKE_WINDOW_MS, SLASH_SKINS, brandBonus, cloakBonus, cloakById, skinDamageTakenMult, type RunSkins } from './skins'
 import { renderSpikeTile, spikeGlintAlpha, backdropPaths, backdropLook } from './mapRenderer'
 import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
@@ -45,7 +46,7 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets, loadTrapArt } from './explore/assets'
+import { bakeHeroCloak, loadHeroSheets, loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets, loadTrapArt } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -170,6 +171,13 @@ const PROGRESS_FAIL_STREAK_FOR_PLAQUE = 3
 
 type ExploreProps = {
   onClose?: () => void
+  /**
+   * Облик героя (Портной, 14.11.2026): какие листы грузить, цвет плаща и его
+   * бонусы, уровни клейма. Из профиля (App.tsx, runSkinsOf); во время вылазки
+   * сервер менять облик не даёт, так что он тот же, что в снимке старта. Нет —
+   * обычный облик и Пепельный плащ уровня 0.
+   */
+  skins?: RunSkins
   endurance?: number
   strength?: number
   // Уровень персонажа (App.tsx: player.level) — тот же источник и тот же
@@ -575,10 +583,11 @@ const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop[]> = {
   flame: [{ category: 'potion', tier: 2 }],
   runner: [{ category: 'soul_shard' }],
   // Руна (09.11.2026) — вторым рядом, как runeDrop у сервера.
-  enemy: [{ category: 'soul_shard' }, { category: 'rune', kind: 'attack' }],
+  // Нашивка (14.11.2026) — третьим рядом, как tailorDrops у сервера.
+  enemy: [{ category: 'soul_shard' }, { category: 'rune', kind: 'attack' }, { category: 'tailor', id: 'patch' }],
   chest: [{ category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 }],
   obelisk: [{ category: 'potion', tier: 1 }],
-  boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }],
+  boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }, { category: 'tailor', id: 'brand' }],
   // У Контрабандиста и загадки добычи не бывает и на сервере.
   smuggler: [],
   puzzle: [],
@@ -746,6 +755,7 @@ function dropIconKey(drop: RunDrop): string {
     case 'renounce_seal': return 'renounce_seal'
     case 'crafter': return `crafter:${drop.id}`
     case 'rune': return `rune:${drop.kind}`
+    case 'tailor': return `tailor:${drop.id}`
   }
 }
 
@@ -1100,8 +1110,14 @@ function ResultsScreen({
 // (?debugFreeze=1, или в Telegram t.me/RightPlaceGame_bot/game?startapp=debugFreeze —
 // тогда он приходит в tgWebAppStartParam) — удар мечом замораживает врага на 2 с.
 const DEBUG_FREEZE = typeof window !== 'undefined' && /debugFreeze/.test(window.location.href)
+// Проверка обликов Портного (14.11.2026): в адресе debugSkins (?debugSkins=1,
+// или в Telegram t.me/RightPlaceGame_bot/game?startapp=debugSkins) в забеге
+// сверху по центру три кнопки — броня, удар и плащ по кругу, без покупки. Только
+// клиент: на сервер ничего не уходит, бонусы плаща в бою меняются вместе с ним
+// (снимок старта на сервере — прежний, это отладка). Клавиши 7 / 8 / 9 — то же.
+const DEBUG_SKINS = typeof window !== 'undefined' && /debugSkins/.test(window.location.href)
 
-export default function Explore({ onClose, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent, gear: gearProp, bootsSpeedPct }: ExploreProps) {
+export default function Explore({ onClose, skins, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent, gear: gearProp, bootsSpeedPct }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
   // не задан → '' — сентинел "карта ещё не выбрана, спроси сервер" (см.
   // setup() ниже: mapFile==='' запускает запрос /run/start-explore БЕЗ
@@ -1636,7 +1652,22 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
 
   // maxHp не меняется в течение забега — считаем один раз из endurance персонажа
   // (и Клобука иного места: та же формула runMaxHpOf, что у сервера).
-  const maxHp = endurance && endurance > 0 ? CR.runMaxHpOf(endurance, gearRef.current) : C.FALLBACK_MAX_HP
+  // Облик (Портной): в ref — его бонусы читают обработчики тикера, а
+  // ?debugSkins=1 меняет его прямо в забеге.
+  const skinsRef = useRef<RunSkins>(skins ?? DEFAULT_RUN_SKINS)
+  // Окно «первый удар после парирования» плаща «Дуэль», мс (0 — окна нет).
+  const parryStrikeMsRef = useRef(0)
+  // ?debugSkins=1: перебор облика в забеге (ставит setup()) и подпись кнопок.
+  const debugSkinCycleRef = useRef<(what: 'armor' | 'slash' | 'cloak') => void>(() => {})
+  const [debugSkinLabel, setDebugSkinLabel] = useState('')
+  // Оглушения от парирования, уже удлинённые плащом «Дуэль»: враг или босс →
+  // остаток таймера на прошлом тике. Таймер вырос — значит, это НОВОЕ оглушение.
+  const parryStunSeenRef = useRef(new WeakMap<object, number>())
+  // Клеймо брони поднимает maxHp долей — тем же сложением с долей Клобука, что
+  // на сервере (start-explore), иначе полоса HP разошлась бы с потолками.
+  const maxHp = endurance && endurance > 0
+    ? CR.runMaxHpOf(endurance, { ...gearRef.current, maxHpFrac: gearRef.current.maxHpFrac + brandBonus('armor', skinsRef.current.brandArmor).maxHpFrac })
+    : C.FALLBACK_MAX_HP
   // Текущее hp — в ref, не в state: меняется в игровом цикле каждый кадр,
   // ререндер React на это не нужен. HP-бар обновляется вручную через DOM-refs.
   const hpRef = useRef(maxHp)
@@ -2456,6 +2487,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
   function healOnParry(): void {
     const frac = gearRef.current.parryHealFrac
     if (frac > 0) restoreHp(maxHp * frac)
+    // Плащ «Дуэль» (Портной, 14.11.2026): первый удар мечом в течение 2 с после
+    // удачного парирования сильнее. Окно тикает по ticker.deltaMS (конец тика),
+    // сгорает на первом взмахе (applyAttackHit).
+    if (cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).parryStrikeBonusFrac > 0) {
+      parryStrikeMsRef.current = PARRY_STRIKE_WINDOW_MS
+    }
   }
 
   function takeDamageUnblockable(amount: number): void {
@@ -2498,7 +2535,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     // через эту функцию, поэтому один Math.ceil здесь закрывает все текущие
     // и будущие источники разом. Вверх, не round/floor — округление никогда
     // не должно уменьшать урон в пользу игрока.
-    const dmg = Math.ceil(amount)
+    // Портной (14.11.2026): поглощение плаща Латник и снижение от клейма брони —
+    // до округления и до брони, на ВСЕ источники (они идут сюда одной точкой).
+    const sk = skinsRef.current
+    const dmg = Math.ceil(amount * skinDamageTakenMult(sk.cloak, sk.cloakLevel, sk.brandArmor))
     // Броня (см. задачу "броня в бою") — вычитается из урона, но не может
     // срезать больше половины: половина всегда проходит (ARMOR_MAX_REDUCTION).
     // ОДНА точка на всех — шипы/мимик (доли maxHp) и враг/босс (масштаб по
@@ -2808,6 +2848,10 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
     let swayDecorSystem: ReturnType<typeof createSwayDecorSystem> | null = null
     let swayDecorAnimate = false
     let swayTextures: Map<string, Texture> | null = null
+    // Листы героя с перекрашенным плащом (Портной): своих текстур нет в кэше
+    // Assets, и app.destroy их не снимет — уничтожаются в cleanup.
+    const cloakBaked: RenderTexture[] = []
+    let debugSkinUnbind: (() => void) | null = null
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
     let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
@@ -2964,7 +3008,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       // случившийся раньше этого await, браузер не записал в «необработанные».
       // Выйдет setup() раньше по другой причине (отказ старта, размонтирование) —
       // покажут ту причину, а листы останутся в кэше Assets до следующего раза.
-      const commonAssetsLoad = loadCommonAssets()
+      const commonAssetsLoad = loadCommonAssets({ armor: skinsRef.current.armor, slash: skinsRef.current.slash })
       commonAssetsLoad.catch(() => {})
 
       let resolvedMapFile = mapFile
@@ -3195,7 +3239,8 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       if (blade.swordDamageMult !== 1) console.log('Explore: урон обычной атаки с классом', plainSwordDamage, blade)
       // Красная искра крита — только герою этой ветки (см. loadBladeClassAssets).
       // Палаш иного места тоже критует — ему та же искра.
-      const bladeAssetsLoad = blade.critMult > 1 || gearRef.current.critChance > 0 ? loadBladeClassAssets() : Promise.resolve(null)
+      // Клеймо оружия тоже критует (Портной) — и ему та же искра.
+      const bladeAssetsLoad = blade.critMult > 1 || gearRef.current.critChance > 0 || brandBonus('weapon', skinsRef.current.brandWeapon).critChance > 0 ? loadBladeClassAssets() : Promise.resolve(null)
       bladeAssetsLoad.catch(() => {})
       // Мастер (docs/crafter.md): огонь — только с кольцом Пепла, цветок —
       // только если сервер его посадил. Оба листа — украшение поверх боя:
@@ -3892,6 +3937,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         startPlayerAttack,
         // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
         startPlayerDash,
+        dashCooldownMult: () => 1 - cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).dashCooldownCutFrac,
         // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
         startPlayerCast,
         casting: castingRef,
@@ -4079,17 +4125,36 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // грузились листы — не создаём спрайты и не трогаем worldContainer.
         return
       }
-      const idleFrames = assets.hero.idle
-      const runFrames = assets.hero.run
-      const jumpFrames = assets.hero.jump
-      const landFrames = assets.hero.land
-      const attackFrames = assets.hero.attack
-      const drinkFrames = assets.hero.drink
-      const hurtFrames = assets.hero.hurt
-      const deathFrames = assets.hero.death
-      const castFrames = assets.hero.cast
-      const dashFrames = assets.hero.dash
-      const blockFrames = assets.hero.block
+      // Плащ (Портной, 14.11.2026): у цветного плаща листы героя перекрашиваются
+      // ОДИН раз здесь, в видеопамяти (entities/cloakTint.ts), и дальше бой
+      // играет уже перекрашенные кадры. Пепельный — без перекраски вовсе. Без
+      // WebGL перекрашивать нечем — плащ остаётся исходным, громко в консоль.
+      async function bakeHeroSet(set: typeof assets.hero, cloak: RunSkins['cloak']): Promise<typeof assets.hero> {
+        const color = cloakById(cloak).color
+        if (color === null) return set
+        if (app!.renderer.type !== RendererType.WEBGL) {
+          console.warn('Explore: без WebGL плащ не перекрашивается — герой в исходном плаще')
+          return set
+        }
+        const r = await bakeHeroCloak(app!.renderer, set, color)
+        cloakBaked.push(...r.baked)
+        return r.hero
+      }
+      const heroSet = await bakeHeroSet(assets.hero, skinsRef.current.cloak)
+      if (cancelled) return
+      // let, а не const: ?debugSkins=1 подменяет листы героя прямо в забеге
+      // (swapHeroSet ниже), и все ветки тикера обязаны видеть новые массивы.
+      let idleFrames = heroSet.idle
+      let runFrames = heroSet.run
+      let jumpFrames = heroSet.jump
+      let landFrames = heroSet.land
+      let attackFrames = heroSet.attack
+      let drinkFrames = heroSet.drink
+      let hurtFrames = heroSet.hurt
+      let deathFrames = heroSet.death
+      let castFrames = heroSet.cast
+      let dashFrames = heroSet.dash
+      let blockFrames = heroSet.block
       const parrySparkFrames = assets.parrySpark
 
       // Листы «под событие» бывают null: события этого вида в забеге нет, и
@@ -4412,6 +4477,66 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       hero.play()
       worldContainer.addChild(hero)
       heroSpriteRef.current = hero
+
+      // ?debugSkins=1 (Портной): подмена листов героя прямо в забеге. Спрайт
+      // остаётся тем же; текущая анимация переезжает на тот же кадр нового
+      // листа, а все ветки тикера читают переменные кадров (let выше) — и после
+      // подмены сравнивают уже с новыми массивами.
+      if (DEBUG_SKINS) {
+        const label = () => {
+          const s = skinsRef.current
+          const armorName = s.armor === 'none' ? 'Обычная' : ARMOR_SKINS.find((x) => x.id === s.armor)?.nameRu
+          const slashName = s.slash === 'none' ? 'Обычный' : SLASH_SKINS.find((x) => x.id === s.slash)?.nameRu
+          setDebugSkinLabel(`${armorName} · ${slashName} · ${cloakById(s.cloak).nameRu}`)
+        }
+        label()
+        let busy = false
+        debugSkinCycleRef.current = (what) => {
+          if (busy) return
+          busy = true
+          const s = { ...skinsRef.current }
+          const next = <T,>(list: readonly T[], cur: T): T => list[(list.indexOf(cur) + 1) % list.length]
+          if (what === 'armor') s.armor = next(['none', ...ARMOR_SKINS.map((x) => x.id)] as const, s.armor)
+          if (what === 'slash') s.slash = next(['none', ...SLASH_SKINS.map((x) => x.id)] as const, s.slash)
+          if (what === 'cloak') s.cloak = next(CLOAKS.map((x) => x.id), s.cloak)
+          const oldBaked = cloakBaked.splice(0)
+          loadHeroSheets({ armor: s.armor, slash: s.slash })
+            .then((set) => bakeHeroSet(set, s.cloak))
+            .then((set) => {
+              if (cancelled || hero.destroyed) return
+              const old: Record<string, Texture[]> = { idleFrames, runFrames, jumpFrames, landFrames, attackFrames, drinkFrames, hurtFrames, deathFrames, castFrames, dashFrames, blockFrames }
+              const fresh: Record<string, Texture[]> = {
+                idleFrames: set.idle, runFrames: set.run, jumpFrames: set.jump, landFrames: set.land, attackFrames: set.attack,
+                drinkFrames: set.drink, hurtFrames: set.hurt, deathFrames: set.death, castFrames: set.cast, dashFrames: set.dash, blockFrames: set.block,
+              }
+              const key = Object.keys(old).find((k) => old[k] === hero.textures)
+              const frame = hero.currentFrame
+              const playing = hero.playing
+              idleFrames = set.idle; runFrames = set.run; jumpFrames = set.jump; landFrames = set.land
+              attackFrames = set.attack; drinkFrames = set.drink; hurtFrames = set.hurt; deathFrames = set.death
+              castFrames = set.cast; dashFrames = set.dash; blockFrames = set.block
+              deathFramesRef.current = deathFrames
+              if (key !== undefined) {
+                hero.textures = fresh[key]
+                if (playing) hero.gotoAndPlay(Math.min(frame, fresh[key].length - 1))
+                else hero.gotoAndStop(Math.min(frame, fresh[key].length - 1))
+              }
+              // Прежние перекрашенные листы больше не на спрайте — уничтожить.
+              for (const t of oldBaked) t.destroy(true)
+              skinsRef.current = { ...skinsRef.current, armor: s.armor, slash: s.slash, cloak: s.cloak }
+              label()
+            })
+            .catch((e) => console.error('debugSkins: облик не загрузился', e))
+            .finally(() => { busy = false })
+        }
+        const onKey = (e: KeyboardEvent) => {
+          if (e.code === 'Digit7') debugSkinCycleRef.current('armor')
+          if (e.code === 'Digit8') debugSkinCycleRef.current('slash')
+          if (e.code === 'Digit9') debugSkinCycleRef.current('cloak')
+        }
+        window.addEventListener('keydown', onKey)
+        debugSkinUnbind = () => window.removeEventListener('keydown', onKey)
+      }
 
       // --- Горение героя от кочерги Кочегара (09.11.2026) ---
       // Вид — шейдер огня по силуэту (ncFilters.ts, одобрено: hero_burn_shader.mp4);
@@ -5843,9 +5968,13 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // startPlayerDash ниже во время замаха отказывает, чтобы dash не
         // съедал уже начатый удар вместе с его уроном.
         dashingRef.current = false
-        attackCooldownRef.current = C.ATTACK_COOLDOWN
+        // Плащ «Клинок» (Портной, 14.11.2026): удар быстрее на долю — анимация,
+        // окно попадания и перезарядка короче на столько же (кадр удара тот же,
+        // он просто наступает раньше).
+        const swingTime = 1 - cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).attackSpeedFrac
+        attackCooldownRef.current = C.ATTACK_COOLDOWN * swingTime
         attackActiveRef.current = true
-        attackActiveTimerRef.current = C.ATTACK_ACTIVE_MS
+        attackActiveTimerRef.current = C.ATTACK_ACTIVE_MS * swingTime
         attackSwingIdRef.current += 1 // новый взмах — враги смогут получить урон от него ровно один раз
         // Выпад (Дуэлянт): первый взмах в окне после рывка — критический. Окно он
         // забирает, даже если промахнётся: Выпад — это первый удар, а не первое
@@ -5869,7 +5998,7 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // анимации героя в тикере, на кадре удара ATTACK_STRIKE_FRAME.
         hero.textures = attackFrames
         hero.loop = false
-        hero.animationSpeed = C.ATTACK_ANIM_SPEED
+        hero.animationSpeed = C.ATTACK_ANIM_SPEED / swingTime
         hero.gotoAndPlay(0)
         return true
       }
@@ -6337,8 +6466,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // складывается: выпали оба — берётся больший множитель.
         const gear = gearRef.current
         const gearCrit = gear.critChance > 0 && Math.random() < gear.critChance
-        const swingCrit = classCrit || gearCrit
-        const critMult = Math.max(classCrit ? blade.critMult : 1, gearCrit ? gear.critMult : 1)
+        // Кузнечное клеймо оружия (Портной, 14.11.2026): свой бросок крита ×2.
+        // Как и у Палаша: крит не складывается — выпало любое, берётся больший.
+        const brandW = brandBonus('weapon', skinsRef.current.brandWeapon)
+        const brandCrit = brandW.critChance > 0 && Math.random() < brandW.critChance
+        const swingCrit = classCrit || gearCrit || brandCrit
+        const critMult = Math.max(classCrit ? blade.critMult : 1, gearCrit ? gear.critMult : 1, brandCrit ? BRAND_CRIT_MULT : 1)
         // Шпага иного места: удар по оглушённой или замороженной цели сильнее.
         const disabledMult = (stun: number, parryStun: number) =>
           gear.disabledHitMult !== 1 && (stun > 0 || parryStun > 0) ? gear.disabledHitMult : 1
@@ -6347,7 +6480,16 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         const lifesteal = (dealt: number) => { if (gear.lifestealFrac > 0 && dealt > 0) restoreHpRef.current(dealt * gear.lifestealFrac) }
         // Урон этого взмаха до крита: обычная атака — с бонусом Дуэлянта (у
         // остальных он равен attackDamageRef), взмах навыка slash — без него.
-        const swingDamage = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
+        // Клеймо оружия (+% к урону мечом) и плащ «Дуэль» (первый удар после
+        // парирования) — множителем к урону взмаха, вниз, как +15% Дуэлянта.
+        // Окно «Дуэли» сгорает на этом взмахе, попал он или нет.
+        const parryStrikeMult = parryStrikeMsRef.current > 0
+          ? 1 + cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).parryStrikeBonusFrac
+          : 1
+        parryStrikeMsRef.current = 0
+        const swingBase = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
+        const swingSkinMult = (1 + brandW.swordDamageFrac) * parryStrikeMult
+        const swingDamage = swingSkinMult !== 1 ? Math.floor(swingBase * swingSkinMult) : swingBase
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
           // Мёртвый враг (death уже играет/держит кадр) — хиты по нему больше
@@ -7602,7 +7744,9 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
               // healPlayer выше): клэмп по maxHp, округление вниз и учёт реально
               // долитого в healedAmountRef живут там, здесь не дублируются.
               // С 08.11.2026 — фикс + процент (potionHealAmount, общая с сервером).
-              healPlayer(potionHealAmount(POTION_TIERS[tier - 1], maxHp))
+              // Плащ Латник лечит зельями сильнее (Портной, 14.11.2026); сервер
+              // держит под это запас в потолках (clampRunProgress, тот же cloakBonus).
+              healPlayer(potionHealAmount(POTION_TIERS[tier - 1], maxHp) * (1 + cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).potionHealBonusFrac))
               // Кольцо бережливости: с шансом глоток не тратит ни зелье, ни
               // глоток забега — и сервер о нём не узнаёт (запас на такие
               // глотки он держит сам, gearReserve в runState.ts).
@@ -7743,6 +7887,25 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
         // внутри них) и удар меча героя выше (он может убить оглушённого).
         // Поэтому звёзды появляются в кадр отбива и гаснут в кадр, когда
         // оглушение кончилось или враг умер, — без кадра опоздания.
+        // Плащ «Дуэль» (Портной, 14.11.2026): оглушение от удачного парирования
+        // длиннее. Оглушение ставят ПЯТЬ модулей врагов и босса своими
+        // константами, поэтому прибавка — здесь, одним местом, после всех систем
+        // врагов: таймер вырос против прошлого тика — значит, оно НОВОЕ, и к нему
+        // добавляется прибавка (один раз). Поза оглушения выводится из ОСТАТКА
+        // таймера (parryStunFrame), так что удлинённое оглушение просто дольше
+        // стоит в позе. Окно «первого удара» тикает здесь же.
+        {
+          const extra = cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).parryStunExtraMs
+          const seen = parryStunSeenRef.current
+          const stunned: { parryStunTimer: number }[] = [...enemiesRef.current]
+          if (bossRef.current) stunned.push(bossRef.current)
+          for (const t of stunned) {
+            const prev = seen.get(t) ?? 0
+            if (extra > 0 && t.parryStunTimer > prev && t.parryStunTimer > 0) t.parryStunTimer += extra
+            seen.set(t, t.parryStunTimer)
+          }
+          parryStrikeMsRef.current = Math.max(0, parryStrikeMsRef.current - ticker.deltaMS)
+        }
         stunStarsSystem!.update(ticker.deltaMS)
         // Красная вспышка врага после крита — гаснет по своему таймеру. ПОСЛЕ
         // систем врагов и босса: tint босса каждый кадр пишет boss.ts, и цвет
@@ -7964,6 +8127,12 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
       if (bossIntroRef.current) { bossIntroRef.current.dataset.on = '0'; bossIntroRef.current.style.display = 'none' }
       document.querySelector<HTMLElement>('[data-touch-controls]')?.style.removeProperty('visibility')
       if (swayTextures) for (const t of swayTextures.values()) t.destroy(true)
+      // Перекрашенные листы героя — свои текстуры, кэш Assets их не держит.
+      for (const t of cloakBaked) t.destroy(true)
+      cloakBaked.length = 0
+      debugSkinUnbind?.()
+      debugSkinUnbind = null
+      debugSkinCycleRef.current = () => {}
       swayTextures = null
       // Реф переживает размонтирование эффекта (StrictMode, смена карты) —
       // чтобы он не держал систему уже уничтоженной сцены и не звал её clear().
@@ -8112,6 +8281,21 @@ export default function Explore({ onClose, endurance, strength, agility, level, 
           но полностью скрыт непрозрачным экраном ожидания поверх (см.
           ниже) — игрок его не видит, что и требовалось по смыслу задачи. */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* ?debugSkins=1 (Портной): перебор облика в забеге — только отладка. */}
+      {DEBUG_SKINS && ready && (
+        <div style={{ position: 'absolute', top: 'calc(var(--rp-safe-top) + 84px)', left: '50%', transform: 'translateX(-50%)', zIndex: 30, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['armor', 'slash', 'cloak'] as const).map((w) => (
+              <button key={w} onClick={() => debugSkinCycleRef.current(w)}
+                style={{ minWidth: 64, height: 40, borderRadius: 8, border: '1px solid #d19744', background: 'rgba(21,18,24,0.85)', color: '#f0d9a8', fontSize: 12 }}>
+                {w === 'armor' ? 'Броня' : w === 'slash' ? 'Удар' : 'Плащ'}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 10, color: '#f0d9a8', background: 'rgba(21,18,24,0.75)', padding: '2px 6px', borderRadius: 4, pointerEvents: 'none' }}>{debugSkinLabel}</div>
+        </div>
+      )}
 
       {/* Надпись об исходе сделки, который не подтвердился (см.
           showSmugglerNotice). Ставится ниже оранжевой плашки-заглушки, чтобы не

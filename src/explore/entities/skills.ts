@@ -103,6 +103,12 @@ export type SkillsDeps = {
   // dash уже идёт либо идёт замах). ЭТАП 1: кулдауна, движения, урона и
   // неуязвимости у dash нет, гейтить тут больше нечем.
   startPlayerDash: () => boolean
+  /**
+   * Множитель перезарядки рывка (Портной, 14.11.2026: плащ «Клинок» её
+   * укорачивает). Функцией, а не числом: в ?debugSkins=1 плащ меняется прямо в
+   * забеге. Рывок в игре один — навык «Рывок» (Таран), другого нет.
+   */
+  dashCooldownMult: () => number
   // Старт анимации каста — ТА ЖЕ closure-функция из setup() в Explore.tsx,
   // по образцу startPlayerAttack. Каст — анимация ГЕРОЯ (подмена текстур на
   // его спрайте), поэтому кадры сюда не передаются: ими владеет Explore.tsx.
@@ -1366,7 +1372,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // воздухе, либо рывок или замах уже идут; ни один из этих случаев не
       // должен съедать 5 секунд.
       if (deps.startPlayerDash()) {
-        dashCdMs = C.DASH_COOLDOWN_MS
+        dashCdMs = C.DASH_COOLDOWN_MS * deps.dashCooldownMult()
         payOnPress('dash')
         // Новый рывок — новый список задетых: каждая цель снова может
         // получить урон ровно один раз. Чистим ИМЕННО на старте, а не по
@@ -1429,7 +1435,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // поле кулдауна у каждого скилла своё, общего массива нет.
     if (id === 'heal') { out.leftMs = healCdMs; out.totalMs = C.HEAL_COOLDOWN_MS; return true }
     if (id === 'slash') { out.leftMs = slashCdMs; out.totalMs = C.SLASH_COOLDOWN_MS; return true }
-    if (id === 'dash') { out.leftMs = dashCdMs; out.totalMs = C.DASH_COOLDOWN_MS; return true }
+    if (id === 'dash') { out.leftMs = dashCdMs; out.totalMs = C.DASH_COOLDOWN_MS * deps.dashCooldownMult(); return true }
     if (id === 'telekinesis') { out.leftMs = tkCdMs; out.totalMs = C.TELEKINESIS_COOLDOWN_MS; return true }
     if (id === 'fireball') { out.leftMs = projectileCdMs.fireball; out.totalMs = FIREBALL_SPEC.cooldownMs; return true }
     if (id === 'iceball') { out.leftMs = projectileCdMs.iceball; out.totalMs = ICEBALL_SPEC.cooldownMs; return true }

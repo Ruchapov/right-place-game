@@ -8,6 +8,7 @@ import { scrollById } from '../scrolls'
 import { classItemById } from '../classItems'
 import { itemIconSrc } from '../itemIcons'
 import { RUNES } from '../runes'
+import { tailorItemById } from '../skins'
 
 /**
  * Как показать одну единицу добычи: название и путь к иконке.
@@ -73,6 +74,11 @@ export function dropView(drop: RunDrop): { key: string; name: string; iconSrc: s
     case 'rune': {
       const spec = RUNES[drop.kind]
       return { key: `rune-${drop.kind}`, name: spec.nameRu, iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` }
+    }
+    // Портной (14.11.2026): нашивка и клеймо — каталог skins.ts.
+    case 'tailor': {
+      const spec = tailorItemById(drop.id)
+      return { key: `tailor-${drop.id}`, name: spec.nameRu, iconSrc: `${import.meta.env.BASE_URL}assets/icons/${spec.icon}` }
     }
   }
 }

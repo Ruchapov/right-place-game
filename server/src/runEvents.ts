@@ -334,6 +334,12 @@ export type RunEvent = {
    * 09.11.2026: рун тогда не было, бросать за него нечего.
    */
   runeDrop?: EventDrop | null
+  /**
+   * Нашивка и Кузнечное клеймо (14.11.2026) — свои броски поверх всей добычи,
+   * только у групп врагов и боссов (rollTailorDrops, runDrops.ts). [] — не
+   * выпало. Поля нет — забег начат сервером старше Портного.
+   */
+  tailorDrops?: EventDrop[]
 }
 
 type SlotsFile = {
@@ -699,6 +705,8 @@ export type ClientRunEvent = {
   extraDrop: ClientEventDrop | null
   /** Руна (09.11.2026). null — не выпало. */
   runeDrop: ClientEventDrop | null
+  /** Нашивка и клеймо (14.11.2026). [] — не выпало. */
+  tailorDrops: ClientEventDrop[]
 }
 
 /** Добыча в том виде, в каком её видит клиент: снаряжение — без itemId. */
@@ -753,6 +761,8 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     extraDrop: clientEventDrop(ev.extraDrop),
     // Руна (09.11.2026) — тоже всегда, null без неё; клиент старше её не читает.
     runeDrop: clientEventDrop(ev.runeDrop),
+    // Нашивка и клеймо (14.11.2026) — всегда списком; клиент старше их не читает.
+    tailorDrops: (ev.tailorDrops ?? []).map((d) => clientEventDrop(d)).filter((d): d is ClientEventDrop => d !== null),
   }))
 }
 

@@ -6,6 +6,7 @@ import { runRoutes } from './routes/run.js'
 import { questRoutes } from './routes/quests.js'
 import { friendRoutes } from './routes/friends.js'
 import { guildRoutes } from './routes/guild.js'
+import { skinRoutes } from './routes/skins.js'
 import { botWebhookRoutes, registerBotWebhook } from './bot/webhook.js'
 import { cronRoutes } from './bot/cron.js'
 import { botPlayerRoutes, trackActivity } from './bot/routes.js'
@@ -35,6 +36,7 @@ await server.register(runRoutes)
 await server.register(questRoutes)
 await server.register(friendRoutes)
 await server.register(guildRoutes)
+await server.register(skinRoutes)
 await server.register(botWebhookRoutes)
 await server.register(cronRoutes)
 await server.register(botPlayerRoutes)

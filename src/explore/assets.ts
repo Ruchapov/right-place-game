@@ -1,4 +1,6 @@
-import { Assets, Rectangle, Texture } from 'pixi.js'
+import { Assets, Rectangle, Texture, type RenderTexture, type Renderer } from 'pixi.js'
+import type { ArmorSkinId, CloakColor, SlashSkinId } from '../skins'
+import { bakeCloakSheet } from './entities/cloakTint'
 import * as C from './constants'
 import type { BossAnimKind, RewardKind } from './types'
 import { loadSheetFrames } from './spriteLoader'
@@ -219,28 +221,56 @@ async function loadCheckedSheet(
   return frames
 }
 
+/**
+ * Облик героя в забеге (Портной, 14.11.2026): какой набор листов грузить.
+ * Листы обликов — того же размера и раскладки, что исходные (сверено по
+ * IHDR при переносе архива), поэтому меняется только путь, нарезка та же.
+ */
+export type HeroLook = { armor: ArmorSkinId; slash: SlashSkinId }
+export const DEFAULT_HERO_LOOK: HeroLook = { armor: 'none', slash: 'none' }
+
+const SKINS_DIR = `${import.meta.env.BASE_URL}assets/sprites/hero/skins`
+
+/** Путь листа героя в облике: 'none' — исходный лист, иначе папка armor_<id>. */
+export function heroSheetSrc(original: string, file: string, armor: ArmorSkinId): string {
+  return armor === 'none' ? original : `${SKINS_DIR}/armor_${armor}/${file}`
+}
+
+/**
+ * Лист удара — по паре (броня, удар): удар 'none' — attack.png этой брони
+ * (у обычной брони это исходный hero/attack.png); иначе attack_<цвет>.png в
+ * папке брони (у обычной — skins/armor_none/).
+ */
+export function heroAttackSrc(look: HeroLook): string {
+  if (look.slash === 'none') return heroSheetSrc(C.HERO_ATTACK_SRC, 'attack.png', look.armor)
+  return `${SKINS_DIR}/armor_${look.armor}/attack_${look.slash}.png`
+}
+
 // Листы героя. Клетка у всех, кроме block и dash, одна — HERO_CELL_W×HERO_CELL_H,
 // 12 колонок в ряд (дефолт loadSheetFrames).
-async function loadHeroSheets(): Promise<CommonAssets['hero']> {
+// Экспортирована для ?debugSkins=1: перебор обликов прямо в забеге грузит
+// листы заново (Explore.tsx).
+export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promise<CommonAssets['hero']> {
+  const a = look.armor
   const [idle, run, jump, attack, drink, hurt, death, cast, block, dash] = await Promise.all([
-    loadSheetFrames(C.HERO_IDLE_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 24),
-    loadSheetFrames(C.HERO_RUN_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 21),
-    loadSheetFrames(C.HERO_JUMP_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 24),
-    loadSheetFrames(C.HERO_ATTACK_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 14),
+    loadSheetFrames(heroSheetSrc(C.HERO_IDLE_SRC, 'idle.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 24),
+    loadSheetFrames(heroSheetSrc(C.HERO_RUN_SRC, 'run.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 21),
+    loadSheetFrames(heroSheetSrc(C.HERO_JUMP_SRC, 'jump.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 24),
+    loadSheetFrames(heroAttackSrc(look), C.HERO_CELL_W, C.HERO_CELL_H, 14),
     // Питьё зелья — та же клетка и раскладка, что у остальных листов героя.
-    loadSheetFrames(C.HERO_DRINK_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 14),
-    loadSheetFrames(C.HERO_HURT_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 10),
-    loadSheetFrames(C.HERO_DEATH_SRC, C.HERO_CELL_W, C.HERO_CELL_H, 18),
+    loadSheetFrames(heroSheetSrc(C.HERO_DRINK_SRC, 'drink.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 14),
+    loadSheetFrames(heroSheetSrc(C.HERO_HURT_SRC, 'hurt.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 10),
+    loadSheetFrames(heroSheetSrc(C.HERO_DEATH_SRC, 'death.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 18),
     // Каст — та же клетка и та же раскладка, что у остальных листов героя
     // (394×296, 12×2, 24 кадра, лист 4728×592), cols — дефолтные 12.
-    loadCheckedSheet('cast_v2.png', C.HERO_CAST_SRC, C.HERO_CELL_W, C.HERO_CELL_H, C.HERO_CAST_COUNT, 12, C.HERO_CAST_ROWS),
+    loadCheckedSheet('cast_v2.png', heroSheetSrc(C.HERO_CAST_SRC, 'cast_v2.png', a), C.HERO_CELL_W, C.HERO_CELL_H, C.HERO_CAST_COUNT, 12, C.HERO_CAST_ROWS),
     // Блок (парирование) — 9 кадров в ОДИН ряд, клетка 394×342. COLS передаётся
     // ЯВНО: дефолт loadSheetFrames — 12.
     // ⚠️ Клетка ВЫШЕ остальных листов героя (342 против 296) — над головой место
     // под поднятый меч. Масштаб спрайта при этом НЕ пересчитывается (см.
     // HERO_BLOCK_* в constants.ts): блок обязан рисоваться тем же множителем, что
     // idle, иначе переключение туда-обратно давало бы скачок размера.
-    loadCheckedSheet('block.png', C.HERO_BLOCK_SRC, C.HERO_BLOCK_CELL_W, C.HERO_BLOCK_CELL_H, C.HERO_BLOCK_COUNT, C.HERO_BLOCK_COLS),
+    loadCheckedSheet('block.png', heroSheetSrc(C.HERO_BLOCK_SRC, 'block.png', a), C.HERO_BLOCK_CELL_W, C.HERO_BLOCK_CELL_H, C.HERO_BLOCK_COUNT, C.HERO_BLOCK_COLS),
     // Dash — анимация героя на СВОЁМ листе: клетка 240×128, 11 кадров в один
     // ряд, файл лежит в assets/skills (см. DASH_* в constants.ts). COLS
     // передаётся ЯВНО: дефолт loadSheetFrames — 12, и на нём кадры съехали бы.
@@ -278,13 +308,13 @@ async function loadHeroSheets(): Promise<CommonAssets['hero']> {
  * среди листов героя. Восьмой, Bleeding_Loop.png, не грузится — визуал
  * кровотечения убран.
  */
-export async function loadCommonAssets(): Promise<CommonAssets> {
+export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Promise<CommonAssets> {
   const [
     hero, parrySpark, healAura, slashStreak,
     fireballProjectile, fireballImpact, iceballProjectile, iceballImpact,
     gold, trophy, rp, manaOrb,
   ] = await Promise.all([
-    loadHeroSheets(),
+    loadHeroSheets(look),
     // Искра отбива — своя клетка 192×192, 11 кадров в один ряд.
     loadCheckedSheet('parry_spark.png', C.PARRY_SPARK_SRC, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS),
     loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS),
@@ -330,6 +360,34 @@ export async function loadCommonAssets(): Promise<CommonAssets> {
     rewardIcons: { gold, trophy, rp },
     manaOrb,
   }
+}
+
+/**
+ * Перекраска плаща (Портной, 14.11.2026; как и почему — entities/cloakTint.ts):
+ * девять листов героя, у которых есть маска плаща. Рывок (Dash_Strike) —
+ * отдельный эффект без маски, его не трогаем. Кадры приземления — те же
+ * 18..24 кадры прыжка, вырезаются заново из перекрашенного прыжка.
+ * Возвращает новый набор и текстуры, которые вызывающий обязан уничтожить,
+ * когда забег кончится (их нет в кэше Assets — сами они не уйдут).
+ */
+export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero'], color: Exclude<CloakColor, null>): Promise<{ hero: CommonAssets['hero']; baked: RenderTexture[] }> {
+  const mask = (name: string) => `${SKINS_DIR}/masks/${name}_cloak.png`
+  const keys = ['idle', 'run', 'jump', 'attack', 'drink', 'hurt', 'death', 'cast', 'block'] as const
+  const maskName: Record<(typeof keys)[number], string> = {
+    idle: 'idle', run: 'run', jump: 'jump', attack: 'attack', drink: 'drink',
+    hurt: 'hurt', death: 'death', cast: 'cast_v2', block: 'block',
+  }
+  const baked: RenderTexture[] = []
+  const out = { ...hero }
+  // По одному, а не Promise.all: каждая перекраска — свой проход рендера и
+  // своя маска 4728×592 в памяти; разом это девять масок сразу.
+  for (const key of keys) {
+    const r = await bakeCloakSheet(renderer, hero[key], mask(maskName[key]), color)
+    baked.push(r.target)
+    out[key] = r.frames
+  }
+  out.land = out.jump.slice(17, 24)
+  return { hero: out, baked }
 }
 
 /**

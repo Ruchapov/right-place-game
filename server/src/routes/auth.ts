@@ -22,6 +22,7 @@ import {
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
 import { consumableStockOf, scrollStockOf, classItemStockOf, ringSlotsOf, runesOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
+import { skinStateOf } from '../skinState.js'
 import { settleExploreRun, storeFinishResult, readRunCompletion, type RunResultSummary } from './run.js'
 import type { FastifyBaseLogger } from 'fastify'
 import { readQuestState } from '../questState.js'
@@ -622,6 +623,10 @@ export async function authRoutes(server: FastifyInstance) {
         // Элитные трофеи (30.10.2026, docs/guilds.md) — личная валюта гильдий.
         // Ветка закрытия забега их не пишет.
         eliteTrophies: char.eliteTrophies,
+        // Портной (14.11.2026): облик, удар, плащ, уровни, нашивки и клейма.
+        // Ветка закрытия брошенного забега их не пишет; засчитанный пройденным
+        // перечитывает char целиком (добыча нашивок и клейм уже в нём).
+        skins: skinStateOf(char),
         // Награда за подписку на канал (бот, 13.11.2026) — получена ли.
         channelRewardClaimed: char.channelRewardAt !== null,
       },

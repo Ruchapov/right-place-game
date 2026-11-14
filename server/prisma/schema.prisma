@@ -251,6 +251,26 @@ model Character {
   questsNotifiedAt    DateTime?
   comebackStage       Int      @default(0)
   channelRewardAt     DateTime?
+  // Портной (14.11.2026, docs/shop.md, «ПОРТНОЙ»; каталог — skins.ts).
+  // skinArmor / skinSlash — надетый облик тела и цвет удара ('none' — обычные,
+  // есть у всех); ownedArmorSkins / ownedSlashSkins — купленные за RP навсегда
+  // (списки, а не Json: проверка владения — `has` в фильтре условной записи).
+  // cloakId — надетый плащ; cloakLevel* — уровень улучшения КАЖДОГО плаща
+  // (по колонке, как у навыков: нашивка — атомарный increment или сброс в 0).
+  // brandLevelArmor / brandLevelWeapon — Кузнечное клеймо, от облика не зависит.
+  // patchCount / brandCount — нашивки и клейма в запасе: счётчики, НЕ сумка.
+  skinArmor           String   @default("none")
+  skinSlash           String   @default("none")
+  cloakId             String   @default("ash")
+  ownedArmorSkins     String[] @default([])
+  ownedSlashSkins     String[] @default([])
+  cloakLevelAsh       Int      @default(0)
+  cloakLevelMidnight  Int      @default(0)
+  cloakLevelWine      Int      @default(0)
+  brandLevelArmor     Int      @default(0)
+  brandLevelWeapon    Int      @default(0)
+  patchCount          Int      @default(0)
+  brandCount          Int      @default(0)
   botNotifications    BotNotification[]
   currentRun         Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())

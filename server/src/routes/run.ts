@@ -12,9 +12,11 @@ import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSU
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
-import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
+import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, rollTailorDrops, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
 import { OTHER_TIER, RING_PROSPECTOR_MULT, RING_SLOT_COUNT, CRAFTER_LEVEL, FORGE_GOLD, FORGE_RP, FORGE_INGOTS, FORGE_SOURCE_TIER, SMELT_POTION_TIER, SMELT_CRIT_CHANCE, SMELT_CRIT_INGOTS, parseCrafterRawId, parseOtherItemId, parseRingId, otherItemById, gearEffectsOf, runMaxHpOf } from '../crafter.js'
 import { grantInviteeReward } from './friends.js'
+import { brandBonus, runSkinsOf, type TailorItemId } from '../skins.js'
+import { skinStateOf } from '../skinState.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -678,6 +680,8 @@ export type RunDrop =
   | { category: 'crafter'; id: string }
   // Руны (09.11.2026): вид — из общего каталога runes.ts.
   | { category: 'rune'; kind: RuneKind }
+  // Портной (14.11.2026): нашивка и клеймо, имя и иконка — каталог skins.ts.
+  | { category: 'tailor'; id: TailorItemId }
 
 /**
  * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
@@ -771,7 +775,9 @@ async function attachEventDrops(
         runeDrop = { category: 'rune', kind }
       }
     }
-    out.push({ ...event, drop, extraDrop, runeDrop })
+    // Нашивка и клеймо (Портной, 14.11.2026) — свои броски поверх всего.
+    const tailorDrops = rollTailorDrops(event.kind, luck)
+    out.push({ ...event, drop, extraDrop, runeDrop, tailorDrops })
   }
   return out
 }
@@ -824,6 +830,19 @@ function storedEventDrops(run: ActiveExploreRun, closed: number[], log: FastifyR
         log.error({ index, runeDrop: event.runeDrop }, 'finish-explore: currentRun.events[].runeDrop is malformed')
       } else if (rune.kind === 'drop') {
         out.push(rune.drop)
+      }
+    }
+    // Нашивка и клеймо (14.11.2026) — та же дисциплина: поля нет — забег старше.
+    if (event.tailorDrops !== undefined) {
+      const list = Array.isArray(event.tailorDrops) ? event.tailorDrops : null
+      if (list === null) {
+        log.error({ index, tailorDrops: event.tailorDrops }, 'finish-explore: currentRun.events[].tailorDrops is malformed')
+      } else {
+        for (const raw of list) {
+          const t = parseEventDrop(raw)
+          if (t.kind === 'malformed') log.error({ index, tailorDrop: raw }, 'finish-explore: currentRun.events[].tailorDrops entry is malformed')
+          else if (t.kind === 'drop') out.push(t.drop)
+        }
       }
     }
   }
@@ -882,6 +901,7 @@ async function applyDrops(
   const bookGain = {} as Record<SkillBookId, number>
   const classGain = {} as Record<ClassItemId, number>
   const runeGain: RuneCounts = emptyRuneCounts()
+  const tailorGain: Record<TailorItemId, number> = { patch: 0, brand: 0 }
   // Ничего не выпало — самый частый исход, и он не должен стоить лишнего
   // запроса к БД: подсчёт занятых ячеек ниже нужен только тогда, когда есть что
   // в них класть.
@@ -988,6 +1008,12 @@ async function applyDrops(
         gained.push({ category: 'rune', kind: drop.kind })
         break
       }
+      case 'tailor': {
+        // Нашивка и клеймо (14.11.2026) — счётчики, ячейку не занимают.
+        tailorGain[drop.id]++
+        gained.push({ category: 'tailor', id: drop.id })
+        break
+      }
     }
   }
 
@@ -1009,6 +1035,8 @@ async function applyDrops(
       stockData = { ...stockData, [runeStockColumn(kind)]: { increment: count }, [runeFoundColumn(kind)]: { increment: count } }
     }
   }
+  if (tailorGain.patch > 0) stockData = { ...stockData, patchCount: { increment: tailorGain.patch } }
+  if (tailorGain.brand > 0) stockData = { ...stockData, brandCount: { increment: tailorGain.brand } }
 
   return { gained, lost, itemIds, stockData, potionGain }
 }
@@ -1276,6 +1304,8 @@ export type RunResultSummary = {
    * и поля не шлёт — клиент тогда держит прежние числа.
    */
   runes?: RuneState
+  /** Нашивки и клейма после забега (Портной, 14.11.2026); нет поля — прежние. */
+  tailorItems?: { patch: number; brand: number }
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
    * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
@@ -1430,7 +1460,12 @@ export async function runRoutes(server: FastifyInstance) {
       rings: ringRead.slots.filter((id) => id !== ''),
     }
     const gear = gearEffectsOf(runGear.items, runGear.rings)
-    const maxHp = runMaxHpOf(character.endurance, gear)
+    // Облик на этот забег (Портной, 14.11.2026) — снимком в currentRun.skins: по
+    // нему потолки держат запас (лечение зельями от плаща Латника), а клеймо
+    // брони поднимает maxHp. Клиент считает maxHp той же формулой — runMaxHpOf
+    // с той же прибавкой доли brandBonus('armor'), иначе полоса HP разошлась бы.
+    const runSkins = runSkinsOf(skinStateOf(character))
+    const maxHp = runMaxHpOf(character.endurance, { ...gear, maxHpFrac: gear.maxHpFrac + brandBonus('armor', runSkins.brandArmor).maxHpFrac })
     const potionSips = Math.min(MAX_SIPS_PER_RUN + gear.extraSips, potionStock.reduce((sum, n) => sum + n, 0))
     // Удача = своя + удача надетого амулета (29.10.2026: до этого амулет удачи
     // только показывал число в карточке, а добыча читала одну колонку героя).
@@ -1519,7 +1554,7 @@ export async function runRoutes(server: FastifyInstance) {
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
-      gear: runGear, starbloom, patrols, breakables, guildBuffs,
+      gear: runGear, starbloom, patrols, breakables, guildBuffs, skins: runSkins,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -1621,6 +1656,9 @@ export async function runRoutes(server: FastifyInstance) {
       // Молитвы алтаря на этот забег (30.10.2026): проценты к атаке без силы и к
       // броне; 0 — баффа нет. Старый клиент поле не читает.
       guildBuffs,
+      // Облик на этот забег (Портной, 14.11.2026) — тот же снимок, что в
+      // currentRun.skins. Старый клиент поле не читает.
+      skins: runSkins,
       // Патрульные (30.10.2026): [{x, y, enemyKind, trophyReward}]. Старый клиент
       // поле не читает — патрульных у него просто нет.
       patrols,
@@ -3036,6 +3074,8 @@ export async function runRoutes(server: FastifyInstance) {
       hunterBadges: character.hunterBadges,
       rp: character.rp,
       eliteTrophies: character.eliteTrophies,
+      // Портной (14.11.2026): облик, удар, плащ, уровни, нашивки и клейма.
+      skins: skinStateOf(character),
       // Статы и уровень (27.10.2026, Ловчий): покупка стата за значки меняет их
       // вне забега, и сверка после 409 или потерянного ответа обязана их
       // показать. Уровень — по серверной формуле, колонка level только снимок.
@@ -4144,6 +4184,7 @@ export async function settleExploreRun(
     let scrollsAfterFinish = scrollStockOf(character)
     let classItemsAfterFinish = classItemStockOf(character)
     let runesAfterFinish = runesOf(character)
+    let tailorAfterFinish = { patch: character.patchCount, brand: character.brandCount }
     let potionsAfterFinish = newPotionStock
     // Золото, значки и RP — тоже перечитанные: награда задания легла
     // increment'ом поверх того, что успело случиться между чтением и записью.
@@ -4160,6 +4201,7 @@ export async function settleExploreRun(
         scrollsAfterFinish = scrollStockOf(reread)
         classItemsAfterFinish = classItemStockOf(reread)
         runesAfterFinish = runesOf(reread)
+        tailorAfterFinish = { patch: reread.patchCount, brand: reread.brandCount }
         potionsAfterFinish = potionStockOf(reread)
         walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
       } else {
@@ -4201,6 +4243,8 @@ export async function settleExploreRun(
       scrolls: scrollsAfterFinish,
       classItems: classItemsAfterFinish,
       runes: runesAfterFinish,
+      // Нашивки и клейма после забега (Портной, 14.11.2026) — перечитанные.
+      tailorItems: tailorAfterFinish,
       // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
       // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
       // собран skillLevelUps), а не всё, что успело случиться с колонкой после:

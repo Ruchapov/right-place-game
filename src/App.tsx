@@ -3,7 +3,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -28,6 +28,9 @@ import { hasActiveGuildBuff } from './ui/guildText'
 import { GUILD_INVITE_PREFIX, parseGuildInviteCode } from './guild'
 // Ловчий (27.10.2026) — общий каталог src/hunter.ts ↔ server/src/hunter.ts.
 import { HUNTER_STATS, hunterStatPrice, type HunterStat } from './hunter'
+// Портной (14.11.2026) — общий каталог src/skins.ts ↔ server/src/skins.ts.
+import { runSkinsOf, type SkinState } from './skins'
+import { TailorShop } from './ui/TailorShop'
 import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
 // Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
 // (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
@@ -148,7 +151,11 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   // сервер не назвал (readRunes): прочерк и «неизвестно», а не нули.
   runes: RuneState | null
   // Своя удача героя (растит руна удачи; удача амулета — отдельно, в инвентаре).
-  luck: number | null }
+  luck: number | null
+  // Портной (14.11.2026): облик, удар, плащ, уровни, нашивки и клейма. null —
+  // сервер не назвал (readSkinState): у Портного «Профиль не загружен», в забег
+  // герой идёт в обычном облике.
+  skins: SkinState | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -509,6 +516,14 @@ function devScrollStock(): Record<ScrollId, number> {
  * УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с остальными TEMP_DEV_* (см. чеклист в CLAUDE.md).
  */
 // Руны офлайн-заглушки (09.11.2026). УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с заглушкой.
+// TEMP_DEV_SKINS (14.11.2026): облик офлайн-заглушки DevTester — у Портного
+// видно и купленное, и некупленное, плащ «Клинок» открыт (5 ур.), «Дуэль» —
+// под замком. Влияет ТОЛЬКО на заглушку: в Telegram облик приходит со входом.
+// УБРАТЬ ПЕРЕД РЕЛИЗОМ вместе с заглушкой.
+const TEMP_DEV_SKINS: SkinState = {
+  armor: 'gold', slash: 'none', cloak: 'midnight', ownedArmor: ['gold'], ownedSlash: ['red'],
+  cloakLevels: { ash: 2, midnight: 5, wine: 0 }, brandLevels: { armor: 3, weapon: 1 }, patchCount: 2, brandCount: 0,
+}
 const TEMP_DEV_RUNES: RuneState = { stock: { attack: 2, armor: 1, luck: 0 }, found: { attack: 7, armor: 3, luck: 1 }, used: { attack: 1, armor: 0 } }
 
 const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = {
@@ -896,7 +911,7 @@ export default function App() {
   // «Снаряжение» из неё убрано раньше (решение дизайнера, 29.09.2026): предметы
   // там не продавались и продаваться не будут — они падают в забегах, а обратно
   // уходят продажей из инвентаря.
-  const [shopTab, setShopTab] = useState<'Торговец' | 'Кузнец' | 'Отшельник' | 'Ловчий'>('Торговец')
+  const [shopTab, setShopTab] = useState<'Торговец' | 'Кузнец' | 'Отшельник' | 'Ловчий' | 'Портной'>('Торговец')
   // Ловчий (27.10.2026, docs/shop.md, «ЛОВЧИЙ»): какой стат сейчас покупается и
   // строка отказа. Запрос в полёте гасит ВСЕ три кнопки, а не одну: сервер
   // сверяет все три стата (входы уровня), и вторая покупка другого стата,
@@ -1287,7 +1302,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0 })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1338,7 +1353,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins) })
     setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
@@ -1860,6 +1875,9 @@ export default function App() {
         ...(typeof result.rp === 'number' ? { rp: result.rp } : {}),
         // Элитные трофеи (30.10.2026, гильдии): финиш даёт +1 за элитное событие.
         ...(typeof result.eliteTrophies === 'number' ? { eliteTrophies: result.eliteTrophies } : {}),
+        // Нашивки и клейма после забега (Портной, 14.11.2026): выпавшие — у
+        // Портного сразу. Нет поля (старый сервер) — прежние.
+        ...(result.tailorItems && prev.skins ? { skins: { ...prev.skins, patchCount: result.tailorItems.patch, brandCount: result.tailorItems.brand } } : {}),
       } : prev)
     } else {
       // player===null — merge выше нечем применить (см. requestPlayerRefresh).
@@ -2700,6 +2718,9 @@ export default function App() {
         // Руны и своя удача (09.11.2026): их меняет использование руны.
         runes: profile.runes,
         luck: profile.luck,
+        // Портной (14.11.2026): потерянный ответ покупки или нашивки снимается этой
+        // сверкой. null перезаписывает намеренно — «сервер не назвал».
+        skins: profile.skins,
         // Статы и уровень (27.10.2026): их меняет покупка у Ловчего, и после
         // 409 или потерянного ответа сверка обязана их показать. null — сервер
         // старше Ловчего: статы вне забега тогда не менял никто, прежние верны.
@@ -3527,7 +3548,8 @@ export default function App() {
             // Портретов нет, только имена. Что у кого: Торговец — расходники и
             // обмен трофеев, Кузнец — улучшения, Отшельник — книги навыков,
             // Ловчий — статы за значки охотника (своя разметка, без сетки).
-            const SHOP_TABS = ['Торговец', 'Кузнец', 'Отшельник', 'Ловчий'] as const
+            // Портной — пятым (14.11.2026): облики, плащи, нашивка и клеймо.
+            const SHOP_TABS = ['Торговец', 'Кузнец', 'Отшельник', 'Ловчий', 'Портной'] as const
             const playerLevel = player?.level ?? 1
             // У двух жителей товары лежат в каталоге расходников — их рисует ОДНА
             // И ТА ЖЕ сетка ниже. Раздел каталога (ConsumableShopTab) остался
@@ -3790,13 +3812,17 @@ export default function App() {
                   «ЛОВЧИЙ». */}
               <div data-shop-tabs="" style={sideMenu
                 ? { order:2, display:'flex', gap:4, flex:'none' }
-                : { display:'grid', gridTemplateColumns:'repeat(4, minmax(0, auto))', gap:4, marginBottom:14, padding:'0 8px' }}>
+                // С Портным (14.11.2026) жителей пять, и в ряд 320 px они не
+                // влезают: строка с переносом, каждая вкладка растягивается
+                // (flex 1 по ширине подписи), лишние уходят второй строкой.
+                : { display:'flex', flexWrap:'wrap', gap:4, marginBottom:14, padding:'0 8px' }}>
                 {SHOP_TABS.map(tab => {
                   const active = shopTab === tab
                   return (
                     <div key={tab} onClick={() => setShopTab(tab)}
                       style={{
                         boxSizing:'border-box',
+                        ...(sideMenu ? {} : { flex:'1 1 auto', minWidth:0 }),
                         minHeight:44,
                         display:'flex', alignItems:'center', justifyContent:'center',
                         background:C.nicheDeep, borderRadius:8, padding: sideMenu ? '0 12px' : '0 4px',
@@ -3919,7 +3945,18 @@ export default function App() {
                   Профиль не загружен — цены улучшений неизвестны.
                 </div>
               )}
-              {shopTab !== 'Ловчий' && <div style={{ display:'grid', gridTemplateColumns:`repeat(${sideMenu ? 5 : 3}, minmax(0, 1fr))`, gap:8, padding:'0 8px' }}>
+              {shopTab === 'Портной' && (
+                <TailorShop
+                  skins={player?.skins ?? null}
+                  rp={player?.rp ?? null}
+                  level={playerLevel}
+                  online={isTelegramSession}
+                  columns={sideMenu ? 4 : 2}
+                  onState={(r) => setPlayer(prev => prev ? { ...prev, skins: r.skins, rp: r.rp } : prev)}
+                  onRefreshBalance={handleRefreshBalance}
+                />
+              )}
+              {shopTab !== 'Ловчий' && shopTab !== 'Портной' && <div style={{ display:'grid', gridTemplateColumns:`repeat(${sideMenu ? 5 : 3}, minmax(0, 1fr))`, gap:8, padding:'0 8px' }}>
                 {gridCells.map(cell => {
                   const unlocked = playerLevel >= cell.levelRequired
                   return (
@@ -5561,7 +5598,7 @@ export default function App() {
         </div>
       )}
 
-      {showExploreTest && <Explore mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} gear={runGear} bootsSpeedPct={bootsSpeedPct} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} heroClass={player?.heroClass ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
+      {showExploreTest && <Explore skins={player?.skins ? runSkinsOf(player.skins) : undefined} mapFile={exploreMapFile} onClose={() => setShowExploreTest(false)} endurance={player?.endurance} strength={player?.strength} agility={player?.agility} level={player?.level} trophies={player?.trophies} armor={totalArmor ?? undefined} weaponDamage={weaponDamage} attackUpgradeBonus={attackUpgradeBonus ?? undefined} gear={runGear} bootsSpeedPct={bootsSpeedPct} equippedSkills={player?.equippedSkills ?? undefined} skillLevels={player?.skillLevels ?? undefined} heroClass={player?.heroClass ?? undefined} consumables={prepSlots.filter((v): v is ConsumableId => v !== null)} onConsumablesSpent={handleConsumablesSpent} onRunComplete={handleExploreRunComplete} token={isTelegramSession ? (localStorage.getItem('jwt') ?? undefined) : undefined} />}
 
       {/* Карточка предмета — ПОСЛЕДНИМ в дереве, а не внутри вкладки: её
           открывают и «Инвентарь», и гнёзда снаряжения на «Персонаже».

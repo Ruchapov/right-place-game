@@ -24,6 +24,7 @@
 // не выдаёт добычу дважды.
 
 import { parseRuneKind, type RuneKind } from './runes.js'
+import type { TailorItemId } from './skins.js'
 import type { RunEvent, RunEventKind } from './runEvents.js'
 import { POTION_TIERS } from './potions.js'
 import { SCROLLS, type ScrollId } from './scrolls.js'
@@ -264,6 +265,9 @@ export type EventDrop =
   // Руны (09.11.2026): только в поле события runeDrop, отдельным броском
   // (rollRune, общий runes.ts) — остальная добыча их не знает.
   | { category: 'rune'; kind: RuneKind }
+  // Портной (14.11.2026): нашивка и Кузнечное клеймо — только в поле события
+  // tailorDrops, своими бросками (rollTailorDrops ниже).
+  | { category: 'tailor'; id: TailorItemId }
 
 /** Равновероятный выбор одного элемента. Пустой список — null, не исключение. */
 function pickOne<T>(items: readonly T[]): T | null {
@@ -422,6 +426,29 @@ export function darkClotChanceFor(level: number, luck: number): number {
   return withLuck(DARK_CLOT_CHANCE, luck)
 }
 
+/**
+ * Нашивка и Кузнечное клеймо (Портной, 14.11.2026, docs/skins-task.md, раздел
+ * 7): по 1% на событие «группа врагов» и «босс», с любого уровня, удача влияет
+ * так же, как на Сгусток тьмы (withLuck). Два НЕЗАВИСИМЫХ броска поверх всей
+ * остальной добычи — её не уменьшают, и с одного события могут выпасть оба.
+ * Отдельным полем события (tailorDrops), а не в extraDrop: там у групп уже
+ * живёт Сгусток тьмы, у босса — Печать отречения.
+ * Предметы лежат счётчиками (Character.patchCount / brandCount), ячейку не
+ * занимают; смерть их не отнимает — как всю добычу.
+ */
+export const PATCH_DROP_CHANCE = 0.01
+export const BRAND_DROP_CHANCE = 0.01
+export function tailorDropChanceFor(kind: RunEventKind, base: number, luck: number): number {
+  if (kind !== 'enemy' && kind !== 'boss') return 0
+  return withLuck(base, luck)
+}
+export function rollTailorDrops(kind: RunEventKind, luck: number): EventDrop[] {
+  const out: EventDrop[] = []
+  if (Math.random() < tailorDropChanceFor(kind, PATCH_DROP_CHANCE, luck)) out.push({ category: 'tailor', id: 'patch' })
+  if (Math.random() < tailorDropChanceFor(kind, BRAND_DROP_CHANCE, luck)) out.push({ category: 'tailor', id: 'brand' })
+  return out
+}
+
 /** Звёздоцвет на карте (docs/crafter.md): 0,5% на вылазку, с 5 уровня. */
 export const STARBLOOM_CHANCE = 0.005
 export function rollStarbloom(level: number, luck: number): boolean {
@@ -483,6 +510,8 @@ export function parseEventDrop(raw: unknown): { kind: 'none' } | { kind: 'drop';
       const kind = parseRuneKind(d.kind)
       return kind === null ? { kind: 'malformed' } : { kind: 'drop', drop: { category: 'rune', kind } }
     }
+    case 'tailor':
+      return d.id === 'patch' || d.id === 'brand' ? { kind: 'drop', drop: { category: 'tailor', id: d.id } } : { kind: 'malformed' }
     default:
       return { kind: 'malformed' }
   }
