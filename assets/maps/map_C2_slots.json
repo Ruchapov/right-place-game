@@ -523,20 +523,20 @@
   "stalactites": [],
   "saws": [
     {
-      "x0": 48,
-      "x1": 51,
+      "x0": 46,
+      "x1": 50,
       "y": 10
     },
     {
-      "x0": 17,
-      "x1": 20,
-      "y": 32
+      "x0": 13,
+      "x1": 16,
+      "y": 22
     }
   ],
   "trapsPerRun": {
     "spikes": 10,
     "stalactites": 0,
     "gargoyles": 0,
-    "saws": 1
+    "saws": 2
   }
 }
