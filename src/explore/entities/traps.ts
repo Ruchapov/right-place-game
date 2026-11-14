@@ -28,7 +28,7 @@
 //
 // Рисуются ПОВЕРХ слоя карты и живого декора, но ПОД героем и врагами — узел
 // вставляет Explore.tsx в нужное место списка мира (parent + index).
-import { Container, Graphics, Sprite, Texture } from 'pixi.js'
+import { Container, Graphics, Sprite, Texture, TilingSprite } from 'pixi.js'
 import * as C from '../constants'
 import { isSolid } from '../collision'
 import { SPIKE_H_RATIO } from '../../mapRenderer'
@@ -38,12 +38,13 @@ export type GargoyleSlot = { x: number; y: number; dir: 1 | -1; plate: [number, 
 export type StalactiteSlot = { x: number; y: number; ceil: number }
 export type SawSlot = { x0: number; x1: number; y: number }
 
-export type GargoyleMeta = { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number }
+export type GargoyleMeta = { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number; postX0: number; postX1: number }
 
 export type TrapTextures = {
   spike: Texture
   spikeGlint: Texture | null
   gargoyleFrames: Texture[]
+  gargoylePost: Texture
   fireball: Texture
   plateUp: Texture
   plateDown: Texture
@@ -124,7 +125,7 @@ type Gargoyle = {
   firing: boolean; frameMs: number; fired: boolean
   plateMs: number // >0 — плита нажата, перезарядка
   press: number // 0..1 — анимация нажатия
-  wallX: number; floorY: number
+  wallX: number; floorY: number; frameTop: number
 }
 
 type Fireball = { sprite: Sprite; x: number; y: number; dir: 1 | -1; travelled: number; t: number }
@@ -182,15 +183,50 @@ export function createTrapsSystem(deps: TrapsDeps) {
   }
 
   // --- горгульи и плиты ---
+  // Верх столба: до потолка (первая твердь над полом), если он не выше
+  // GARGOYLE_POST_CEIL_MAX клеток, иначе GARGOYLE_POST_FREE_H клеток (та же
+  // формула, что post_top в tools/trap_rules.py — по ней чистится декор).
+  function postTopY(cx: number, cy: number): number {
+    let y = cy - 1
+    while (y >= 0 && !['#', '='].includes(deps.grid[y]?.[cx] ?? '#')) y--
+    if (y >= 0 && cy - y <= C.GARGOYLE_POST_CEIL_MAX) return (y + 1) * T
+    return (cy + 1 - C.GARGOYLE_POST_FREE_H) * T
+  }
   const gargoyles: Gargoyle[] = []
   const gm = deps.gargoyle
   for (const slot of deps.gargoyles) {
     const floorY = (slot.y + 1) * T
+    // Столб стоит в клетке x у её края со стороны -dir; всё, что дальше, —
+    // в узле, зеркальном по dir (лист смотрит вправо).
     const wallX = slot.dir === 1 ? slot.x * T : (slot.x + 1) * T
+    const s = C.GARGOYLE_SCALE
+    const node = new Container()
+    node.x = wallX
+    node.scale.x = slot.dir
+    const frameTop = floorY - C.GARGOYLE_MOUTH_ABOVE_FLOOR - gm.mouthY * s
+    const frameBottom = frameTop + gm.frameH * s
+    const postTop = postTopY(slot.x, slot.y)
+    const postX = gm.postX0 * s
+    const postW = (gm.postX1 - gm.postX0) * s
+    const ov = C.GARGOYLE_POST_OVERLAP * s
+    // Тонкая тень у основания.
+    const shadow = new Graphics().ellipse(postX + postW / 2, floorY - 1, postW * 0.9, 3).fill({ color: 0x000000, alpha: 0.35 })
+    node.addChild(shadow)
+    // Плитка столба ниже и выше кадра (бесшовная по вертикали).
+    const tile = (y0: number, y1: number) => {
+      if (y1 - y0 <= 0) return
+      const t = new TilingSprite({ texture: tx.gargoylePost, width: postW / s, height: (y1 - y0) / s })
+      t.scale.set(s)
+      t.x = postX
+      t.y = y0
+      node.addChild(t)
+    }
+    tile(frameBottom - ov, floorY)
+    tile(postTop, frameTop + ov)
     const sprite = new Sprite(tx.gargoyleFrames[0])
-    sprite.scale.set(C.GARGOYLE_SCALE * slot.dir, C.GARGOYLE_SCALE)
-    sprite.x = wallX
-    sprite.y = floorY - 2 * T
+    sprite.scale.set(s)
+    sprite.y = frameTop
+    node.addChild(sprite)
     const plateX = slot.plate[0] * T
     const mk = (tex: Texture) => {
       const p = new Sprite(tex)
@@ -202,8 +238,8 @@ export function createTrapsSystem(deps: TrapsDeps) {
     const plateUp = mk(tx.plateUp)
     const plateDown = mk(tx.plateDown)
     plateDown.alpha = 0
-    root.addChild(plateDown, plateUp, sprite)
-    gargoyles.push({ slot, sprite, plateUp, plateDown, firing: false, frameMs: 0, fired: false, plateMs: 0, press: 0, wallX, floorY })
+    root.addChild(plateDown, plateUp, node)
+    gargoyles.push({ slot, sprite, plateUp, plateDown, firing: false, frameMs: 0, fired: false, plateMs: 0, press: 0, wallX, floorY, frameTop })
     cells.set(key(slot.plate[0], slot.y), { kind: 'plate' })
     cells.set(key(slot.plate[0] + 1, slot.y), { kind: 'plate' })
   }
@@ -395,7 +431,7 @@ export function createTrapsSystem(deps: TrapsDeps) {
           if (!g.fired && f >= gm.mouthOpenFrame) {
             g.fired = true
             const mx = g.wallX + g.slot.dir * gm.mouthX * C.GARGOYLE_SCALE
-            const my = g.sprite.y + gm.mouthY * C.GARGOYLE_SCALE
+            const my = g.frameTop + gm.mouthY * C.GARGOYLE_SCALE
             const sp = new Sprite(deps.textures.fireball)
             sp.anchor.set(0.82, 0.55)
             sp.scale.set(C.GARGOYLE_FIREBALL_SCALE * g.slot.dir, C.GARGOYLE_FIREBALL_SCALE)

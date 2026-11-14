@@ -186,7 +186,8 @@ def check_traps(letter, txt, g, slots, start):
             continue
         others = traps[:i] + traps[i + 1:]
         for b in R.check_trap(k, t, ctx, others):
-            bad.append(f'{k} {R.footprint(k, t)[0]}: {b}')
+            anchor = R.footprint(k, t)[0] if R.footprint(k, t) else (t['x'], t['y'])
+            bad.append(f'{k} {anchor}: {b}')
     base = R.waves_with(g, start, [], mt)
     now = R.waves_with(g, start, traps, mt)
     lost = R.waves_lost(base, now)

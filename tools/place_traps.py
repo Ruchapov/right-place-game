@@ -29,6 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import map_tools as mt  # noqa: E402
 import trap_rules as R  # noqa: E402
 
+# Как в src/explore/constants.ts (GARGOYLE_SCALE, GARGOYLE_MOUTH_ABOVE_FLOOR) — только для превью.
+GARGOYLE_SCALE = 0.455
+GARGOYLE_MOUTH_ABOVE_FLOOR = 60
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -56,11 +60,9 @@ def candidates(kind, ctx):
     H, W = len(g), len(g[0])
     out = []
     if kind == 'gargoyles':
+        # Столб на полу в клетке x, голова смотрит в d; плита в dd клетках.
         for (x, y) in sorted(S):
             for d in (1, -1):
-                wx = x - d
-                if not (0 <= wx < W) or g[y][wx] != '#' or g[y - 1][wx] != '#':
-                    continue
                 for dd in (6, 5, 7, 4, 8):
                     px = x + dd if d == 1 else x - dd - 1
                     out.append({'x': x, 'y': y, 'dir': d, 'plate': [px, y]})
@@ -96,8 +98,8 @@ def place_pool(kind, need, ctx, placed, base):
     chosen = []
     while len(chosen) < need and ok:
         def spread(t):
-            c = R.footprint(kind, t)[0]
-            others = [R.footprint(k, o)[0] for k, o in placed]
+            c = R.anchor(kind, t)
+            others = [R.anchor(k, o) for k, o in placed]
             return min((R.dist(c, o) for o in others), default=1e9)
         ok.sort(key=spread, reverse=True)
         took = None
@@ -142,7 +144,8 @@ def traps_art():
         base = R.ROOT / 'public' / 'assets' / 'objects'
         _ART = {
             'spike': Image.open(base / 'spikes.png').convert('RGBA'),
-            'garg': Image.open(base / 'traps' / 'Gargoyle_Idle.png').convert('RGBA'),
+            'garg': Image.open(base / 'traps' / 'GargoylePost_Idle.png').convert('RGBA'),
+            'post': Image.open(base / 'traps' / 'Gargoyle_Post.png').convert('RGBA'),
             'plate': Image.open(base / 'traps' / 'Plate_Up.png').convert('RGBA'),
             'stal': Image.open(base / 'traps' / 'Stalactite_Full.png').convert('RGBA'),
             'blade': Image.open(base / 'traps' / 'Saw_Blade.png').convert('RGBA'),
@@ -159,18 +162,35 @@ def _paste(img, src, w, h, x, y, flip=False):
     img.alpha_composite(s, (round(x), round(y))) if x >= 0 and y >= 0 else None
 
 
-def draw_trap(img, k, t, art):
+def draw_trap(img, k, t, art, g=None):
     """Тот же размер и посадка, что в игре (entities/traps.ts, TRAP_* в constants.ts)."""
     T = R.TS
     if k == 'hazard':
         x, y = t
         _paste(img, art['spike'], T, T * 0.48, x * T, y * T + T - T * 0.48)
     elif k == 'gargoyles':
+        # Горгулья на столбе — как entities/traps.ts: масштаб GARGOYLE_SCALE,
+        # пасть на GARGOYLE_MOUTH_ABOVE_FLOOR над полом, столб от пола до
+        # post_top плиткой Gargoyle_Post.png, кадр поверх.
         x, y, d = t['x'], t['y'], t['dir']
-        fw, fh = 277 * 0.5, 254 * 0.5
+        s = GARGOYLE_SCALE
         floor = (y + 1) * T
-        gx = x * T if d == 1 else (x + 1) * T - fw
-        _paste(img, art['garg'], fw, fh, gx, floor - 2 * T, flip=d == -1)
+        wall = x * T if d == 1 else (x + 1) * T
+        fw, fh = 330 * s, 324 * s
+        top = floor - GARGOYLE_MOUTH_ABOVE_FLOOR - 217 * s
+        pw = 51 * s
+        post_x = wall if d == 1 else wall - pw
+        post_top = R.post_top(g, x, y) * T if g is not None else floor - R.POST_FREE_H * T
+        tile_h = 120 * s
+        for y0, y1 in ((top + fh - 3 * s, floor), (post_top, top + 3 * s)):
+            yy = y0
+            while yy < y1 - 0.5:
+                h = min(tile_h, y1 - yy)
+                piece = art['post'].crop((0, 0, 51, max(1, round(h / s))))
+                _paste(img, piece, pw, h, post_x, yy)
+                yy += h
+        gx = wall if d == 1 else wall - fw
+        _paste(img, art['garg'], fw, fh, gx, top, flip=d == -1)
         px = t['plate'][0]
         _paste(img, art['plate'], 2 * T, 51 * 0.4, px * T, floor - 51 * 0.4 + 6)
     elif k == 'stalactites':
@@ -192,33 +212,18 @@ def draw_trap(img, k, t, art):
 from collections import Counter  # noqa: E402
 
 
-def place_all(ctx, base, hazards, spacing):
-    """Пулы новых ловушек при шаге spacing. Возвращает (пулы, за забег)."""
-    R.SPACING = spacing
+def place_all(ctx, base, hazards):
+    """Пулы новых ловушек под цель за забег (trap_rules.per_run). Возвращает
+    (пулы, за забег, цель). Не хватило мест — за забег ставится сколько есть."""
     letter = ctx['letter']
-    pr = R.per_run(len(ctx['S']), len(hazards))
-    pr['total'] = R.TARGETS.get(letter, pr['total'])
-    spikes = pr['spikes']
-    rest = pr['total'] - spikes
+    want = R.per_run(letter, len(hazards))
     placed = [('hazard', h) for h in hazards]
-    pools, got = {}, {}
-    for kind in ('gargoyles', 'saws'):
-        need = math.ceil(pr[kind] * R.POOL_MULT)
+    pools, got = {}, {'spikes': want['spikes']}
+    for kind in ('gargoyles', 'saws', 'stalactites'):
+        need = math.ceil(want[kind] * R.POOL_MULT)
         pools[kind] = place_pool(kind, need, ctx, placed, base)
-        got[kind] = min(pr[kind], len(pools[kind]))
-    # Недостачу горгулий и пил добирают сталактиты.
-    stal_want = rest - got['gargoyles'] - got['saws']
-    pools['stalactites'] = place_pool('stalactites', math.ceil(stal_want * R.POOL_MULT), ctx, placed, base)
-    got['stalactites'] = min(stal_want, len(pools['stalactites']))
-    # Сталактитов не хватило — ещё пил, до SAW_MAX.
-    short = rest - sum(got.values())
-    if short > 0 and got['saws'] < R.SAW_MAX:
-        extra_need = math.ceil(min(R.SAW_MAX, got['saws'] + short) * R.POOL_MULT) - len(pools['saws'])
-        if extra_need > 0:
-            pools['saws'] += place_pool('saws', extra_need, ctx, placed, base)
-        got['saws'] = min(R.SAW_MAX, got['saws'] + short, len(pools['saws']))
-    per_run = {'spikes': spikes, 'stalactites': got['stalactites'], 'gargoyles': got['gargoyles'], 'saws': got['saws']}
-    return pools, per_run
+        got[kind] = min(want[kind], len(pools[kind]))
+    return pools, got, want
 
 
 def run(letter, dry):
@@ -226,26 +231,21 @@ def run(letter, dry):
     g, start = ctx['grid'], ctx['start']
     base = R.waves_with(g, start, [], mt)
     hazards = [tuple(p) for p in ctx['slots'].get('hazard') or []]
-    target = R.TARGETS.get(letter)
-    pools, per_run = place_all(ctx, base, hazards, R.SPACING)
-    spacing = 6
-    if sum(per_run.values()) < target:
-        p2, r2 = place_all(ctx, base, hazards, R.SPACING_FALLBACK)
-        if sum(r2.values()) > sum(per_run.values()):
-            pools, per_run, spacing = p2, r2, R.SPACING_FALLBACK
-    R.SPACING = 6
+    pools, per_run, want = place_all(ctx, base, hazards)
     slots = dict(ctx['slots'])
     for kind in ('gargoyles', 'stalactites', 'saws'):
         slots[kind] = pools[kind]
-    slots['trapsPerRun'] = per_run
-    total = sum(per_run.values())
-    print(f"== {letter}: цель {target}, за забег {total} (шипы {per_run['spikes']}, сталактиты {per_run['stalactites']}, "
-          f"горгульи {per_run['gargoyles']}, пилы {per_run['saws']}); пулы: сталактиты {len(pools['stalactites'])}, "
-          f"горгульи {len(pools['gargoyles'])}, пилы {len(pools['saws'])}; шаг {spacing}"
-          + ('' if total >= target else f'  ⚠️ НЕ НАБРАЛОСЬ: {total} из {target}'))
+    slots['trapsPerRun'] = {'spikes': per_run['spikes'], 'stalactites': per_run['stalactites'], 'gargoyles': per_run['gargoyles'], 'saws': per_run['saws']}
+    short = []
+    for kind, name in (('gargoyles', 'горгулий'), ('stalactites', 'сталактитов'), ('saws', 'пил')):
+        need = math.ceil(want[kind] * R.POOL_MULT)
+        if len(pools[kind]) < need:
+            short.append(f'{name}: пул {len(pools[kind])} из {need}, за забег {per_run[kind]} из {want[kind]}')
+    print(f"== {letter}: за забег шипы {per_run['spikes']}, сталактиты {per_run['stalactites']}, горгульи {per_run['gargoyles']}, "
+          f"пилы {per_run['saws']}" + ('' if not short else '  ⚠️ НЕ ХВАТИЛО МЕСТ — ' + '; '.join(short)))
     if not dry:
         write_slots(ctx, slots)
-    return {'letter': letter, 'per_run': per_run, 'spacing': spacing, 'target': target, 'pools': {k: len(v) for k, v in pools.items()}}
+    return {'letter': letter, 'per_run': per_run, 'want': want, 'pools': {k: len(v) for k, v in pools.items()}}
 
 
 def main():

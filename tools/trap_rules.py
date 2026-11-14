@@ -1,4 +1,5 @@
-"""Общие правила ловушек (13.11.2026) — для place_traps.py и check_map_slots.py.
+"""Общие правила ловушек (13.11.2026; 14.11.2026 — горгулья на столбе, свои
+правила сталактита) — для place_traps.py, clean_trap_decor.py и check_map_slots.py.
 
 Одна копия правил на расстановку и на проверку: разойдутся — скрипт будет
 ставить то, что проверка бракует, или наоборот. Модуль только считает, файлов
@@ -6,17 +7,19 @@
 
 Ловушки (координаты — клетки сетки, y — ряд стояния, пол под ним в y+1):
   hazard      [x, y]                               шип, клетка (x, y)
-  gargoyles   {x, y, dir, plate: [px, y]}          голова у стены: x — первая
-              клетка воздуха у стены, стена в x-dir; смотрит в сторону dir;
-              плита — две клетки (px, px+1) на том же ряду
+  gargoyles   {x, y, dir, plate: [px, y]}          горгулья на столбе: столб стоит
+              на полу в клетке x (у её края со стороны -dir), голова смотрит в dir
+              и занимает клетки x, x+dir на рядах y-2..y; столб — до потолка
+              (если он не выше POST_CEIL_MAX клеток над полом) или POST_FREE_H
+              клеток; НЕ твёрдый. Плита — клетки px, px+1 на том же ряду
   stalactites {x, y, ceil}                          столб x, x+1; ceil — ряд
-              потолка (твердь), над полом (y - ceil) клеток воздуха, 3..6
+              потолка «#», над полом (y - ceil) клеток воздуха, 3..9
   saws        {x0, x1, y}                           рельс x0..x1, 4..6 клеток
 
 Зоны, где не должно быть декора (клетки):
   шип        (x, y)
-  плита      (px, y), (px+1, y) и клетки над ними
-  горгулья   2x2: столбцы x, x+dir, ряды y-1, y
+  горгулья   столб (столбец x от его верха до пола) и голова — 2x3: столбцы x,
+             x+dir, ряды y-2..y; плита (px, y), (px+1, y) и клетки над ними
   сталактит  столбцы x, x+1, ряды ceil+1 .. ceil+3, и клетки пола (x, y), (x+1, y)
   пила       клетки рельса и клетки над ними
 """
@@ -30,36 +33,45 @@ MAPS = ROOT / 'public' / 'assets' / 'maps'
 ART = MAPS / 'art'
 TS = 64
 
-# Числа (14.11.2026) — правила задачи, строгие. Декор расстановку больше не
-# ограничивает: он стирается из слоя в зонах ловушек при сборке
-# (tools/clean_trap_decor.py), а проверка считает декор по уже очищенному слою
-# с допуском 0. Ослаблять можно ТОЛЬКО шаг между ловушками — до SPACING_FALLBACK,
-# на карте, где иначе не набирается цель (place_traps.py пишет, где).
-SPACING = 6           # между ловушками на одном ряду, клеток
-SPACING_FALLBACK = 5
-WINDOW, WINDOW_MAX = 14, 2   # не больше 2 ловушек на 14 клеток ряда
-START_MIN = 10        # от старта
-ENEMY_MIN = 4         # от точек врагов
+# Числа (14.11.2026, третья правка). Декор расстановку не ограничивает: он
+# стирается из слоя в зонах ловушек при сборке (tools/clean_trap_decor.py), а
+# проверка считает декор по уже очищенному слою с допуском 0.
+#
+# НАПОЛЬНЫЕ ловушки (горгулья с плитой, пила) — «след» на полу: клетка столба и
+# плита у горгульи, рельс у пилы. Шипы — существующий пул, сами не проверяются,
+# но от них держатся напольные.
+SPACING_ANY = 4       # между любыми ловушками на ряду (шипы тоже), клеток
+SPACING_SAME = 6      # между ловушками одного вида
+WINDOW, WINDOW_MAX = 14, 2   # не больше 2 НОВЫХ напольных на 14 клеток ряда (шипы не в счёт)
+START_MIN = 10        # от старта (и сталактит)
+ENEMY_MIN = 3         # от точек врагов
 POINT_MIN = 4         # от сундуков, NPC, босса, обелиска
 BREAKABLE_MIN = 2     # от бочек и кувшинов
-EDGE_MIN = 2          # от края площадки (у горгульи — для плиты)
+EDGE_MIN = 2          # от края площадки (столб, плита, рельс)
 HAZARD_EDGE_MIN = 2   # шипы, как в check_map_slots.py (TRAP_EDGE_MIN)
+# Сталактит пол не занимает: в шаг напольных не входит. Свои правила.
+STAL_SPACING = 4      # от другого сталактита
+STAL_BELOW_PAD = 1    # не прямо над шипом, пилой, плитой, горгульей, сундуком, точкой врага (±1)
 DECOR_ALPHA = 32      # пиксель декора — альфа больше этого
 DECOR_TOL = 0         # пикселей декора в клетке зоны (на очищенном слое)
 SWAMP_GRASS_PX = 6    # болото: кромка травы над полом, которую чистка оставляет
 SWAMP_MAPS = ('B2', 'C2', 'W', 'Y')
-# Сколько ловушек за забег — цель задачи (14.11.2026). 10 шипов (на W и Y —
-# сколько есть в пуле), остальное — сталактиты, горгульи, пилы.
-TARGETS = {'A': 12, 'B': 17, 'C': 16, 'D': 20, 'E': 13, 'F': 18, 'B2': 10, 'C2': 15, 'W': 16, 'Y': 11}
-GARGOYLE_FLOOR = 6    # ровный пол от горгульи
-PLATE_DIST = (4, 8)   # плита от горгульи
-STAL_H = (3, 6)       # высота потолка над полом
-STAL_ZONE_ROWS = 3    # столб сталактита от потолка вниз
+GARGOYLE_FLOOR = 7    # ровный пол от столба в сторону огня
+GARGOYLE_FREE_H = 3   # свободно над полом у головы (ряды y-2..y)
+POST_CEIL_MAX = 9     # столб до потолка, если потолок не выше этого над полом
+POST_FREE_H = 3       # иначе столб высотой столько клеток
+PLATE_DIST = (4, 8)   # плита от столба
+STAL_H = (3, 9)       # высота потолка над полом
+STAL_ZONE_ROWS = 3    # столб сталактита от потолка вниз (зона декора)
 SAW_LEN = (4, 6)
 SAW_FLOOR = 8
 GARGOYLE_MAX, SAW_MAX = 3, 3
-SPIKES_PER_RUN = 10
+SPIKES_PER_RUN = 7
 POOL_MULT = 1.5
+# Цель за забег по видам (14.11.2026).
+GARGOYLE_TARGET = {'B': 3, 'D': 3, 'F': 3}       # остальные 2
+STAL_TARGET = {'B2': 2, 'Y': 2}                  # остальные 3
+SAW_TARGET = {'C': 3, 'D': 3, 'F': 3, 'B2': 1, 'Y': 1}   # остальные 2
 
 
 def load_grid(path):
@@ -73,29 +85,14 @@ def map_files(letter):
     return txts[0], MAPS / f'map_{letter}_slots.json'
 
 
-def per_run(n_standing, n_hazard):
-    """Сколько ловушек каждого вида ставится за забег."""
-    total = max(10, min(20, round(n_standing / 16)))
-    spikes = min(SPIKES_PER_RUN, n_hazard)
-    rest = max(0, total - spikes)
-    stal = garg = saw = rest // 3
-    left = rest - 3 * (rest // 3)
-    order = ['stal', 'garg', 'saw']
-    i = 0
-    while left > 0:
-        k = order[i % 3]
-        if k == 'stal':
-            stal += 1
-        elif k == 'garg':
-            garg += 1
-        else:
-            saw += 1
-        left -= 1
-        i += 1
-    over = max(0, garg - GARGOYLE_MAX) + max(0, saw - SAW_MAX)
-    garg, saw = min(garg, GARGOYLE_MAX), min(saw, SAW_MAX)
-    stal += over
-    return {'total': total, 'spikes': spikes, 'stalactites': stal, 'gargoyles': garg, 'saws': saw}
+def per_run(letter, n_hazard):
+    """Цель за забег по видам."""
+    return {
+        'spikes': min(SPIKES_PER_RUN, n_hazard),
+        'stalactites': STAL_TARGET.get(letter, 3),
+        'gargoyles': GARGOYLE_TARGET.get(letter, 2),
+        'saws': SAW_TARGET.get(letter, 2),
+    }
 
 
 # --- Декор: слой карты + живой декор из кода ---
@@ -190,6 +187,33 @@ def cleared_live(txt_path):
     return out
 
 
+# Связная область непрозрачных пикселей в пустых клетках шире FRINGE_W клеток или
+# выше FRINGE_H — не предмет, а кромка платформы (болотная бахрома корней под
+# платформой тянется во всю её длину). Её чистка не трогает, а проверка декором
+# не считает — как кромку травы. Предметы декора меньше.
+FRINGE_W, FRINGE_H = 4, 3
+
+
+def empty_pixels(grid):
+    import numpy as np
+    H, W = len(grid), len(grid[0])
+    empty = np.array([[grid[y][x] not in '#=' for x in range(W)] for y in range(H)])
+    return np.repeat(np.repeat(empty, TS, 0), TS, 1)
+
+
+def components(rgba, grid, letter):
+    """(метки, число, маска кромки платформы) по непрозрачным (альфа > 0)
+    пикселям пустых клеток, без кромки травы болота; 8-связность."""
+    import numpy as np
+    from scipy import ndimage
+    opaque = (rgba[:, :, 3] > 0) & empty_pixels(grid) & ~grass_band(grid, letter)
+    labels, n = ndimage.label(opaque, structure=np.ones((3, 3), bool))
+    big = [i for i, sl in enumerate(ndimage.find_objects(labels), start=1)
+           if sl is not None and (sl[1].stop - sl[1].start > FRINGE_W * TS or sl[0].stop - sl[0].start > FRINGE_H * TS)]
+    fringe = np.isin(labels, big) if big else np.zeros(labels.shape, bool)
+    return labels, n, fringe, opaque
+
+
 def decor_pixels(txt_path, grid):
     """Маска пикселей декора (numpy bool, H*TS × W*TS): непрозрачные (альфа >
     DECOR_ALPHA) пиксели слоя в ПУСТЫХ клетках сетки, кроме кромки травы болота,
@@ -198,12 +222,9 @@ def decor_pixels(txt_path, grid):
     H, W = len(grid), len(grid[0])
     rgba = layer_rgba(txt_path, grid)
     px = rgba[:, :, 3] > DECOR_ALPHA
-    empty = np.zeros((H, W), bool)
-    for y in range(H):
-        for x in range(W):
-            empty[y, x] = grid[y][x] not in '#='
-    px &= np.repeat(np.repeat(empty, TS, 0), TS, 1)
+    px &= empty_pixels(grid)
     px &= ~grass_band(grid, map_letter(txt_path))
+    px &= ~components(rgba, grid, map_letter(txt_path))[2]
     gone = cleared_live(txt_path)
     for (x, y, w, h) in sway_items(txt_path):
         if (x, y) not in gone['sway']:
@@ -237,15 +258,29 @@ def _mark(px, x0, y0, w, h):
 
 # --- Геометрия ловушек ---
 
-def zone_cells(kind, t):
-    """Клетки, где не должно быть декора."""
+def post_top(g, x, y):
+    """Верхний ряд столба горгульи в столбце x: до потолка (первая твердь над
+    полом), если она не выше POST_CEIL_MAX клеток; иначе POST_FREE_H клеток."""
+    cy = y - 1
+    while cy >= 0 and g[cy][x] not in '#=':
+        cy -= 1
+    if cy >= 0 and y - cy <= POST_CEIL_MAX:
+        return cy + 1
+    return y - POST_FREE_H + 1
+
+
+def zone_cells(kind, t, g=None):
+    """Клетки, где не должно быть декора. g нужен горгулье (высота столба)."""
     if kind == 'hazard':
         return [tuple(t)]
     if kind == 'gargoyles':
         x, y, d = t['x'], t['y'], t['dir']
         px = t['plate'][0]
-        return [(x, y), (x, y - 1), (x + d, y), (x + d, y - 1),
-                (px, y), (px + 1, y), (px, y - 1), (px + 1, y - 1)]
+        top = post_top(g, x, y) if g is not None else y - POST_FREE_H + 1
+        cells = {(x, cy) for cy in range(min(top, y - GARGOYLE_FREE_H + 1), y + 1)}
+        cells |= {(x + d, cy) for cy in range(y - GARGOYLE_FREE_H + 1, y + 1)}
+        cells |= {(px, y), (px + 1, y), (px, y - 1), (px + 1, y - 1)}
+        return sorted(cells)
     if kind == 'stalactites':
         x, y, c = t['x'], t['y'], t['ceil']
         cells = [(cx, cy) for cx in (x, x + 1) for cy in range(c + 1, c + 1 + STAL_ZONE_ROWS)]
@@ -256,38 +291,47 @@ def zone_cells(kind, t):
 
 
 def footprint(kind, t):
-    """Клетки ряда стояния, которые занимает ловушка (для расстояний и окна 14)."""
+    """Клетки ряда стояния, которые ловушка занимает на ПОЛУ (для шага и окна 14).
+    Сталактит пол не занимает — у него свои правила (check_stalactite)."""
     if kind == 'hazard':
         return [tuple(t)]
     if kind == 'gargoyles':
-        # Клетка под головой и плита. Полоса огня между ними — НЕ след: огонь
-        # вправе лететь через точку врага или сундука (он бьёт первого на пути).
+        # Клетка столба и плита. Полоса огня между ними — НЕ след: огонь вправе
+        # лететь через точку врага или сундука (он бьёт первого на пути).
         x, y, px = t['x'], t['y'], t['plate'][0]
         return sorted([(x, y), (px, y), (px + 1, y)])
     if kind == 'stalactites':
-        return [(t['x'], t['y']), (t['x'] + 1, t['y'])]
+        return []
     if kind == 'saws':
         return [(cx, t['y']) for cx in range(t['x0'], t['x1'] + 1)]
     raise ValueError(kind)
 
 
-def edge_cells(kind, t):
-    """Клетки, к которым относится правило «не ближе 2 к краю площадки»."""
-    if kind == 'gargoyles':   # голова висит у стены по определению — правило для плиты
-        return [(t['plate'][0], t['y']), (t['plate'][0] + 1, t['y'])]
+def anchor(kind, t):
+    """Одна клетка ловушки — для разброса пулов и подписей."""
+    fp = footprint(kind, t)
+    return fp[0] if fp else (t['x'], t['y'])
+
+
+def under_cells(kind, t):
+    """Клетки на полу, над которыми не висит сталактит (±STAL_BELOW_PAD)."""
+    if kind == 'gargoyles':
+        x, y, d = t['x'], t['y'], t['dir']
+        return [(x, y), (x + d, y)] + footprint(kind, t)
     return footprint(kind, t)
 
 
 def hazard_cells(kind, t):
     """Клетки, которые для проверки волн ставятся в сетку как '^' (на них нельзя
     стоять, их надо перепрыгнуть). Пила — одна клетка, середина рельса: опасен диск
-    ~1 клетку шириной, рельс сам не ранит. Горгулья — плита (огонь летит, а не лежит)."""
+    ~1 клетку шириной, рельс сам не ранит. Горгулья — плита (огонь летит, а не
+    лежит; столб не твёрдый). Сталактит пол не занимает — ничего."""
     if kind == 'hazard':
         return [tuple(t)]
     if kind == 'gargoyles':
         return [(t['plate'][0], t['y']), (t['plate'][0] + 1, t['y'])]
     if kind == 'stalactites':
-        return [(t['x'], t['y']), (t['x'] + 1, t['y'])]
+        return []
     if kind == 'saws':
         return [((t['x0'] + t['x1']) // 2, t['y'])]
     raise ValueError(kind)
@@ -329,30 +373,36 @@ def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def check_trap(kind, t, ctx, others):
-    """Список нарушений одной НОВОЙ ловушки (горгулья, сталактит, пила) против
-    правил расстановки. others — [(вид, ловушка)] уже стоящих (все пулы)."""
-    g, S, start, points, decor = ctx['grid'], ctx['S'], ctx['start'], ctx['points'], ctx['decor']
+def _zone_bad(kind, t, ctx):
+    g, decor = ctx['grid'], ctx['decor']
     bad = []
-    fp = footprint(kind, t)
-    for c in fp:
-        if c not in S:
-            bad.append(f'клетка {list(c)} не клетка стояния')
-    for c in zone_cells(kind, t):
+    for c in zone_cells(kind, t, g):
         x, y = c
         if not (0 <= y < len(g) and 0 <= x < len(g[0])) or g[y][x] in '#=':
             bad.append(f'клетка зоны {list(c)} — твердь или вне карты')
         elif decor is not None and decor[y][x] > DECOR_TOL:
             bad.append(f'декор в зоне {list(c)}: {decor[y][x]} px')
+    return bad
+
+
+def check_trap(kind, t, ctx, others):
+    """Список нарушений одной НОВОЙ ловушки (горгулья, сталактит, пила) против
+    правил расстановки. others — [(вид, ловушка)] остальных (все пулы)."""
+    if kind == 'stalactites':
+        return check_stalactite(t, ctx, others)
+    g, S, start, points = ctx['grid'], ctx['S'], ctx['start'], ctx['points']
+    bad = _zone_bad(kind, t, ctx)
+    fp = footprint(kind, t)
     for c in fp:
-        if dist(c, start) < START_MIN:
-            bad.append(f'{list(c)} в {dist(c, start):.1f} от старта')
-            break
+        if c not in S:
+            bad.append(f'клетка {list(c)} не клетка стояния')
+    if min(dist(c, start) for c in fp) < START_MIN:
+        bad.append(f'ближе {START_MIN} к старту')
     for name, p, mn in points:
         near = min(dist(c, p) for c in fp)
         if near < mn:
             bad.append(f'ближе {mn} к точке «{name}» {list(p)} ({near:.1f})')
-    for c in edge_cells(kind, t):
+    for c in fp:
         if c in S:
             left, right = run_of(S, *c)
             if c[0] - left < EDGE_MIN or right - c[0] < EDGE_MIN:
@@ -360,23 +410,51 @@ def check_trap(kind, t, ctx, others):
                 break
     row = fp[0][1]
     xs = [c[0] for c in fp]
+    floor_new = ('gargoyles', 'saws')
     for okind, o in others:
         ofp = footprint(okind, o)
-        if ofp[0][1] != row:
+        if not ofp or ofp[0][1] != row:
             continue
         gap = min(abs(a - b) for a in xs for b in (c[0] for c in ofp))
-        if gap < SPACING:
-            bad.append(f'ближе {SPACING} клеток к ловушке {okind} {ofp[0]}')
-    # Окно 14: ловушки (по их первой клетке) на ряду
-    # Окно 14 — только окна, куда попадает САМА эта ловушка (по первой клетке):
-    # перебор у старых шипов без неё — не её нарушение.
+        need = SPACING_SAME if okind == kind else SPACING_ANY
+        if gap < need:
+            bad.append(f'ближе {need} клеток к ловушке {okind} {ofp[0]}')
+    # Окно 14 — только новые напольные (шипы не в счёт), и только окна, куда
+    # попадает сама эта ловушка (по первой клетке).
     me = min(xs)
-    starts = [min(c[0] for c in footprint(k, o)) for k, o in others if footprint(k, o)[0][1] == row]
+    starts = [min(c[0] for c in footprint(k, o)) for k, o in others
+              if k in floor_new and footprint(k, o) and footprint(k, o)[0][1] == row]
     for w0 in range(me - WINDOW + 1, me + 1):
         if 1 + sum(1 for s in starts if w0 <= s < w0 + WINDOW) > WINDOW_MAX:
-            bad.append(f'больше {WINDOW_MAX} ловушек на {WINDOW} клетках ряда {row}')
+            bad.append(f'больше {WINDOW_MAX} новых ловушек на {WINDOW} клетках ряда {row}')
             break
     bad += geometry_problems(kind, t, g, S)
+    return bad
+
+
+def check_stalactite(t, ctx, others):
+    g, S, start, points = ctx['grid'], ctx['S'], ctx['start'], ctx['points']
+    bad = _zone_bad('stalactites', t, ctx)
+    x, y = t['x'], t['y']
+    for c in ((x, y), (x + 1, y)):
+        if c not in S:
+            bad.append(f'клетка пола {list(c)} не клетка стояния')
+    if min(dist(c, start) for c in ((x, y), (x + 1, y))) < START_MIN:
+        bad.append(f'ближе {START_MIN} к старту')
+    cols = range(x - STAL_BELOW_PAD, x + 2 + STAL_BELOW_PAD)
+    for name, p, _mn in points:
+        if name in ('враг', 'сундук') and p[1] == y and p[0] in cols:
+            bad.append(f'прямо над точкой «{name}» {list(p)}')
+    for okind, o in others:
+        if okind == 'stalactites':
+            if o is not t and dist((x, y), (o['x'], o['y'])) < STAL_SPACING:
+                bad.append(f'ближе {STAL_SPACING} к сталактиту {[o["x"], o["y"]]}')
+            continue
+        for cx, cy in under_cells(okind, o):
+            if cy == y and cx in cols:
+                bad.append(f'прямо над {okind} {[cx, cy]}')
+                break
+    bad += geometry_problems('stalactites', t, g, S)
     return bad
 
 
@@ -385,19 +463,21 @@ def geometry_problems(kind, t, g, S):
     H, W = len(g), len(g[0])
     if kind == 'gargoyles':
         x, y, d = t['x'], t['y'], t['dir']
-        wx = x - d
-        if not (0 <= wx < W) or g[y][wx] != '#' or g[y - 1][wx] != '#':
-            bad.append('горгулья не у стены (нет «#» в x-dir на рядах y-1, y)')
+        for cx in (x, x + d):
+            for cy in range(y - GARGOYLE_FREE_H + 1, y + 1):
+                if not (0 <= cx < W and 0 <= cy < H) or g[cy][cx] in '#=':
+                    bad.append(f'над полом у головы не свободно {GARGOYLE_FREE_H} клетки ({[cx, cy]})')
+                    break
         floor = [(x + d * i, y) for i in range(GARGOYLE_FLOOR)]
         if any(c not in S for c in floor):
-            bad.append(f'ровного пола от горгульи меньше {GARGOYLE_FLOOR}')
+            bad.append(f'ровного пола от столба меньше {GARGOYLE_FLOOR}')
         px = t['plate'][0]
         near = min(abs(px - x), abs(px + 1 - x))
         if not (PLATE_DIST[0] <= near <= PLATE_DIST[1]) or (px - x) * d < 0:
-            bad.append(f'плита в {near} клетках от горгульи (нужно {PLATE_DIST[0]}..{PLATE_DIST[1]} в сторону огня)')
+            bad.append(f'плита в {near} клетках от столба (нужно {PLATE_DIST[0]}..{PLATE_DIST[1]} в сторону огня)')
         a, b = min(x, px), max(x, px + 1)
         if any((cx, y) not in S for cx in range(a, b + 1)):
-            bad.append('между горгульей и плитой не сплошной пол')
+            bad.append('между столбом и плитой не сплошной пол')
     elif kind == 'stalactites':
         x, y, c = t['x'], t['y'], t['ceil']
         h = y - c

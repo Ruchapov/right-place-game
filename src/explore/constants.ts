@@ -1014,7 +1014,7 @@ export const MANA_SOCKETS: [number, number][] = [
 
 export const SPIKE_DAMAGE_RATIO = 0.5 // урон шипов — 50% от maxHp за касание
 export const SPIKE_IFRAME_MS = 1000 // неуязвимость после касания шипов, мс
-export const HAZARD_SPIKES_PER_RUN = 10 // сколько точек из hazard-пула ставим на карту за забег
+export const HAZARD_SPIKES_PER_RUN = 7 // сколько точек из hazard-пула ставим на карту за забег (14.11.2026: было 10)
 
 // Броня (см. задачу "броня в бою", takeDamage в Explore.tsx) — вычитается из
 // урона, но не может срезать больше половины: max(round(урон*0.5), урон-броня).
@@ -2600,12 +2600,24 @@ export const SPIKE_WARN_JITTER_PX = 1.5
 export const SPIKE_CYCLE_MS = SPIKE_HIDDEN_MS + SPIKE_WARN_MS + SPIKE_EXTENDED_MS
 
 // Горгулья и нажимная плита.
-export const GARGOYLE_FIRE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.png`
-export const GARGOYLE_FIRE_JSON = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.json`
+// Горгулья на столбе (14.11.2026; до этого — голова на стене): лист 22 кадра
+// 330×324, столб в кадре на x postX0..postX1 во всю высоту, пасть mouthX/Y
+// (GargoylePost_Fire.json). Столб ниже и выше кадра — плитка Gargoyle_Post.png
+// (51×120, бесшовная по вертикали, тот же масштаб) с перекрытием GARGOYLE_POST_OVERLAP.
+// Столб НЕ твёрдый: в сетку не попадает.
+export const GARGOYLE_FIRE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/GargoylePost_Fire.png`
+export const GARGOYLE_FIRE_JSON = `${import.meta.env.BASE_URL}assets/objects/traps/GargoylePost_Fire.json`
+export const GARGOYLE_POST_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Post.png`
+export const GARGOYLE_POST_OVERLAP = 3 // px кадра: плитка столба заходит под кадр, без шва
+export const GARGOYLE_MOUTH_ABOVE_FLOOR = 60 // пасть над полом, px мира (≈1 клетка: бьёт и героя, и низкого зверя)
+// Высота столба: до потолка, если он не выше POST_CEIL_MAX клеток над полом,
+// иначе POST_FREE_H клеток. Та же формула — post_top в tools/trap_rules.py.
+export const GARGOYLE_POST_CEIL_MAX = 9
+export const GARGOYLE_POST_FREE_H = 3
 export const GARGOYLE_FIREBALL_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fireball.png`
 export const PLATE_UP_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Up.png`
 export const PLATE_DOWN_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Down.png`
-export const GARGOYLE_SCALE = 0.5 // кадр 277×254 → голова на 2×2 клетки у стены
+export const GARGOYLE_SCALE = 0.455 // кадр 330×324: столб и голова (281 px) → 2 клетки шириной
 export const GARGOYLE_FIRE_DAMAGE_FRAC = 0.3 // героя; парируется
 export const GARGOYLE_FIREBALL_SPEED = 600 // px/с
 export const GARGOYLE_FIREBALL_SCALE = 0.25

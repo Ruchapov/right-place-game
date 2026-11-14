@@ -274,18 +274,49 @@
     ]
   ],
   "gargoyles": [],
-  "stalactites": [],
+  "stalactites": [
+    {
+      "x": 39,
+      "y": 17,
+      "ceil": 12
+    },
+    {
+      "x": 59,
+      "y": 32,
+      "ceil": 26
+    },
+    {
+      "x": 53,
+      "y": 23,
+      "ceil": 18
+    },
+    {
+      "x": 67,
+      "y": 29,
+      "ceil": 26
+    },
+    {
+      "x": 25,
+      "y": 23,
+      "ceil": 18
+    }
+  ],
   "saws": [
     {
       "x0": 48,
-      "x1": 51,
+      "x1": 52,
+      "y": 17
+    },
+    {
+      "x0": 28,
+      "x1": 31,
       "y": 17
     }
   ],
   "trapsPerRun": {
-    "spikes": 10,
-    "stalactites": 0,
+    "spikes": 7,
+    "stalactites": 3,
     "gargoyles": 0,
-    "saws": 1
+    "saws": 2
   }
 }

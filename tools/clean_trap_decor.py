@@ -19,7 +19,9 @@
      не трогаются — платформы остаются как есть).
   2. Связные области непрозрачных пикселей слоя (альфа > 0, 8-связность) в
      пустых клетках; каждая область, задетая зоной хоть одним пикселем, стирается
-     ЦЕЛИКОМ (альфа и цвет в 0) — без половинок предметов. На болоте (B2, C2, W,
+     ЦЕЛИКОМ (альфа и цвет в 0) — без половинок предметов. Области шире
+     R.FRINGE_W клеток или выше R.FRINGE_H — кромка платформы (бахрома корней под
+     болотной платформой), не предмет: не трогаются, проверка их не считает. На болоте (B2, C2, W,
      Y) нижние SWAMP_GRASS_PX пикселей клетки над полом — кромка травы, её не
      трогаем и в области её не включаем.
   3. Живой декор, чьи предметы стёрты или чей прямоугольник лежит в зоне:
@@ -54,8 +56,8 @@ if hasattr(sys.stdout, 'reconfigure'):
 WORK = Path(r'D:\dev\right-place-art\game-export\trap-clean')
 PRISTINE = WORK / 'pristine'
 STATE = WORK / 'state.json'
-AUDIT = Path(r'D:\dev\right-place-art\audits\traps-2026-11-13-fix')
-DOCS_AUDIT = R.ROOT / 'docs' / 'audits' / 'traps-2026-11-13-fix'
+AUDIT = Path(r'D:\dev\right-place-art\audits\traps-2026-11-14')
+DOCS_AUDIT = R.ROOT / 'docs' / 'audits' / 'traps-2026-11-14'
 CLEARED_TS = R.ROOT / 'src' / 'explore' / 'trapDecorCleared.ts'
 ENCODER = R.ROOT / 'tools' / 'encode_webp_ladder.mjs'
 T = R.TS
@@ -96,30 +98,27 @@ def clean_map(letter, state, previews):
     rgba = R.layer_rgba(txt, grid, art_dir=PRISTINE)
     pristine = rgba.copy()
 
-    empty = np.array([[grid[y][x] not in '#=' for x in range(W)] for y in range(H)])
-    empty_px = np.repeat(np.repeat(empty, T, 0), T, 1)
-    band = R.grass_band(grid, letter)
-    opaque = (rgba[:, :, 3] > 0) & empty_px & ~band
-    labels, n = ndimage.label(opaque, structure=np.ones((3, 3), bool))
+    labels, n, fringe, opaque = R.components(rgba, grid, letter)
 
     traps = R.all_traps(slots)
     zone = np.zeros((H * T, W * T), bool)
     for k, t in traps:
-        for cx, cy in R.zone_cells(k, t):
+        for cx, cy in R.zone_cells(k, t, grid):
             if 0 <= cy < H and 0 <= cx < W and grid[cy][cx] not in '#=':
                 zone[cy * T:(cy + 1) * T, cx * T:(cx + 1) * T] = True
-    hit = np.unique(labels[zone & opaque])
+    hit = np.unique(labels[zone & opaque & ~fringe])
     hit = hit[hit > 0]
-    removed = np.isin(labels, hit)
-    rgba[removed] = 0
-    # Крупные области (шире 4 клеток или выше 3) — в отчёт: стёрто больше зоны.
+    # Кромку платформы (R.components: область шире FRINGE_W клеток или выше
+    # FRINGE_H) не трогаем — это часть платформы, ловушка рисуется поверх.
     big = []
-    for i, sl in enumerate(ndimage.find_objects(labels), start=1):
-        if sl is None or i not in set(hit.tolist()):
-            continue
-        hh, ww = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
-        if ww > 4 * T or hh > 3 * T:
-            big.append((sl[1].start // T, sl[0].start // T, ww, hh))
+    objs = ndimage.find_objects(labels)
+    for i in np.unique(labels[zone & fringe]).tolist():
+        if i > 0:
+            sl = objs[i - 1]
+            big.append((sl[1].start // T, sl[0].start // T, sl[1].stop - sl[1].start, sl[0].stop - sl[0].start))
+    whole = hit.tolist()
+    removed = np.isin(labels, whole)
+    rgba[removed] = 0
 
     # Живой декор.
     cleared = {'flames': [], 'sway': [], 'chains': []}
@@ -155,7 +154,7 @@ def clean_map(letter, state, previews):
 
     if previews:
         make_previews(letter, txt, grid, traps, pristine, rgba)
-    return {'letter': letter, 'items': int(len(hit)), 'px': int(removed.sum()), 'big': big, 'cleared': cleared, 'sizes': sizes}
+    return {'letter': letter, 'items': len(whole), 'px': int(removed.sum()), 'big': big, 'cleared': cleared, 'sizes': sizes}
 
 
 def make_previews(letter, txt, grid, traps, pristine, cleaned):
@@ -174,7 +173,7 @@ def make_previews(letter, txt, grid, traps, pristine, cleaned):
     full_after = on_bg(cleaned)
     with_traps = full_after.copy()
     for k, t in traps:
-        P.draw_trap(with_traps, k, t, art)
+        P.draw_trap(with_traps, k, t, art, grid)
     sc = min(1.0, 1600 / W)
     all_img = with_traps.convert('RGB').resize((int(W * sc), int(H * sc)))
     all_img.save(AUDIT / f'{letter}_all.png')
@@ -184,7 +183,7 @@ def make_previews(letter, txt, grid, traps, pristine, cleaned):
     n = {}
     for k, t in traps:
         n[k] = n.get(k, 0) + 1
-        cells = R.zone_cells(k, t)
+        cells = R.zone_cells(k, t, grid)
         x0 = max(0, (min(c[0] for c in cells) - 2) * T)
         x1 = min(W, (max(c[0] for c in cells) + 3) * T)
         y0 = max(0, (min(c[1] for c in cells) - 2) * T)
@@ -252,7 +251,7 @@ def main():
         print(f"== {letter}: стёрто предметов {r['items']} ({r['px']} px); живой декор: пламя {len(r['cleared']['flames'])}, "
               f"стебли {len(r['cleared']['sway'])}, цепи {len(r['cleared']['chains'])}")
         for b in r['big']:
-            print(f'   крупная область: клетка {b[:2]}, {b[2]}×{b[3]} px')
+            print(f'   кромка платформы в зоне (не тронута): клетка {b[:2]}, область {b[2]}×{b[3]} px')
         for f, label, size in r['sizes']:
             print(f'   {f}: {label}, {size / 1e6:.2f} МБ')
     write_cleared(results)

@@ -313,20 +313,46 @@
   ],
   "gargoyles": [
     {
-      "x": 26,
+      "x": 29,
       "y": 20,
       "dir": 1,
       "plate": [
-        32,
+        35,
         20
       ]
     }
   ],
-  "stalactites": [],
+  "stalactites": [
+    {
+      "x": 69,
+      "y": 37,
+      "ceil": 32
+    },
+    {
+      "x": 56,
+      "y": 37,
+      "ceil": 32
+    },
+    {
+      "x": 18,
+      "y": 14,
+      "ceil": 8
+    },
+    {
+      "x": 65,
+      "y": 26,
+      "ceil": 18
+    },
+    {
+      "x": 20,
+      "y": 30,
+      "ceil": 22
+    }
+  ],
   "saws": [],
   "trapsPerRun": {
-    "spikes": 10,
-    "stalactites": 0,
+    "spikes": 7,
+    "stalactites": 3,
     "gargoyles": 1,
     "saws": 0
   }
