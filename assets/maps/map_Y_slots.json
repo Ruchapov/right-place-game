@@ -301,11 +301,22 @@
     ]
   ],
   "gargoyles": [],
-  "stalactites": [],
+  "stalactites": [
+    {
+      "x": 5,
+      "y": 24,
+      "ceil": 17
+    },
+    {
+      "x": 52,
+      "y": 24,
+      "ceil": 17
+    }
+  ],
   "saws": [],
   "trapsPerRun": {
-    "spikes": 8,
-    "stalactites": 0,
+    "spikes": 7,
+    "stalactites": 2,
     "gargoyles": 0,
     "saws": 0
   }
