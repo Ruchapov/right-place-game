@@ -69,8 +69,13 @@ void main() {
 }
 `
 
-/** Лист, перекрашенный в видеопамяти: новые кадры и текстура, которую надо уничтожить. */
-export type BakedSheet = { frames: Texture[]; target: RenderTexture }
+/**
+ * Лист, перекрашенный в видеопамяти: новые кадры, текстура, которую надо
+ * уничтожить, и rebake — перерисовать заново (13.11.2026): при потере WebGL
+ * Pixi после восстановления заливает обратно картинки из файлов, но
+ * нарисованное в RenderTexture пропадает — без rebake герой стал бы пустым.
+ */
+export type BakedSheet = { frames: Texture[]; target: RenderTexture; rebake: (renderer: Renderer) => Promise<void> }
 
 /**
  * Перекрашивает один лист героя. `frames` — уже нарезанные кадры исходного листа
@@ -78,6 +83,16 @@ export type BakedSheet = { frames: Texture[]; target: RenderTexture }
  * Кадры результата — те же прямоугольники, что у исходных, на новой текстуре.
  */
 export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], maskSrc: string, color: Exclude<CloakColor, null>): Promise<BakedSheet> {
+  const source = frames[0].source
+  const target = RenderTexture.create({ width: source.width, height: source.height, resolution: 1 })
+  target.source.scaleMode = 'linear' // как у исходных листов (spriteLoader)
+  const rebake = (r: Renderer) => renderInto(r, frames, maskSrc, color, target)
+  await rebake(renderer)
+  const out = frames.map((f) => new Texture({ source: target.source, frame: new Rectangle(f.frame.x, f.frame.y, f.frame.width, f.frame.height) }))
+  return { frames: out, target, rebake }
+}
+
+async function renderInto(renderer: Renderer, frames: Texture[], maskSrc: string, color: Exclude<CloakColor, null>, target: RenderTexture): Promise<void> {
   const source = frames[0].source
   const w = source.width
   const h = source.height
@@ -96,8 +111,6 @@ export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], mask
   const uniforms = new UniformGroup({ uHsv: { value: new Float32Array([color.h / 360, color.s, color.v]), type: 'vec3<f32>' } })
   const shader = new Shader({ glProgram, resources: { uTexture: source, uMask: mask.source, cloakUniforms: uniforms } })
   const mesh = new Mesh({ geometry, shader })
-  const target = RenderTexture.create({ width: w, height: h, resolution: 1 })
-  target.source.scaleMode = 'linear' // как у исходных листов (spriteLoader)
   renderer.render({ container: mesh, target, clear: true })
   mesh.destroy()
   geometry.destroy()
@@ -107,6 +120,4 @@ export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], mask
   // остаётся в кэше Assets: следующий забег перекрасит её снова без скачивания).
   source.unload()
   await Assets.unload(maskSrc)
-  const out = frames.map((f) => new Texture({ source: target.source, frame: new Rectangle(f.frame.x, f.frame.y, f.frame.width, f.frame.height) }))
-  return { frames: out, target }
 }

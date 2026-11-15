@@ -5,7 +5,8 @@ import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, NcEnemyState, 
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { ncSheet } from '../ncConstants'
-import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
+import { sweepFootBlock, cellFootBlockTop } from '../collision'
+import { climbStep, stepDownOk, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyAttackDamage, scaledNcEnemyMaxHp } from '../scaling'
@@ -108,6 +109,11 @@ export type NcBehavior = {
   onAction: (ctx: NcCtx, e: Enemy, action: string, frame: number, dt: number, deltaMS: number) => void
   /** Действие доиграло до конца (не оборвано). */
   onActionEnd?: (ctx: NcCtx, e: Enemy, action: string) => void
+  /**
+   * Действие сейчас нарочно стоит на кадре (фехтовальщик держит блок,
+   * 13.11.2026): остановленный спрайт тогда НЕ значит «доиграло».
+   */
+  holding?: (e: Enemy) => boolean
   /** Кадр, до которого идёт замах действия (для POISE_POINT); null — замаха нет. */
   windupFrame: (action: string) => number | null
   hpMult: number
@@ -125,6 +131,8 @@ export function newNcState(): NcEnemyState {
     hitStreak: 0,
     parryRequest: false,
     blockedHit: false,
+    blockHoldMs: 0,
+    blockHeld: false,
     needReload: false,
     dashMoved: 0,
     eyesMs: 0,
@@ -215,17 +223,16 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
   function stepX(e: Enemy, dir: 1 | -1, speed: number, dt: number, allowDrop: boolean): boolean {
     const nextX = e.x + dir * speed * dt
     const leadingX = dir > 0 ? nextX + e.width : nextX
-    const hitWall =
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, e.y + 1) ||
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, e.y + e.height / 2) ||
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, e.y + e.height - 1)
-    if (hitWall) return false
+    // Ступень в клетку — не стена: на неё поднимаются (stepClimb.ts, 13.11.2026).
+    if (wallAhead(deps.grid, e, leadingX)) return false
     if (e.vy === 0 && deps.trapBlocks?.(e, leadingX, e.y + e.height)) return false
     if (!allowDrop && e.vy === 0) {
       const footCx = Math.floor(leadingX / C.TILE_SIZE)
       const footCy = Math.floor((e.y + e.height) / C.TILE_SIZE)
-      if (cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null) return false
+      // Ступень на клетку вниз — сходит всегда (в погоне, поиске и патруле).
+      if (cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null && !stepDownOk(deps.grid, leadingX, e.y + e.height)) return false
     }
+    climbStep(deps.grid, e, leadingX)
     e.x = clamp(nextX, 0, worldWidthPx - e.width)
     return true
   }
@@ -397,7 +404,7 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
     const surfaceY = deps.findGroundSurfaceY(e.x, e.width, footBottom)
     // Фигура стоит в боксе серединой: точка ног сдвинута на середину фигуры.
     e.sprite.x = e.x + e.width / 2 + e.facing * figMid * scale
-    e.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE
+    e.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (e.stepLiftPx ?? 0)
     e.sprite.scale.set(e.facing === -1 ? scale : -scale, scale)
     e.rect.x = e.x
     e.rect.y = e.y
@@ -580,7 +587,7 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
         }
         behavior.onAction(ctx, e, action, e.sprite.currentFrame, dt, deltaMS)
         // onAction мог оборвать действие (отбит удар — уже оглушён).
-        if (nc.action === action && (e.sprite.currentFrame >= e.sprite.totalFrames - 1 || !e.sprite.playing)) {
+        if (nc.action === action && (e.sprite.currentFrame >= e.sprite.totalFrames - 1 || (!e.sprite.playing && !behavior.holding?.(e)))) {
           endAction(e)
           behavior.onActionEnd?.(ctx, e, action)
         }

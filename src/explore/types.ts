@@ -55,6 +55,10 @@ export type NcEnemyState = {
   parryRequest: boolean
   /** Фехтовальщик: последнее попадание мечом пришлось в блок (урона нет). */
   blockedHit: boolean
+  /** Фехтовальщик: держит кадр блока ещё столько мс (0 — не держит). */
+  blockHoldMs: number
+  /** Фехтовальщик: в этом блоке кадр уже держали (второй раз не встаёт). */
+  blockHeld: boolean
   /** Арбалетчик: выстрел был — до перезарядки не стреляет. */
   needReload: boolean
   /** Жук: сколько px рывка уже пройдено. */
@@ -252,6 +256,8 @@ export type PlayerPhysics = {
 export type DamageSource = Enemy | 'boss'
 
 export type Enemy = {
+  /** Ступень в клетку (13.11.2026, stepClimb.ts): картинка ниже тела на столько px, гаснет за STEP_LIFT_MS. */
+  stepLiftPx?: number
   /**
    * Чей это враг (04.10.2026). ОДИН список на оба вида — `enemiesRef` — и это
    * главное решение: урон мечом, скиллы, стан льда, кровотечение, рывок и
@@ -471,7 +477,7 @@ export type Enemy = {
  * Состояние Беглеца (11.11.2026, entities/runner.ts).
  *   'asleep' — стоит на точке, ждёт героя;
  *   'fleeing' — проснулся, бежит от героя, идёт таймер RUNNER_TIME_MS;
- *   'gone' — не пойман, исчез; через RUNNER_RESPAWN_MS снова спит на точке.
+ *   'gone' — не пойман, исчез навсегда (13.11.2026: одна попытка), событие провалено.
  * В 'gone' его нет в enemiesRef: ни меч, ни навыки его не задевают.
  */
 export type RunnerState = {
@@ -802,6 +808,12 @@ export type BossWave = {
 export type MapEvent = EventCandidate & {
   marker?: Graphics
   closed: boolean
+  /**
+   * Провалено (13.11.2026; сейчас только Беглец: не пойман за 25 с — исчез
+   * навсегда). Для «все задачи выполнены» считается сделанным, но в
+   * closedEvents НЕ идёт — награды за него нет. В снимке финиша — failedEvents.
+   */
+  failed?: boolean
   remainingEnemies?: number
   trophyReward: number | null
   drops: RunDrop[]

@@ -370,7 +370,7 @@ export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Prom
  * Возвращает новый набор и текстуры, которые вызывающий обязан уничтожить,
  * когда забег кончится (их нет в кэше Assets — сами они не уйдут).
  */
-export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero'], color: Exclude<CloakColor, null>): Promise<{ hero: CommonAssets['hero']; baked: RenderTexture[] }> {
+export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero'], color: Exclude<CloakColor, null>): Promise<{ hero: CommonAssets['hero']; baked: RenderTexture[]; rebake: (r: Renderer) => Promise<void> }> {
   const mask = (name: string) => `${SKINS_DIR}/masks/${name}_cloak.png`
   const keys = ['idle', 'run', 'jump', 'attack', 'drink', 'hurt', 'death', 'cast', 'block'] as const
   const maskName: Record<(typeof keys)[number], string> = {
@@ -378,16 +378,18 @@ export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero
     hurt: 'hurt', death: 'death', cast: 'cast_v2', block: 'block',
   }
   const baked: RenderTexture[] = []
+  const rebakes: ((r: Renderer) => Promise<void>)[] = []
   const out = { ...hero }
   // По одному, а не Promise.all: каждая перекраска — свой проход рендера и
   // своя маска 4728×592 в памяти; разом это девять масок сразу.
   for (const key of keys) {
     const r = await bakeCloakSheet(renderer, hero[key], mask(maskName[key]), color)
     baked.push(r.target)
+    rebakes.push(r.rebake)
     out[key] = r.frames
   }
   out.land = out.jump.slice(17, 24)
-  return { hero: out, baked }
+  return { hero: out, baked, rebake: async (r) => { for (const fn of rebakes) await fn(r) } }
 }
 
 /**

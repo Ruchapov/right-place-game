@@ -4,6 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
+import { climbStep, stepDownOk, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
@@ -533,14 +534,13 @@ export function createZvonarSystem(deps: ZvonarDeps) {
               const leadingX = away > 0 ? nextX + enemy.width : nextX
               // Стена и край — ТЕ ЖЕ проверки и в том же виде, что в патруле
               // зверя: своей геометрии не заводим.
-              const hitWall =
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height / 2) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height - 1)
+              const hitWall = wallAhead(deps.grid, enemy, leadingX)
               const footCx = Math.floor(leadingX / C.TILE_SIZE)
               const footCy = Math.floor((enemy.y + enemy.height) / C.TILE_SIZE)
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+                && !stepDownOk(deps.grid, leadingX, enemy.y + enemy.height)
               if (!hitWall && !noFloorAhead) {
+                climbStep(deps.grid, enemy, leadingX)
                 enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
                 retreating = true
               }
@@ -562,19 +562,18 @@ export function createZvonarSystem(deps: ZvonarDeps) {
             } else {
               const nextX = enemy.x + dir * step
               const leadingX = dir > 0 ? nextX + enemy.width : nextX
-              const hitWall =
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height / 2) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height - 1)
+              const hitWall = wallAhead(deps.grid, enemy, leadingX)
               const footCx = Math.floor(leadingX / C.TILE_SIZE)
               const footCy = Math.floor((enemy.y + enemy.height) / C.TILE_SIZE)
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+                && !stepDownOk(deps.grid, leadingX, enemy.y + enemy.height)
               // Поиск героя ниже (08.11.2026): с края спрыгивает, в полёте идёт дальше.
               const canDrop = searchTargetBelow(enemy, enemyFeetY) || enemy.vy !== 0
               if (hitWall || (noFloorAhead && !canDrop)) {
                 enemy.investigateTimer = 0
                 enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
               } else {
+                climbStep(deps.grid, enemy, leadingX)
                 enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
               }
             }
@@ -588,17 +587,16 @@ export function createZvonarSystem(deps: ZvonarDeps) {
             const dir = enemy.patrolDir
             const nextX = enemy.x + dir * C.ENEMY_PATROL_SPEED * dt
             const leadingX = dir > 0 ? nextX + enemy.width : nextX
-            const hitWall =
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height / 2) ||
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height - 1)
+            const hitWall = wallAhead(deps.grid, enemy, leadingX)
             const footCx = Math.floor(leadingX / C.TILE_SIZE)
             const footCy = Math.floor((enemy.y + enemy.height) / C.TILE_SIZE)
             const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+              && !stepDownOk(deps.grid, leadingX, enemy.y + enemy.height)
             const reachedBound = dir > 0 ? nextX > rightBound : nextX < leftBound
             if (reachedBound || hitWall || noFloorAhead) {
               enemy.patrolDir = dir > 0 ? -1 : 1
             } else {
+              climbStep(deps.grid, enemy, leadingX)
               enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
             }
             enemy.facing = enemy.patrolDir
@@ -678,7 +676,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       const footBottom = enemy.y + enemy.height
       const surfaceY = deps.findGroundSurfaceY(enemy.x, enemy.width, footBottom)
       enemy.sprite.x = enemy.x + enemy.width / 2
-      enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE
+      enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
       enemy.hpBarBg.x = enemy.x
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x

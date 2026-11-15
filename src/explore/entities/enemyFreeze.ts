@@ -1,12 +1,12 @@
 import { Container, Filter, GlProgram, Graphics, UniformGroup } from 'pixi.js'
 import * as C from '../constants'
-import type { Enemy } from '../types'
+import type { Boss, Enemy } from '../types'
 import { FILTER_VERTEX } from './ncFilters'
 
 // ЗАМОРОЗКА — статус врага (12.11.2026, задание shaders_task/task-freeze-candles.md,
-// эталон — shaders_preview.mp4, клетка «Заморозка»). Источника в игре пока нет: статус
-// готов под ловушку или кольцо. Проверка на телефоне — ?debugFreeze=1 (Explore.tsx):
-// удар мечом замораживает врага на 2 с.
+// эталон — shaders_preview.mp4, клетка «Заморозка»). С 13.11.2026 источник —
+// ЛЕДЯНОЙ ШАР (skills.ts, deps.freezeTarget): вид ровно на время его стана, у
+// врагов и у босса. Тестовый ?debugFreeze=1 убран.
 //
 // Поведение — стан льда врага (`stunTimer`, ПАУЗА): враг стоит, не ходит и не бьёт,
 // анимация стоит на текущем кадре, после — продолжает с того же места (это уже
@@ -59,8 +59,10 @@ void main() {
 `
 
 type Shard = { g: Graphics; vx: number; vy: number; spin: number }
+/** Кого морозим: враг или босс (у босса бокс — через deps.bossBox). */
+type FreezeTarget = Enemy | Boss
 type FreezeEntry = {
-  enemy: Enemy
+  enemy: FreezeTarget
   ms: number
   prevFilters: Filter[] | null
   prevTint: number
@@ -68,7 +70,12 @@ type FreezeEntry = {
 }
 type Burst = { shards: Shard[]; age: number }
 
-export type EnemyFreezeDeps = { parent: Container; webgl: boolean }
+export type EnemyFreezeDeps = {
+  parent: Container
+  webgl: boolean
+  /** Бокс босса в мире (entities/boss.ts, bossBox) — у Boss нет width/height. */
+  bossBox: (boss: Boss) => { x: number; y: number; w: number; h: number }
+}
 
 export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
   const program = deps.webgl ? GlProgram.from({ vertex: FILTER_VERTEX, fragment: FRAGMENT, name: 'enemy-freeze' }) : null
@@ -93,6 +100,11 @@ export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
     })
   }
 
+  // Бокс цели: у врага поля, у босса — bossBox (у него свои габариты по виду).
+  function boxOf(t: FreezeTarget): { x: number; y: number; w: number; h: number } {
+    return 'width' in t ? { x: t.x, y: t.y, w: t.width, h: t.height } : deps.bossBox(t)
+  }
+
   function star(size: number): Graphics {
     const g = new Graphics()
     g.poly([0, -size, size * 0.22, -size * 0.22, size, 0, size * 0.22, size * 0.22, 0, size, -size * 0.22, size * 0.22, -size, 0, -size * 0.22, -size * 0.22])
@@ -102,7 +114,7 @@ export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
   }
 
   /** Заморозить врага на ms (повтор — продлить до max, не сложить). */
-  function freeze(enemy: Enemy, ms: number = C.FREEZE_DEFAULT_MS) {
+  function freeze(enemy: FreezeTarget, ms: number = C.FREEZE_DEFAULT_MS) {
     if (enemy.dead) return
     enemy.stunTimer = Math.max(enemy.stunTimer, ms)
     const have = entries.find((e) => e.enemy === enemy)
@@ -133,16 +145,16 @@ export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
     }
     for (const g of entry.glints) g.destroy()
     if (!shatter) return
-    const e = entry.enemy
-    const cx = e.x + e.width / 2, cy = e.y + e.height * 0.45
+    const e = boxOf(entry.enemy)
+    const cx = e.x + e.w / 2, cy = e.y + e.h * 0.45
     const shards: Shard[] = []
     const n = C.FREEZE_SHARDS
     for (let k = 0; k < n; k++) {
       const g = new Graphics()
       const s = 2.5 + Math.random() * 3
       g.poly([0, -s, s * 0.6, 0, 0, s * 0.8, -s * 0.5, 0.2 * s]).fill({ color: C.FREEZE_SHARD_COLOR }).stroke({ color: 0xffffff, width: 0.6, alpha: 0.8 })
-      g.x = cx + (Math.random() - 0.5) * e.width * 0.6
-      g.y = cy + (Math.random() - 0.5) * e.height * 0.5
+      g.x = cx + (Math.random() - 0.5) * e.w * 0.6
+      g.y = cy + (Math.random() - 0.5) * e.h * 0.5
       deps.parent.addChild(g)
       const a = (k / n) * Math.PI * 2 + Math.random() * 0.5
       shards.push({ g, vx: Math.cos(a) * (70 + Math.random() * 70), vy: -120 - Math.random() * 90 + Math.sin(a) * 40, spin: (Math.random() - 0.5) * 14 })
@@ -163,12 +175,13 @@ export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
         const u = f.resources.freezeUniforms as UniformGroup | undefined
         if (u) (u.uniforms as { uTime: number }).uTime = timeS
       }
+      const b = boxOf(e)
       en.glints.forEach((g, k) => {
         // мигает: короткая вспышка раз в ~1.1 с, у каждого своя фаза; место — новое на каждой вспышке
         const ph = (timeS * 0.9 + k * 0.37) % 1
         if (ph < dtS * 0.9 + 0.001 || g.alpha === 0 && ph < 0.05) {
-          g.x = e.x + e.width * (0.2 + Math.random() * 0.6)
-          g.y = e.y + e.height * (0.15 + Math.random() * 0.6)
+          g.x = b.x + b.w * (0.2 + Math.random() * 0.6)
+          g.y = b.y + b.h * (0.15 + Math.random() * 0.6)
         }
         g.alpha = ph < 0.25 ? Math.sin(ph / 0.25 * Math.PI) : 0
       })
@@ -188,7 +201,7 @@ export function createEnemyFreezeSystem(deps: EnemyFreezeDeps) {
     }
   }
 
-  function isFrozen(enemy: Enemy): boolean {
+  function isFrozen(enemy: FreezeTarget): boolean {
     return entries.some((e) => e.enemy === enemy)
   }
 

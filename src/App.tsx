@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@telegram-apps/sdk'
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -1755,7 +1755,10 @@ export default function App() {
   // броня, и забег пошёл бы с заниженными числами — ровно та беда, ради которой
   // гейт и заводился.
   const gearNotReady = isTelegramSession && (inventoryStatus !== 'ready' || upgradeCounts === null)
-  const runBlocked = notEnoughEnergy || gearNotReady
+  // Прошлый забег ещё сохраняется в фоне (ушёл в меню с итогов до ответа,
+  // 13.11.2026) — старт подождёт, иначе сервер ответил бы «забег уже открыт».
+  const finishSaving = useSyncExternalStore(subscribeFinishInFlight, finishInFlightCount) > 0
+  const runBlocked = notEnoughEnergy || gearNotReady || finishSaving
 
   // Тик экранного времени. СЕКУНДА, пока на экране идёт отсчёт «+1 через»
   // (иначе таймер стоял бы на месте до 15 секунд и выглядел сломанным), и
@@ -5379,6 +5382,11 @@ export default function App() {
                 {`Начать забег (−${RUN_COST} ⚡)`}
               </span>
             </div>
+            {finishSaving && (
+              <div style={{ marginTop:8, fontSize:11, color:C.textDim, textAlign:'center' }}>
+                Сохраняем прошлую вылазку…
+              </div>
+            )}
             {notEnoughEnergy && (
               <div style={{ marginTop:8, fontSize:11, color:C.danger, textAlign:'center' }}>
                 Недостаточно энергии (нужно {RUN_COST}).

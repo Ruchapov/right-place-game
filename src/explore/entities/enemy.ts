@@ -4,6 +4,7 @@ import type { Container, Texture } from 'pixi.js'
 import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
+import { climbStep, stepDownOk, stepUpY, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
@@ -547,9 +548,8 @@ export function createEnemySystem(deps: EnemyDeps) {
               const nextX = enemy.x + d * C.ENEMY_CHASE_SPEED * dt
               const leadingX = d > 0 ? nextX + C.ENEMY_WIDTH : nextX
               const hitWall =
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT / 2) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1) ||
+                // Ступень в клетку — не стена (stepClimb.ts, 13.11.2026).
+                wallAhead(deps.grid, enemy, leadingX) ||
                 // В полёте — ещё и точка чуть ниже ног (куда они попадут за этот
                 // кадр): иначе, сходя с края и тут же разворачиваясь к герою,
                 // зверь задевал угол платформы и «садился» в её бок.
@@ -560,8 +560,9 @@ export function createEnemySystem(deps: EnemyDeps) {
               if (!allowDrop && enemy.vy === 0) {
                 const footCx = Math.floor(leadingX / C.TILE_SIZE)
                 const footCy = Math.floor(enemyFeetY / C.TILE_SIZE)
-                if (cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null) return false
+                if (cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null && !stepDownOk(deps.grid, leadingX, enemyFeetY)) return false
               }
+              climbStep(deps.grid, enemy, leadingX)
               enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
               return true
             }
@@ -583,6 +584,12 @@ export function createEnemySystem(deps: EnemyDeps) {
               const d = enemy.dropDir ?? towardDir
               if (!stepX(d, true)) enemy.dropDir = d > 0 ? -1 : 1 // стена — к другому краю
               enemy.facing = d
+            } else if (playerAbove && stepUpY(deps.grid, enemy, towardDir > 0 ? enemy.x + C.ENEMY_WIDTH + 2 : enemy.x - 2) !== null) {
+              // ГЕРОЙ ВЫШЕ, но к нему ведёт ступень в клетку (13.11.2026) — идёт
+              // по ней, как по лестнице (stepClimb.ts), а не ждёт внизу.
+              enemy.dropDir = null
+              stepX(towardDir, false)
+              enemy.facing = towardDir
             } else if (playerAbove) {
               // ГЕРОЙ ВЫШЕ — отойти из-под удара и ждать лицом к нему.
               enemy.dropDir = null
@@ -628,13 +635,11 @@ export function createEnemySystem(deps: EnemyDeps) {
             } else {
               const nextX = enemy.x + dir * step
               const leadingX = dir > 0 ? nextX + C.ENEMY_WIDTH : nextX
-              const hitWall =
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT / 2) ||
-                isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1)
+              const hitWall = wallAhead(deps.grid, enemy, leadingX)
               const footCx = Math.floor(leadingX / C.TILE_SIZE)
               const footCy = Math.floor((enemy.y + C.ENEMY_HEIGHT) / C.TILE_SIZE)
               const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+                && !stepDownOk(deps.grid, leadingX, enemy.y + C.ENEMY_HEIGHT)
               // Поиск героя (05.11.2026): точка НИЖЕ — с края спрыгивает, а в
               // полёте просто продолжает идти к ней.
               const targetBelow = searchTargetBelow(enemy, enemy.y + C.ENEMY_HEIGHT)
@@ -647,6 +652,7 @@ export function createEnemySystem(deps: EnemyDeps) {
                 enemy.investigateTimer = 0
                 enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
               } else {
+                climbStep(deps.grid, enemy, leadingX)
                 enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
               }
             }
@@ -669,14 +675,13 @@ export function createEnemySystem(deps: EnemyDeps) {
             const nextX = enemy.x + dir * C.ENEMY_PATROL_SPEED * dt
             const leadingX = dir > 0 ? nextX + C.ENEMY_WIDTH : nextX
 
-            const hitWall =
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT / 2) ||
-              isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + C.ENEMY_HEIGHT - 1)
+            const hitWall = wallAhead(deps.grid, enemy, leadingX)
             // Край платформы: под клеткой сразу впереди по ходу нет '#'/'='.
+            // Ступень на клетку вниз — не край (обратно он поднимется сам).
             const footCx = Math.floor(leadingX / C.TILE_SIZE)
             const footCy = Math.floor((enemy.y + C.ENEMY_HEIGHT) / C.TILE_SIZE)
             const noFloorAhead = cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+              && !stepDownOk(deps.grid, leadingX, enemy.y + C.ENEMY_HEIGHT)
             const reachedBound = dir > 0 ? nextX > patrolRightBound : nextX < patrolLeftBound
 
             const trapAhead = enemy.vy === 0 && (deps.trapBlocks?.(enemy, leadingX, enemy.y + C.ENEMY_HEIGHT) ?? false)
@@ -689,6 +694,7 @@ export function createEnemySystem(deps: EnemyDeps) {
               if (headingHome && (hitWall || noFloorAhead || trapAhead)) enemy.spawnX = enemy.x
               enemy.patrolDir = dir > 0 ? -1 : 1
             } else {
+              climbStep(deps.grid, enemy, leadingX)
               enemy.x = clamp(nextX, 0, worldWidthPx - C.ENEMY_WIDTH)
             }
             enemy.facing = enemy.patrolDir
@@ -865,7 +871,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       const enemyFootBottom = enemy.y + C.ENEMY_HEIGHT
       const enemySurfaceY = deps.findGroundSurfaceY(enemy.x, C.ENEMY_WIDTH, enemyFootBottom)
       enemy.sprite.x = enemy.x + C.ENEMY_WIDTH / 2
-      enemy.sprite.y = (enemySurfaceY ?? enemyFootBottom) + C.FOOT_TUNE
+      enemy.sprite.y = (enemySurfaceY ?? enemyFootBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
       enemy.hpBarBg.x = enemy.x
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x

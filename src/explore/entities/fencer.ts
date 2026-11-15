@@ -33,8 +33,26 @@ const behavior: NcBehavior = {
     }
     return false
   },
-  onAction(ctx, e, action, frame) {
+  onAction(ctx, e, action, frame, _dt, deltaMS) {
     const nc = e.nc!
+    // Блок (13.11.2026): дошёл до последнего кадра block — стоит на нём, пока
+    // не придёт удар мечом (fencerSwordHit отпускает) или не кончится
+    // FENCER_BLOCK_HOLD_MS; потом лист доигрывается (open), за ним — выпад.
+    if (action === 'Parry') {
+      const last = ncSheet(PARRY).block![1]
+      if (!nc.blockHeld && frame >= last) {
+        nc.blockHeld = true
+        nc.blockHoldMs = N.FENCER_BLOCK_HOLD_MS
+        e.sprite.gotoAndStop(last)
+      } else if (nc.blockHoldMs > 0) {
+        nc.blockHoldMs -= deltaMS
+        if (nc.blockHoldMs <= 0) {
+          nc.blockHoldMs = 0
+          e.sprite.play()
+        }
+      }
+      return
+    }
     if (action !== 'Attack' || nc.hitDone) return
     const [h0, h1] = ncSheet(ATTACK).hit!
     if (frame >= h0 && frame <= h1) {
@@ -42,6 +60,7 @@ const behavior: NcBehavior = {
       if (r !== 'miss') nc.hitDone = true
     }
   },
+  holding: (e) => (e.nc?.blockHoldMs ?? 0) > 0,
   onActionEnd(ctx, e, action) {
     // После блока — сразу выпад, если герой рядом.
     if (action !== 'Parry') return
@@ -66,6 +85,8 @@ export function createFencerSystem(deps: NcEnemyDeps, assets: MutableRefObject<N
       if (e.kind !== 'fencer' || !e.nc || e.dead) continue
       if (e.nc.parryRequest && e.stunTimer <= 0 && e.parryStunTimer <= 0) {
         e.nc.parryRequest = false
+        e.nc.blockHeld = false
+        e.nc.blockHoldMs = 0
         e.hurtTimer = 0
         sys.ctx.start(e, 'Parry')
         // Блок — не замах: сбить его ударом нельзя, кадры block гасят меч.
@@ -92,6 +113,13 @@ export function fencerSwordHit(e: Enemy, nowMs: number): 'block' | 'open' | 'nor
     const spec = ncSheet(PARRY)
     if (frame >= spec.block![0] && frame <= spec.block![1]) {
       nc.blockedHit = true
+      // Удар пришёл в блок (13.11.2026): героя оглушает на 0.85 с, и выпад
+      // обязан успеть по оглушённому — остаток листа Parry не доигрывается:
+      // последний кадр, и следующим тиком действие кончается → onActionEnd →
+      // выпад. Доигрывание листа (open, ×1.5) осталось у блока, который
+      // простоял FENCER_BLOCK_HOLD_MS без удара.
+      nc.blockHoldMs = 0
+      e.sprite.gotoAndStop(e.sprite.totalFrames - 1)
       return 'block'
     }
     if (frame >= spec.open![0] && frame <= spec.open![1]) return 'open'

@@ -3,7 +3,8 @@ import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, GatekeeperPhase } from '../types'
 import * as C from '../constants'
-import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
+import { sweepFootBlock, cellFootBlockTop } from '../collision'
+import { climbStep, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
@@ -348,17 +349,16 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
   }
 
   // Стена перед ведущим краем — ТЕ ЖЕ три точки, что в патруле и погоне зверя.
+  // Ступень в клетку — не стена, ступень на клетку вниз — не край
+  // (stepClimb.ts, 13.11.2026); шаг на ступень — climbStep у каждого сдвига x.
   function wallAhead(enemy: Enemy, leadingX: number) {
-    return (
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + 1) ||
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height / 2) ||
-      isSolid(deps.grid, C.TILE_SIZE, leadingX, enemy.y + enemy.height - 1)
-    )
+    return stepWallAhead(deps.grid, enemy, leadingX)
   }
   function noFloorAhead(enemy: Enemy, leadingX: number) {
     const footCx = Math.floor(leadingX / C.TILE_SIZE)
     const footCy = Math.floor((enemy.y + enemy.height) / C.TILE_SIZE)
     return cellFootBlockTop(deps.grid, C.TILE_SIZE, footCx, footCy) === null
+      && !stepDownOk(deps.grid, leadingX, enemy.y + enemy.height)
   }
 
   // Позиция спрайта, полосы HP и хитбокса. Отдельной функцией, потому что
@@ -382,7 +382,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     // HP стоят на месте.
     const shake = g.shakeMs > 0 ? (Math.floor(g.shakeMs / 30) % 2 === 0 ? 1 : -1) * C.GATEKEEPER_DOOR_SHAKE_PX : 0
     enemy.sprite.x = enemy.x + enemy.width / 2 + shake
-    enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE
+    enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
     enemy.hpBarBg.x = enemy.x
     enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
     enemy.hpBarFill.x = enemy.x
@@ -635,7 +635,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
               const dir = (toPlayer || 1) as 1 | -1
               const nextX = enemy.x + dir * C.ENEMY_CHASE_SPEED * dt
               const leadingX = dir > 0 ? nextX + enemy.width : nextX
-              if (!wallAhead(enemy, leadingX)) enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
+              if (!wallAhead(enemy, leadingX)) { climbStep(deps.grid, enemy, leadingX); enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width) }
             }
 
             // СТАРТ ЗАМАХА — условие зверя: стоп-дистанция или касание тел,
@@ -678,6 +678,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
                 enemy.investigateTimer = 0
                 enemy.investigateLookTimer = C.INVESTIGATE_LOOK_MS
               } else {
+                climbStep(deps.grid, enemy, leadingX)
                 enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
               }
             }
@@ -695,6 +696,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
             if (reachedBound || wallAhead(enemy, leadingX) || noFloorAhead(enemy, leadingX)) {
               enemy.patrolDir = dir > 0 ? -1 : 1
             } else {
+              climbStep(deps.grid, enemy, leadingX)
               enemy.x = clamp(nextX, 0, worldWidthPx - enemy.width)
             }
             enemy.facing = enemy.patrolDir

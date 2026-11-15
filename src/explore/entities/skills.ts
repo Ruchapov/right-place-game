@@ -109,6 +109,12 @@ export type SkillsDeps = {
    * забеге. Рывок в игре один — навык «Рывок» (Таран), другого нет.
    */
   dashCooldownMult: () => number
+  /**
+   * Вид заморозки (13.11.2026, entities/enemyFreeze.ts): ледяной шар включает
+   * его ровно на время своего стана. Стан (stunTimer) ставит сам скилл, как и
+   * раньше; эта функция — только вид (и продление stunTimer до max, что то же).
+   */
+  freezeTarget: (target: Enemy | Boss, ms: number) => void
   // Старт анимации каста — ТА ЖЕ closure-функция из setup() в Explore.tsx,
   // по образцу startPlayerAttack. Каст — анимация ГЕРОЯ (подмена текстур на
   // его спрайте), поэтому кадры сюда не передаются: ими владеет Explore.tsx.
@@ -1064,7 +1070,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // заморозка (пропуск AI/движения/кадров) живёт в обновлении сущности,
       // см. stunTimer в entities/enemy.ts. Не на трупе: у мёртвого врага
       // замирать нечему, а death-анимацию стан бы заморозил.
-      if (!died && stunMs > 0) enemy.stunTimer = stunMs
+      if (!died && stunMs > 0) { enemy.stunTimer = stunMs; deps.freezeTarget(enemy, stunMs) }
     }
 
     const boss = deps.boss.current
@@ -1083,7 +1089,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // врагам, а эта ветка выполняется один раз за взрыв.
     if (!blastHitAny) deps.onSkillUse(spec.id)
     // Босс станится наравне с обычным врагом (см. stunTimer в boss.ts).
-    if (!bossDied && stunMs > 0) boss.stunTimer = stunMs
+    if (!bossDied && stunMs > 0) { boss.stunTimer = stunMs; deps.freezeTarget(boss, stunMs) }
   }
 
   // Смерть снаряда С ПОСЛЕДСТВИЯМИ — одна точка на обе причины (цель и

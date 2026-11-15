@@ -1002,7 +1002,33 @@ const FINISH_EXPLORE_RETRY_DELAYS_MS = [300, 1200]
 const FINISH_ATTEMPT_TIMEOUT_MS = 20000
 const FINISH_TOTAL_BUDGET_MS = 60000
 
-export async function finishRunExplore(
+// Финиши «в полёте» (13.11.2026): «В МЕНЮ» на итогах больше не ждёт ответа
+// сервера, и финиш может ещё повторяться в фоне, когда игрок уже в меню. Пока
+// он идёт, на сервере открыт прошлый забег — старт нового получил бы отказ
+// «A run is already in progress». Меню читает счётчик (useSyncExternalStore) и
+// держит «Начать забег» до ответа.
+let finishesInFlight = 0
+const finishListeners = new Set<() => void>()
+export function finishInFlightCount(): number { return finishesInFlight }
+export function subscribeFinishInFlight(fn: () => void): () => void {
+  finishListeners.add(fn)
+  return () => { finishListeners.delete(fn) }
+}
+function bumpFinishInFlight(delta: number) {
+  finishesInFlight = Math.max(0, finishesInFlight + delta)
+  for (const fn of finishListeners) fn()
+}
+
+export async function finishRunExplore(...args: Parameters<typeof finishRunExploreRaw>): ReturnType<typeof finishRunExploreRaw> {
+  bumpFinishInFlight(1)
+  try {
+    return await finishRunExploreRaw(...args)
+  } finally {
+    bumpFinishInFlight(-1)
+  }
+}
+
+async function finishRunExploreRaw(
   token: string,
   closedEvents: number[],
   died: boolean,
@@ -1404,6 +1430,8 @@ export type RunProgressSnapshot = {
 /** Тело финиша с died:false — для снимка в срезе (см. completion выше). */
 export type RunCompletionSnapshot = {
   closedEvents: number[]
+  /** Проваленные события (13.11.2026, только Беглец) — без награды, но «сделаны». */
+  failedEvents: number[]
   killedPatrols: number[]
   brokenBreakables: number[]
   charmUsed: boolean

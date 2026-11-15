@@ -53,8 +53,11 @@ export type NcProjectileDeps = {
   /** Парируемый урон; true — герой отбил. */
   takeDamage: (amount: number, source?: DamageSource) => boolean
   dashing: MutableRefObject<boolean>
-  /** Грязь попала (не отбита) — замедлить героя. */
-  slowHero: () => void
+  /**
+   * Замедлить героя на ms (берётся больший остаток): попадание грязью — SLOW_MS,
+   * стояние в луже — MUD_PUDDLE_LINGER_MS каждый тик, пока стоит.
+   */
+  slowHero: (ms: number) => void
 }
 
 export type FireSpec = {
@@ -172,7 +175,7 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
           if (overlap) {
             remove = true
             const parried = deps.takeDamage(p.damage, p.owner)
-            if (!parried && p.kind === 'mud') deps.slowHero()
+            if (!parried && p.kind === 'mud') deps.slowHero(N.SLOW_MS)
             if (p.kind === 'clod') spawnBurst('crumbs', p.sprite.x, p.sprite.y)
           }
         }
@@ -216,15 +219,37 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
             b.g.circle(part.dx, part.dy, part.r).fill({ color: N.CLOD_CRUMB_COLOR, alpha: Math.min(1, k * 1.4) })
           }
         } else {
-          // Пятно грязи: плоский эллипс на полу, за секунду исчезает.
+          // Лужа грязи (13.11.2026): видна и на тёмных картах — тёмная охра с
+          // каймой и светлым бликом сверху, ширина 1.2 клетки; 4 с, потом плавно
+          // гаснет. Герой в ней замедлен (ниже, после отрисовки).
           const grow = Math.min(1, b.ms / 120)
-          b.g.ellipse(0, -3, 26 * grow, 7 * grow).fill({ color: N.MUD_SPLAT_COLOR, alpha: 0.85 * k })
-          b.g.ellipse(-12 * grow, -5, 7 * grow, 4 * grow).fill({ color: 0x4a3622, alpha: 0.8 * k })
-          b.g.ellipse(14 * grow, -4, 6 * grow, 3 * grow).fill({ color: 0x4a3622, alpha: 0.8 * k })
+          const left = b.life - b.ms
+          const a = left < N.MUD_PUDDLE_FADE_MS ? left / N.MUD_PUDDLE_FADE_MS : 1
+          const rx = (N.MUD_PUDDLE_W_TILES * C.TILE_SIZE) / 2 * grow
+          b.g.ellipse(0, -2, rx + 2, 9 * grow).fill({ color: N.MUD_PUDDLE_RIM_COLOR, alpha: 0.9 * a })
+          b.g.ellipse(0, -3, rx, 7 * grow).fill({ color: N.MUD_PUDDLE_COLOR, alpha: 0.95 * a })
+          b.g.ellipse(-rx * 0.25, -6, rx * 0.45, 2 * grow).fill({ color: N.MUD_PUDDLE_SHINE_COLOR, alpha: 0.75 * a })
+          b.g.ellipse(rx * 0.45, -5, rx * 0.12, 1.5 * grow).fill({ color: N.MUD_PUDDLE_SHINE_COLOR, alpha: 0.6 * a })
         }
         alive.push(b)
       }
       bursts = alive
+    }
+
+    // Герой стоит в луже — замедлен, пока стоит, и ещё MUD_PUDDLE_LINGER_MS.
+    // «Стоит» — низ его бокса у пола лужи (±8 px) и середина над её шириной.
+    if (bursts.length > 0) {
+      const hb = deps.getPlayerCombatBox()
+      const feetY = hb.y + hb.h
+      const cx = hb.x + hb.w / 2
+      for (const b of bursts) {
+        if (b.kind !== 'splat') continue
+        const rx = (N.MUD_PUDDLE_W_TILES * C.TILE_SIZE) / 2
+        if (Math.abs(feetY - b.y) <= 8 && Math.abs(cx - b.x) <= rx) {
+          deps.slowHero(N.MUD_PUDDLE_LINGER_MS)
+          break
+        }
+      }
     }
   }
 

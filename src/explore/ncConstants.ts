@@ -30,12 +30,16 @@ export function ncSheetNames(kind: NcKind): NcSheetName[] {
  * Масштаб = эта высота / высота тела на кадре 0 листа Idle (NC_BODY_H, замер по
  * альфе > 40 от верха силуэта до точки ног). Один масштаб на все листы вида.
  */
+// 13.11.2026 (проверка на телефоне): люди ростом с героя (тело героя ≈128 при
+// HERO_DRAW_H 140 клетки), а не выше; гробокопатель и кочегар чуть крупнее,
+// навозник ниже. Хитбокс, дальность (reachPx × масштаб), точки вылета, полоса
+// HP и значок оглушения — от масштаба, пересчитываются сами.
 export const NC_DRAW_H: Record<NcKind, number> = {
-  fencer: 140,
-  gravedigger: 150,
-  crossbowman: 140,
-  stoker: 165,
-  beetle: 95,
+  fencer: 128,
+  gravedigger: 135,
+  crossbowman: 128,
+  stoker: 145,
+  beetle: 75,
   serpent: 250,
   crowking: 235,
 }
@@ -120,6 +124,20 @@ export const FENCER_PARRY_GAP_MS = 800
 export const FENCER_OPEN_DMG_MULT = 1.5
 /** Героя, ударившего в блок, отталкивает и держит на месте, мс. */
 export const FENCER_BLOCK_STAGGER_MS = 300
+/**
+ * Блок фехтовальщика (13.11.2026, проверка на телефоне): лист Parry идёт
+ * 38.4 к/с, кадры block — ≈0.13 с, и следующий удар героя (кулдаун 0.5 с)
+ * всегда попадал в open (×1.5) — блока почти не было видно. Теперь он ДЕРЖИТ
+ * последний кадр block, пока не придёт следующий удар мечом или не пройдёт
+ * FENCER_BLOCK_HOLD_MS, и только потом доигрывает лист.
+ */
+export const FENCER_BLOCK_HOLD_MS = 1200
+/**
+ * Удар героя в блок ОГЛУШАЕТ героя (13.11.2026): ввод не работает вовсе,
+ * герой стоит в кадре ранения, над головой звёзды. Сразу за блоком —
+ * выпад фехтовальщика (onActionEnd), он успевает ударить оглушённого.
+ */
+export const FENCER_BLOCK_STUN_MS = 850
 /** Скорость отталкивания героя, px/кадр при 60 к/с (первые 120 мс стаггера). */
 export const FENCER_BLOCK_PUSH_SPEED = 5
 export const FENCER_BLOCK_PUSH_MS = 120
@@ -131,11 +149,29 @@ export const BURN_TICK_MS = 500
 export const BURN_TOTAL_FRAC = 0.45
 
 // --- Жук: замедление и рывок ---
-export const SLOW_MS = 2500
-export const SLOW_MULT = 0.75
+// 13.11.2026 (проверка на телефоне): замедление было слабым и невидимым —
+// стало сильнее и дольше, а на герое теперь видна грязь (Explore.tsx,
+// updateHeroStatus: бурый оттенок и капли).
+export const SLOW_MS = 3000
+export const SLOW_MULT = 0.6
 export const BEETLE_DASH_PX = 160
-/** Грязное пятно на месте падения кома, мс. */
-export const MUD_SPLAT_MS = 1000
+/**
+ * Лужа на месте падения кома (13.11.2026): живёт 4 с, последние
+ * MUD_PUDDLE_FADE_MS плавно исчезает. Герой, стоящий в ней, замедлен — пока
+ * стоит и ещё MUD_PUDDLE_LINGER_MS после. Ширина — MUD_PUDDLE_W_TILES клетки.
+ */
+export const MUD_SPLAT_MS = 4000
+export const MUD_PUDDLE_FADE_MS = 900
+export const MUD_PUDDLE_LINGER_MS = 500
+export const MUD_PUDDLE_W_TILES = 1.2
+/** Лужа: тёмная охра, сверху светлый блик — видна и на тёмном болоте. */
+export const MUD_PUDDLE_COLOR = 0x7a4f1e
+export const MUD_PUDDLE_RIM_COLOR = 0x4e3214
+export const MUD_PUDDLE_SHINE_COLOR = 0xd9a95a
+/** Герой в грязи: оттенок спрайта и капли (как искры Беглеца — Graphics). */
+export const MUD_HERO_TINT = 0xc09670
+export const MUD_DROP_COLOR = 0x6b4520
+export const MUD_DROP_ALIVE = 4
 
 // --- Снаряды ---
 /** Гравитация дуги кома и грязи — как у шипа босса (BOSS_SPIKE_GRAVITY). */

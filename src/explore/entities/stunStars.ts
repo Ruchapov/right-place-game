@@ -21,6 +21,11 @@ export type StunStarsDeps = {
   // Те же рефы, что у систем врагов и босса: владеет ими Explore.tsx.
   enemies: MutableRefObject<Enemy[]>
   boss: MutableRefObject<Boss | null>
+  /**
+   * Герой (13.11.2026, оглушён ударом в блок фехтовальщика): спрайт и сколько
+   * мс оглушения осталось (0 — не оглушён). Звёзды — над HERO_STUN_HEAD.
+   */
+  hero?: () => { sprite: { x: number; y: number; scale: { x: number; y: number }; anchor: { x: number; y: number }; texture: { width: number; height: number } } | null; stunMs: number }
 }
 
 type Halo = {
@@ -45,6 +50,50 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
   // сразу не бывает (группа Привратников, отбитая одним нажатием), а кадр
   // тикера обходится без создания узлов.
   const halos: Halo[] = []
+
+  // Отдельный значок героя — он не Enemy и не Boss.
+  let heroHalo: Halo | null = null
+  let heroMs = 0
+  function placeHero(deltaMS: number) {
+    const h = deps.hero?.()
+    const sprite = h?.sprite ?? null
+    if (!h || !sprite || h.stunMs <= 0) {
+      if (heroHalo) heroHalo.node.visible = false
+      heroMs = 0
+      return
+    }
+    if (!heroHalo) {
+      const node = new Container()
+      node.sortableChildren = true
+      const stars: Graphics[] = []
+      for (let i = 0; i < C.PARRY_STUN_STAR_COUNT; i++) {
+        const star = new Graphics(starShape)
+        node.addChild(star)
+        stars.push(star)
+      }
+      deps.worldContainer.addChild(node)
+      heroHalo = { node, stars, owner: null, ms: 0 }
+    }
+    heroMs += deltaMS
+    const halo = heroHalo
+    halo.node.visible = true
+    const head = C.HERO_STUN_HEAD
+    halo.node.x = sprite.x + (head.x - sprite.anchor.x * sprite.texture.width) * sprite.scale.x
+    halo.node.y = sprite.y + (head.y - sprite.anchor.y * sprite.texture.height) * sprite.scale.y - C.PARRY_STUN_ORBIT_LIFT
+    halo.node.scale.set(1)
+    const turn = Math.PI / 2 + (heroMs / C.PARRY_STUN_ORBIT_MS) * Math.PI * 2
+    for (let i = 0; i < halo.stars.length; i++) {
+      const angle = turn + (i / halo.stars.length) * Math.PI * 2
+      const depth = Math.sin(angle)
+      const near = (depth + 1) / 2
+      const star = halo.stars[i]
+      star.x = Math.cos(angle) * C.PARRY_STUN_ORBIT_RX
+      star.y = depth * C.PARRY_STUN_ORBIT_RY
+      star.scale.set(C.PARRY_STUN_STAR_FAR_SCALE + (1 - C.PARRY_STUN_STAR_FAR_SCALE) * near)
+      star.alpha = C.PARRY_STUN_STAR_FAR_ALPHA + (1 - C.PARRY_STUN_STAR_FAR_ALPHA) * near
+      star.zIndex = depth
+    }
+  }
 
   function isParryStunned(owner: Enemy | Boss): boolean {
     return !owner.dead && owner.parryStunTimer > 0
@@ -156,6 +205,7 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
     const boss = deps.boss.current
     // Настоятель — своя точка головы на стадию (колокол на ярме / огонь над шеей).
     if (boss && isParryStunned(boss)) place(boss, boss.nc ? boss.nc.kind : boss.abbot ? (boss.abbot.transformed ? 'abbot2' : 'abbot') : 'boss', deltaMS)
+    placeHero(deltaMS)
   }
 
   function dispose() {
@@ -167,6 +217,11 @@ export function createStunStarsSystem(deps: StunStarsDeps) {
       halo.node.destroy({ children: true })
     }
     halos.length = 0
+    if (heroHalo) {
+      deps.worldContainer.removeChild(heroHalo.node)
+      heroHalo.node.destroy({ children: true })
+      heroHalo = null
+    }
     starShape.destroy()
   }
 

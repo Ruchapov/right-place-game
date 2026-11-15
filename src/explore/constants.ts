@@ -1446,6 +1446,13 @@ export const PARRY_STUN_STAR_FAR_ALPHA = 0.75
  * ⚠️ Макушка — НЕ верх силуэта: у зверя выше головы шипы на холке, у босса —
  * шипы на спине, и по верху силуэта звёзды встали бы над спиной.
  */
+/**
+ * Оглушение ГЕРОЯ (13.11.2026, удар в блок фехтовальщика): кадр листа hurt, на
+ * котором он стоит, и макушка на нём (px клетки 394×296; замер по альфе: кадр 4
+ * — глубже всего в позе ранения, верх капюшона x≈218, y≈39).
+ */
+export const HERO_STUN_FRAME = 4
+export const HERO_STUN_HEAD = { x: 218, y: 45 }
 export const PARRY_STUN_HEAD: Record<EnemyKind | 'boss' | 'abbot' | 'abbot2' | SheetBossKind, { x: number; y: number; endX: number; endY: number; size: number }> = {
   beast: { x: 172, y: 150, endX: 168, endY: 98, size: 1 },
   zvonar: { x: 62, y: 28, endX: 68, endY: 20, size: 1 },
@@ -1727,7 +1734,10 @@ export const FIRE_SMOKE_MS = 400
  *  секунду на 1-ю октаву — 64 клетки за период образца 1.2 с). */
 export const FIRE_BOWL_WID = 0.5
 export const FIRE_ORB_WID = 0.5
-export const FIRE_NOISE_SPEED = 64 / 1.2
+// ⚠️ 13.11.2026 (проверка на телефоне): 64/1.2 ≈ 53 клетки шума в секунду (×
+// (октава+1)) — огонь шёл как из турбины. Вариант Б Андрея: в 12 раз медленнее
+// (≈4.4). Остальной шейдер не трогали. Касается и чаши, и огонька над героем.
+export const FIRE_NOISE_SPEED = 64 / 1.2 / 12
 /** Время шума закольцовано (точность float в шейдере). */
 export const FIRE_TIME_WRAP_S = 600
 /** Свечение позади огня: цвет, альфа в центре, радиус от размера огня, «дыхание». */
@@ -1745,7 +1755,6 @@ export const RUNNER_HITS = 3
 export const RUNNER_WAKE_TILES = 6
 export const RUNNER_SPEED_MULT = 0.85
 export const RUNNER_TIME_MS = 25000
-export const RUNNER_RESPAWN_MS = 5000
 /** После разворота у стены бежит мимо героя столько мс, не глядя на него. */
 export const RUNNER_PASS_MS = 1200
 export const RUNNER_GLOW_TINT = 0xfff2b0

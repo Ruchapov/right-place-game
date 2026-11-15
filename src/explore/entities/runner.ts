@@ -6,7 +6,7 @@ import * as C from '../constants'
 import { isSolid, sweepFootBlock } from '../collision'
 import { lineOfSight } from '../vision'
 import { destroyMark } from '../perception'
-import { redrawEnemyHpBar, type BeastFrames } from './enemy'
+import type { BeastFrames } from './enemy'
 
 // БЕГЛЕЦ (11.11.2026, событие 'runner', docs/explore-features.md).
 //
@@ -23,8 +23,10 @@ import { redrawEnemyHpBar, type BeastFrames } from './enemy'
 //             разворачивается и RUNNER_PASS_MS бежит мимо героя (сквозь него —
 //             тела Беглеца нет). Не атакует, шипов не боится. Таймер
 //             RUNNER_TIME_MS — HUD поверх экрана, как у обелисков.
-//   gone    — не пойман: исчез в клубе дыма, через RUNNER_RESPAWN_MS снова
-//             спит на своей точке со всеми ударами. Героя не убивает.
+//   gone    — не пойман: исчез в клубе дыма НАВСЕГДА (13.11.2026, одна попытка;
+//             прежде через 5 с снова спал на точке). Событие провалено
+//             (failEvent): трофеев нет, но «все задачи» без него выполнимы.
+//             Героя не убивает.
 // Убит — смерть зверя, труп, мана и closeEvent с наградой над трупом.
 
 export type RunnerDeps = {
@@ -42,6 +44,8 @@ export type RunnerDeps = {
   playSpriteAnim: (sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
+  /** Беглец не пойман — событие провалено (без награды, но «сделано»). */
+  failEvent: (index: number) => void
   dropMana: (worldX: number, worldY: number) => void
   smoke: (x: number, y: number, count: number, ms: number, spread: number) => void
   /** Таймер погони для HUD: целые секунды или null (нет погони). */
@@ -108,35 +112,24 @@ export function createRunnerSystem(deps: RunnerDeps) {
     deps.onHud(seconds)
   }
 
-  // Не пойман — исчез. Из enemiesRef он уходит, чтобы ни меч, ни навыки его не
-  // задевали, пока его нет; вернётся на свою точку тем же объектом.
+  // Не пойман — исчез в дыму НАВСЕГДА (13.11.2026). Из enemiesRef и из
+  // списка Беглецов он уходит, узлы уничтожаются; событие — провалено.
   function vanish(enemy: Enemy) {
     const r = enemy.runner!
     deps.smoke(enemy.x + W / 2, enemy.y + H / 2, C.RUNNER_SMOKE_COUNT, C.RUNNER_SMOKE_MS, 60)
     r.phase = 'gone'
-    r.timerMs = C.RUNNER_RESPAWN_MS
     setVisible(enemy, false)
     const i = deps.enemies.current.indexOf(enemy)
     if (i !== -1) deps.enemies.current.splice(i, 1)
-  }
-
-  function respawn(enemy: Enemy) {
-    const r = enemy.runner!
-    r.phase = 'asleep'
-    r.hitsLeft = C.RUNNER_HITS
-    r.woken = false
-    r.passMs = 0
-    enemy.x = r.homeX
-    enemy.y = r.homeY
-    enemy.vy = 0
-    enemy.hp = enemy.maxHp
-    enemy.hurtTimer = 0
-    enemy.stunTimer = 0
-    enemy.parryStunTimer = 0
-    enemy.knockMs = 0
-    redrawEnemyHpBar(enemy)
-    setVisible(enemy, true)
-    deps.enemies.current.push(enemy)
+    const k = runners.indexOf(enemy)
+    if (k !== -1) runners.splice(k, 1)
+    deps.worldContainer.removeChild(enemy.rect, enemy.sprite, enemy.hpBarBg, enemy.hpBarFill)
+    enemy.rect.destroy()
+    enemy.sprite.destroy()
+    enemy.hpBarBg.destroy()
+    enemy.hpBarFill.destroy()
+    destroyMark(enemy, deps.worldContainer)
+    deps.failEvent(enemy.eventIndex)
   }
 
   function update(dt: number, deltaMS: number, heroDead: boolean) {
@@ -172,11 +165,7 @@ export function createRunnerSystem(deps: RunnerDeps) {
         continue
       }
 
-      if (r.phase === 'gone') {
-        r.timerMs -= deltaMS
-        if (r.timerMs <= 0) respawn(enemy)
-        continue
-      }
+      if (r.phase === 'gone') continue
 
       // Лёд — пауза, как у зверя: спрайт замирает, тело не двигается. Таймер
       // погони при этом идёт: заморозить Беглеца — честный способ его поймать.

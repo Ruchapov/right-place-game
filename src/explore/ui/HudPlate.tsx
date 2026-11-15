@@ -7,6 +7,8 @@ interface HudPlateProps {
   hpTextRef: RefObject<HTMLSpanElement | null>
   maxHp: number
   eventClosed: boolean[]
+  /** Провалено (13.11.2026, Беглец не пойман): красное кольцо и красноватая иконка. */
+  eventFailed?: boolean[]
   eventKinds: EventKind[]
   /**
    * Оберег от смерти взят в забег и ЕЩЁ НЕ сработал — рисуем маленькую иконку у
@@ -36,7 +38,7 @@ const MANA_SOCKET_SIZE = `calc(${C.HP_FRAME_W} * ${C.MANA_SOCKET_D})`
 // узком экране около 4.5 px, и тень в постоянных пикселях залила бы соседей.
 const MANA_ORB_GLOW = `0 0 calc(${C.HP_FRAME_W} * 0.012) calc(${C.HP_FRAME_W} * 0.004) rgba(70,196,232,0.9)`
 
-export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventKinds, charmReady, manaRingRef, flameCarrying }: HudPlateProps) {
+export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eventFailed, eventKinds, charmReady, manaRingRef, flameCarrying }: HudPlateProps) {
   return (
     <>
       {/* HP-плита (v2) — fixed сверху-слева, safe-area aware. Несёт HP-полосу/
@@ -149,6 +151,7 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
             ровным (высота плиты считается по своей формуле, не 1:1). */}
         {C.SOCK_X.map((sockX, i) => {
           const closed = eventClosed[i]
+          const failed = eventFailed?.[i] === true
           const kind = eventKinds[i]
           return (
             <div
@@ -172,12 +175,14 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
                     width: '100%',
                     height: '100%',
                     objectFit: 'contain',
-                    opacity: closed ? 1 : 0.8,
+                    opacity: closed || failed ? 1 : 0.8,
+                    // Провал — иконка в красный тон (сепия + поворот тона + насыщенность).
+                    filter: failed ? 'sepia(1) saturate(4) hue-rotate(-35deg) brightness(0.85)' : undefined,
                     animation: kind === 'flame' && !closed && flameCarrying ? 'flameIconPulse 1.1s ease-in-out infinite' : undefined,
                   }}
                 />
               )}
-              {closed && (
+              {(closed || failed) && (
                 // Светящееся кольцо "завершено" — диаметр = иконка*RING_SCALE,
                 // центр сдвинут на (RING_DX,RING_DY) долей размера иконки.
                 // box-shadow (не filter/drop-shadow) на круглом элементе даёт
@@ -193,7 +198,7 @@ export default function HudPlate({ hpFillRef, hpTextRef, maxHp, eventClosed, eve
                     aspectRatio: '1',
                     transform: 'translate(-50%, -50%)',
                     borderRadius: '50%',
-                    border: `${C.RING_W}px solid #E8B23A`,
+                    border: `${C.RING_W}px solid ${failed ? '#E0353B' : '#E8B23A'}`,
                     boxSizing: 'border-box',
                     animation: 'eventRingPulse 1.5s ease-in-out infinite',
                     pointerEvents: 'none',

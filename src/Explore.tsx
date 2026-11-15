@@ -57,6 +57,9 @@ import type { ZvonarFrames } from './explore/entities/zvonar'
 import { createGatekeeperSystem, gatekeeperDoorBlocks, gatekeeperIsOpen, gatekeeperIsShiftingGuard } from './explore/entities/gatekeeper'
 import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar, bossBox } from './explore/entities/boss'
+import { BOSS_PERCEPTION } from './explore/perception'
+import { decayStepLift } from './explore/stepClimb'
+import { canSeePlayer } from './explore/vision'
 import { createFencerSystem, fencerSwordHit } from './explore/entities/fencer'
 import { createGravediggerSystem } from './explore/entities/gravedigger'
 import { createCrossbowmanSystem } from './explore/entities/crossbowman'
@@ -716,7 +719,7 @@ function devChestRoll(ev: EventCandidate): EventCandidate {
 // Настоятель / Змей / Король, по трети. ?boss=serpent|crowking — этот.
 function devBossKind(mapFile: string): StartExploreBossKind {
   const forced = devUrlParam('boss')
-  if (forced === 'serpent' || forced === 'crowking') return forced
+  if (forced === 'serpent' || forced === 'crowking' || forced === 'abbot' || forced === 'werewolf') return forced
   const first: StartExploreBossKind = C.ABBOT_MAP_PREFIXES.some((p) => mapFile.startsWith(p)) ? 'abbot' : 'werewolf'
   const pool: StartExploreBossKind[] = [first, 'serpent', 'crowking']
   return pool[Math.floor(Math.random() * pool.length)]
@@ -1081,9 +1084,15 @@ function ResultsScreen({
               ПОВТОРИТЬ СОХРАНЕНИЕ
             </button>
           )}
+          {/* 13.11.2026 (проверка на телефоне): «В МЕНЮ» больше НЕ заперта, пока
+              идёт сохранение — на плохой сети игрок сидел на экране итогов по
+              минуте. Ушёл в меню — финиш продолжает свои попытки в фоне
+              (finishRunExplore не отменяется размонтированием): пришёл ответ —
+              onRunComplete обновит меню, setState размонтированного экрана React
+              молча пропускает. Не дошёл вовсе — следующий вход закроет забег сам
+              (по снимку completion или как сейчас) и покажет окно прошлого забега. */}
           <button
-            onClick={saveStatus === 'pending' ? undefined : onMenu}
-            disabled={saveStatus === 'pending'}
+            onClick={onMenu}
             style={{
               padding: '12px 30px',
               borderRadius: 10,
@@ -1094,8 +1103,7 @@ function ResultsScreen({
               fontWeight: 700,
               fontSize: 'clamp(13px, 4vmin, 15px)',
               letterSpacing: '0.06em',
-              cursor: saveStatus === 'pending' ? 'default' : 'pointer',
-              opacity: saveStatus === 'pending' ? 0.5 : 1,
+              cursor: 'pointer',
             }}
           >
             В МЕНЮ
@@ -1106,16 +1114,22 @@ function ResultsScreen({
   )
 }
 
-// Проверка заморозки до появления её источника (12.11.2026): в адресе debugFreeze
-// (?debugFreeze=1, или в Telegram t.me/RightPlaceGame_bot/game?startapp=debugFreeze —
-// тогда он приходит в tgWebAppStartParam) — удар мечом замораживает врага на 2 с.
-const DEBUG_FREEZE = typeof window !== 'undefined' && /debugFreeze/.test(window.location.href)
 // Проверка обликов Портного (14.11.2026): в адресе debugSkins (?debugSkins=1,
 // или в Telegram t.me/RightPlaceGame_bot/game?startapp=debugSkins) в забеге
 // сверху по центру три кнопки — броня, удар и плащ по кругу, без покупки. Только
 // клиент: на сервер ничего не уходит, бонусы плаща в бою меняются вместе с ним
 // (снимок старта на сервере — прежний, это отладка). Клавиши 7 / 8 / 9 — то же.
 const DEBUG_SKINS = typeof window !== 'undefined' && /debugSkins/.test(window.location.href)
+
+/**
+ * Задача события сделана (13.11.2026): закрыто (с наградой) ИЛИ провалено
+ * (Беглец не пойман — без награды). Одно правило на все места, где решается
+ * «все задачи выполнены»: кнопка «Завершить вылазку», снимок финиша, выход
+ * шестерёнкой, срез при смерти.
+ */
+function eventDone(e: { closed: boolean; failed?: boolean }): boolean {
+  return e.closed || e.failed === true
+}
 
 export default function Explore({ onClose, skins, endurance, strength, agility, level, onRunComplete, mapFile: mapFileProp, token, trophies, armor, weaponDamage, attackUpgradeBonus, equippedSkills, skillLevels, heroClass, consumables, onConsumablesSpent, gear: gearProp, bootsSpeedPct }: ExploreProps) {
   // Проп задан (debug-панель) → используем его, 1:1 прежнее поведение. Проп
@@ -1330,6 +1344,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // только с финишем; сервер засчитывает их только живой вылазке.
   const questCountersRef = useRef<QuestRunCounters>(emptyQuestRunCounters())
   const [eventClosed, setEventClosed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
+  // Провалено (13.11.2026, Беглец): гнездо в HUD — красное кольцо, не жёлтое.
+  const [eventFailed, setEventFailed] = useState<boolean[]>(Array(C.EVENTS_PER_RUN).fill(false))
   // eventKinds — параллельно eventClosed (тот же индекс = то же событие), только
   // для HUD-иконок (какой эмодзи/тип рисовать) — на closed-логику не влияет.
   const [eventKinds, setEventKinds] = useState<EventKind[]>([])
@@ -1346,6 +1362,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // дороже, и у повторяющегося фона светлеют полупрозрачные края. Играть можно,
   // поэтому забег не валим, но говорим об этом плашкой (см. ниже, под HP-плитой).
   const [canvasFallback, setCanvasFallback] = useState(false)
+  // Потеря WebGL посреди забега (13.11.2026, iPhone во второй стадии
+  // Настоятеля): 'lost' — экран «Графика сбросилась», тикер стоит; 'restored'
+  // — браузер вернул контекст, можно «Продолжить». null — всё в порядке.
+  const [glState, setGlState] = useState<'lost' | 'restored' | null>(null)
+  const glResumeRef = useRef<() => void>(() => {})
   // Сверка глотков с сервером (POST /run/sip, см. sendSip). null — сбоев и
   // расхождений в этом забеге не было, плашки нет. Счётчики живут в рефе
   // sipSyncRef — его читают асинхронные ответы; state — только копия для
@@ -1378,7 +1399,6 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // начала забега и перезаписывает потерянный целиком. Три подряд — уже не
   // случайность, и игроку стоит знать, что прогресс забега на сервер не идёт.
   const progressFailStreakRef = useRef(0)
-  const [progressStalled, setProgressStalled] = useState(false)
   // Итоги забега для экрана результатов (см. ResultsScreen выше) — null,
   // пока забег идёт. Выставляется РОВНО один раз, синхронно клиентскими
   // числами (см. sendFinishExplore), и может быть заменён на авторитетные
@@ -1657,6 +1677,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   const skinsRef = useRef<RunSkins>(skins ?? DEFAULT_RUN_SKINS)
   // Окно «первый удар после парирования» плаща «Дуэль», мс (0 — окна нет).
   const parryStrikeMsRef = useRef(0)
+  // Сон босса до заставки (13.11.2026): ставит setup(), зовут damageBoss и др.
+  const bossAsleepRef = useRef<() => boolean>(() => false)
+  const wakeBossRef = useRef<(b: Boss) => void>(() => {})
   // ?debugSkins=1: перебор облика в забеге (ставит setup()) и подпись кнопок.
   const debugSkinCycleRef = useRef<(what: 'armor' | 'slash' | 'cloak') => void>(() => {})
   const [debugSkinLabel, setDebugSkinLabel] = useState('')
@@ -1710,7 +1733,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // Искра на клинке в момент отбива. Ref с замыканием, как trapHurtRef
   // ниже, и по той же причине: спрайт рождается в worldContainer, который живёт
   // ВНУТРИ setup(), а зовёт её takeDamage — она объявлена на уровне компонента.
-  const spawnParrySparkRef = useRef<() => void>(() => {})
+  const spawnParrySparkRef = useRef<(at?: { x: number; y: number }) => void>(() => {})
   // Стабильная ссылка на killPlayer (см. задачу "обелиск перестал убивать") —
   // тот же приём, что у takeDamageRef выше, для того же ticker-кода.
   const killPlayerRef = useRef<() => void>(() => {})
@@ -2224,12 +2247,15 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // победой, даже если финиш смертью не дойдёт. Задачи не выполнены — поля
     // нет вовсе (как у старого клиента).
     const eventsNow = eventsRef.current
-    const tasksDone = eventsNow.length > 0 && eventsNow.every((e) => e.closed)
+    const tasksDone = eventsNow.length > 0 && eventsNow.every(eventDone)
     if (tasksDone && deathRef.current) {
       snapshot.completion = null
     } else if (tasksDone) {
       snapshot.completion = {
         closedEvents: collectClosedEventIndices(),
+        // Проваленный Беглец (13.11.2026) — сервер принимает только события
+        // Беглеца, без награды (parseRunCompletion).
+        failedEvents: eventsNow.flatMap((e, i) => (e.failed ? [i] : [])),
         killedPatrols: [...killedPatrolsRef.current],
         brokenBreakables: [...brokenBreakablesRef.current],
         charmUsed: charmUsedRef.current,
@@ -2279,9 +2305,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         progressFailStreakRef.current = 0
         // Успех означает, что на сервере лежит ВЕСЬ прогресс забега (срез
         // накопительный, а не дельта), поэтому прежние неудачи больше ничего
-        // не значат и плашка обязана погаснуть — в отличие от плашки глотка,
-        // которая сообщает о безвозвратно потерянной записи.
-        setProgressStalled(false)
+        // не значат.
       } catch (err) {
         // Отказ ПОСЛЕ отправки финиша — штатная гонка, та же и с теми же двумя
         // кодами, что у глотка выше (409 — финиш ещё пишет, 400 'No active
@@ -2309,7 +2333,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // Три подряд — это уже не случайная потеря пакета, а нерабочая связь с
         // сервером: закрытие приложения сейчас обойдётся игроку в весь рост
         // статов за забег, и об этом стоит сказать.
-        if (progressFailStreakRef.current >= PROGRESS_FAIL_STREAK_FOR_PLAQUE) setProgressStalled(true)
+        // ⚠️ 13.11.2026 (решение Андрея): плашку игроку НЕ показываем вовсе —
+        // она пугала посреди боя, а сделать с ней игрок ничего не может. Счёт
+        // серий остался — громкая строка в консоль на третьей неудаче подряд.
+        if (progressFailStreakRef.current === PROGRESS_FAIL_STREAK_FOR_PLAQUE) {
+          console.error(`Explore: /run/progress — ${PROGRESS_FAIL_STREAK_FOR_PLAQUE} среза подряд не дошли до сервера`)
+        }
       }
     }).catch((unexpected) => {
       // Брошено ВНЕ try выше (из самого catch) — звено всё равно обязано
@@ -2374,7 +2403,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // чтобы брошенный после смерти забег вход не засчитал пройденным. Не по
     // runCompleteFiredRef: последнее событие и смерть бывают в одном тике, а
     // снимок уже ушёл срезом из closeEvent.
-    if (eventsRef.current.length > 0 && eventsRef.current.every((e) => e.closed)) sendProgress()
+    if (eventsRef.current.length > 0 && eventsRef.current.every(eventDone)) sendProgress()
     deathHoldRef.current = 0
     // Огонёк Носителя огня просто исчезает (11.11.2026).
     flameCarryRef.current = false
@@ -2828,6 +2857,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     let burnTickDamage = 0
     let staggerMsLeft = 0
     let staggerDir: 1 | -1 = 1
+    // Оглушение ГЕРОЯ ударом в блок фехтовальщика (13.11.2026): ввода нет вовсе,
+    // герой стоит в кадре ранения, над головой звёзды (stunStars, deps.hero).
+    let heroStunMs = 0
     let igniteHero: (hitDamage: number) => void = () => {}
     let manaSystem: ReturnType<typeof createManaSystem> | null = null
     let stunStarsSystem: ReturnType<typeof createStunStarsSystem> | null = null
@@ -2851,6 +2883,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // Листы героя с перекрашенным плащом (Портной): своих текстур нет в кэше
     // Assets, и app.destroy их не снимет — уничтожаются в cleanup.
     const cloakBaked: RenderTexture[] = []
+    // Перерисовать плащ после возврата WebGL (нарисованное в видеопамяти теряется).
+    let cloakRebake: ((r: NonNullable<typeof app>['renderer']) => Promise<void>) | null = null
+    let glUnbind: (() => void) | null = null
     let debugSkinUnbind: (() => void) | null = null
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
@@ -3540,6 +3575,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         ? Assets.load<Texture>(C.BRAZIER_SRC) : Promise.resolve(null)
       brazierLoad.catch(() => {})
       setEventClosed(Array(chosenEvents.length).fill(false))
+      setEventFailed(Array(chosenEvents.length).fill(false))
       setEventKinds(chosenEvents.map((ev) => ev.kind))
 
       // Награда КАЖДОГО события, разобранная один раз здесь: и серверный путь, и
@@ -3656,6 +3692,39 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         )
       }
       setCanvasFallback(onCanvasRenderer)
+
+      // ПОТЕРЯ WebGL (13.11.2026). На iPhone во второй стадии Настоятеля
+      // видеопамять кончалась, контекст терялся — экран чёрный, HUD живой,
+      // обработчика не было. Pixi сам зовёт preventDefault (значит, браузер
+      // может вернуть контекст) и после возврата заливает картинки из файлов
+      // заново. Здесь: тикер стоит, игроку — экран «Графика сбросилась»;
+      // вернулся контекст — плащ перерисовывается, и можно «Продолжить»; иначе
+      // «В меню» — как выход шестерёнкой.
+      if (app.renderer.type === RendererType.WEBGL) {
+        const canvasEl = app.canvas
+        const onLost = (ev: Event) => {
+          ev.preventDefault()
+          console.error('Explore: WebGL-контекст потерян (видеопамять?) — забег на паузе')
+          app?.ticker.stop()
+          setGlState('lost')
+        }
+        const onRestored = () => {
+          console.warn('Explore: WebGL-контекст восстановлен')
+          const done = () => { if (!cancelled) setGlState('restored') }
+          if (cloakRebake && app) cloakRebake(app.renderer).then(done, (e) => { console.error('Explore: плащ не перерисовался', e); done() })
+          else done()
+        }
+        canvasEl.addEventListener('webglcontextlost', onLost, false)
+        canvasEl.addEventListener('webglcontextrestored', onRestored, false)
+        glUnbind = () => {
+          canvasEl.removeEventListener('webglcontextlost', onLost)
+          canvasEl.removeEventListener('webglcontextrestored', onRestored)
+        }
+        glResumeRef.current = () => {
+          setGlState(null)
+          if (!finishExploreSentRef.current) app?.ticker.start()
+        }
+      }
 
       // Параллакс-фон (2 слоя, far/mid) — рисуется ДО worldContainer (позади
       // карты) и НЕ внутри него, иначе двигался бы 1:1 с картой без эффекта
@@ -3937,6 +4006,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         startPlayerAttack,
         // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
         startPlayerDash,
+        // Ледяной шар (13.11.2026) — вид заморозки на время его стана. Систему
+        // создают позже скиллов, поэтому через замыкание: пока её нет — без вида.
+        freezeTarget: (target, ms) => { if (!('runner' in target && target.runner)) enemyFreezeSystem?.freeze(target, ms) },
         dashCooldownMult: () => 1 - cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).dashCooldownCutFrac,
         // Тоже hoisted-функция, объявленная ниже (см. комментарий выше).
         startPlayerCast,
@@ -4111,6 +4183,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         worldContainer,
         enemies: enemiesRef,
         boss: bossRef,
+        hero: () => ({ sprite: heroSpriteRef.current, stunMs: heroStunMs }),
       })
 
       // Все листы спрайтов дожидаются ЗДЕСЬ, одним await: общие (стартовали в
@@ -4138,10 +4211,33 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
         const r = await bakeHeroCloak(app!.renderer, set, color)
         cloakBaked.push(...r.baked)
+        cloakRebake = r.rebake
         return r.hero
       }
       const heroSet = await bakeHeroSet(assets.hero, skinsRef.current.cloak)
       if (cancelled) return
+      // Листы БОССА — в видеопамять СЕЙЧАС, на
+      // экране подготовки, а не в кадре первого показа (13.11.2026: превращение
+      // Настоятеля впервые рисовало Abbot_Transform и Abbot2_* посреди боя, и
+      // iPhone терял WebGL на этом рывке памяти). Только WebGL.
+      if (app.renderer.type === RendererType.WEBGL) {
+        const seen = new Set<unknown>()
+        const visit = (v: unknown, depth: number) => {
+          if (depth > 5 || v === null || typeof v !== 'object') return
+          if (v instanceof Texture) {
+            if (!seen.has(v.source)) {
+              seen.add(v.source)
+              try { (app!.renderer.texture as unknown as { initSource: (s: unknown) => void }).initSource(v.source) } catch (e) { console.warn('Explore: лист не загрузился в видеопамять заранее', e) }
+            }
+            return
+          }
+          for (const x of Array.isArray(v) ? v : Object.values(v)) visit(x, depth + 1)
+        }
+        // Только листы босса: врагов «наперёд» не грузим — это подняло бы пик
+        // видеопамяти (замер: +≈200 МБ на C2), а их листы и так малы и
+        // показываются с первых секунд.
+        visit([eventAssets.boss, eventAssets.abbot, eventAssets.nc.serpent, eventAssets.nc.crowking], 0)
+      }
       // let, а не const: ?debugSkins=1 подменяет листы героя прямо в забеге
       // (swapHeroSet ниже), и все ветки тикера обязаны видеть новые массивы.
       let idleFrames = heroSet.idle
@@ -4213,7 +4309,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       smokeSystem = createSmokePuffSystem({ parent: worldContainer })
       const smoke = smokeSystem
       fireSystem = createFireSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL })
-      enemyFreezeSystem = createEnemyFreezeSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL })
+      enemyFreezeSystem = createEnemyFreezeSystem({ parent: worldContainer, webgl: app.renderer.type === RendererType.WEBGL, bossBox })
       const glowForRunner = eliteGlowSystem
       runnerSystem = createRunnerSystem({
         phys,
@@ -4231,6 +4327,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         smoke: (x, y, count, ms, spread) => smoke.spawn(x, y, count, ms, spread),
         onHud: (seconds) => setRunnerHudSeconds(seconds),
+        failEvent,
       })
       setRunnerHudSeconds(null)
       reflectGlowSystem = createReflectGlowSystem({ worldContainer, getHero: () => heroSpriteRef.current })
@@ -4550,6 +4647,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       const embers = new Graphics()
       worldContainer.addChild(embers)
       const emberParts: { x: number; y: number; vx: number; vy: number; ms: number; life: number }[] = []
+      // Грязь навозника на герое (13.11.2026): бурый оттенок спрайта и 3–4 капли,
+      // падающие с него, пока он замедлен. Пул как у искр — одна Graphics.
+      const mudDrops = new Graphics()
+      worldContainer.addChild(mudDrops)
+      const mudParts: { x: number; y: number; vy: number; ms: number; life: number }[] = []
+      let mudShown = false
       igniteHero = (hitDamage: number) => {
         if (deathRef.current) return
         burnMsLeft = N.BURN_MS
@@ -4559,6 +4662,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       function updateHeroStatus(deltaMS: number) {
         slowMsLeft = Math.max(0, slowMsLeft - deltaMS)
         staggerMsLeft = Math.max(0, staggerMsLeft - deltaMS)
+        heroStunMs = deathRef.current ? 0 : Math.max(0, heroStunMs - deltaMS)
         const burning = burnMsLeft > 0 && !deathRef.current
         if (burning) {
           burnMsLeft = Math.max(0, burnMsLeft - deltaMS)
@@ -4577,10 +4681,32 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           burnMsLeft = 0
           burnTickMs = 0
         }
-        if (burning !== burnShown) {
+        const muddy = slowMsLeft > 0 && !deathRef.current
+        if (burning !== burnShown || muddy !== mudShown) {
           burnShown = burning
+          mudShown = muddy
           if (burnFilter) hero.filters = burning ? [burnFilter] : null
-          else hero.tint = burning ? 0xffb070 : 0xffffff
+          // Оттенок: без фильтра горение — тёплый, иначе грязь — бурый.
+          hero.tint = burning && !burnFilter ? 0xffb070 : muddy ? N.MUD_HERO_TINT : 0xffffff
+        }
+        if (muddy && mudParts.length < N.MUD_DROP_ALIVE && Math.random() < deltaMS / 140) {
+          mudParts.push({
+            x: hero.x + (Math.random() - 0.5) * 34,
+            y: hero.y - 20 - Math.random() * 60,
+            vy: 20 + Math.random() * 40,
+            ms: 0,
+            life: 450 + Math.random() * 250,
+          })
+        }
+        mudDrops.clear()
+        for (let i = mudParts.length - 1; i >= 0; i--) {
+          const p = mudParts[i]
+          p.ms += deltaMS
+          if (p.ms >= p.life) { mudParts.splice(i, 1); continue }
+          p.vy += 900 * deltaMS / 1000
+          p.y += (p.vy * deltaMS) / 1000
+          const k = 1 - p.ms / p.life
+          mudDrops.ellipse(p.x, p.y, 1.8, 2.6).fill({ color: N.MUD_DROP_COLOR, alpha: 0.9 * k })
         }
         if (burning && burnFilter) {
           burnTimeMs += deltaMS
@@ -4624,7 +4750,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // потом removeChild + destroy. Своего списка, как у rewardFloatsRef, он не
       // требует — анимацию крутит сам Pixi (autoUpdate), а снять спрайт хватает
       // одного onComplete.
-      spawnParrySparkRef.current = () => {
+      spawnParrySparkRef.current = (at) => {
         const heroSprite = heroSpriteRef.current
         if (!heroSprite) return
         const scaleMag = C.HERO_DRAW_H / idleFrames[0].height
@@ -4642,8 +4768,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         const offsetY = (bladeY - C.HERO_BLOCK_CELL_H) * scaleMag
         const spark = new AnimatedSprite(parrySparkFrames)
         spark.anchor.set(0.5, 0.5)
-        spark.x = heroSprite.x + offsetX
-        spark.y = heroSprite.y + offsetY
+        // Точка задана (удар в блок фехтовальщика) — искра там, где сошлись
+        // клинки, а не на клинке листа блока героя (он в этот миг не в блоке).
+        spark.x = at ? at.x : heroSprite.x + offsetX
+        spark.y = at ? at.y : heroSprite.y + offsetY
         spark.scale.set(scaleMag * C.PARRY_SPARK_SCALE)
         // Альфа в этом арте = яркость, поэтому 'add': при обычном смешивании
         // вокруг блика был бы тёмный квадрат.
@@ -4764,7 +4892,6 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       setSipSync(null)
       progressSentRef.current = null // сброс на случай повторного запуска setup()
       progressFailStreakRef.current = 0 // сброс на случай повторного запуска setup()
-      setProgressStalled(false)
       setRunResult(null) // сброс на случай повторного запуска setup()
       setSaveStatus('pending') // сброс на случай повторного запуска setup()
       // Мана — на забег: каждый начинается с полного запаса, прошлый остаток
@@ -4949,7 +5076,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         getPlayerCombatBox,
         takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         dashing: dashingRef,
-        slowHero: () => { slowMsLeft = N.SLOW_MS },
+        slowHero: (ms) => { slowMsLeft = Math.max(slowMsLeft, ms) },
       })
       const ncDeps: NcEnemyDeps = {
         trapBlocks: (e, leadX, feetY) => trapsSystem?.blocksStep(e, leadX, feetY) ?? false,
@@ -5902,7 +6029,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           next[index] = true
           return next
         })
-        if (eventsRef.current.every((e) => e.closed)) {
+        if (eventsRef.current.every(eventDone)) {
           // Все события закрыты — но что дальше, решает НЕ это место, а
           // конец тика, и только для живого героя (см. allEventsClosed у
           // объявления и проверку в самом конце тикера). До 12.10.2026 финиш
@@ -5926,6 +6053,23 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // ещё в пути, когда уйдёт финиш, — это штатная гонка: sendProgress
         // не шлёт после финиша, а отказ 409/400 после него молча пишет в log
         // (см. там же); финиш свой 409 повторяет сам.
+        sendProgress()
+      }
+
+      // Событие провалено (13.11.2026, Беглец не пойман за отведённое время):
+      // без награды и без всплывашки, в closedEvents не идёт, но задача
+      // считается сделанной (eventDone) — завершить вылазку можно. Гнездо в
+      // HUD — красное. Срез — как у закрытия: вдруг это последняя задача.
+      function failEvent(index: number) {
+        const ev = eventsRef.current[index]
+        if (!ev || ev.closed || ev.failed) return
+        ev.failed = true
+        setEventFailed((prev) => {
+          const next = [...prev]
+          next[index] = true
+          return next
+        })
+        if (eventsRef.current.every(eventDone)) allEventsClosed = true
         sendProgress()
       }
 
@@ -6118,9 +6262,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           if (via === 'sword') {
             const r = fencerSwordHit(enemy, performance.now())
             if (r === 'block') {
-              spawnParrySparkRef.current()
-              staggerMsLeft = N.FENCER_BLOCK_STAGGER_MS
               staggerDir = phys.x + C.PLAYER_WIDTH / 2 >= enemy.x + enemy.width / 2 ? 1 : -1
+              // Искра — между героем и фехтовальщиком, на высоте груди.
+              const heroFront = staggerDir === 1 ? phys.x : phys.x + C.PLAYER_WIDTH
+              const foeFront = staggerDir === 1 ? enemy.x + enemy.width : enemy.x
+              spawnParrySparkRef.current({ x: (heroFront + foeFront) / 2, y: enemy.y + enemy.height * 0.35 })
+              staggerMsLeft = N.FENCER_BLOCK_STAGGER_MS
+              // Оглушение (13.11.2026): поверх отброса; замах и каст рвутся.
+              heroStunMs = N.FENCER_BLOCK_STUN_MS
+              attackingRef.current = false
+              castingRef.current = false
               return false
             }
             if (r === 'open') amount = Math.floor(amount * N.FENCER_OPEN_DMG_MULT)
@@ -6152,9 +6303,6 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         enemy.investigateX = sourceX
         enemy.investigateTimer = C.INVESTIGATE_MS
         enemy.investigateLookTimer = 0
-        // ?debugFreeze=1 (12.11.2026): удар мечом по живому — заморозка на 2 с
-        // (entities/enemyFreeze.ts; источника в игре пока нет). Беглеца не морозим.
-        if (DEBUG_FREEZE && via === 'sword' && enemy.hp > 0 && !enemy.runner) enemyFreezeSystem?.freeze(enemy, C.FREEZE_DEFAULT_MS)
         if (enemy.hp <= 0) {
           // Смерть — высший приоритет, перебивает hurt/attack/windup
           // немедленно. Само удаление/закрытие события ПЕРЕНЕСЕНО в
@@ -6229,6 +6377,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (boss.nc?.kind === 'crowking') crowKingSystem?.onHit(boss)
         accumulator.current += Math.min(amount, boss.hp)
         boss.hp = Math.max(0, boss.hp - amount)
+        // Удар по спящему боссу (навык издалека) будит его заставкой (13.11.2026).
+        if (boss.hp > 0) wakeBossRef.current(boss)
         // Расследование — та же роль и та же причина, что у damageEnemy выше.
         boss.investigateX = sourceX
         boss.investigateTimer = C.INVESTIGATE_MS
@@ -6698,12 +6848,27 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // стояла в момент входа в зону, к боссу с приближением и обратно.
       let bossIntroMs: number | null = null
       let bossIntroPlayed = false
+      // БОСС СПИТ ДО ЗАСТАВКИ (13.11.2026, проверка на телефоне): видит он с 20
+      // клеток, а заставка включалась с 7 — Змей успевал нырнуть, и имя всплывало
+      // над пустым полом. Пока заставка не сыграна, живой босс не обновляется
+      // вовсе (ни восприятия, ни шагов, ни атак, ни ныряния) — стоит в idle
+      // (анимацию крутит сам Pixi). Будят его: вход героя в зону заставки, то,
+      // что он в обычном режиме ЗАМЕТИЛ бы героя (тот же canSeePlayer с его
+      // BOSS_PERCEPTION), и любой урон по нему (damageBoss) — что раньше.
+      // Мёртвого (убит навыком издалека одним ударом) не держим: его смерть
+      // доигрывает обычное обновление.
+      const bossAsleep = (): boolean => {
+        const b = bossRef.current
+        return !bossIntroPlayed && b !== null && !b.dead && b.hp > 0
+      }
+      bossAsleepRef.current = bossAsleep
       const bossIntroFrom = { x: 0, y: 0, s: 1 }
       const setTouchControlsHidden = (hidden: boolean) => {
         const tc = document.querySelector<HTMLElement>('[data-touch-controls]')
         if (tc) tc.style.visibility = hidden ? 'hidden' : ''
       }
       const startBossIntro = (b: Boss) => {
+        if (bossIntroPlayed) return
         bossIntroPlayed = true
         bossIntroMs = 0
         bossIntroSkipRef.current = false
@@ -6716,6 +6881,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (el) { el.dataset.on = '1'; el.style.display = 'block' }
         // Боевые кнопки на время заставки прячутся — титр внизу, а ввода всё равно нет.
         setTouchControlsHidden(true)
+      }
+      wakeBossRef.current = (b: Boss) => {
+        if (bossAsleep() && !tutorialPausedRef.current && !deathRef.current) startBossIntro(b)
+        // Под подсказкой обучения заставку не начинаем, но и спать дальше
+        // ударенный босс не должен — заставки тогда не будет вовсе.
+        else if (bossAsleep()) { bossIntroPlayed = true; restartBossTimers(b) }
       }
       const endBossIntro = () => {
         bossIntroMs = null
@@ -6794,6 +6965,18 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
         // Подсказка обучения открыта — игра на паузе (кнопка «Понятно» снимает).
         if (tutorialPausedRef.current) return
+        // Герой оглушён (удар в блок фехтовальщика): никакого ввода — ни шага,
+        // ни прыжка, ни удара, ни блока, ни навыков, ни зелья. Нажатия гасятся,
+        // а не копятся: после оглушения не должно выстрелить нажатое в нём.
+        if (heroStunMs > 0) {
+          attackPressedRef.current = false
+          jumpPressedRef.current = false
+          jumpBufferRef.current = 0
+          dodgePressedRef.current = false
+          drinkPressedRef.current = false
+          skill1PressedRef.current = false
+          skill2PressedRef.current = false
+        }
         const dt = ticker.deltaTime
         const startX = phys.x
         const startY = phys.y
@@ -6887,7 +7070,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // должна ездить по карте. Нужная скорость — НОЛЬ, а ноль heroLocked уже
         // умеет. Заодно это замораживает facing (тот же гейт ниже): развернуться
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
-        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current || staggerMsLeft > 0
+        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current || staggerMsLeft > 0 || heroStunMs > 0
         // Грязь жука замедляет на SLOW_MULT (09.11.2026).
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED * bootsSpeedMult * (slowMsLeft > 0 ? N.SLOW_MULT : 1)
         // Удар в блок фехтовальщика: первые FENCER_BLOCK_PUSH_MS героя относит
@@ -7381,15 +7564,20 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // получить его физический шаг сразу, не на следующем кадре).
         // ?. — системы босса нет в забеге без босса (его листы туда не грузятся,
         // см. создание bossSystem выше); обновлять тогда нечего.
-        bossSystem?.update(dt, ticker.deltaMS)
+        // Ступень в клетку (13.11.2026, stepClimb.ts): картинка врага догоняет
+        // тело, вставшее на ступень, — одно затухание на всех, раз за тик.
+        for (const en of enemiesRef.current) decayStepLift(en, ticker.deltaMS)
+        // Спящий до заставки босс (13.11.2026) не обновляется — см. bossAsleep.
+        const bossSleeping = bossAsleep()
+        if (!bossSleeping) bossSystem?.update(dt, ticker.deltaMS)
         // Настоятель — на том же месте кадра; в забеге есть только один из двух.
-        abbotSystem?.update(dt, ticker.deltaMS)
+        if (!bossSleeping) abbotSystem?.update(dt, ticker.deltaMS)
         // Новые враги, Тень, Змей, Король и их снаряды (09.11.2026) — тот же
         // список врагов и тот же босс; снаряды — после стрелков, в том же кадре.
         for (const k of Object.keys(ncEnemySystems) as NcKind[]) ncEnemySystems[k]!.update(dt, ticker.deltaMS)
         shadowSystem?.update(dt, ticker.deltaMS)
-        serpentSystem?.update(dt, ticker.deltaMS)
-        crowKingSystem?.update(dt, ticker.deltaMS)
+        if (!bossSleeping) serpentSystem?.update(dt, ticker.deltaMS)
+        if (!bossSleeping) crowKingSystem?.update(dt, ticker.deltaMS)
         ncProjectiles?.update(ticker.deltaMS)
         // Толчки Тарана и Телекинеза, потом ловушки (13.11.2026): после систем
         // врагов — враг, влетевший в ловушку в этом кадре, ранится в нём же.
@@ -7687,6 +7875,14 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           parryingRef.current = false
           parryWindowRef.current = 0
           hurtTimerRef.current = 0 // в воздухе — прыжок, hurt не тянем на землю
+        } else if (heroStunMs > 0) {
+          // Оглушён (удар в блок фехтовальщика) — стоит на кадре ранения, как
+          // оглушённый враг на кадре позы. Удар, пришедший в оглушении, своего
+          // хитстана поверх не рисует — поза та же.
+          hurtTimerRef.current = 0
+          hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+          if (hero.textures !== hurtFrames) hero.textures = hurtFrames
+          if (hero.playing || hero.currentFrame !== C.HERO_STUN_FRAME) hero.gotoAndStop(C.HERO_STUN_FRAME)
         } else if (hurtTimerRef.current > 0) {
           hurtTimerRef.current = Math.max(0, hurtTimerRef.current - ticker.deltaMS)
           hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
@@ -7962,7 +8158,15 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             const box = bossBox(b)
             const dx = Math.abs(player.x + player.width / 2 - (box.x + box.w / 2))
             const dy = Math.abs(player.y + player.height - (box.y + box.h))
-            if (dx < C.BOSS_INTRO_ZONE_TILES_X * C.TILE_SIZE && dy < C.BOSS_INTRO_ZONE_TILES_Y * C.TILE_SIZE) startBossIntro(b)
+            // Что раньше: герой в зоне заставки — или босс в обычном режиме
+            // заметил бы его (тем же зрением, что у его AI).
+            const pb = getPlayerCombatBox()
+            const wouldSee = canSeePlayer({
+              grid, ex: box.x, ey: box.y, ew: box.w, eh: box.h, facing: b.facing,
+              px: pb.x, py: phys.y, pw: pb.w, ph: C.PLAYER_HEIGHT,
+              viewTiles: BOSS_PERCEPTION.viewTiles, senseBehindPx: BOSS_PERCEPTION.senseBehindPx,
+            })
+            if (wouldSee || (dx < C.BOSS_INTRO_ZONE_TILES_X * C.TILE_SIZE && dy < C.BOSS_INTRO_ZONE_TILES_Y * C.TILE_SIZE)) startBossIntro(b)
           }
         }
         // ОБУЧЕНИЕ: раз в TUTORIAL_SCAN_MS — что впервые попало в кадр. После
@@ -8130,6 +8334,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Перекрашенные листы героя — свои текстуры, кэш Assets их не держит.
       for (const t of cloakBaked) t.destroy(true)
       cloakBaked.length = 0
+      glUnbind?.()
+      glUnbind = null
       debugSkinUnbind?.()
       debugSkinUnbind = null
       debugSkinCycleRef.current = () => {}
@@ -8282,6 +8488,34 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           ниже) — игрок его не видит, что и требовалось по смыслу задачи. */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Потеря WebGL (13.11.2026): вместо чёрного экрана — объяснение и выход. */}
+      {glState !== null && !runResult && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 3000, background: 'rgba(13,8,32,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ maxWidth: 340, textAlign: 'center', color: Theme.textMain, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ fontFamily: C.FONT_DISPLAY, fontSize: 20, color: Theme.glowCore }}>Графика сбросилась</div>
+            <div style={{ fontSize: 13, lineHeight: 1.45, color: Theme.textDim }}>
+              {glState === 'lost'
+                ? 'Телефону не хватило видеопамяти, и картинка пропала. Подожди пару секунд — она может вернуться. Или выйди в меню: заработанное сохранится, как при выходе из вылазки.'
+                : 'Картинка вернулась. Можно продолжать.'}
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button disabled={glState !== 'restored'} onClick={() => glResumeRef.current()}
+                style={{ minHeight: 44, padding: '0 18px', borderRadius: 10, border: `2px solid ${Theme.glowEdge}`, background: glState === 'restored' ? Theme.glowCore : Theme.niche, color: glState === 'restored' ? Theme.appBg : Theme.textDim, fontFamily: C.FONT_DISPLAY, fontWeight: 700 }}>
+                Продолжить
+              </button>
+              <button onClick={() => {
+                const tasksDone = eventsRef.current.length > 0 && eventsRef.current.every(eventDone)
+                setGlState(null)
+                sendFinishExplore(!(tasksDone && !deathRef.current))
+              }}
+                style={{ minHeight: 44, padding: '0 18px', borderRadius: 10, border: `2px solid ${Theme.glowEdge}`, background: Theme.nicheDeep, color: Theme.glowCore, fontFamily: C.FONT_DISPLAY, fontWeight: 700 }}>
+                В меню
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ?debugSkins=1 (Портной): перебор облика в забеге — только отладка. */}
       {DEBUG_SKINS && ready && (
         <div style={{ position: 'absolute', top: 'calc(var(--rp-safe-top) + 84px)', left: '50%', transform: 'translateX(-50%)', zIndex: 30, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
@@ -8386,7 +8620,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           кнопка «Завершить вылазку» (31.10.2026). Одна колонка, чтобы кнопка
           вставала ПОД плашкой, а не на неё. Ниже плиты и шестерёнки, выше
           боевых кнопок (они от низа экрана) — в обоих положениях телефона. */}
-      {(sipSync || progressStalled || canvasFallback || (ready && finishPhase === 'ready')) && (() => {
+      {(sipSync || canvasFallback || (ready && finishPhase === 'ready')) && (() => {
         const desync = sipSync !== null && (sipSync.limitRejected || sipSync.mismatched > 0)
         const color = desync ? '#E0353B' : '#F08A24'
         return (
@@ -8404,7 +8638,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               pointerEvents: 'none',
             }}
           >
-            {(sipSync || progressStalled || canvasFallback) && <div
+            {(sipSync || canvasFallback) && <div
               style={{
                 maxWidth: 'calc(100vw - 16px)',
                 boxSizing: 'border-box',
@@ -8427,10 +8661,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               {sipSync && sipSync.failed > 0 && <div>⚠ Глоток не сохранён на сервере ({sipSync.failed})</div>}
               {sipSync && sipSync.limitRejected && <div>РАССИНХРОН: сервер отказал по лимиту глотков — клиент насчитал иначе</div>}
               {sipSync && sipSync.mismatched > 0 && <div>РАССИНХРОН: сервер насчитал выпитое иначе ({sipSync.mismatched})</div>}
-              {/* Срезы прогресса (см. sendProgress): гаснет сама, как только
-                  срез дойдёт, — успешный срез несёт ВЕСЬ прогресс забега, и
-                  прежние неудачи перестают что-либо значить. */}
-              {progressStalled && <div>⚠ Прогресс забега не уходит на сервер — выход сейчас потеряет рост статов</div>}
+              {/* Плашки «прогресс не уходит на сервер» больше нет (13.11.2026,
+                  решение Андрея) — только console.error в sendProgress. */}
             </div>}
             {ready && finishPhase === 'ready' && (
               <button
@@ -8615,17 +8847,19 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         </div>
       )}
 
-      {/* Таймер Беглеца (11.11.2026) — то же место и тот же вид, что у
-          обелисков, плюс иконка события; если оба идут разом — под таймером
-          обелисков. Тапы не ловит. */}
+      {/* Таймер Беглеца (11.11.2026; 13.11.2026 — крупнее и на виду: на
+          телефоне его не заметили в узкой щели между плитой HP и шестерёнкой).
+          По центру экрана сразу под плитой HP, цифры крупнее обелисковых,
+          последние 10 с — красные и пульсируют. Появляется с первого тика
+          бегства (onHud). Тапы не ловит. */}
       {ready && runnerHudSeconds !== null && (
         <div
           data-runner-hud=""
           style={{
             position: 'fixed',
-            top: `calc(var(--rp-safe-top, 0px) + ${obeliskHud?.active ? 62 : 6}px)`,
-            left: `calc(var(--rp-safe-left, 0px) + 8px + ${C.HP_FRAME_W} + 8px)`,
-            right: `calc(var(--rp-safe-right, 0px) + ${C.SETTINGS_BTN_RIGHT + C.SETTINGS_BTN_SIZE + 8}px)`,
+            top: `calc(var(--rp-safe-top, 0px) + 6px + ${C.HP_FRAME_H} + ${obeliskHud?.active ? 52 : 10}px)`,
+            left: 'var(--rp-safe-left, 0px)',
+            right: 'var(--rp-safe-right, 0px)',
             zIndex: 1001,
             display: 'flex',
             flexDirection: 'row',
@@ -8639,12 +8873,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             src={C.EVENT_ICON_SRC.runner}
             alt=""
             draggable={false}
-            style={{ width: 'clamp(22px, 7vmin, 34px)', height: 'clamp(22px, 7vmin, 34px)', objectFit: 'contain', flexShrink: 0 }}
+            style={{ width: 'clamp(30px, 9vmin, 44px)', height: 'clamp(30px, 9vmin, 44px)', objectFit: 'contain', flexShrink: 0 }}
           />
           <div
             style={{
               fontFamily: C.FONT_DISPLAY,
-              fontSize: 'clamp(20px, 6vmin, 34px)',
+              fontSize: 'clamp(30px, 9.5vmin, 46px)',
               fontWeight: 900,
               letterSpacing: '0.02em',
               lineHeight: 1,
@@ -8664,6 +8898,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         hpTextRef={hpTextRef}
         maxHp={maxHp}
         eventClosed={eventClosed}
+        eventFailed={eventFailed}
         eventKinds={eventKinds}
         charmReady={charmReady}
         // Узел гнёзд появился (или пересоздан) — сразу красим его по запасу:
@@ -8686,7 +8921,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           выполнены, дособирание не отнимает заработанного). */}
       <SettingsPanel mapFile={mapFile} onSelectMap={setMapFile} invincible={invincible} onToggleInvincible={setInvincible}
         onClose={() => {
-          const tasksDone = eventsRef.current.length > 0 && eventsRef.current.every((e) => e.closed)
+          const tasksDone = eventsRef.current.length > 0 && eventsRef.current.every(eventDone)
           sendFinishExplore(!(tasksDone && !deathRef.current))
         }}
         trophies={trophies} runTrophies={() => trophiesEarnedRef.current} tasksDone={finishPhase !== 'none'} />
