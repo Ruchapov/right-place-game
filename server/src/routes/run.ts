@@ -4317,7 +4317,19 @@ export function parseRunCompletion(raw: unknown, run: ActiveExploreRun): RunComp
   if (!Array.isArray(r.closedEvents)) return { kind: 'malformed', reason: 'closedEvents' }
   const closed = parseClosedEventIndices(r.closedEvents, run)
   if (closed.length !== r.closedEvents.length) return { kind: 'malformed', reason: 'closedEvents' }
-  if (closed.length !== run.events.length) return { kind: 'malformed', reason: 'not all events closed' }
+  // Проваленный Беглец (13.11.2026): одна попытка — не пойман за 25 с, исчез
+  // навсегда. Событие «выполнено без награды»: в closedEvents его нет (сервер
+  // за него ничего не платит), а задачи забега без него всё равно «все». Клиент
+  // называет такие индексы в failedEvents; принимаются ТОЛЬКО события Беглеца и
+  // только не закрытые. Поля нет — клиент старше, проваленных нет.
+  let failed: number[] = []
+  if (r.failedEvents !== undefined) {
+    if (!Array.isArray(r.failedEvents)) return { kind: 'malformed', reason: 'failedEvents' }
+    failed = parseClosedEventIndices(r.failedEvents, run)
+    if (failed.length !== r.failedEvents.length) return { kind: 'malformed', reason: 'failedEvents' }
+    if (failed.some((i) => run.events[i]?.kind !== 'runner' || closed.includes(i))) return { kind: 'malformed', reason: 'failedEvents' }
+  }
+  if (closed.length + failed.length !== run.events.length) return { kind: 'malformed', reason: 'not all events closed' }
   const patrolsRead = readRunPatrols(run)
   const patrols = patrolsRead === 'malformed' ? [] : patrolsRead
   if (!Array.isArray(r.killedPatrols)) return { kind: 'malformed', reason: 'killedPatrols' }
@@ -4345,6 +4357,7 @@ export function parseRunCompletion(raw: unknown, run: ActiveExploreRun): RunComp
   // Нормализованная копия: только известные поля, ничего лишнего в currentRun.
   const completion: Record<string, unknown> = {
     closedEvents: closed,
+    failedEvents: failed,
     killedPatrols: killed,
     brokenBreakables: broken,
     charmUsed: r.charmUsed,
