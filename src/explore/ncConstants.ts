@@ -78,6 +78,41 @@ export const NC_FIG_X: Record<NcKind, readonly [number, number]> = {
   serpent: [-173.5, 123.5],
   crowking: [-82.5, 86.5],
 }
+/**
+ * ТЕЛО для попадания мечом героя (16.11.2026): по X от точки ног, px листа,
+ * фигура смотрит влево. NC_FIG_X — вся фигура с оружием (шпага, арбалет,
+ * кочерга), и меч героя попадал по ней издалека; эта рамка — только туловище.
+ * Читает её ТОЛЬКО удар мечом героя (ncSwordBodyBox) — физика, столкновения и
+ * ИИ живут по NC_FIG_X. Замер (повторить, если лист Idle сменится): кадр 0
+ * Idle, альфа > 40, колонки, где непрозрачных не меньше 30% высоты тела
+ * (NC_BODY_H), — самый длинный сплошной кусок.
+ */
+export const NC_BODY_X: Partial<Record<NcKind, readonly [number, number]>> = {
+  fencer: [-10.5, 46.5],
+  gravedigger: [-41.3, 88.7],
+  crossbowman: [-26.3, 44.7],
+  stoker: [-94.2, 102.8],
+  beetle: [-155.9, 190.1],
+}
+
+/**
+ * Рамка тела в мире для удара мечом. footX — точка ног в мире (у новых врагов
+ * это sprite.x: спрайт стоит якорем в точке ног), footY — низ тела. Пиксели
+ * мира — умножением на ТЕКУЩИЙ масштаб вида (рост врагов меняется). Смотрит
+ * вправо — рамка отражается. null — у вида рамки тела нет.
+ */
+export function ncSwordBodyBox(kind: NcKind, footX: number, footY: number, facing: 1 | -1): { x: number; y: number; w: number; h: number } | null {
+  const body = NC_BODY_X[kind]
+  if (!body) return null
+  const s = NC_SCALE[kind]
+  const a = body[0] * s
+  const b = body[1] * s
+  const x0 = facing === -1 ? footX + a : footX - b
+  const x1 = facing === -1 ? footX + b : footX - a
+  const h = NC_DRAW_H[kind]
+  return { x: x0, y: footY - h, w: x1 - x0, h }
+}
+
 export function ncBoxW(kind: NcKind): number {
   const [x0, x1] = NC_FIG_X[kind]
   return Math.round((x1 - x0) * NC_SCALE[kind])
@@ -131,7 +166,11 @@ export const FENCER_BLOCK_STAGGER_MS = 300
  * последний кадр block, пока не придёт следующий удар мечом или не пройдёт
  * FENCER_BLOCK_HOLD_MS, и только потом доигрывает лист.
  */
-export const FENCER_BLOCK_HOLD_MS = 1200
+// 16.11.2026: держит не дольше 600 мс — по задаче «держит кадр блока, пока не
+// придёт следующий удар героя или не пройдёт 600 мс». Стойку больше не сбивает
+// хитстан от удара (applyEnemyHitReaction): раньше он подменял лист Parry
+// листом hurt, и кадры блока не наступали — блок не срабатывал никогда.
+export const FENCER_BLOCK_HOLD_MS = 600
 /**
  * Удар героя в блок ОГЛУШАЕТ героя (13.11.2026): ввод не работает вовсе,
  * герой стоит в кадре ранения, над головой звёзды. Сразу за блоком —

@@ -7,6 +7,7 @@ import { isSolid, sweepFootBlock } from '../collision'
 import { lineOfSight } from '../vision'
 import { destroyMark } from '../perception'
 import type { BeastFrames } from './enemy'
+import { lightHurtSpeed } from './enemy'
 
 // БЕГЛЕЦ (11.11.2026, событие 'runner', docs/explore-features.md).
 //
@@ -239,6 +240,12 @@ export function createRunnerSystem(deps: RunnerDeps) {
         if (enemy.hurtTimer > 0) {
           enemy.hurtTimer = Math.max(0, enemy.hurtTimer - deltaMS)
           deps.playSpriteAnim(enemy.sprite, frames.hurt, C.BEAST_HURT_ANIM_SPEED, false)
+        } else if ((enemy.lightHurtMs ?? 0) > 0) {
+          // Лёгкое ранение (16.11.2026) — только картинка, бег не держит.
+          enemy.lightHurtMs = Math.max(0, (enemy.lightHurtMs ?? 0) - deltaMS)
+          deps.playSpriteAnim(enemy.sprite, frames.hurt, lightHurtSpeed(frames.hurt.length), false)
+          enemy.sprite.animationSpeed = lightHurtSpeed(frames.hurt.length)
+          if (enemy.lightHurtRestart) { enemy.lightHurtRestart = false; enemy.sprite.gotoAndPlay(0) }
         } else if (enemy.x !== prevX) {
           deps.playSpriteAnim(enemy.sprite, frames.walk, C.WALK_ANIM_CHASE, true)
         } else {

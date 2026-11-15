@@ -298,6 +298,7 @@ export function createShadowSystem(deps: ShadowDeps) {
         e.hurtTimer = Math.max(0, e.hurtTimer - deltaMS)
         setAnim(e, 'hurt', false, deps.frames.hurt.length / ((C.ENEMY_HURT_MS / 1000) * 60))
       } else if (nc.action === 'eyes') {
+        e.lightHurtMs = 0
         e.windupTimer += deltaMS
         nc.eyesMs = Math.max(0, nc.eyesMs - deltaMS)
         setAnim(e, 'idle', true, HERO_SPEEDS.idle)
@@ -306,6 +307,7 @@ export function createShadowSystem(deps: ShadowDeps) {
           setAnim(e, 'attack', false, HERO_SPEEDS.attack)
         }
       } else if (nc.action === 'attack') {
+        e.lightHurtMs = 0
         e.windupTimer += deltaMS
         if (!nc.hitDone && e.sprite.currentFrame >= C.ATTACK_STRIKE_FRAME) {
           nc.hitDone = true
@@ -328,6 +330,12 @@ export function createShadowSystem(deps: ShadowDeps) {
           e.windingUp = false
           nc.cooldownMs = N.NC_ATTACK_COOLDOWN_MS
         }
+      } else if ((e.lightHurtMs ?? 0) > 0) {
+        // Лёгкое ранение (16.11.2026) — только картинка.
+        e.lightHurtMs = Math.max(0, (e.lightHurtMs ?? 0) - deltaMS)
+        setAnim(e, 'hurt', false, deps.frames.hurt.length / ((C.LIGHT_HURT_MS / 1000) * 60))
+        e.sprite.animationSpeed = deps.frames.hurt.length / ((C.LIGHT_HURT_MS / 1000) * 60)
+        if (e.lightHurtRestart) { e.lightHurtRestart = false; e.sprite.gotoAndPlay(0) }
       } else if (e.x !== prevX) {
         setAnim(e, 'run', true, HERO_SPEEDS.run)
       } else {

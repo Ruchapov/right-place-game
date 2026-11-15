@@ -90,6 +90,8 @@ import { createChestGlintSystem } from './explore/entities/chestGlint'
 import { BOSS_INTRO_CSS, BOSS_INTRO_TOTAL_MS, bossDisplayName, bossIntroBlend, restartBossTimers } from './explore/entities/bossIntro'
 import { LIVE_DECOR_FLAMES } from './explore/liveDecorManifest'
 import { createRunnerSystem } from './explore/entities/runner'
+import { createDamageNumberSystem } from './explore/entities/damageNumbers'
+import { createHitFlashSystem } from './explore/entities/hitFlash'
 import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { createBreakablesSystem, type BreakableAssets } from './explore/entities/breakables'
@@ -1192,6 +1194,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // Окно неуязвимости после спасения, мс. > 0 — урон не проходит (проверяется в
   // takeDamage, одной точкой на все источники).
   const charmIframeRef = useRef(0)
+  // Неуязвимость после удара врага (16.11.2026): HERO_HIT_IFRAME_MS не проходит
+  // урон от врагов и их снарядов (takeDamage, takeFoeDamageUnblockable), герой
+  // мигает. Шипы, ловушки, мимик и горение её не трогают и не запускают.
+  const heroHitIframeRef = useRef(0)
+  // Цифра урона над героем — система живёт в setup(), applyDamage на уровне
+  // компонента зовёт её через этот ref.
+  const heroDamageNumberRef = useRef<(amount: number) => void>(() => {})
+  // КОМБО ИЗ ТРЁХ УДАРОВ (16.11.2026): стадия удара (0 — нет, 1..3 — идёт удар),
+  // выход в idle после удара N (0 — нет), нажата ли атака ещё раз во время
+  // удара, нанесён ли урон этого удара. В refs, а не в setup(): их гасят
+  // triggerHurt и triggerDeath (уровень компонента).
+  const comboStageRef = useRef<0 | 1 | 2 | 3>(0)
+  const comboExitRef = useRef<0 | 1 | 2 | 3>(0)
+  const comboQueuedRef = useRef(false)
+  const comboHitDoneRef = useRef(false)
   // Доля maxHp, с которой оберег поднимает. Из КАТАЛОГА, не литерал: витрина
   // обещает то же число той же функцией (consumableEffectLine).
   const charmReviveFracRef = useRef(0)
@@ -1727,6 +1744,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // Непарируемый урон (волна босса, шипы карты, ловушка мимика) — отдельная
   // ссылка, чтобы на вызове было видно решение, а не забытый аргумент.
   const takeDamageUnblockableRef = useRef<(amount: number) => void>(() => {})
+  // Непарируемый урон ВРАГА (волна топота, яд/кости боссов): как выше, но с
+  // неуязвимостью после удара (heroHitIframeRef).
+  const takeFoeDamageUnblockableRef = useRef<(amount: number) => void>(() => {})
   // Тик горения от кочерги Кочегара (09.11.2026): без брони и без хитстана —
   // иначе огонь держал бы героя в хитстане все 3 с, и ударить в ответ было бы нельзя.
   const takeBurnDamageRef = useRef<(amount: number) => void>(() => {})
@@ -2373,6 +2393,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     hurtTimerRef.current = C.HURT_MS
     attackingRef.current = false // обрываем замах (хитстан)
     attackHitDoneRef.current = false
+    // Удар врага обрывает комбо (16.11.2026) — и удар, и выход в idle.
+    comboStageRef.current = 0
+    comboExitRef.current = 0
+    comboQueuedRef.current = false
     dashingRef.current = false // обрываем dash (хитстан главнее)
     castingRef.current = false // и каст — снаряд не вылетит, если не дошли до кадра вылета
     drinkingRef.current = false // обрываем питьё (хитстан главнее)
@@ -2408,6 +2432,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // Огонёк Носителя огня просто исчезает (11.11.2026).
     flameCarryRef.current = false
     attackingRef.current = false
+    comboStageRef.current = 0
+    comboExitRef.current = 0
+    comboQueuedRef.current = false
+    heroHitIframeRef.current = 0
     dashingRef.current = false // обрываем dash (смерть главнее)
     castingRef.current = false // и каст (смерть главнее)
     drinkingRef.current = false // обрываем питьё (смерть главнее)
@@ -2461,6 +2489,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       healOnParry()
       return true
     }
+    // Неуязвимость после удара врага (16.11.2026): удар не проходит вовсе — и
+    // зелье отражения на него не тратится.
+    if (heroHitIframeRef.current > 0) return false
     // Зелье отражения: ПЕРВЫЙ удар врага за забег гасится целиком, его урон до
     // брони уходит ударившему. Парирование главнее (выше) — отбитый удар зелье не
     // тратит. Не тратится и там, где урона всё равно не было бы (рывок, окно
@@ -2471,7 +2502,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       reflectHitRef.current(source, Math.ceil(amount))
       return false
     }
-    applyDamage(amount)
+    applyDamage(amount, { foe: true })
     return false
   }
 
@@ -2528,7 +2559,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     applyDamage(amount)
   }
 
-  function applyDamage(amount: number, opts: { burn?: boolean } = {}) {
+  // Непарируемый удар ВРАГА (волна топота босса, удары боссов мимо парирования):
+  // с неуязвимостью после удара, в отличие от шипов и ловушек выше.
+  function takeFoeDamageUnblockable(amount: number): void {
+    if (heroHitIframeRef.current > 0) return
+    applyDamage(amount, { foe: true })
+  }
+
+  // foe — урон врага или его снаряда: запускает неуязвимость после удара
+  // (горение, шипы и ловушки — нет).
+  function applyDamage(amount: number, opts: { burn?: boolean; foe?: boolean } = {}) {
     // ВРЕМЕННО (см. invincible state выше и SettingsPanel) — полный ранний
     // выход, ДО damageTakenRef: враги/босс/шипы/мимик все идут через эту
     // функцию, так что перехват здесь один на все источники. HP/hurt/death
@@ -2593,6 +2633,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     damageTakenRef.current += actualDamage
     hpRef.current = Math.max(0, hpRef.current - armored)
     updateHpBar()
+    // Красная цифра над героем — сколько урона прошло (16.11.2026).
+    if (armored > 0) heroDamageNumberRef.current(armored)
+    // Неуязвимость после удара врага — только если герой жив (смерть и подъём
+    // оберегом ниже ведут свои окна).
+    if (opts.foe && armored > 0 && hpRef.current > 0) heroHitIframeRef.current = C.HERO_HIT_IFRAME_MS
     // Огонёк Носителя огня гаснет от ЛЮБОГО урона, который реально прошёл
     // (11.11.2026): здесь — после всех ранних выходов (бессмертие, смерть,
     // рывок, окно оберега), а парирование и отражение зелья сюда не доходят.
@@ -2714,6 +2759,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     takeDamageRef.current = takeDamage
     takeRamDamageRef.current = takeRamDamage
     takeDamageUnblockableRef.current = takeDamageUnblockable
+    takeFoeDamageUnblockableRef.current = takeFoeDamageUnblockable
     takeBurnDamageRef.current = (amount: number) => applyDamage(amount, { burn: true })
     killPlayerRef.current = killPlayer
     healPlayerRef.current = healPlayer
@@ -2890,6 +2936,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     let classHealFlashSystem: ReturnType<typeof createClassHealFlashSystem> | null = null
     let critFlashSystem: ReturnType<typeof createCritFlashSystem> | null = null
     let eliteGlowSystem: ReturnType<typeof createEliteGlowSystem> | null = null
+    // Цифры урона и белая вспышка врага от меча (16.11.2026).
+    let damageNumberSystem: ReturnType<typeof createDamageNumberSystem> | null = null
+    let hitFlashSystem: ReturnType<typeof createHitFlashSystem> | null = null
     // Носитель огня и Беглец (11.11.2026): огни, дым, Беглецы.
     let fireSystem: ReturnType<typeof createFireSystem> | null = null
     let smokeSystem: ReturnType<typeof createSmokePuffSystem> | null = null
@@ -3028,6 +3077,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       charmReadyRef.current = false
       charmUsedRef.current = false
       charmIframeRef.current = 0
+      heroHitIframeRef.current = 0
+      comboStageRef.current = 0
+      comboExitRef.current = 0
+      comboQueuedRef.current = false
       charmReviveFracRef.current = 0
       setCharmReady(false)
       reflectReadyRef.current = false
@@ -4252,6 +4305,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       let dashFrames = heroSet.dash
       let blockFrames = heroSet.block
       const parrySparkFrames = assets.parrySpark
+      // Комбо (16.11.2026): кадры каждого удара и выхода в idle — массивы
+      // текстур листа Hero_Combo в нужном порядке, собранные один раз.
+      // comboHitIndex — номер кадра урона ВНУТРИ массива удара.
+      const comboStrikeFrames = C.HERO_COMBO_STRIKES.map((st) => st.frames.map((i) => assets.heroCombo[i]))
+      const comboExitFrames = C.HERO_COMBO_EXITS.map((ex) => ex.map((i) => assets.heroCombo[i]))
+      const comboHitIndex = C.HERO_COMBO_STRIKES.map((st) => (st.frames as readonly number[]).indexOf(st.hit))
+      const comboTextureSets = new Set<Texture[]>([...comboStrikeFrames, ...comboExitFrames])
 
       // Листы «под событие» бывают null: события этого вида в забеге нет, и
       // лист не запрашивался. Спрашивать его можно только там, куда без события
@@ -4304,6 +4364,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       })
       // Золотое свечение элиты (30.10.2026) — копия кадра позади врага.
       eliteGlowSystem = createEliteGlowSystem({ worldContainer })
+      // Цифры урона (пул текста) и белая вспышка врага (общий фильтр; без WebGL
+      // вспышки нет) — 16.11.2026.
+      damageNumberSystem = createDamageNumberSystem({ worldContainer })
+      hitFlashSystem = createHitFlashSystem({ enabled: useNcFilters })
+      const numbersForHero = damageNumberSystem
+      heroDamageNumberRef.current = (amount: number) => numbersForHero.spawn(phys.x + C.PLAYER_WIDTH / 2, phys.y - 4, amount, 'hero')
       // Носитель огня и Беглец (11.11.2026).
       const brazierTexture = await brazierLoad
       smokeSystem = createSmokePuffSystem({ parent: worldContainer })
@@ -5029,7 +5095,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // Та же обёртка, что у зверя и Звонаря: мана падает и с босса.
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
-        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
+        // Волна топота и удары мимо парирования — урон ВРАГА: с неуязвимостью
+        // после удара (16.11.2026), в отличие от шипов карты.
+        takeDamageUnblockable: (amount: number) => takeFoeDamageUnblockableRef.current(amount),
         boss: bossRef,
         bossSpikes: bossSpikesRef,
         bossWaves: bossWavesRef,
@@ -5055,7 +5123,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         closeEvent,
         dropMana: (worldX, worldY) => manaSystem!.dropFrom(worldX, worldY),
         takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
-        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
+        // Волна топота и удары мимо парирования — урон ВРАГА: с неуязвимостью
+        // после удара (16.11.2026), в отличие от шипов карты.
+        takeDamageUnblockable: (amount: number) => takeFoeDamageUnblockableRef.current(amount),
         dashing: dashingRef,
         // Звонарь без события: -1 — ни одно событие его не ждёт (см. Enemy.summoned).
         spawnZvonar: (tileX, tileY) => (zvonarFramesRef.current ? zvonarSystem!.spawn(tileX, tileY, -1, true) : null),
@@ -5111,7 +5181,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         closeEvent,
         dropMana: (worldX: number, worldY: number) => manaSystem!.dropFrom(worldX, worldY),
         takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
-        takeDamageUnblockable: (amount: number) => takeDamageUnblockableRef.current(amount),
+        // Волна топота и удары мимо парирования — урон ВРАГА: с неуязвимостью
+        // после удара (16.11.2026), в отличие от шипов карты.
+        takeDamageUnblockable: (amount: number) => takeFoeDamageUnblockableRef.current(amount),
         dashing: dashingRef,
         heroFacing: () => (facingRef.current >= 0 ? 1 : -1) as 1 | -1,
         boss: bossRef,
@@ -6112,6 +6184,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // startPlayerDash ниже во время замаха отказывает, чтобы dash не
         // съедал уже начатый удар вместе с его уроном.
         dashingRef.current = false
+        // Одиночный удар (в воздухе, взмах навыка) перебивает выход из комбо.
+        comboStageRef.current = 0
+        comboExitRef.current = 0
+        comboQueuedRef.current = false
         // Плащ «Клинок» (Портной, 14.11.2026): удар быстрее на долю — анимация,
         // окно попадания и перезарядка короче на столько же (кадр удара тот же,
         // он просто наступает раньше).
@@ -6145,6 +6221,55 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         hero.animationSpeed = C.ATTACK_ANIM_SPEED / swingTime
         hero.gotoAndPlay(0)
         return true
+      }
+
+      // КОМБО ИЗ ТРЁХ УДАРОВ (16.11.2026, docs/explore-engine.md). Только на
+      // земле; в воздухе — прежний одиночный удар (startPlayerAttack). Первое
+      // нажатие — удар 1; нажатие во время удара 1 или 2 — следующий удар сразу
+      // после последнего кадра текущего; не нажали — выход в idle. ATTACK_COOLDOWN
+      // между ударами не действует. Урон — applyAttackHit на кадре урона удара,
+      // хитбокс — от ЦЕНТРА героя вперёд на rangePx, высотой PLAYER_HEIGHT.
+      function startComboStrike(stage: 1 | 2 | 3) {
+        // Плащ «Клинок» ускоряет и комбо — как одиночный удар.
+        const swingTime = 1 - cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).attackSpeedFrac
+        comboStageRef.current = stage
+        comboExitRef.current = 0
+        comboQueuedRef.current = false
+        comboHitDoneRef.current = false
+        attackingRef.current = true
+        // Ветка одиночного удара в тикере ниже ветки комбо и сюда не доходит;
+        // дедуп её урона на всякий случай закрыт.
+        attackHitDoneRef.current = true
+        dashingRef.current = false
+        attackSwingIdRef.current += 1 // каждый удар комбо — свой взмах
+        // Выпад (Дуэлянт) забирает первый удар после рывка — как у одиночного.
+        if (lungeMsLeft > 0) {
+          lungeSwingId = attackSwingIdRef.current
+          lungeMsLeft = 0
+        }
+        if (stage === 1) attackFacingRef.current = facingRef.current
+        hero.textures = comboStrikeFrames[stage - 1]
+        hero.loop = false
+        hero.animationSpeed = C.HERO_COMBO_ANIM_SPEED / swingTime
+        hero.gotoAndPlay(0)
+      }
+      function startCombo(): boolean {
+        if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
+        if (attackCooldownRef.current > 0 || attackingRef.current) return false
+        if (staggerMsLeft > 0 || heroStunMs > 0) return false
+        if (parryingRef.current || castingRef.current) return false
+        startComboStrike(1)
+        return true
+      }
+      function playComboExit(afterStage: 1 | 2 | 3) {
+        attackingRef.current = false
+        comboStageRef.current = 0
+        comboQueuedRef.current = false
+        comboExitRef.current = afterStage
+        hero.textures = comboExitFrames[afterStage - 1]
+        hero.loop = false
+        hero.animationSpeed = C.HERO_COMBO_ANIM_SPEED
+        hero.gotoAndPlay(0)
       }
 
       // Старт анимации dash — по образцу startPlayerAttack выше: та же
@@ -6263,15 +6388,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             const r = fencerSwordHit(enemy, performance.now())
             if (r === 'block') {
               staggerDir = phys.x + C.PLAYER_WIDTH / 2 >= enemy.x + enemy.width / 2 ? 1 : -1
-              // Искра — между героем и фехтовальщиком, на высоте груди.
-              const heroFront = staggerDir === 1 ? phys.x : phys.x + C.PLAYER_WIDTH
-              const foeFront = staggerDir === 1 ? enemy.x + enemy.width : enemy.x
-              spawnParrySparkRef.current({ x: (heroFront + foeFront) / 2, y: enemy.y + enemy.height * 0.35 })
+              // Искра (16.11.2026) — в точке касания клинков: передний край
+              // ТЕЛА фехтовальщика (рамка NC_BODY_X), со стороны героя, на
+              // высоте груди. Не по кадру героя: у комбо клинок в другом месте.
+              const fb = N.ncSwordBodyBox('fencer', enemy.sprite.x, enemy.y + enemy.height, enemy.facing)
+              const foeFront = fb ? (staggerDir === 1 ? fb.x + fb.w : fb.x) : (staggerDir === 1 ? enemy.x + enemy.width : enemy.x)
+              const chestY = fb ? fb.y + fb.h * 0.32 : enemy.y + enemy.height * 0.35
+              spawnParrySparkRef.current({ x: foeFront, y: chestY })
               staggerMsLeft = N.FENCER_BLOCK_STAGGER_MS
-              // Оглушение (13.11.2026): поверх отброса; замах и каст рвутся.
+              // Оглушение (13.11.2026): поверх отброса; замах, каст и комбо рвутся.
               heroStunMs = N.FENCER_BLOCK_STUN_MS
               attackingRef.current = false
               castingRef.current = false
+              comboStageRef.current = 0
+              comboExitRef.current = 0
+              comboQueuedRef.current = false
               return false
             }
             if (r === 'open') amount = Math.floor(amount * N.FENCER_OPEN_DMG_MULT)
@@ -6447,6 +6578,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       function applyEnemyHitReaction(enemy: Enemy) {
         // Меч фехтовальщика принял удар блоком — урона и реакции не было.
         if (enemy.nc?.blockedHit) return
+        // Фехтовальщик в стойке блока (лист Parry) хитстаном не сбивается
+        // (16.11.2026): хитстан подменял лист, и кадры блока не наступали.
+        if (enemy.kind === 'fencer' && enemy.nc?.action === 'Parry') {
+          hitFlashSystem?.flash(enemy.sprite)
+          return
+        }
         // Привратник: удар, принятый дверью, хитстана не даёт (он за щитом). Пока
         // он ОТКРЫТ станом — оглушён отбитым ударом или заморожен льдом — реакции
         // на попадание тоже нет: урон уже прошёл целиком, а он и так стоит.
@@ -6497,6 +6634,29 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
         // else: поздняя фаза ИЛИ иммунитет — замах не прерываем, зверь
         // просто дожимает удар до strike-кадра как обычно, без подсветки.
+      }
+
+      // ЛЁГКИЙ удар мечом (16.11.2026): удары 1 и 2 комбо и удар в воздухе.
+      // Враг не в замахе и не в атаке — лист hurt целиком за LIGHT_HURT_MS
+      // (lightHurtMs, только картинка: hurtTimer НЕ ставится, ИИ и атака идут
+      // как обычно; начался замах — ветка атаки в системе вида главнее). В
+      // замахе, атаке, стане или уже идущем хитстане — только белая вспышка.
+      // Отскока нет; poise-счётчик (STUN_LIMIT) не растёт — он только у
+      // сильных ударов (applyEnemyHitReaction).
+      function applyLightHitReaction(enemy: Enemy) {
+        if (enemy.nc?.blockedHit) return
+        // Удар принят поднятой дверью Привратника — не реагирует (как и раньше).
+        if (enemy.gatekeeper?.guarded) return
+        hitFlashSystem?.flash(enemy.sprite)
+        const g = enemy.gatekeeper
+        const busy =
+          enemy.windingUp || enemy.attackAnimPlaying ||
+          !!enemy.nc?.action ||
+          (g !== undefined && (g.phase === 'windup' || g.phase === 'follow' || gatekeeperIsShiftingGuard(enemy))) ||
+          enemy.hurtTimer > 0 || enemy.stunTimer > 0 || enemy.parryStunTimer > 0
+        if (busy) return
+        enemy.lightHurtMs = C.LIGHT_HURT_MS
+        enemy.lightHurtRestart = true
       }
 
       function applyBossHitReaction(boss: Boss) {
@@ -6565,18 +6725,22 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Хитстоп (30.10.2026): сколько мс игре ещё стоять. Не копится — новое
       // попадание только продлевает до HITSTOP_MS, а не прибавляет.
       let hitstopMsLeft = 0
-      function startHitstop() {
-        hitstopMsLeft = Math.max(hitstopMsLeft, C.HITSTOP_MS)
+      function startHitstop(ms: number = C.HITSTOP_MS) {
+        hitstopMsLeft = Math.max(hitstopMsLeft, ms)
         Ticker.shared.speed = 0
       }
       // Отдача от меча (30.10.2026): враг отъезжает от героя на KNOCKBACK_PX за
       // KNOCKBACK_MS. Не боссу (его ведёт boss.ts), не Привратнику с поднятой
       // дверью и не замороженному льдом (лёд держит на месте). Повторный удар
       // начинает отъезд заново, а не складывает.
-      function startKnockback(enemy: Enemy, sourceX: number) {
+      // С 16.11.2026 отскок только у СИЛЬНОГО удара (удар 3 комбо, крит):
+      // STRONG_KNOCKBACK_PX за STRONG_KNOCKBACK_MS с замедлением к концу.
+      function startKnockback(enemy: Enemy, sourceX: number, px: number = C.KNOCKBACK_PX, ms: number = C.KNOCKBACK_MS) {
         if (enemy.kind === 'gatekeeper' && enemy.gatekeeper?.guard === 'up') return
         if (enemy.stunTimer > 0) return
-        enemy.knockMs = C.KNOCKBACK_MS
+        enemy.knockMs = ms
+        enemy.knockTotalMs = ms
+        enemy.knockPx = px
         enemy.knockDir = enemy.x + enemy.width / 2 >= sourceX ? 1 : -1
       }
       // Шаг отдачи за кадр. Шаг не делается (и отъезд кончается), если впереди
@@ -6587,9 +6751,15 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           if (!enemy.knockMs || enemy.knockMs <= 0) continue
           if (enemy.dead) { enemy.knockMs = 0; continue }
           const ms = Math.min(deltaMS, enemy.knockMs)
+          const total = enemy.knockTotalMs ?? C.KNOCKBACK_MS
+          const px = enemy.knockPx ?? C.KNOCKBACK_PX
+          // Путь к доле t: px × (1 − (1 − t)²) — быстро в начале, медленно к концу.
+          const t0 = 1 - enemy.knockMs / total
           enemy.knockMs -= ms
+          const t1 = 1 - enemy.knockMs / total
+          const ease = (t: number) => 1 - (1 - t) * (1 - t)
           const dir = enemy.knockDir ?? 1
-          const nextX = enemy.x + dir * C.KNOCKBACK_PX * (ms / C.KNOCKBACK_MS)
+          const nextX = enemy.x + dir * px * (ease(t1) - ease(t0))
           // Передний край — сама граница бокса (без запаса в 1 px: с ним враг
           // заезжал за край пола на долю пикселя).
           const lead = dir > 0 ? nextX + enemy.width - 1e-3 : nextX
@@ -6603,7 +6773,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
       }
 
-      function applyAttackHit() {
+      // opts (16.11.2026, комбо): damageMult — доля обычного урона удара (удар 3
+      // комбо — 1.5); strong — сильный удар (удар 3): полный хитстан, отскок,
+      // хитстоп 80 мс. Крит — тоже сильный. Остальные удары мечом (1, 2 комбо и
+      // удар в воздухе) — лёгкие: applyLightHitReaction.
+      function applyAttackHit(opts: { damageMult: number; strong: boolean } = { damageMult: 1, strong: false }) {
         // Крит ветки «Клинок» (26.10.2026) решается ОДИН раз на взмах: Выпад
         // (этот взмах забрал окно после рывка) или Острый глаз (бросок). Оба
         // сразу — тот же ×critMult, не ×4: правило «крит не складывается». Казнь
@@ -6639,7 +6813,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         parryStrikeMsRef.current = 0
         const swingBase = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
         const swingSkinMult = (1 + brandW.swordDamageFrac) * parryStrikeMult
-        const swingDamage = swingSkinMult !== 1 ? Math.floor(swingBase * swingSkinMult) : swingBase
+        const swingSkinned = swingSkinMult !== 1 ? Math.floor(swingBase * swingSkinMult) : swingBase
+        const swingDamage = opts.damageMult !== 1 ? Math.floor(swingSkinned * opts.damageMult) : swingSkinned
+        // Рамка тела новых врагов (NC_BODY_X) — для удара мечом героя, не взмаха
+        // навыка «Кровотечение» (умения не менялись).
+        const useBodyBox = !skills!.isSlashStrike()
         for (let i = 0; i < enemiesRef.current.length; i++) {
           const enemy = enemiesRef.current[i]
           // Мёртвый враг (death уже играет/держит кадр) — хиты по нему больше
@@ -6650,13 +6828,18 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             enemy.lastHitSwingId !== attackSwingIdRef.current
           ) {
             const hb = attackHitboxRef.current
+            // Цель — ТЕЛО (16.11.2026): у новых врагов отдельная рамка без
+            // оружия (ncSwordBodyBox), у остальных — физический бокс.
+            // Габариты — ПОЛЯ врага: в списке лежат и звери (116×80), и
+            // Звонари (56×120), см. Enemy.width/height в types.ts.
+            const body = (useBodyBox && enemy.nc && enemy.kind in N.NC_BODY_X
+              ? N.ncSwordBodyBox(enemy.kind as NcKind, enemy.sprite.x, enemy.y + enemy.height, enemy.facing)
+              : null) ?? { x: enemy.x, y: enemy.y, w: enemy.width, h: enemy.height }
             const overlap =
-              // Габариты — ПОЛЯ врага: в списке лежат и звери (116×80), и
-              // Звонари (56×120), см. Enemy.width/height в types.ts.
-              hb.x < enemy.x + enemy.width &&
-              hb.x + hb.width > enemy.x &&
-              hb.y < enemy.y + enemy.height &&
-              hb.y + hb.height > enemy.y
+              hb.x < body.x + body.w &&
+              hb.x + hb.width > body.x &&
+              hb.y < body.y + body.h &&
+              hb.y + hb.height > body.y
             if (overlap) {
               enemy.lastHitSwingId = attackSwingIdRef.current
               // Урон/смерть/перерисовка полосы — в damageEnemy выше (общая
@@ -6687,13 +6870,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               const swordKilled = damageEnemy(enemy, execute ? Math.max(swordHit, enemy.hp) : Math.floor(swordHit), attackDamageDealtRef, swordSourceX, 'sword')
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
               lifesteal(attackDamageDealtRef.current - swordDealtBefore)
-              if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, enemy.x, enemy.width), overlapCenter(hb.y, hb.height, enemy.y, enemy.height), enemy.sprite)
+              if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, body.x, body.w), overlapCenter(hb.y, hb.height, body.y, body.h), enemy.sprite)
+              // Сильный удар — удар 3 комбо или крит (16.11.2026).
+              const strongHit = opts.strong || crit
+              const swordDealt = attackDamageDealtRef.current - swordDealtBefore
+              if (swordDealt > 0) damageNumberSystem!.spawn(body.x + body.w / 2, enemy.y - 6, swordDealt, strongHit ? 'big' : 'normal')
               // Хитстоп (30.10.2026) — на попадание, которое сняло HP (меч в
-              // поднятую дверь его не даёт: урона там нет).
-              if (attackDamageDealtRef.current > swordDealtBefore) startHitstop()
+              // поднятую дверь его не даёт: урона там нет). У сильного — дольше.
+              if (swordDealt > 0) startHitstop(strongHit ? C.STRONG_HITSTOP_MS : C.HITSTOP_MS)
               if (swordKilled) continue
-              applyEnemyHitReaction(enemy)
-              if (!doorBlocks && !enemy.nc?.blockedHit) startKnockback(enemy, swordSourceX)
+              if (strongHit) {
+                applyEnemyHitReaction(enemy)
+                if (!doorBlocks && !enemy.nc?.blockedHit) startKnockback(enemy, swordSourceX, C.STRONG_KNOCKBACK_PX, C.STRONG_KNOCKBACK_MS)
+              } else {
+                applyLightHitReaction(enemy)
+              }
             }
           }
         }
@@ -6733,14 +6924,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               const bossDealtBefore = attackDamageDealtRef.current
               // Крит — как у врага выше; Казни на боссе нет (docs/classes.md).
               const bossHit = (swingCrit ? swingDamage * critMult : swingDamage) * disabledMult(boss.stunTimer, boss.parryStunTimer)
+              // (цифра урона и реакция — ниже, по снятому)
               const bossKilled = damageBoss(Math.floor(bossHit), attackDamageDealtRef, phys.x + C.PLAYER_WIDTH / 2, 'sword')
               if (bossBladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - bossDealtBefore) * blood.bladeHealFrac)
               lifesteal(attackDamageDealtRef.current - bossDealtBefore)
+              const bossStrong = opts.strong || swingCrit
+              const bossDealt = attackDamageDealtRef.current - bossDealtBefore
+              if (bossDealt > 0) damageNumberSystem!.spawn(bb.x + bb.w / 2, bb.y - 6, bossDealt, bossStrong ? 'big' : 'normal')
+              // Босс (16.11.2026): сильный удар — прежняя реакция (два слоя
+              // poise); лёгкий — только вспышка, хитстана не даёт.
               if (!bossKilled) {
-                applyBossHitReaction(boss)
+                if (bossStrong) applyBossHitReaction(boss)
+                else if (!boss.abbot?.transforming && !boss.nc?.invulnerable) boss.hitFlashTimer = C.BOSS_HIT_FLASH_MS
               }
               // Хитстоп и по боссу (30.10.2026); отдачи у босса нет.
-              if (attackDamageDealtRef.current > bossDealtBefore) startHitstop()
+              if (bossDealt > 0) startHitstop(bossStrong ? C.STRONG_HITSTOP_MS : C.HITSTOP_MS)
               if (swingCrit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, bb.x, bb.w), overlapCenter(hb.y, hb.height, bb.y, bb.h), boss.sprite)
             }
           }
@@ -7070,7 +7268,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // должна ездить по карте. Нужная скорость — НОЛЬ, а ноль heroLocked уже
         // умеет. Заодно это замораживает facing (тот же гейт ниже): развернуться
         // посреди блока нельзя, иначе отбив случался бы спиной к врагу.
-        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current || staggerMsLeft > 0 || heroStunMs > 0
+        // Удары комбо (16.11.2026): герой стоит, шаги — в самой анимации.
+        const heroLocked = drinkingRef.current || castingRef.current || parryingRef.current || deathRef.current || staggerMsLeft > 0 || heroStunMs > 0 || comboStageRef.current !== 0
         // Грязь жука замедляет на SLOW_MULT (09.11.2026).
         phys.vx = heroLocked ? 0 : dirRef.current * C.MOVE_SPEED * bootsSpeedMult * (slowMsLeft > 0 ? N.SLOW_MULT : 1)
         // Удар в блок фехтовальщика: первые FENCER_BLOCK_PUSH_MS героя относит
@@ -7350,7 +7549,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           // со скиллом slash, который использует ту же анимацию). Результат
           // здесь не нужен: нажатие в неподходящий момент — тихий no-op,
           // ровно как было инлайн.
-          startPlayerAttack()
+          // Комбо (16.11.2026): на земле — удары комбо; нажатие во время удара 1
+          // или 2 ставит следующий, во время удара 3 — ничего; в воздухе —
+          // прежний одиночный удар.
+          if (comboStageRef.current === 1 || comboStageRef.current === 2) comboQueuedRef.current = true
+          else if (comboStageRef.current === 3) { /* последний удар — дальше выход */ }
+          else if (phys.onGround) startCombo()
+          else startPlayerAttack()
         }
 
         if (attackActiveRef.current) {
@@ -7384,6 +7589,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           ) {
             drinkingRef.current = true
             potionHealedThisDrinkRef.current = false
+            // Питьё обрывает комбо (16.11.2026): лист один, спрайт один.
+            if (comboStageRef.current !== 0) attackingRef.current = false
+            comboStageRef.current = 0
+            comboExitRef.current = 0
+            comboQueuedRef.current = false
             hero.textures = drinkFrames
             hero.loop = false
             hero.animationSpeed = 0.2
@@ -7451,6 +7661,18 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             spriteForBlink.alpha = charmIframeRef.current <= 0
               ? 1
               : (Math.floor(charmIframeRef.current / CHARM_BLINK_MS) % 2 === 0 ? 0.35 : 1)
+          }
+        }
+        // Неуязвимость после удара врага (16.11.2026) — то же мигание, своя
+        // частота (HERO_HIT_BLINK_MS). Окно оберега главнее: пока оно открыто,
+        // альфой владеет оно.
+        if (heroHitIframeRef.current > 0) {
+          heroHitIframeRef.current = Math.max(0, heroHitIframeRef.current - ticker.deltaMS)
+          const spriteForBlink = heroSpriteRef.current
+          if (spriteForBlink && !(charmIframeRef.current > 0)) {
+            spriteForBlink.alpha = heroHitIframeRef.current <= 0 || deathRef.current
+              ? 1
+              : (Math.floor(heroHitIframeRef.current / C.HERO_HIT_BLINK_MS) % 2 === 0 ? 0.35 : 1)
           }
         }
         parryCooldownRef.current = Math.max(0, parryCooldownRef.current - ticker.deltaMS)
@@ -7844,6 +8066,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // д) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
         //    land (движение прерывает его — переход в ветку е);
         // е) обычный idle/run по движению.
+        // Выход из комбо в idle прерывается движением, рывком, кастом,
+        // парированием и питьём (16.11.2026) — ветки ниже подхватят своё.
+        // Атака и прыжок прерывают его сами (startCombo, ветка воздуха).
+        if (comboExitRef.current !== 0 && (dirRef.current !== 0 || dashingRef.current || castingRef.current || parryingRef.current || drinkingRef.current)) {
+          comboExitRef.current = 0
+        }
         if (deathRef.current) {
           // Доиграла — замираем на последнем кадре и копим удержание;
           // abandon срабатывает РОВНО один раз (deathAbandonFiredRef).
@@ -7867,6 +8095,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           hero.anchor.set(0.5, rising ? C.RISE_ANCHOR_Y : C.FALL_ANCHOR_Y)
           landTimerRef.current = 0
           attackingRef.current = false // прыжок отменяет замах
+          // и комбо: в воздухе его нет (16.11.2026)
+          comboStageRef.current = 0
+          comboExitRef.current = 0
+          comboQueuedRef.current = false
           dashingRef.current = false // и dash тоже — он проигрывается только на земле
           castingRef.current = false // и каст: прыжок его обрывает, как и замах
           // Блок — только на земле. Сюда герой попадает, если его сбросило с
@@ -7969,6 +8201,32 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             drinkingRef.current = false
           }
           hero.anchor.set(0.5, C.GROUND_ANCHOR_Y)
+        } else if (comboStageRef.current !== 0) {
+          // УДАР КОМБО (16.11.2026). Якорь — точка ног листа комбо: она встаёт
+          // туда же, куда низ-центр старых листов, масштаб — в heroScaleMag.
+          const stage = comboStageRef.current
+          const strike = C.HERO_COMBO_STRIKES[stage - 1]
+          hero.anchor.set(C.HERO_COMBO_ANCHOR_X, C.HERO_COMBO_ANCHOR_Y)
+          if (!comboHitDoneRef.current && hero.currentFrame >= comboHitIndex[stage - 1]) {
+            comboHitDoneRef.current = true
+            // Хитбокс — в момент кадра урона, от ЦЕНТРА героя вперёд.
+            const cx = phys.x + C.PLAYER_WIDTH / 2
+            attackHitboxRef.current = attackFacingRef.current === 1
+              ? { x: cx, y: phys.y, width: strike.rangePx, height: C.PLAYER_HEIGHT }
+              : { x: cx - strike.rangePx, y: phys.y, width: strike.rangePx, height: C.PLAYER_HEIGHT }
+            applyAttackHit({ damageMult: strike.damageMult, strong: stage === 3 })
+          }
+          // Удар мог оборвать блок фехтовальщика (applyAttackHit → damageEnemy).
+          if (comboStageRef.current === stage && (hero.currentFrame >= comboStrikeFrames[stage - 1].length - 1 || !hero.playing)) {
+            if (comboQueuedRef.current && stage < 3) startComboStrike((stage + 1) as 2 | 3)
+            else playComboExit(stage)
+          }
+        } else if (comboExitRef.current !== 0) {
+          // Выход из комбо в idle — доиграл, со следующего тика idle/run.
+          hero.anchor.set(C.HERO_COMBO_ANCHOR_X, C.HERO_COMBO_ANCHOR_Y)
+          if (hero.currentFrame >= comboExitFrames[comboExitRef.current - 1].length - 1 || !hero.playing) {
+            comboExitRef.current = 0
+          }
         } else if (attackingRef.current) {
           if (!attackHitDoneRef.current && hero.currentFrame >= C.ATTACK_STRIKE_FRAME) {
             applyAttackHit()
@@ -8070,10 +8328,14 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // dashingRef: на последнем кадре dash флаг уже снят веткой выше, а
         // кадр ещё показывается, и по флагу он мигнул бы не в том масштабе.
         // Тот же способ сравнения листов, что у веток hurt/land выше.
+        // Лист комбо (16.11.2026): герой на нём на 8% мельче — свой множитель
+        // (HERO_COMBO_SIZE_MULT) поверх общего масштаба героя.
         const heroScaleMag =
           hero.textures === dashFrames
             ? C.DASH_DRAW_H / dashFrames[0].height
-            : C.HERO_DRAW_H / idleFrames[0].height
+            : comboTextureSets.has(hero.textures as Texture[])
+              ? (C.HERO_DRAW_H / C.HERO_CELL_H) * C.HERO_COMBO_SIZE_MULT
+              : C.HERO_DRAW_H / idleFrames[0].height
         hero.scale.y = heroScaleMag
         hero.scale.x = heroFlipDir === 1 ? heroScaleMag : -heroScaleMag
 
@@ -8107,6 +8369,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // систем врагов и босса: tint босса каждый кадр пишет boss.ts, и цвет
         // крита попадает в кадр, только если записан позже (см. critFlash.ts).
         critFlashSystem!.update(ticker.deltaMS)
+        // Белая вспышка — тоже после систем врагов; цифры урона всплывают.
+        hitFlashSystem!.update(ticker.deltaMS)
+        damageNumberSystem!.update(ticker.deltaMS)
         // Свечение элиты — после систем врагов: копия берёт кадр этого тика.
         eliteGlowSystem!.update(ticker.deltaMS)
         // Голубое свечение зелья отражения: горит, пока зелье готово; вспышку
@@ -8275,6 +8540,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       skills?.dispose()
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()
+      damageNumberSystem?.dispose()
+      hitFlashSystem?.dispose()
+      heroDamageNumberRef.current = () => {}
       eliteGlowSystem?.dispose()
       fireSystem?.dispose()
       smokeSystem?.dispose()

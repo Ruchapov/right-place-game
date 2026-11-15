@@ -8,7 +8,7 @@ import { climbStep, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
-import { redrawEnemyHpBar } from './enemy'
+import { lightHurtSpeed, redrawEnemyHpBar } from './enemy'
 
 /**
  * ПРИВРАТНИК — третий враг, ближний бой с дверью-щитом (06.10.2026).
@@ -720,10 +720,17 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
           enemy.hurtTimer = Math.max(0, enemy.hurtTimer - deltaMS)
           playAnim(enemy, 'hurt', frames)
         } else if (g.phase === 'windup' || g.phase === 'follow') {
+          enemy.lightHurtMs = 0 // замах главнее лёгкого ранения
           // Лист атаки — только у двух фаз самой атаки. Стойка после оглушения
           // ('recover') идёт ниже, общей веткой поднятой двери: он не двигается,
           // и она даёт idleGuard.
           showFrame(enemy, 'attack', attackFrameOf(g.phase, g.phaseMs), frames)
+        } else if ((enemy.lightHurtMs ?? 0) > 0) {
+          // Лёгкое ранение (16.11.2026) — только картинка, ИИ идёт как обычно.
+          enemy.lightHurtMs = Math.max(0, (enemy.lightHurtMs ?? 0) - deltaMS)
+          playAnim(enemy, 'hurt', frames)
+          enemy.sprite.animationSpeed = lightHurtSpeed(frames.hurt.length)
+          if (enemy.lightHurtRestart) { enemy.lightHurtRestart = false; enemy.sprite.gotoAndPlay(0) }
         } else if (g.guard === 'raising' || g.guard === 'lowering') {
           // Один лист на оба направления: кадр — по тому, сколько двери поднято.
           showFrame(enemy, 'raiseGuard', raiseFrameOf(g.guardMs), frames)

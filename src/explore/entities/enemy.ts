@@ -101,6 +101,11 @@ export type EnemyDeps = {
 // НЕ приватно модулю (в отличие от skills.ts, где снаряды/кулдауны будут
 // жить внутри) — так applyAttackHit() в Explore.tsx продолжает читать/
 // писать те же объекты Enemy без каких-либо изменений в своём коде.
+/** Скорость листа, чтобы он прошёл целиком за LIGHT_HURT_MS (кадров за кадр тикера при 60). */
+export function lightHurtSpeed(frames: number): number {
+  return frames / ((C.LIGHT_HURT_MS / 1000) * 60)
+}
+
 export function createEnemySystem(deps: EnemyDeps) {
   // Та же формула, что worldWidthPx в setup() Explore.tsx (grid[0].length *
   // TILE_SIZE) — врагу для клэмпа движения по X нужно то же число, но как
@@ -786,6 +791,8 @@ export function createEnemySystem(deps: EnemyDeps) {
           deps.playSpriteAnim(enemy.sprite, beastFrames.hurt, C.BEAST_HURT_ANIM_SPEED, false)
         } else {
           if (enemy.windingUp && !enemy.attackAnimPlaying) {
+            // Замах главнее лёгкого ранения (оно только картинка).
+            enemy.lightHurtMs = 0
             enemy.attackAnimPlaying = true
             enemy.attackHitApplied = false
             deps.playSpriteAnim(enemy.sprite, beastFrames.attack, C.BEAST_ATTACK_ANIM_SPEED, false)
@@ -840,6 +847,13 @@ export function createEnemySystem(deps: EnemyDeps) {
             if (enemy.sprite.currentFrame >= beastFrames.attack.length - 1 || !enemy.sprite.playing) {
               enemy.attackAnimPlaying = false // доиграла — со следующего тика idle/walk
             }
+          } else if ((enemy.lightHurtMs ?? 0) > 0) {
+            // Лёгкое ранение (16.11.2026): лист hurt целиком за LIGHT_HURT_MS,
+            // только картинка — ИИ выше уже отработал как обычно.
+            enemy.lightHurtMs = Math.max(0, (enemy.lightHurtMs ?? 0) - deltaMS)
+            deps.playSpriteAnim(enemy.sprite, beastFrames.hurt, lightHurtSpeed(beastFrames.hurt.length), false)
+            enemy.sprite.animationSpeed = lightHurtSpeed(beastFrames.hurt.length)
+            if (enemy.lightHurtRestart) { enemy.lightHurtRestart = false; enemy.sprite.gotoAndPlay(0) }
           } else {
             const enemyMoving = enemy.x !== prevEnemyX
             if (enemyMoving) {

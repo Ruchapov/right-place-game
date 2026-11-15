@@ -574,6 +574,7 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
         e.hurtTimer = Math.max(0, e.hurtTimer - deltaMS)
         ncPlay(e.sprite, nc, hurtName, a, { hurtMs: C.ENEMY_HURT_MS })
       } else if (nc.action) {
+        e.lightHurtMs = 0 // действие главнее лёгкого ранения
         const action = nc.action
         nc.actionMs += deltaMS
         if (e.windingUp) {
@@ -591,6 +592,12 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
           endAction(e)
           behavior.onActionEnd?.(ctx, e, action)
         }
+      } else if ((e.lightHurtMs ?? 0) > 0) {
+        // Лёгкое ранение (16.11.2026): лист hurt целиком за LIGHT_HURT_MS —
+        // только картинка, решения выше уже отработали как обычно.
+        e.lightHurtMs = Math.max(0, (e.lightHurtMs ?? 0) - deltaMS)
+        ncPlay(e.sprite, nc, hurtName, a, { hurtMs: C.LIGHT_HURT_MS, restart: e.lightHurtRestart })
+        e.lightHurtRestart = false
       } else if (e.x !== prevX) {
         ncPlay(e.sprite, nc, sheet('Walk'), a)
       } else {

@@ -8,7 +8,7 @@ import { climbStep, stepDownOk, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
-import { redrawEnemyHpBar } from './enemy'
+import { lightHurtSpeed, redrawEnemyHpBar } from './enemy'
 import { ELITE_DMG_MULT } from '../../runExtras'
 
 /**
@@ -639,6 +639,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
           enemy.hurtTimer = Math.max(0, enemy.hurtTimer - deltaMS)
           playAnim(enemy, 'hurt', frames)
         } else if (enemy.attackAnimPlaying) {
+          enemy.lightHurtMs = 0 // замах главнее лёгкого ранения
           enemy.windupTimer += deltaMS
           // Волна рождается на кадре вспышки, а не по таймеру: анимация и выстрел
           // не имеют права разъехаться (то же решение, что у strike-кадра зверя
@@ -656,6 +657,12 @@ export function createZvonarSystem(deps: ZvonarDeps) {
             enemy.attackAnimPlaying = false
             enemy.windingUp = false
           }
+        } else if ((enemy.lightHurtMs ?? 0) > 0) {
+          // Лёгкое ранение (16.11.2026) — только картинка, ИИ идёт как обычно.
+          enemy.lightHurtMs = Math.max(0, (enemy.lightHurtMs ?? 0) - deltaMS)
+          playAnim(enemy, 'hurt', frames)
+          enemy.sprite.animationSpeed = lightHurtSpeed(frames.hurt.length)
+          if (enemy.lightHurtRestart) { enemy.lightHurtRestart = false; enemy.sprite.gotoAndPlay(0) }
         } else if (enemy.x !== prevX) {
           // Темп ног — по ФАКТИЧЕСКОМУ шагу, как у зверя: режимов движения три
           // (отход, расследование, патруль), и два из них идут одной скоростью.

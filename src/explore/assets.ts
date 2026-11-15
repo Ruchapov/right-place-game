@@ -60,6 +60,10 @@ export type CommonAssets = {
   // Искра отбива (парирование) — ОДНОРАЗОВЫЙ VFX поверх героя, поэтому рядом с
   // healAura/slashStreak, а не в hero: это не его анимация, а вспышка на клинке.
   parrySpark: Texture[]
+  // Комбо из трёх ударов (16.11.2026): hero/Hero_Combo.png, 77 кадров. НЕ в
+  // hero: облик и плащ его не перекрашивают (лист один на все облики), а набор
+  // hero целиком уходит в перекраску плаща.
+  heroCombo: Texture[]
   // Аура лечения (скилл heal).
   healAura: Texture[]
   // Скилл slash: дуга взмаха (разовая). Петля кровотечения (Bleeding_Loop)
@@ -310,13 +314,15 @@ export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promis
  */
 export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Promise<CommonAssets> {
   const [
-    hero, parrySpark, healAura, slashStreak,
+    hero, parrySpark, heroCombo, healAura, slashStreak,
     fireballProjectile, fireballImpact, iceballProjectile, iceballImpact,
     gold, trophy, rp, manaOrb,
   ] = await Promise.all([
     loadHeroSheets(look),
     // Искра отбива — своя клетка 192×192, 11 кадров в один ряд.
     loadCheckedSheet('parry_spark.png', C.PARRY_SPARK_SRC, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS),
+    // Комбо — 10 колонок × 8 рядов, клетка 405×382 (лист 4050×3056).
+    loadCheckedSheet('Hero_Combo.png', C.HERO_COMBO_SRC, C.HERO_COMBO_CELL_W, C.HERO_COMBO_CELL_H, C.HERO_COMBO_COUNT, C.HERO_COMBO_COLS, C.HERO_COMBO_ROWS),
     loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS),
     // Slash — дуга взмаха. Размер клетки сверен по IHDR: 1920/12 = 160 нацело,
     // высота листа равна высоте кадра (один ряд).
@@ -351,6 +357,7 @@ export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Prom
   return {
     hero,
     parrySpark,
+    heroCombo,
     healAura,
     slashStreak,
     fireballProjectile,

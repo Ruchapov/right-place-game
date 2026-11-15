@@ -1589,6 +1589,69 @@ export const KNOCKBACK_PX = 7
 export const KNOCKBACK_MS = 100
 export const HITSTOP_MS = 40
 
+// НОВАЯ БОЁВКА ГЕРОЯ (16.11.2026, docs/explore-engine.md, «Комбо из трёх
+// ударов»). Лёгкий удар (удары 1 и 2 комбо, удар в воздухе) и сильный (удар 3
+// комбо или любой крит) — разная реакция врага.
+//
+// Лист комбо: hero/Hero_Combo.png, 4050×3056, 10 колонок × 8 рядов, клетка
+// 405×382, 77 кадров, герой смотрит вправо. Лист — как есть, без перекраски
+// обликом и плащом. Герой на нём на 8% мельче, чем на idle/attack, поэтому
+// масштаб — (HERO_DRAW_H / HERO_CELL_H) × HERO_COMBO_SIZE_MULT, а точка ног
+// клетки (161, 392) — якорь: она встаёт туда же, куда точка ног (197, 296)
+// старых листов (низ-центр клетки 394×296).
+export const HERO_COMBO_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/Hero_Combo.png`
+export const HERO_COMBO_CELL_W = 405
+export const HERO_COMBO_CELL_H = 382
+export const HERO_COMBO_COUNT = 77
+export const HERO_COMBO_COLS = 10
+export const HERO_COMBO_ROWS = 8
+export const HERO_COMBO_SIZE_MULT = 1.08
+export const HERO_COMBO_ANCHOR_X = 161 / HERO_COMBO_CELL_W
+export const HERO_COMBO_ANCHOR_Y = 392 / HERO_COMBO_CELL_H
+/** 30 кадров в секунду (animationSpeed — кадров листа за кадр тикера при 60). */
+export const HERO_COMBO_ANIM_SPEED = 30 / 60
+/** Кадры листа по ударам; hit — кадр урона (номер кадра листа). */
+export const HERO_COMBO_STRIKES = [
+  { frames: [5, 7, 9, 11, 14, 16, 17, 18, 19, 20, 21], hit: 17, damageMult: 1, rangePx: 110 },
+  { frames: [26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38], hit: 29, damageMult: 1, rangePx: 110 },
+  { frames: [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52], hit: 49, damageMult: 1.5, rangePx: 105 },
+] as const
+/** Выход в idle после удара 1, 2, 3 (комбо бросили или оно кончилось). */
+export const HERO_COMBO_EXITS = [
+  [22, 25, 70, 71, 72, 73, 74, 75, 76],
+  [70, 71, 72, 73, 74, 75, 76],
+  [53, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76],
+] as const
+
+// Реакция врага на удар мечом героя. Лёгкий удар: враг не в замахе и не в
+// атаке — лист hurt целиком за LIGHT_HURT_MS (только картинка: атаку не
+// блокирует и не откладывает), плюс белая вспышка HIT_FLASH_MS; в замахе или
+// атаке — одна вспышка. Отскока у лёгкого нет, хитстоп HITSTOP_MS.
+// Сильный: полный хитстан (POISE), отскок STRONG_KNOCKBACK_PX за
+// STRONG_KNOCKBACK_MS с замедлением к концу, хитстоп STRONG_HITSTOP_MS.
+export const LIGHT_HURT_MS = 180
+export const HIT_FLASH_MS = 80
+export const STRONG_KNOCKBACK_PX = 20
+export const STRONG_KNOCKBACK_MS = 130
+export const STRONG_HITSTOP_MS = 80
+
+// Неуязвимость героя после удара врага: HERO_HIT_IFRAME_MS не получает урон от
+// врагов и их снарядов, мигает альфой 0.35 / 1.0 со сменой каждые
+// HERO_HIT_BLINK_MS. Горение и шипы/ловушки её не трогают.
+export const HERO_HIT_IFRAME_MS = 600
+export const HERO_HIT_BLINK_MS = 66
+
+// Цифры урона (entities/damageNumbers.ts): всплывают на DAMAGE_NUMBER_RISE_PX
+// за DAMAGE_NUMBER_MS и гаснут. Обычный удар — белый 22 px, сильный и крит —
+// жёлтый 30 px с «!», по герою — красный с минусом.
+export const DAMAGE_NUMBER_MS = 600
+export const DAMAGE_NUMBER_RISE_PX = 40
+export const DAMAGE_NUMBER_SIZE = 22
+export const DAMAGE_NUMBER_BIG_SIZE = 30
+export const DAMAGE_NUMBER_COLOR = 0xffffff
+export const DAMAGE_NUMBER_BIG_COLOR = 0xffd23a
+export const DAMAGE_NUMBER_HERO_COLOR = 0xff3b3b
+
 // Золотое свечение элиты (30.10.2026, entities/eliteGlow.ts): копия кадра
 // позади врага, крупнее в ELITE_GLOW_SCALE, золотым тоном; прозрачность
 // пульсирует между MIN и MAX с периодом PERIOD_MS; после смерти гаснет за
