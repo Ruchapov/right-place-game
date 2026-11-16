@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Application, Assets, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, Ticker, TilingSprite, type RenderTexture } from 'pixi.js'
+import { Application, AnimatedSprite, Container, Graphics, Rectangle, RendererType, Sprite, Text, Texture, Ticker, TilingSprite, type RenderTexture } from 'pixi.js'
 import { ARMOR_SKINS, BRAND_CRIT_MULT, CLOAKS, DEFAULT_RUN_SKINS, PARRY_STRIKE_WINDOW_MS, SLASH_SKINS, brandBonus, cloakBonus, cloakById, skinDamageTakenMult, type RunSkins } from './skins'
 import { renderSpikeTile, spikeGlintAlpha, backdropPaths, backdropLook } from './mapRenderer'
 import { mapArtFor, gridChecksum } from './explore/mapArt'
@@ -46,7 +46,7 @@ import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
 import { skillSealSrc } from './skillBooks'
-import { bakeHeroCloak, loadHeroSheets, loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, retainNcAssets, releaseNcAssets, loadTrapArt } from './explore/assets'
+import { bakeHeroCloak, loadHeroSheets, loadCommonAssets, loadEventAssets, loadBloodClassAssets, loadBladeClassAssets, loadTrapArt } from './explore/assets'
 import type { RunAssetNeeds } from './explore/assets'
 import { createSkillsSystem } from './explore/entities/skills'
 import { createManaSystem } from './explore/entities/mana'
@@ -98,7 +98,8 @@ import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
 import { createBreakablesSystem, type BreakableAssets } from './explore/entities/breakables'
 import { rollBreakables, type RunBreakable } from './breakables'
-import { loadSheetFrames } from './explore/spriteLoader'
+import { beginRunAssets, endRunAssets, loadSheetFrames, loadTexture } from './explore/spriteLoader'
+import { startDebugMem } from './explore/debugMem'
 import { bloodClassEffects, magicClassEffects, bladeClassEffects, type BloodClassEffects, type MagicClassEffects, type BladeClassEffects, type HeroClassState } from './heroClasses'
 import { createAtmosphereSystem, type AtmosphereView } from './explore/entities/atmosphere'
 import { createSwayDecorSystem, loadSwayTextures } from './explore/entities/swayDecor'
@@ -322,7 +323,7 @@ type ExploreProps = {
  */
 async function loadBackdropLayer(url: string, layer: 'far' | 'mid'): Promise<Texture | null> {
   try {
-    return await Assets.load(url) as Texture
+    return await loadTexture(url)
   } catch (e) {
     console.warn(`Explore: слой фона ${layer} не загрузился (${url}) — забег идёт без него`, e)
     return null
@@ -655,8 +656,12 @@ const DEV_THEME_WEIGHTS: Record<string, Partial<Record<EnemyKind, number>>> = {
   swamp: { beast: 20, zvonar: 15, gatekeeper: 15, fencer: 15, crossbowman: 15, beetle: 20 },
 }
 
+let devEnemyTurn = 0
 function devEnemyKind(mapFile = ''): EnemyKind {
-  const forced = devUrlParam('enemy')
+  // ?enemy=fencer,beetle,… (16.11.2026, замер видеопамяти) — группы и
+  // патрульные по очереди из списка: так в одном забеге встают несколько видов.
+  const list = (devUrlParam('enemy') ?? '').split(',').filter((k) => k === 'beast' || (DEV_NC_ENEMIES as readonly string[]).includes(k))
+  const forced = list.length > 1 ? list[devEnemyTurn++ % list.length] : list[0]
   if (forced && (DEV_NC_ENEMIES as readonly string[]).includes(forced)) return forced as EnemyKind
   if (forced === 'beast') return 'beast'
   if (TEMP_DEV_GATEKEEPER_GROUPS === 'roll' && TEMP_DEV_ZVONAR_GROUPS === 'roll' && mapFile) {
@@ -2904,8 +2909,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     let crowKingSystem: ReturnType<typeof createCrowKingSystem> | null = null
     let shadowSystem: ReturnType<typeof createShadowSystem> | null = null
     let ncProjectiles: ReturnType<typeof createNcProjectileSystem> | null = null
-    // Файлы новых листов, взятые этим забегом: cleanup их отпускает (releaseNcAssets).
-    let ncRetained: string[] = []
+    // Картинки этого забега (16.11.2026, spriteLoader.ts): всё, что setup()
+    // запросит через loadTexture / loadSheetFrames, пишется сюда, а cleanup
+    // отпускает — что больше никто не держит, выгружается из памяти.
+    const runAssets = beginRunAssets()
+    // ?debugMem=1: счётчик видеопамяти в углу (explore/debugMem.ts).
+    let stopDebugMem: () => void = () => {}
     let useNcFilters = false
     // Состояния героя от новых врагов (09.11.2026): замедление грязью жука,
     // горение от кочерги, отталкивание от блока фехтовальщика. Переменные
@@ -3172,12 +3181,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         loadBackdropLayer(backdropUrls.far, 'far'),
         loadBackdropLayer(backdropUrls.mid, 'mid'),
         // Слой шире потолка текстуры — несколько частей по ширине (mapArt.slices).
-        Promise.all(mapArt.slices.map((s) => Assets.load(s.src) as Promise<Texture>)),
+        Promise.all(mapArt.slices.map((s) => loadTexture(s.src))),
         // Камыш и осока (у прочих карт список пуст) — тоже часть вида карты: их
         // нет в слое, и без них болото было бы с голыми тенями. Промах — ошибка.
         loadSwayTextures(mapArt.sway.map((v) => v.src)),
         // Глухая стена за краем карты (31.10.2026) — часть вида карты: промах — ошибка.
-        Promise.all([Assets.load(mapArt.walls.left), Assets.load(mapArt.walls.right)]) as Promise<[Texture, Texture]>,
+        Promise.all([loadTexture(mapArt.walls.left), loadTexture(mapArt.walls.right)]) as Promise<[Texture, Texture]>,
       ])
       backdropLoad.catch(() => {})
 
@@ -3356,7 +3365,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         ? Promise.all([
           loadSheetFrames(C.STARBLOOM_IDLE_SRC, C.STARBLOOM_IDLE_CELL_W, C.STARBLOOM_IDLE_CELL_H, C.STARBLOOM_IDLE_COUNT, C.STARBLOOM_SHEET_COLS),
           loadSheetFrames(C.STARBLOOM_CUT_SRC, C.STARBLOOM_CUT_CELL_W, C.STARBLOOM_CUT_CELL_H, C.STARBLOOM_CUT_COUNT, C.STARBLOOM_SHEET_COLS),
-          Assets.load(C.STARBLOOM_ICON_SRC) as Promise<Texture>,
+          loadTexture(C.STARBLOOM_ICON_SRC),
         ]).catch((e: unknown) => { console.error('Explore: Звёздоцвет не загрузился — в этом забеге его не будет', e); return null })
         : Promise.resolve(null)
       // Выпад: сколько ещё длится окно после рывка (мс). Пока идёт рывок — оно
@@ -3554,7 +3563,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           loadSheetFrames(C.BARREL_BREAK_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, C.BARREL_BREAK_COUNT, C.BREAKABLE_SHEET_COLS),
           loadSheetFrames(C.JAR_IDLE_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, 1, C.BREAKABLE_SHEET_COLS),
           loadSheetFrames(C.JAR_BREAK_SRC, C.BREAKABLE_CELL_W, C.BREAKABLE_CELL_H, C.JAR_BREAK_COUNT, C.BREAKABLE_SHEET_COLS),
-          Assets.load(C.BREAKABLE_HP_ICON_SRC) as Promise<Texture>,
+          loadTexture(C.BREAKABLE_HP_ICON_SRC),
         ]).then(([barrelIdle, barrelHit, barrelCracked, barrelBreak, jarIdle, jarBreak, hpIcon]) => ({
           sheets: { barrelIdle, barrelHit, barrelCracked, barrelBreak, jarIdle, jarBreak }, hpIcon,
         })).catch((e: unknown) => { console.error('Explore: бочки и кувшины не загрузились — в этом забеге их не будет', e); return null })
@@ -3636,12 +3645,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           crowking: ncBossKind === 'crowking',
         },
       }
-      ncRetained = retainNcAssets((Object.keys(runAssetNeeds.nc) as NcKind[]).filter((k) => runAssetNeeds.nc[k]))
       const eventAssetsLoad = loadEventAssets(runAssetNeeds)
       eventAssetsLoad.catch(() => {})
       // Жаровня Носителя огня (11.11.2026) — только в забег с этим событием.
       const brazierLoad: Promise<Texture | null> = chosenEvents.some((ev) => ev.kind === 'flame')
-        ? Assets.load<Texture>(C.BRAZIER_SRC) : Promise.resolve(null)
+        ? loadTexture(C.BRAZIER_SRC) : Promise.resolve(null)
       brazierLoad.catch(() => {})
       setEventClosed(Array(chosenEvents.length).fill(false))
       setEventFailed(Array(chosenEvents.length).fill(false))
@@ -3680,7 +3688,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (src === null) continue
         dropIconsRequested.add(key)
         dropIconLoads.push(
-          (Assets.load(src) as Promise<Texture>).then(
+          loadTexture(src).then(
             (texture) => { dropIconTextures.set(key, texture) },
             (e) => { console.error('Explore: не загрузилась иконка добычи', src, e) },
           ),
@@ -3708,7 +3716,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Арт новых ловушек — только тем, что встали в этот забег.
       // Волна Телекинеза — только если навык надет.
       if ((equippedSkills ?? []).includes('telekinesis')) {
-        telekinesisWaveRef.current = await Assets.load(C.TELEKINESIS_WAVE_SRC) as Texture
+        telekinesisWaveRef.current = await loadTexture(C.TELEKINESIS_WAVE_SRC)
       }
       const trapArt = await loadTrapArt(chosenGargoyles.length > 0, chosenStalactites.length > 0, chosenSaws.length > 0)
 
@@ -3954,7 +3962,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Висячие цепи-маятники (entities/chainSway.ts) — на картах пока нет ни одной.
       const chainPoints = withoutCleared(CHAINS[resolvedMapFile] ?? [], CLEARED_CHAINS[resolvedMapFile])
       if (chainPoints.length > 0) {
-        const chainTexture = await Assets.load(`${base}${CHAIN_TEXTURE}`) as Texture
+        const chainTexture = await loadTexture(`${base}${CHAIN_TEXTURE}`)
         chainSwaySystem = createChainSwaySystem(worldContainer, chainPoints.map((c) => ({ ...c, texture: chainTexture })))
       }
       // Ловушки (13.11.2026) — поверх слоя и живого декора: узел встаёт сейчас,
@@ -4285,16 +4293,20 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       }
       const heroSet = await bakeHeroSet(assets.hero, skinsRef.current.cloak)
       if (cancelled) return
-      // Листы БОССА — в видеопамять СЕЙЧАС, на
-      // экране подготовки, а не в кадре первого показа (13.11.2026: превращение
-      // Настоятеля впервые рисовало Abbot_Transform и Abbot2_* посреди боя, и
-      // iPhone терял WebGL на этом рывке памяти). Только WebGL.
+      // Листы боя — в видеопамять СЕЙЧАС, на экране подготовки, а не в кадре
+      // первого показа (13.11.2026: превращение Настоятеля впервые рисовало
+      // Abbot_Transform и Abbot2_* посреди боя, и iPhone терял WebGL на этом
+      // рывке памяти). С 16.11.2026 — все листы забега: герой (уже
+      // перекрашенный — исходные листы под плащом выгружены, их не трогаем),
+      // эффекты, враги, босс. Листы по размеру экрана и без пустоты стоят
+      // втрое-вчетверо меньше, и пик от этого не растёт: в бою они всё равно
+      // понадобились бы (docs/explore-engine.md, «Видеопамять забега»). Только WebGL.
       if (app.renderer.type === RendererType.WEBGL) {
         const seen = new Set<unknown>()
         const visit = (v: unknown, depth: number) => {
-          if (depth > 5 || v === null || typeof v !== 'object') return
+          if (depth > 8 || v === null || typeof v !== 'object') return
           if (v instanceof Texture) {
-            if (!seen.has(v.source)) {
+            if (v !== Texture.EMPTY && v !== Texture.WHITE && !seen.has(v.source)) {
               seen.add(v.source)
               try { (app!.renderer.texture as unknown as { initSource: (s: unknown) => void }).initSource(v.source) } catch (e) { console.warn('Explore: лист не загрузился в видеопамять заранее', e) }
             }
@@ -4302,11 +4314,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           }
           for (const x of Array.isArray(v) ? v : Object.values(v)) visit(x, depth + 1)
         }
-        // Только листы босса: врагов «наперёд» не грузим — это подняло бы пик
-        // видеопамяти (замер: +≈200 МБ на C2), а их листы и так малы и
-        // показываются с первых секунд.
-        visit([eventAssets.boss, eventAssets.abbot, eventAssets.nc.serpent, eventAssets.nc.crowking], 0)
+        visit([{ ...assets, hero: heroSet }, eventAssets], 0)
       }
+      stopDebugMem = startDebugMem(app.renderer)
       // let, а не const: ?debugSkins=1 подменяет листы героя прямо в забеге
       // (swapHeroSet ниже), и все ветки тикера обязаны видеть новые массивы.
       let idleFrames = heroSet.idle
@@ -8696,6 +8706,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // destroy() только если init() реально завершился — до этого у app нет
       // внутренностей, на которые destroy() рассчитывает (см. комментарий
       // у объявления initialized выше).
+      stopDebugMem()
+      stopDebugMem = () => {}
       if (app && initialized) {
         try {
           if (onBgResize) app.renderer.off('resize', onBgResize)
@@ -8706,10 +8718,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       }
       appRef.current = null
       heroSpriteRef.current = null
-      // Листы новых врагов и боссов (≈45–245 МБ на вид в видеопамяти) — после
-      // забега уничтожить, если их не взял уже следующий забег.
-      if (ncRetained.length > 0) releaseNcAssets(ncRetained)
-      ncRetained = []
+      // Все картинки забега (слой карты, стены, фон, герой, враги, босс,
+      // эффекты, ловушки) — после забега выгрузить, если их не взял уже
+      // следующий забег (spriteLoader.ts). После app.destroy: узлы сцены уже
+      // уничтожены, а текстуры кэша Assets они не трогают.
+      endRunAssets(runAssets)
       // Узлы сами уничтожаются деревом app.destroy(true, {children:true})
       // выше — здесь только сбрасываем список, чтобы не держать ссылки на
       // уже уничтоженные Container при повторном mount (StrictMode).

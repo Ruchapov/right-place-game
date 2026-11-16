@@ -1,4 +1,5 @@
 import { Assets, Geometry, GlProgram, Mesh, RenderTexture, Rectangle, Shader, Texture, UniformGroup, type Renderer } from 'pixi.js'
+import { loadTexture } from '../spriteLoader'
 import type { CloakColor } from '../../skins'
 
 // ПЕРЕКРАСКА ПЛАЩА (Портной, 14.11.2026, docs/shop.md, «ПОРТНОЙ»).
@@ -84,11 +85,20 @@ export type BakedSheet = { frames: Texture[]; target: RenderTexture; rebake: (re
  */
 export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], maskSrc: string, color: Exclude<CloakColor, null>): Promise<BakedSheet> {
   const source = frames[0].source
-  const target = RenderTexture.create({ width: source.width, height: source.height, resolution: 1 })
+  // Тот же логический размер и тот же коэффициент, что у листа (16.11.2026,
+  // «Видеопамять забега»): у листа по размеру экрана пикселей в res² меньше —
+  // и у перекрашенной копии столько же. Упакованный лист — атлас кадров, и
+  // копия — того же размера атласа, а не всей сетки клеток.
+  const target = RenderTexture.create({ width: source.width, height: source.height, resolution: source.resolution })
   target.source.scaleMode = 'linear' // как у исходных листов (spriteLoader)
   const rebake = (r: Renderer) => renderInto(r, frames, maskSrc, color, target)
   await rebake(renderer)
-  const out = frames.map((f) => new Texture({ source: target.source, frame: new Rectangle(f.frame.x, f.frame.y, f.frame.width, f.frame.height) }))
+  const out = frames.map((f) => new Texture({
+    source: target.source,
+    frame: new Rectangle(f.frame.x, f.frame.y, f.frame.width, f.frame.height),
+    orig: new Rectangle(f.orig.x, f.orig.y, f.orig.width, f.orig.height),
+    trim: f.trim ? new Rectangle(f.trim.x, f.trim.y, f.trim.width, f.trim.height) : undefined,
+  }))
   return { frames: out, target, rebake }
 }
 
@@ -96,7 +106,10 @@ async function renderInto(renderer: Renderer, frames: Texture[], maskSrc: string
   const source = frames[0].source
   const w = source.width
   const h = source.height
-  const mask = (await Assets.load(maskSrc)) as Texture
+  // Маска — того же размера и раскладки, что лист (tools/make_sprite_res.mjs
+  // кладёт их в одну группу); через loadTexture — чтобы ей встали тот же
+  // коэффициент и логический размер. Без учёта забега: выгружается ниже сразу.
+  const mask = await loadTexture(maskSrc, { track: false })
   if (mask.source.width !== w || mask.source.height !== h) {
     throw new Error(`Маска плаща ${maskSrc}: ${mask.source.width}×${mask.source.height}, а лист ${w}×${h} — кадры маски не совпадут с кадрами героя`)
   }

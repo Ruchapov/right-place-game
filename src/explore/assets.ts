@@ -1,9 +1,9 @@
-import { Assets, Rectangle, Texture, type RenderTexture, type Renderer } from 'pixi.js'
+import { Rectangle, Texture, type RenderTexture, type Renderer } from 'pixi.js'
 import type { ArmorSkinId, CloakColor, SlashSkinId } from '../skins'
 import { bakeCloakSheet } from './entities/cloakTint'
 import * as C from './constants'
 import type { BossAnimKind, RewardKind } from './types'
-import { loadSheetFrames } from './spriteLoader'
+import { loadSheetFrames, loadTexture } from './spriteLoader'
 import { NC_SHEETS } from './ncSheets'
 import { ncSheetNames } from './ncConstants'
 import type { NcKind } from './ncConstants'
@@ -198,6 +198,9 @@ function assertSheetSize(
       `${fileName}: ${count} кадров не помещаются в сетку ${cols}×${rows} (${cols * rows} клеток)`,
     )
   }
+  // Упакованный лист (манифест sheetRes.ts): сетку против манифеста уже сверил
+  // loadSheetFrames, а размер атласа от сетки не зависит.
+  if (frames[0].trim) return
   const sheet = frames[0].source
   if (sheet.width !== cellW * cols || sheet.height !== cellH * rows) {
     throw new Error(
@@ -349,10 +352,10 @@ export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Prom
     ),
     // Иконки наград (см. spawnRewardFloat в setup) и шар маны — обычные
     // картинки, не спрайт-листы, поэтому просто Assets.load.
-    Assets.load(C.REWARD_ICON_SRC.gold) as Promise<Texture>,
-    Assets.load(C.REWARD_ICON_SRC.trophy) as Promise<Texture>,
-    Assets.load(C.REWARD_ICON_SRC.rp) as Promise<Texture>,
-    Assets.load(C.MANA_ORB_SRC) as Promise<Texture>,
+    loadTexture(C.REWARD_ICON_SRC.gold),
+    loadTexture(C.REWARD_ICON_SRC.trophy),
+    loadTexture(C.REWARD_ICON_SRC.rp),
+    loadTexture(C.MANA_ORB_SRC),
   ])
   return {
     hero,
@@ -459,7 +462,7 @@ async function loadZvonarAssets(): Promise<ZvonarAssets> {
         Math.ceil(spec.count / spec.cols),
       )
     })),
-    Assets.load(C.ZVONAR_WAVE_SRC) as Promise<Texture>,
+    loadTexture(C.ZVONAR_WAVE_SRC),
     loadCheckedSheet(
       'Zvonar_Wave_Impact_v2.png',
       C.ZVONAR_WAVE_IMPACT_SRC,
@@ -563,7 +566,7 @@ async function loadObeliskAssets(): Promise<ObeliskAssets> {
 // игра работает. Сбой громкий — console.error.
 async function loadBossSpikeTexture(): Promise<Texture | null> {
   try {
-    return await Assets.load(C.BOSS_SPIKE_SRC) as Texture
+    return await loadTexture(C.BOSS_SPIKE_SRC)
   } catch (err) {
     console.error('Explore: не удалось загрузить Boss_Spike.png', err)
     return null
@@ -590,7 +593,7 @@ async function loadBossWave(): Promise<{ left: Texture[]; right: Texture[] }> {
   const left: Texture[] = []
   const right: Texture[] = []
   try {
-    const base = await Assets.load(C.BOSS_WAVE_SRC)
+    const base = await loadTexture(C.BOSS_WAVE_SRC)
     base.source.scaleMode = 'linear'
     for (let i = 0; i < C.BOSS_WAVE_COUNT; i++) {
       const col = i % C.BOSS_WAVE_COLS
@@ -670,7 +673,7 @@ async function loadBossAssets(): Promise<BossAssets> {
 // ≈ 720 МБ (вид врага 45–75 МБ, Змей ≈ 245, Король ≈ 137). Поэтому — строго
 // только виды этого забега (группы и патрульные — по enemyKind из ответа
 // старта, босс — по bossKind), и после забега текстуры уничтожаются
-// (releaseNcAssets из cleanup Explore.tsx).
+// (endRunAssets из cleanup Explore.tsx, учёт — spriteLoader.ts).
 
 // Одиночные картинки вида: снаряды и свечение глаз. Ключ — имя в NcAssets.extra.
 const NC_EXTRA: Partial<Record<NcKind, Record<string, string>>> = {
@@ -680,14 +683,6 @@ const NC_EXTRA: Partial<Record<NcKind, Record<string, string>>> = {
   serpent: { bones: 'serpent/bones3_game.png', eye: 'serpent/eye_glow.png' },
 }
 const extraSrc = (rel: string) => `${import.meta.env.BASE_URL}assets/sprites/${rel}`
-
-/** Все файлы вида — по ним грузится и выгружается. */
-export function ncKindSources(kind: NcKind): string[] {
-  return [
-    ...ncSheetNames(kind).map((name) => NC_SHEETS[name].src),
-    ...Object.values(NC_EXTRA[kind] ?? {}).map(extraSrc),
-  ]
-}
 
 async function loadNcAssets(kind: NcKind): Promise<NcAssets> {
   const names = ncSheetNames(kind)
@@ -705,7 +700,7 @@ async function loadNcAssets(kind: NcKind): Promise<NcAssets> {
         Math.ceil(spec.count / spec.cols),
       )
     })),
-    Promise.all(extraEntries.map(([, rel]) => Assets.load(extraSrc(rel)) as Promise<Texture>)),
+    Promise.all(extraEntries.map(([, rel]) => loadTexture(extraSrc(rel)))),
   ])
   const raw: Record<string, Texture[]> = {}
   const play: Record<string, Texture[]> = {}
@@ -719,31 +714,6 @@ async function loadNcAssets(kind: NcKind): Promise<NcAssets> {
   const extra: Record<string, Texture> = {}
   extraEntries.forEach(([key], i) => { extra[key] = extras[i] })
   return { raw, play, extra }
-}
-
-// Счётчик забегов, держащих файл: StrictMode и смена карты монтируют setup()
-// заново, и выгрузка прошлого забега не должна снять лист, уже взятый новым.
-const ncRetain = new Map<string, number>()
-
-export function retainNcAssets(kinds: NcKind[]): string[] {
-  const srcs = kinds.flatMap(ncKindSources)
-  for (const src of srcs) ncRetain.set(src, (ncRetain.get(src) ?? 0) + 1)
-  return srcs
-}
-
-/**
- * Забег кончился — отпустить его листы. Файл, который больше никто не держит,
- * уничтожается на видеокарте (Assets.unload) через секунду — если за это время
- * новый забег его не взял.
- */
-export function releaseNcAssets(srcs: string[]): void {
-  for (const src of srcs) ncRetain.set(src, Math.max(0, (ncRetain.get(src) ?? 0) - 1))
-  window.setTimeout(() => {
-    const free = srcs.filter((src) => (ncRetain.get(src) ?? 0) === 0)
-    if (free.length === 0) return
-    for (const src of free) ncRetain.delete(src)
-    Assets.unload(free).catch((err) => console.error('Explore: не выгрузились листы', err))
-  }, 1000)
 }
 
 export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets> {
@@ -790,7 +760,7 @@ export type TrapArt = {
 
 export async function loadTrapArt(gargoyles: boolean, stalactites: boolean, saws: boolean): Promise<TrapArt> {
   const E = Texture.EMPTY
-  const load = (on: boolean, src: string) => (on ? Assets.load(src) as Promise<Texture> : Promise.resolve(E))
+  const load = (on: boolean, src: string) => (on ? loadTexture(src) : Promise.resolve(E))
   const metaP: Promise<TrapArt['gargoyle'] | null> = gargoyles
     ? fetch(C.GARGOYLE_FIRE_JSON).then((r) => {
       if (!r.ok) throw new Error(`GargoylePost_Fire.json: HTTP ${r.status}`)
