@@ -131,7 +131,7 @@ async function renderScreen(screen: Screen, telegramId: number, param: string | 
       }
     case 'notify': {
       const p = await playerOf(telegramId)
-      if (!p) return { photo: botArt('energy'), caption: '🔔 Сначала зайди в игру — тогда Колокол узнает, о чём звонить.', keyboard: [footer(param)] }
+      if (!p) return { photo: botArt('energy'), caption: '🔔 Колокол ещё не знает тебя. Загляни в игру — и он найдёт тебя, когда будет нужно.', keyboard: [footer(param)] }
       return { photo: botArt('energy'), caption: NOTIFY_CAPTION, keyboard: notifyKeyboard(readNotifySettings(p.notifySettings), param) }
     }
     case 'friends': {
