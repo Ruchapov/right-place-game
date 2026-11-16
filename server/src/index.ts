@@ -10,6 +10,7 @@ import { skinRoutes } from './routes/skins.js'
 import { botWebhookRoutes, registerBotWebhook } from './bot/webhook.js'
 import { cronRoutes } from './bot/cron.js'
 import { botPlayerRoutes, trackActivity } from './bot/routes.js'
+import { leaderboardRoutes } from './routes/leaderboard.js'
 
 // Load environment variables from .env file
 dotenv.config()
@@ -37,6 +38,7 @@ await server.register(questRoutes)
 await server.register(friendRoutes)
 await server.register(guildRoutes)
 await server.register(skinRoutes)
+await server.register(leaderboardRoutes)
 await server.register(botWebhookRoutes)
 await server.register(cronRoutes)
 await server.register(botPlayerRoutes)
