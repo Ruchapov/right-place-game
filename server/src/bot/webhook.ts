@@ -12,7 +12,7 @@
 // присылается новая. На каждый callback — answerCallbackQuery.
 //
 // callback_data (латиница, ≤ 64 байт):
-//   m | n | f | c | h  [:<параметр>]  — экран: главный, уведомления, друзья, канал, как играть
+//   m | n | f | c | h  [:<параметр>]  — экран: главный, уведомления, друзья, канал, об игре
 //   t:<настройка>[:<параметр>]        — переключатель на экране уведомлений
 //   off[:<параметр>]                  — «Выключить все»
 //   no:<настройка> / yes:<настройка>  — «Не присылать такое» / «Вернуть» под уведомлением
@@ -21,13 +21,12 @@
 // на любом экране; длина не больше START_PARAM_MAX, чтобы влез в 64 байта.
 //
 // Любое сообщение игрока — botAllowed=true, botBlocked=false (он написал сам).
-// На обычный текст и файлы — «Я понимаю только кнопки 🙂» и главный экран, не
+// На обычный текст и файлы — «Колокол не слышит слов. Только кнопки.» и главный экран, не
 // чаще раза в 10 минут на игрока. Игроку — понятные слова, детали — в лог.
 import type { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import { PrismaClient } from '@prisma/client'
-import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP, friendState, referralUrl } from '../referral.js'
+import { referralUrl } from '../referral.js'
 import { ensureReferralCode } from '../routes/friends.js'
-import { calculateLevel } from '../game.js'
 import {
   answerCallbackQuery, backButton, botArt, call, CHANNEL_URL, editMessageMedia, editMessageReplyMarkup, FIRE_EFFECT_ID,
   isNotModified, playButton, sendCard, sendMessage, type InlineButton, type Keyboard,
@@ -49,22 +48,23 @@ const SCREEN_OF_CODE: Record<string, Screen> = { m: 'main', n: 'notify', f: 'fri
 const CODE_OF_SCREEN: Record<Screen, string> = { main: 'm', notify: 'n', friends: 'f', channel: 'c', help: 'h' }
 
 const START_CAPTION =
-  '🔔 Колокол Убежища звонит для тебя, странник.\n' +
-  'Подземелья, болота и боссы ждут. Собирай трофеи, расти героя, зови друзей.'
+  '🔔 Колокол звонит. Значит, ты ещё жив.\n' +
+  'Внизу ждут руины и то, что в них не спит. Наверху — костёр и твоя добыча.'
 
-const NOTIFY_CAPTION = '🔔 О чём звонить Колоколу?\nНочью (23:00–9:00) молчу — всё приходит утром.'
+const NOTIFY_CAPTION =
+  '🔔 Колокол может звать тебя, когда в Убежище что-то происходит.\n' +
+  'Выбери, о чём ему звонить. Ночью он молчит.'
 
 const HELP_CAPTION =
-  '📖 Как играть\n' +
-  '⚔️ Вылазка — карта с тремя задачами: враги, сундуки, боссы.\n' +
-  '💀 Трофеи копятся, но сгорают при смерти — вовремя меняй их на золото.\n' +
-  '🏚 В Убежище — зелья, закалки и книги навыков.\n' +
-  '📜 С 5 уровня — задания на доске Убежища.\n' +
-  '🛡 Гильдии и друзья — вместе сильнее.'
+  '📖 Right Place\n\n' +
+  'Мир давно пал. Остались руины, болота и то, что в них живёт.\n' +
+  'У тебя есть клинок, костёр в Убежище и право спускаться туда, откуда другие не вернулись.\n' +
+  'Каждая вылазка — новая карта, новые твари и добыча, ради которой стоит рискнуть.\n' +
+  'Найдёшь своё место — или станешь частью руин.'
 
 const SHARE_TEXT = 'Пойдём в Right Place: за меня дадут 5000 золота и 100 RP'
-const ONLY_BUTTONS_TEXT = 'Я понимаю только кнопки 🙂'
-const BROKEN_TEXT = 'Колокол сбился. Попробуй ещё раз через минуту.'
+const ONLY_BUTTONS_TEXT = '🔔 Колокол не слышит слов. Только кнопки.'
+const BROKEN_TEXT = 'Колокол сбился. Попробуй через минуту'
 
 type TgUser = { id: number }
 type TgMessage = { message_id: number; date: number; chat: { id: number; type: string }; from?: TgUser; text?: string }
@@ -126,7 +126,7 @@ async function renderScreen(screen: Screen, telegramId: number, param: string | 
         keyboard: [
           [playButton(param)],
           [{ text: '🔔 Уведомления', callback_data: nav('notify', param) }, { text: '👥 Друзья', callback_data: nav('friends', param) }],
-          [{ text: '📣 Канал: +50 RP', style: 'primary', callback_data: nav('channel', param) }, { text: '📖 Как играть', callback_data: nav('help', param) }],
+          [{ text: '📣 Канал: +50 RP', style: 'primary', callback_data: nav('channel', param) }, { text: '📖 Об игре', callback_data: nav('help', param) }],
         ],
       }
     case 'notify': {
@@ -136,18 +136,12 @@ async function renderScreen(screen: Screen, telegramId: number, param: string | 
     }
     case 'friends': {
       const p = await playerOf(telegramId)
-      if (!p) return { photo: botArt('friend'), caption: '👥 Сначала зайди в игру — там появится твоя ссылка для друзей.', keyboard: [footer(param)] }
+      if (!p) return { photo: botArt('friend'), caption: '👥 Сначала разожги свой костёр — загляни в игру. Потом зови.', keyboard: [footer(param)] }
       const link = referralUrl(await ensureReferralCode(p.id))
-      const rows = await prisma.character.findMany({
-        where: { invitedById: p.id },
-        select: { strength: true, agility: true, endurance: true, bonusLevels: true, inviterClaimedAt: true },
-      })
-      const waiting = rows.filter((r) => friendState(calculateLevel(r.strength, r.agility, r.endurance, r.bonusLevels), r.inviterClaimedAt !== null) === 'claim').length
-      const caption = rows.length === 0
-        ? `👥 Ты ещё никого не позвал.\nОтправь ссылку — на ${REFERRAL_LEVEL} уровне друга вам обоим ${REFERRAL_GOLD} золота и ${REFERRAL_RP} RP.`
-        : `👥 Позвано странников: ${rows.length}.\n` + (waiting > 0
-          ? `Наград ждёт: ${waiting} — забери в игре: Сообщество → Друзья.`
-          : `Наград пока нет — они приходят, когда друг дойдёт до ${REFERRAL_LEVEL} уровня.`)
+      const invited = await prisma.character.count({ where: { invitedById: p.id } })
+      const caption = invited === 0
+        ? '👥 В руинах в одиночку долго не живут.\nПозови друга — когда он окрепнет, каждому из вас 5000 золота и 100 RP.'
+        : `👥 Твой зов услышали: ${invited}.\nКогда странник окрепнет, награда будет ждать тебя у костра.`
       const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(SHARE_TEXT)}`
       return {
         photo: botArt('friend'),
@@ -162,8 +156,8 @@ async function renderScreen(screen: Screen, telegramId: number, param: string | 
     case 'channel': {
       const p = await playerOf(telegramId)
       const caption = p?.channelRewardAt
-        ? '📣 Канал Убежища: новости, новые карты и подарки.\nНаграда за канал получена ✅'
-        : '📣 Новости, новые карты и подарки.\nПодпишись и забери 50 RP в игре: Сообщество → Канал.'
+        ? '📣 Ты уже среди своих. Заглядывай — там звучит то, чего ещё нет в игре.'
+        : '📣 Здесь новости Убежища звучат первыми: новые твари, боссы и подарки.\nПодпишись — и Колокол отсыплет 50 RP.'
       return { photo: botArt('channel'), caption, keyboard: [[{ text: '📣 Открыть канал', url: CHANNEL_URL }], footer(param)] }
     }
     case 'help':
@@ -262,7 +256,7 @@ async function handleCallback(q: TgCallback, log: FastifyBaseLogger) {
       if (key) { st[key] = !st[key]; on = st[key] } else for (const k of NOTIFY_SETTING_KEYS) st[k] = false
     })
     if (!s) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
-    await answerCallbackQuery(q.id, on ? 'Включено' : 'Выключено')
+    await answerCallbackQuery(q.id, on ? 'Колокол будет звать' : 'Колокол промолчит')
     if (q.message && Date.now() / 1000 - q.message.date < CARD_EDIT_MAX_AGE_S) {
       const r = await editMessageReplyMarkup(chatId, q.message.message_id, notifyKeyboard(s, param))
       if (r.ok || isNotModified(r)) return
@@ -279,7 +273,7 @@ async function handleCallback(q: TgCallback, log: FastifyBaseLogger) {
     const on = head === 'yes'
     const s = await setSetting(q.from.id, (st) => { st[key] = on })
     if (!s) { await answerCallbackQuery(q.id, 'Сначала зайди в игру'); return }
-    await answerCallbackQuery(q.id, on ? 'Включено' : 'Больше не пришлю такое')
+    await answerCallbackQuery(q.id, on ? 'Снова буду звать' : 'Больше не позову')
     if (q.message) {
       const r = await editMessageReplyMarkup(chatId, q.message.message_id, notificationKeyboard(key, !on))
       if (!r.ok && !isNotModified(r)) log.warn({ description: r.description }, 'bot: notification markup edit failed')
@@ -333,7 +327,7 @@ export async function registerBotWebhook(log: FastifyBaseLogger): Promise<void> 
         { command: 'play', description: 'Играть' },
         { command: 'notify', description: 'Уведомления' },
         { command: 'friends', description: 'Друзья' },
-        { command: 'help', description: 'Как играть' },
+        { command: 'help', description: 'Об игре' },
       ],
     })
     if (!cmds.ok) log.error({ description: cmds.description }, 'bot: setMyCommands failed')

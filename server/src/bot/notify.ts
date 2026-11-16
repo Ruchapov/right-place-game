@@ -144,22 +144,22 @@ export function renderNotification(kind: string, payload: unknown): { photo: str
   const keyboard = notificationKeyboard(SETTING_OF_KIND[k], false)
   switch (k) {
     case 'energy':
-      return { photo: botArt('energy'), caption: '🔔 Энергия полна: 100/100. Костёр горит, вылазка ждёт.', keyboard }
+      return { photo: botArt('energy'), caption: '🔥 Силы вернулись. Костёр горит, клинок скучает — руины ждут.', keyboard }
     case 'quests':
-      return { photo: botArt('quests'), caption: '🔔 На доске Убежища новые задания.', keyboard }
+      return { photo: botArt('quests'), caption: '📜 На доске Убежища новые заказы. Кто-то хорошо заплатит.', keyboard }
     case 'friend_joined':
-      return { photo: botArt('friend'), caption: '🔔 По твоему зову в Убежище пришёл новый странник. Когда он дойдёт до 3 уровня, вас обоих ждёт награда.', keyboard }
+      return { photo: botArt('friend'), caption: '👥 Твой зов услышали. В Убежище пришёл новый странник.', keyboard }
     case 'friend_reward':
-      return { photo: botArt('friend'), caption: '🔔 Твой друг окреп — забери 5000 золота и 100 RP в «Сообщество → Друзья».', keyboard }
+      return { photo: botArt('friend'), caption: '🎁 Твой странник окреп. Награда ждёт тебя у костра.', keyboard }
     case 'guild_request':
-      return { photo: botArt('guild'), caption: `🔔 В гильдию «${guildName(payload)}» постучался странник. Заявка ждёт решения.`, keyboard }
+      return { photo: botArt('guild'), caption: `🛡 В ворота «${guildName(payload)}» стучат. Впустить — решать тебе.`, keyboard }
     case 'guild_accepted':
-      return { photo: botArt('guild'), caption: `🔔 Гильдия «${guildName(payload)}» приняла тебя.`, keyboard }
+      return { photo: botArt('guild'), caption: `🛡 Ворота «${guildName(payload)}» открылись. Теперь ты свой.`, keyboard }
     case 'guild_declined':
-      return { photo: botArt('guild'), caption: `🔔 Гильдия «${guildName(payload)}» отклонила заявку.`, keyboard }
+      return { photo: botArt('guild'), caption: `🛡 Ворота «${guildName(payload)}» остались закрыты. Найдутся и другие.`, keyboard }
     case 'comeback': {
       const stage = payload && typeof payload === 'object' ? (payload as { stage?: unknown }).stage : undefined
-      const caption = stage === 2 ? '🔔 Последний звон: Убежище всё ещё ждёт.' : '🔔 Колокол звонит в пустом Убежище. Без тебя здесь тихо.'
+      const caption = stage === 2 ? '🔔 Последний звон. Дальше — тишина.' : '🔔 Костёр в Убежище почти погас. Твари в руинах уже решили, что ты сдался.'
       return { photo: botArt('comeback'), caption, keyboard }
     }
   }
