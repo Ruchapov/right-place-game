@@ -1,0 +1,5544 @@
+{
+ "game": [
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    102.49,
+    102.49
+   ],
+   "h": [
+    77,
+    77
+   ],
+   "feet": [
+    [
+     195.45,
+     505.95
+    ],
+    [
+     195.45,
+     505.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.0,
+   "mae": 0.66,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy0-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     195.14,
+     507.62
+    ],
+    [
+     194.84,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.6,
+   "mae": 0.74,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy1-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.94,
+     507.62
+    ],
+    [
+     194.64,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 38.3,
+   "mae": 0.69,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy2-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.54,
+     507.22
+    ],
+    [
+     195.24,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.9,
+   "mae": 1.21,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy3-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.54,
+     507.22
+    ],
+    [
+     195.24,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.9,
+   "mae": 1.21,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy4-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    54.02,
+    54.02
+   ],
+   "h": [
+    73.19,
+    73.19
+   ],
+   "feet": [
+    [
+     194.7,
+     507.75
+    ],
+    [
+     195.4,
+     507.75
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.4,
+   "mae": 2.44,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy5-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    54.02,
+    54.02
+   ],
+   "h": [
+    73.19,
+    73.19
+   ],
+   "feet": [
+    [
+     195.5,
+     507.75
+    ],
+    [
+     195.2,
+     507.75
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.0,
+   "mae": 1.57,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy6-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    54.02,
+    54.02
+   ],
+   "h": [
+    73.19,
+    73.19
+   ],
+   "feet": [
+    [
+     195.5,
+     507.35
+    ],
+    [
+     195.2,
+     507.35
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.2,
+   "mae": 1.53,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy7-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    54.02,
+    54.02
+   ],
+   "h": [
+    73.19,
+    73.19
+   ],
+   "feet": [
+    [
+     195.1,
+     507.35
+    ],
+    [
+     194.8,
+     507.35
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.0,
+   "mae": 1.77,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy8-gravedigger",
+   "kind": "gravedigger",
+   "same_anim": true,
+   "w": [
+    45.7,
+    45.7
+   ],
+   "h": [
+    77.72,
+    77.72
+   ],
+   "feet": [
+    [
+     195.2,
+     507.53
+    ],
+    [
+     194.9,
+     507.53
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.5,
+   "mae": 2.34,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy9-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.92,
+     507.42
+    ],
+    [
+     194.62,
+     507.42
+    ]
+   ],
+   "same_box": true,
+   "psnr": 34.0,
+   "mae": 1.68,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "B",
+   "actor": "enemy10-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.94,
+     507.22
+    ],
+    [
+     194.64,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 38.2,
+   "mae": 0.7,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    90.85,
+    90.85
+   ],
+   "h": [
+    68.25,
+    68.25
+   ],
+   "feet": [
+    [
+     422.26,
+     233.96
+    ],
+    [
+     422.26,
+     233.96
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.9,
+   "mae": 0.65,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy0-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.47,
+     234.54
+    ],
+    [
+     421.84,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 34.3,
+   "mae": 1.13,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy1-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.27,
+     234.54
+    ],
+    [
+     421.64,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 34.2,
+   "mae": 1.14,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy2-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.87,
+     235.14
+    ],
+    [
+     422.24,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.8,
+   "mae": 0.83,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy3-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.87,
+     235.14
+    ],
+    [
+     422.24,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.8,
+   "mae": 0.83,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy4-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    47.88,
+    47.88
+   ],
+   "h": [
+    64.87,
+    64.87
+   ],
+   "feet": [
+    [
+     421.8,
+     234.64
+    ],
+    [
+     422.18,
+     234.64
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.2,
+   "mae": 1.89,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy5-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    47.88,
+    47.88
+   ],
+   "h": [
+    64.87,
+    64.87
+   ],
+   "feet": [
+    [
+     421.6,
+     234.64
+    ],
+    [
+     421.98,
+     234.64
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 1.95,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy6-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    47.88,
+    47.88
+   ],
+   "h": [
+    64.87,
+    64.87
+   ],
+   "feet": [
+    [
+     421.6,
+     235.24
+    ],
+    [
+     421.98,
+     235.24
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.2,
+   "mae": 1.9,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy7-crossbowman",
+   "kind": "crossbowman",
+   "same_anim": true,
+   "w": [
+    47.88,
+    47.88
+   ],
+   "h": [
+    64.87,
+    64.87
+   ],
+   "feet": [
+    [
+     422.2,
+     235.24
+    ],
+    [
+     421.58,
+     235.24
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.5,
+   "mae": 2.37,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy8-gravedigger",
+   "kind": "gravedigger",
+   "same_anim": true,
+   "w": [
+    40.51,
+    40.51
+   ],
+   "h": [
+    68.89,
+    68.89
+   ],
+   "feet": [
+    [
+     421.59,
+     234.46
+    ],
+    [
+     421.96,
+     234.46
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.3,
+   "mae": 2.67,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy9-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.39,
+     235.26
+    ],
+    [
+     421.76,
+     235.26
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 2.46,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "B",
+   "actor": "enemy10-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.27,
+     235.14
+    ],
+    [
+     421.64,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 34.4,
+   "mae": 1.13,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    102.49,
+    102.49
+   ],
+   "h": [
+    77,
+    77
+   ],
+   "feet": [
+    [
+     195.45,
+     506.3
+    ],
+    [
+     195.45,
+     506.3
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.1,
+   "mae": 4.28,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy0-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     194.94,
+     507.52
+    ],
+    [
+     195.12,
+     507.52
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 2.55,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy1-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     195.34,
+     507.52
+    ],
+    [
+     194.52,
+     507.52
+    ]
+   ],
+   "same_box": true,
+   "psnr": 26.3,
+   "mae": 4.41,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy2-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     194.74,
+     507.12
+    ],
+    [
+     194.92,
+     507.12
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.8,
+   "mae": 2.57,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy3-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     194.74,
+     507.12
+    ],
+    [
+     194.92,
+     507.12
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.8,
+   "mae": 2.57,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy4-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.03,
+     508.24
+    ],
+    [
+     194.85,
+     508.24
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.0,
+   "mae": 0.93,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy5-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     194.67,
+     508.24
+    ],
+    [
+     194.85,
+     508.24
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.1,
+   "mae": 0.92,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy6-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.47,
+     508.84
+    ],
+    [
+     194.65,
+     508.84
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.2,
+   "mae": 2.06,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy7-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.07,
+     508.84
+    ],
+    [
+     195.25,
+     508.84
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.0,
+   "mae": 0.93,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy8-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     194.54,
+     507.12
+    ],
+    [
+     194.72,
+     507.12
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 2.57,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy9-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.27,
+     508.84
+    ],
+    [
+     195.45,
+     508.84
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.0,
+   "mae": 0.93,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "enemy10-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    87.37,
+    87.37
+   ],
+   "h": [
+    44.12,
+    44.12
+   ],
+   "feet": [
+    [
+     195.14,
+     507.52
+    ],
+    [
+     195.32,
+     507.52
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 2.55,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C2",
+   "actor": "boss",
+   "kind": "boss-abbot",
+   "same_anim": true,
+   "w": [
+    90.65,
+    90.65
+   ],
+   "h": [
+    133.5,
+    133.5
+   ],
+   "feet": [
+    [
+     195,
+     508.83
+    ],
+    [
+     195,
+     508.83
+    ]
+   ],
+   "same_box": true,
+   "psnr": 42.4,
+   "mae": 0.81,
+   "res": [
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    90.85,
+    90.85
+   ],
+   "h": [
+    68.25,
+    68.25
+   ],
+   "feet": [
+    [
+     422.26,
+     233.88
+    ],
+    [
+     422.26,
+     233.88
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.2,
+   "mae": 4.13,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy0-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     421.5,
+     234.95
+    ],
+    [
+     421.84,
+     234.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.0,
+   "mae": 3.09,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy1-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     421.9,
+     234.95
+    ],
+    [
+     422.24,
+     234.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.1,
+   "mae": 3.1,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy2-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     422.3,
+     235.55
+    ],
+    [
+     421.64,
+     235.55
+    ]
+   ],
+   "same_box": true,
+   "psnr": 26.8,
+   "mae": 4.06,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy3-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     422.3,
+     235.55
+    ],
+    [
+     421.64,
+     235.55
+    ]
+   ],
+   "same_box": true,
+   "psnr": 26.8,
+   "mae": 4.06,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy4-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.08,
+     235.59
+    ],
+    [
+     421.74,
+     235.59
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.8,
+   "mae": 1.31,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy5-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.59,
+     235.59
+    ],
+    [
+     421.93,
+     235.59
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.8,
+   "mae": 1.31,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy6-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.39,
+     236.19
+    ],
+    [
+     421.73,
+     236.19
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.8,
+   "mae": 1.88,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy7-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.99,
+     236.19
+    ],
+    [
+     422.33,
+     236.19
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.8,
+   "mae": 1.3,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy8-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     422.1,
+     235.55
+    ],
+    [
+     422.44,
+     235.55
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.1,
+   "mae": 3.08,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy9-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.19,
+     236.19
+    ],
+    [
+     421.53,
+     236.19
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.9,
+   "mae": 1.88,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "enemy10-beetle",
+   "kind": "beetle",
+   "same_anim": true,
+   "w": [
+    77.44,
+    77.44
+   ],
+   "h": [
+    39.11,
+    39.11
+   ],
+   "feet": [
+    [
+     421.7,
+     234.95
+    ],
+    [
+     422.04,
+     234.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 29.1,
+   "mae": 3.08,
+   "res": [
+    1,
+    0.45
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C2",
+   "actor": "boss",
+   "kind": "boss-abbot",
+   "same_anim": true,
+   "w": [
+    80.35,
+    80.35
+   ],
+   "h": [
+    118.33,
+    118.33
+   ],
+   "feet": [
+    [
+     422.5,
+     235.3
+    ],
+    [
+     422.5,
+     235.3
+    ]
+   ],
+   "same_box": true,
+   "psnr": 42.5,
+   "mae": 0.8,
+   "res": [
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    102.49,
+    102.49
+   ],
+   "h": [
+    77,
+    77
+   ],
+   "feet": [
+    [
+     194.85,
+     505.95
+    ],
+    [
+     194.85,
+     505.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.0,
+   "mae": 4.28,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy0-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     195.12,
+     508.22
+    ],
+    [
+     195.04,
+     508.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.0,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy1-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.52,
+     507.82
+    ],
+    [
+     195.44,
+     507.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.0,
+   "mae": 2.82,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy2-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     195.12,
+     508.22
+    ],
+    [
+     195.04,
+     508.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.0,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy3-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.92,
+     507.82
+    ],
+    [
+     194.84,
+     507.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.9,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy4-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.52,
+     508.22
+    ],
+    [
+     195.44,
+     508.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.0,
+   "mae": 2.81,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy5-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     195.32,
+     508.22
+    ],
+    [
+     195.24,
+     508.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.9,
+   "mae": 1.23,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy6-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     195.12,
+     507.42
+    ],
+    [
+     195.04,
+     507.42
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.9,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy7-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.92,
+     507.42
+    ],
+    [
+     194.84,
+     507.42
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.7,
+   "mae": 1.23,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy8-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.52,
+     507.42
+    ],
+    [
+     195.44,
+     507.42
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.0,
+   "mae": 2.81,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy9-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.72,
+     508.22
+    ],
+    [
+     194.64,
+     508.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.0,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy10-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    79.01,
+    79.01
+   ],
+   "h": [
+    83.74,
+    83.74
+   ],
+   "feet": [
+    [
+     194.92,
+     507.82
+    ],
+    [
+     194.84,
+     507.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.9,
+   "mae": 1.22,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-crowking",
+   "same_anim": true,
+   "w": [
+    77.71,
+    77.71
+   ],
+   "h": [
+    133.61,
+    133.61
+   ],
+   "feet": [
+    [
+     195.01,
+     508.73
+    ],
+    [
+     195.01,
+     508.73
+    ]
+   ],
+   "same_box": true,
+   "psnr": 38.8,
+   "mae": 1.04,
+   "res": [
+    0.5,
+    0.8
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    102.49,
+    102.49
+   ],
+   "h": [
+    77,
+    77
+   ],
+   "feet": [
+    [
+     194.85,
+     505.95
+    ],
+    [
+     194.85,
+     505.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.0,
+   "mae": 4.28,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy0-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.74,
+     507.62
+    ],
+    [
+     194.56,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.7,
+   "mae": 0.56,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy1-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     195.14,
+     507.22
+    ],
+    [
+     194.96,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.4,
+   "mae": 0.59,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy2-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.74,
+     507.62
+    ],
+    [
+     194.56,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.7,
+   "mae": 0.56,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy3-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.54,
+     507.22
+    ],
+    [
+     195.36,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.5,
+   "mae": 1.28,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy4-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     195.14,
+     507.62
+    ],
+    [
+     194.96,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.4,
+   "mae": 0.59,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy5-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.94,
+     507.62
+    ],
+    [
+     194.76,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.5,
+   "mae": 0.59,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy6-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.74,
+     506.82
+    ],
+    [
+     194.56,
+     506.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.2,
+   "mae": 0.54,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy7-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.54,
+     506.82
+    ],
+    [
+     195.36,
+     506.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.1,
+   "mae": 1.29,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy8-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     195.14,
+     506.82
+    ],
+    [
+     194.96,
+     506.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.7,
+   "mae": 0.57,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy9-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     195.34,
+     507.62
+    ],
+    [
+     195.16,
+     507.62
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.9,
+   "mae": 0.56,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy10-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    63.68,
+    63.68
+   ],
+   "h": [
+    70.51,
+    70.51
+   ],
+   "feet": [
+    [
+     194.54,
+     507.22
+    ],
+    [
+     195.36,
+     507.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 33.5,
+   "mae": 1.28,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-serpent",
+   "same_anim": true,
+   "w": [
+    135.45,
+    135.45
+   ],
+   "h": [
+    142.84,
+    142.84
+   ],
+   "feet": [
+    [
+     195.06,
+     508.39
+    ],
+    [
+     195.06,
+     508.39
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.5,
+   "mae": 1.33,
+   "res": [
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    102.49,
+    102.49
+   ],
+   "h": [
+    77,
+    77
+   ],
+   "feet": [
+    [
+     194.85,
+     505.95
+    ],
+    [
+     194.85,
+     505.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 22.9,
+   "mae": 4.3,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy0-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.25,
+     508.69
+    ],
+    [
+     195.33,
+     508.69
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.3,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy1-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     194.65,
+     508.29
+    ],
+    [
+     194.73,
+     508.29
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.6,
+   "mae": 0.78,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy2-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.25,
+     508.69
+    ],
+    [
+     195.33,
+     508.69
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.3,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy3-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.05,
+     508.29
+    ],
+    [
+     195.13,
+     508.29
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.4,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy4-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     194.65,
+     508.69
+    ],
+    [
+     194.73,
+     508.69
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.5,
+   "mae": 0.79,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy5-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.45,
+     508.69
+    ],
+    [
+     194.53,
+     508.69
+    ]
+   ],
+   "same_box": true,
+   "psnr": 28.9,
+   "mae": 2.15,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy6-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.25,
+     507.89
+    ],
+    [
+     195.33,
+     507.89
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.4,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy7-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.05,
+     507.89
+    ],
+    [
+     195.13,
+     507.89
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.4,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy8-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     194.65,
+     507.89
+    ],
+    [
+     194.73,
+     507.89
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.5,
+   "mae": 0.79,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy9-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     194.85,
+     508.69
+    ],
+    [
+     194.93,
+     508.69
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.4,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "enemy10-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    144.38,
+    144.38
+   ],
+   "h": [
+    69.3,
+    69.3
+   ],
+   "feet": [
+    [
+     195.05,
+     508.29
+    ],
+    [
+     195.13,
+     508.29
+    ]
+   ],
+   "same_box": true,
+   "psnr": 37.4,
+   "mae": 0.8,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "390x844",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-werewolf",
+   "same_anim": true,
+   "w": [
+    86.01,
+    86.01
+   ],
+   "h": [
+    132,
+    132
+   ],
+   "feet": [
+    [
+     194.8,
+     508.95
+    ],
+    [
+     194.8,
+     508.95
+    ]
+   ],
+   "same_box": true,
+   "psnr": 38.7,
+   "mae": 1.02,
+   "res": [
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    90.85,
+    90.85
+   ],
+   "h": [
+    68.25,
+    68.25
+   ],
+   "feet": [
+    [
+     421.91,
+     233.96
+    ],
+    [
+     421.91,
+     233.96
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.2,
+   "mae": 4.12,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy0-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.36,
+     235.06
+    ],
+    [
+     421.96,
+     235.06
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.7,
+   "mae": 1.95,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy1-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     421.76,
+     235.66
+    ],
+    [
+     422.36,
+     235.66
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.2,
+   "mae": 2.38,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy2-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.36,
+     235.06
+    ],
+    [
+     421.96,
+     235.06
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.7,
+   "mae": 1.95,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy3-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.16,
+     235.66
+    ],
+    [
+     421.76,
+     235.66
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.9,
+   "mae": 1.94,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy4-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     421.76,
+     235.06
+    ],
+    [
+     422.36,
+     235.06
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.2,
+   "mae": 2.38,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy5-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     421.56,
+     235.06
+    ],
+    [
+     422.16,
+     235.06
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.9,
+   "mae": 2.42,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy6-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.36,
+     235.26
+    ],
+    [
+     421.96,
+     235.26
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.6,
+   "mae": 1.97,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy7-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.16,
+     235.26
+    ],
+    [
+     421.76,
+     235.26
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.8,
+   "mae": 1.94,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy8-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     421.76,
+     235.26
+    ],
+    [
+     422.36,
+     235.26
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.2,
+   "mae": 2.37,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy9-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     421.96,
+     235.06
+    ],
+    [
+     421.56,
+     235.06
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.5,
+   "mae": 1.97,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy10-stoker",
+   "kind": "stoker",
+   "same_anim": true,
+   "w": [
+    70.04,
+    70.04
+   ],
+   "h": [
+    74.22,
+    74.22
+   ],
+   "feet": [
+    [
+     422.16,
+     235.66
+    ],
+    [
+     421.76,
+     235.66
+    ]
+   ],
+   "same_box": true,
+   "psnr": 32.9,
+   "mae": 1.94,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-crowking",
+   "same_anim": true,
+   "w": [
+    68.88,
+    68.88
+   ],
+   "h": [
+    118.43,
+    118.43
+   ],
+   "feet": [
+    [
+     421.85,
+     235.52
+    ],
+    [
+     421.85,
+     235.52
+    ]
+   ],
+   "same_box": true,
+   "psnr": 39.2,
+   "mae": 0.98,
+   "res": [
+    0.5,
+    0.8
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    90.85,
+    90.85
+   ],
+   "h": [
+    68.25,
+    68.25
+   ],
+   "feet": [
+    [
+     421.91,
+     233.96
+    ],
+    [
+     421.91,
+     233.96
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.1,
+   "mae": 4.16,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy0-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.31,
+     234.54
+    ],
+    [
+     422.42,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.5,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy1-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.71,
+     235.14
+    ],
+    [
+     421.82,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 41.1,
+   "mae": 0.49,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy2-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.31,
+     234.54
+    ],
+    [
+     422.42,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.5,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy3-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.11,
+     235.14
+    ],
+    [
+     422.22,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy4-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.71,
+     234.54
+    ],
+    [
+     421.82,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.6,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy5-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.51,
+     234.54
+    ],
+    [
+     421.62,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.5,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy6-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.31,
+     234.74
+    ],
+    [
+     422.42,
+     234.74
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.5,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy7-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.11,
+     234.74
+    ],
+    [
+     422.22,
+     234.74
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.5,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy8-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.71,
+     234.74
+    ],
+    [
+     421.82,
+     234.74
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.49,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy9-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     421.91,
+     234.54
+    ],
+    [
+     422.02,
+     234.54
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.5,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy10-fencer",
+   "kind": "fencer",
+   "same_anim": true,
+   "w": [
+    56.44,
+    56.44
+   ],
+   "h": [
+    62.5,
+    62.5
+   ],
+   "feet": [
+    [
+     422.11,
+     235.14
+    ],
+    [
+     422.22,
+     235.14
+    ]
+   ],
+   "same_box": true,
+   "psnr": 40.7,
+   "mae": 0.51,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-serpent",
+   "same_anim": true,
+   "w": [
+    120.06,
+    120.06
+   ],
+   "h": [
+    126.6,
+    126.6
+   ],
+   "feet": [
+    [
+     421.65,
+     235.22
+    ],
+    [
+     421.65,
+     235.22
+    ]
+   ],
+   "same_box": true,
+   "psnr": 36.5,
+   "mae": 1.31,
+   "res": [
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "hero",
+   "kind": "hero",
+   "same_anim": true,
+   "w": [
+    90.85,
+    90.85
+   ],
+   "h": [
+    68.25,
+    68.25
+   ],
+   "feet": [
+    [
+     421.91,
+     233.96
+    ],
+    [
+     421.91,
+     233.96
+    ]
+   ],
+   "same_box": true,
+   "psnr": 23.2,
+   "mae": 4.12,
+   "res": [
+    1,
+    0.55
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy0-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.2,
+     235.48
+    ],
+    [
+     421.77,
+     235.48
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.6,
+   "mae": 1.49,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy1-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.6,
+     236.08
+    ],
+    [
+     422.17,
+     236.08
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.3,
+   "mae": 1.76,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy2-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.2,
+     235.48
+    ],
+    [
+     421.77,
+     235.48
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.6,
+   "mae": 1.49,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy3-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422,
+     236.08
+    ],
+    [
+     421.57,
+     236.08
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.8,
+   "mae": 1.47,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy4-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.6,
+     235.48
+    ],
+    [
+     422.17,
+     235.48
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.4,
+   "mae": 1.76,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy5-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.4,
+     235.48
+    ],
+    [
+     421.97,
+     235.48
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.7,
+   "mae": 1.48,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy6-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422.2,
+     235.68
+    ],
+    [
+     421.77,
+     235.68
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.8,
+   "mae": 1.48,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy7-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422,
+     235.68
+    ],
+    [
+     421.57,
+     235.68
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.8,
+   "mae": 1.47,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy8-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.6,
+     235.68
+    ],
+    [
+     422.17,
+     235.68
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.3,
+   "mae": 1.75,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy9-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     421.8,
+     235.48
+    ],
+    [
+     422.37,
+     235.48
+    ]
+   ],
+   "same_box": true,
+   "psnr": 30.3,
+   "mae": 1.76,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "enemy10-beast",
+   "kind": "beast",
+   "same_anim": true,
+   "w": [
+    127.97,
+    127.97
+   ],
+   "h": [
+    61.43,
+    61.43
+   ],
+   "feet": [
+    [
+     422,
+     236.08
+    ],
+    [
+     421.57,
+     236.08
+    ]
+   ],
+   "same_box": true,
+   "psnr": 31.8,
+   "mae": 1.47,
+   "res": [
+    1,
+    0.5
+   ]
+  },
+  {
+   "screen": "844x390",
+   "map": "C",
+   "actor": "boss",
+   "kind": "boss-werewolf",
+   "same_anim": true,
+   "w": [
+    76.23,
+    76.23
+   ],
+   "h": [
+    117,
+    117
+   ],
+   "feet": [
+    [
+     421.55,
+     235.82
+    ],
+    [
+     421.55,
+     235.82
+    ]
+   ],
+   "same_box": true,
+   "psnr": 38.8,
+   "mae": 1.0,
+   "res": [
+    0.5,
+    0.5
+   ]
+  }
+ ],
+ "sheets": [
+  {
+   "sheet": "objects/Obelisk_Burning.png",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 30.4,
+   "mae": 2.63
+  },
+  {
+   "sheet": "objects/Obelisk_Burning.png",
+   "frame": 5,
+   "f": 0.45,
+   "psnr": 30.4,
+   "mae": 2.67
+  },
+  {
+   "sheet": "objects/Obelisk_Idle.png",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 32.1,
+   "mae": 1.77
+  },
+  {
+   "sheet": "objects/Obelisk_Idle.png",
+   "frame": 5,
+   "f": 0.45,
+   "psnr": 31.2,
+   "mae": 2.02
+  },
+  {
+   "sheet": "objects/breakables/barrel_break.webp",
+   "frame": 0,
+   "f": 0.75,
+   "psnr": 38.2,
+   "mae": 0.93
+  },
+  {
+   "sheet": "objects/breakables/barrel_break.webp",
+   "frame": 13,
+   "f": 0.75,
+   "psnr": 39.6,
+   "mae": 0.83
+  },
+  {
+   "sheet": "objects/breakables/barrel_hit.webp",
+   "frame": 0,
+   "f": 0.75,
+   "psnr": 37.9,
+   "mae": 0.9
+  },
+  {
+   "sheet": "objects/breakables/barrel_hit.webp",
+   "frame": 5,
+   "f": 0.75,
+   "psnr": 37.8,
+   "mae": 0.97
+  },
+  {
+   "sheet": "objects/breakables/jar_break.webp",
+   "frame": 0,
+   "f": 0.75,
+   "psnr": 39.1,
+   "mae": 0.77
+  },
+  {
+   "sheet": "objects/breakables/jar_break.webp",
+   "frame": 17,
+   "f": 0.75,
+   "psnr": 39.6,
+   "mae": 0.76
+  },
+  {
+   "sheet": "objects/starbloom_cut.webp",
+   "frame": 0,
+   "f": 0.65,
+   "psnr": 35.4,
+   "mae": 1.17
+  },
+  {
+   "sheet": "objects/starbloom_cut.webp",
+   "frame": 31,
+   "f": 0.65,
+   "psnr": 37.1,
+   "mae": 1.05
+  },
+  {
+   "sheet": "objects/starbloom_idle.webp",
+   "frame": 0,
+   "f": 0.65,
+   "psnr": 33.2,
+   "mae": 1.94
+  },
+  {
+   "sheet": "objects/starbloom_idle.webp",
+   "frame": 24,
+   "f": 0.65,
+   "psnr": 32.7,
+   "mae": 2.05
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_AttackSlam.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 34.8,
+   "mae": 1.31
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_AttackSlam.webp",
+   "frame": 24,
+   "f": 0.5,
+   "psnr": 32.3,
+   "mae": 1.75
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_AttackSwing.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 34.3,
+   "mae": 1.6
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_AttackSwing.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 33.9,
+   "mae": 1.36
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 34.8,
+   "mae": 1.39
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Death.webp",
+   "frame": 17,
+   "f": 0.5,
+   "psnr": 34.5,
+   "mae": 1.28
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.9,
+   "mae": 1.71
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Hurt.webp",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 31.0,
+   "mae": 2.47
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.0,
+   "mae": 4.63
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Idle.webp",
+   "frame": 8,
+   "f": 0.5,
+   "psnr": 27.8,
+   "mae": 4.81
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Summon.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 34.2,
+   "mae": 1.61
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Summon.webp",
+   "frame": 24,
+   "f": 0.5,
+   "psnr": 30.8,
+   "mae": 2.41
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Walk.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.9,
+   "mae": 2.8
+  },
+  {
+   "sheet": "sprites/abbot/Abbot2_Walk.webp",
+   "frame": 13,
+   "f": 0.5,
+   "psnr": 30.4,
+   "mae": 3.03
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Attack.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 2.48
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Attack.webp",
+   "frame": 18,
+   "f": 0.5,
+   "psnr": 32.1,
+   "mae": 2.17
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.6,
+   "mae": 2.35
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Death.webp",
+   "frame": 16,
+   "f": 0.5,
+   "psnr": 32.2,
+   "mae": 2.18
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.0,
+   "mae": 2.81
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Hurt.webp",
+   "frame": 8,
+   "f": 0.5,
+   "psnr": 30.7,
+   "mae": 2.9
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.1,
+   "mae": 3.4
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Idle.webp",
+   "frame": 8,
+   "f": 0.5,
+   "psnr": 30.3,
+   "mae": 3.31
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Transform.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 32.0,
+   "mae": 2.16
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Transform.webp",
+   "frame": 27,
+   "f": 0.5,
+   "psnr": 31.9,
+   "mae": 2.19
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Walk.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.9,
+   "mae": 3.04
+  },
+  {
+   "sheet": "sprites/abbot/Abbot_Walk.webp",
+   "frame": 8,
+   "f": 0.5,
+   "psnr": 30.5,
+   "mae": 3.07
+  },
+  {
+   "sheet": "sprites/beast/attack.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.1,
+   "mae": 1.65
+  },
+  {
+   "sheet": "sprites/beast/attack.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 32.3,
+   "mae": 1.95
+  },
+  {
+   "sheet": "sprites/beast/death.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 32.7,
+   "mae": 1.71
+  },
+  {
+   "sheet": "sprites/beast/death.png",
+   "frame": 9,
+   "f": 0.5,
+   "psnr": 32.8,
+   "mae": 1.57
+  },
+  {
+   "sheet": "sprites/beast/hurt.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 32.9,
+   "mae": 1.68
+  },
+  {
+   "sheet": "sprites/beast/hurt.png",
+   "frame": 6,
+   "f": 0.5,
+   "psnr": 33.0,
+   "mae": 1.64
+  },
+  {
+   "sheet": "sprites/beast/idle.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 32.6,
+   "mae": 1.76
+  },
+  {
+   "sheet": "sprites/beast/idle.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 32.9,
+   "mae": 1.7
+  },
+  {
+   "sheet": "sprites/beast/walk.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.9,
+   "mae": 1.44
+  },
+  {
+   "sheet": "sprites/beast/walk.png",
+   "frame": 8,
+   "f": 0.5,
+   "psnr": 33.5,
+   "mae": 1.57
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Dash.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 28.9,
+   "mae": 3.83
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Dash.webp",
+   "frame": 21,
+   "f": 0.45,
+   "psnr": 30.5,
+   "mae": 3.03
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Death.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 28.4,
+   "mae": 4.12
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Death.webp",
+   "frame": 16,
+   "f": 0.45,
+   "psnr": 30.9,
+   "mae": 2.73
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Hurt.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 27.9,
+   "mae": 4.67
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Hurt.webp",
+   "frame": 4,
+   "f": 0.45,
+   "psnr": 28.5,
+   "mae": 4.32
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Idle.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 27.1,
+   "mae": 5.48
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Idle.webp",
+   "frame": 21,
+   "f": 0.45,
+   "psnr": 27.3,
+   "mae": 5.38
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Throw.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 29.0,
+   "mae": 4.08
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Throw.webp",
+   "frame": 19,
+   "f": 0.45,
+   "psnr": 29.8,
+   "mae": 3.58
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Walk.webp",
+   "frame": 0,
+   "f": 0.45,
+   "psnr": 27.7,
+   "mae": 4.96
+  },
+  {
+   "sheet": "sprites/beetle/Beetle_Walk.webp",
+   "frame": 44,
+   "f": 0.45,
+   "psnr": 28.3,
+   "mae": 4.52
+  },
+  {
+   "sheet": "sprites/boss/Boss_Death.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 1.94
+  },
+  {
+   "sheet": "sprites/boss/Boss_Death.png",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 32.0,
+   "mae": 1.71
+  },
+  {
+   "sheet": "sprites/boss/Boss_Hurt.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.0,
+   "mae": 3.66
+  },
+  {
+   "sheet": "sprites/boss/Boss_Hurt.png",
+   "frame": 15,
+   "f": 0.5,
+   "psnr": 28.8,
+   "mae": 3.33
+  },
+  {
+   "sheet": "sprites/boss/Boss_Idle.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 27.2,
+   "mae": 4.37
+  },
+  {
+   "sheet": "sprites/boss/Boss_Idle.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 27.5,
+   "mae": 4.19
+  },
+  {
+   "sheet": "sprites/boss/Boss_Melee.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.1,
+   "mae": 1.45
+  },
+  {
+   "sheet": "sprites/boss/Boss_Melee.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 32.3,
+   "mae": 1.69
+  },
+  {
+   "sheet": "sprites/boss/Boss_Melee2.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 38.6,
+   "mae": 0.47
+  },
+  {
+   "sheet": "sprites/boss/Boss_Melee2.png",
+   "frame": 18,
+   "f": 0.5,
+   "psnr": 33.8,
+   "mae": 1.12
+  },
+  {
+   "sheet": "sprites/boss/Boss_Ranged.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.4,
+   "mae": 2.01
+  },
+  {
+   "sheet": "sprites/boss/Boss_Ranged.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 32.6,
+   "mae": 1.7
+  },
+  {
+   "sheet": "sprites/boss/Boss_Stomp.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 34.6,
+   "mae": 1.17
+  },
+  {
+   "sheet": "sprites/boss/Boss_Stomp.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 34.0,
+   "mae": 1.33
+  },
+  {
+   "sheet": "sprites/boss/Boss_Walk.png",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.2,
+   "mae": 2.53
+  },
+  {
+   "sheet": "sprites/boss/Boss_Walk.png",
+   "frame": 12,
+   "f": 0.5,
+   "psnr": 29.4,
+   "mae": 2.94
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.0,
+   "mae": 2.38
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Death.webp",
+   "frame": 15,
+   "f": 0.5,
+   "psnr": 31.9,
+   "mae": 2.05
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.8,
+   "mae": 2.66
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Hurt.webp",
+   "frame": 5,
+   "f": 0.5,
+   "psnr": 30.9,
+   "mae": 2.6
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.0,
+   "mae": 3.05
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Idle.webp",
+   "frame": 20,
+   "f": 0.5,
+   "psnr": 29.9,
+   "mae": 3.05
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Reload.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 29.2,
+   "mae": 3.18
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Reload.webp",
+   "frame": 18,
+   "f": 0.5,
+   "psnr": 29.1,
+   "mae": 3.21
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Shoot.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 32.0,
+   "mae": 2.01
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Shoot.webp",
+   "frame": 18,
+   "f": 0.5,
+   "psnr": 31.6,
+   "mae": 2.1
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Walk.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.2,
+   "mae": 2.69
+  },
+  {
+   "sheet": "sprites/crossbowman/Crossbowman_Walk.webp",
+   "frame": 15,
+   "f": 0.5,
+   "psnr": 30.5,
+   "mae": 2.54
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 35.9,
+   "mae": 0.88
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Death.webp",
+   "frame": 21,
+   "f": 0.5,
+   "psnr": 35.9,
+   "mae": 0.84
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 35.0,
+   "mae": 1.07
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Hurt.webp",
+   "frame": 3,
+   "f": 0.5,
+   "psnr": 34.6,
+   "mae": 1.16
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 2.54
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Idle.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 31.5,
+   "mae": 2.46
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Scatter.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 37.3,
+   "mae": 0.6
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Scatter.webp",
+   "frame": 9,
+   "f": 0.5,
+   "psnr": 34.4,
+   "mae": 0.91
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Strike.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 37.1,
+   "mae": 0.66
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Strike.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 35.4,
+   "mae": 0.98
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Walk.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 2.46
+  },
+  {
+   "sheet": "sprites/crowking/CrowKing_Walk.webp",
+   "frame": 22,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 2.46
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Attack.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 39.0,
+   "mae": 0.62
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Attack.webp",
+   "frame": 18,
+   "f": 0.55,
+   "psnr": 38.5,
+   "mae": 0.76
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Death.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.6,
+   "mae": 0.68
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Death.webp",
+   "frame": 18,
+   "f": 0.55,
+   "psnr": 38.4,
+   "mae": 0.68
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Hurt.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.3,
+   "mae": 0.72
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Hurt.webp",
+   "frame": 4,
+   "f": 0.55,
+   "psnr": 38.4,
+   "mae": 0.7
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Idle.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.6,
+   "mae": 1.11
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Idle.webp",
+   "frame": 15,
+   "f": 0.55,
+   "psnr": 36.6,
+   "mae": 1.1
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Parry.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 39.2,
+   "mae": 0.63
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Parry.webp",
+   "frame": 18,
+   "f": 0.55,
+   "psnr": 38.7,
+   "mae": 0.7
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Walk.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.7,
+   "mae": 0.98
+  },
+  {
+   "sheet": "sprites/fencer/Fencer_Walk.webp",
+   "frame": 16,
+   "f": 0.55,
+   "psnr": 37.4,
+   "mae": 0.92
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_AttackGuard.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.9,
+   "mae": 1.7
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_AttackGuard.webp",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 34.2,
+   "mae": 1.75
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Death.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.2,
+   "mae": 1.62
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Death.webp",
+   "frame": 15,
+   "f": 0.55,
+   "psnr": 36.3,
+   "mae": 1.34
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Hurt.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.6,
+   "mae": 1.81
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Hurt.webp",
+   "frame": 8,
+   "f": 0.55,
+   "psnr": 34.8,
+   "mae": 1.73
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Idle.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.3,
+   "mae": 1.93
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Idle.webp",
+   "frame": 13,
+   "f": 0.55,
+   "psnr": 34.4,
+   "mae": 1.88
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_IdleGuard.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.8,
+   "mae": 1.73
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_IdleGuard.webp",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 34.6,
+   "mae": 1.81
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_RaiseGuard.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.3,
+   "mae": 1.64
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_RaiseGuard.webp",
+   "frame": 8,
+   "f": 0.55,
+   "psnr": 34.1,
+   "mae": 1.85
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Walk.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.8,
+   "mae": 1.82
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_Walk.webp",
+   "frame": 11,
+   "f": 0.55,
+   "psnr": 34.6,
+   "mae": 1.89
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_WalkGuard.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 34.7,
+   "mae": 1.9
+  },
+  {
+   "sheet": "sprites/gatekeeper/Gatekeeper_WalkGuard.webp",
+   "frame": 8,
+   "f": 0.55,
+   "psnr": 34.0,
+   "mae": 1.99
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.8,
+   "mae": 2.95
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Death.webp",
+   "frame": 17,
+   "f": 0.5,
+   "psnr": 32.0,
+   "mae": 2.38
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.8,
+   "mae": 3.0
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Hurt.webp",
+   "frame": 4,
+   "f": 0.5,
+   "psnr": 30.7,
+   "mae": 3.01
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.0,
+   "mae": 3.61
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Idle.webp",
+   "frame": 21,
+   "f": 0.5,
+   "psnr": 30.0,
+   "mae": 3.61
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Swing.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.5,
+   "mae": 1.58
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Swing.webp",
+   "frame": 17,
+   "f": 0.5,
+   "psnr": 34.0,
+   "mae": 1.44
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Throw.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 33.7,
+   "mae": 1.63
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Throw.webp",
+   "frame": 15,
+   "f": 0.5,
+   "psnr": 33.7,
+   "mae": 1.63
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Walk.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.5,
+   "mae": 3.05
+  },
+  {
+   "sheet": "sprites/gravedigger/Gravedigger_Walk.webp",
+   "frame": 19,
+   "f": 0.5,
+   "psnr": 30.1,
+   "mae": 3.33
+  },
+  {
+   "sheet": "sprites/hero/Hero_Combo.png",
+   "frame": 0,
+   "f": 0.6,
+   "psnr": 37.1,
+   "mae": 0.63
+  },
+  {
+   "sheet": "sprites/hero/Hero_Combo.png",
+   "frame": 38,
+   "f": 0.6,
+   "psnr": 37.5,
+   "mae": 0.62
+  },
+  {
+   "sheet": "sprites/hero/attack.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.9,
+   "mae": 0.94
+  },
+  {
+   "sheet": "sprites/hero/attack.png",
+   "frame": 7,
+   "f": 0.55,
+   "psnr": 34.6,
+   "mae": 1.61
+  },
+  {
+   "sheet": "sprites/hero/block.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.2,
+   "mae": 0.88
+  },
+  {
+   "sheet": "sprites/hero/block.png",
+   "frame": 4,
+   "f": 0.55,
+   "psnr": 36.0,
+   "mae": 0.92
+  },
+  {
+   "sheet": "sprites/hero/cast_v2.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 37.0,
+   "mae": 0.85
+  },
+  {
+   "sheet": "sprites/hero/cast_v2.png",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 37.4,
+   "mae": 0.87
+  },
+  {
+   "sheet": "sprites/hero/death.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.5,
+   "mae": 0.98
+  },
+  {
+   "sheet": "sprites/hero/death.png",
+   "frame": 9,
+   "f": 0.55,
+   "psnr": 37.7,
+   "mae": 0.78
+  },
+  {
+   "sheet": "sprites/hero/drink.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.6,
+   "mae": 0.91
+  },
+  {
+   "sheet": "sprites/hero/drink.png",
+   "frame": 7,
+   "f": 0.55,
+   "psnr": 36.0,
+   "mae": 1.02
+  },
+  {
+   "sheet": "sprites/hero/hurt.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.9,
+   "mae": 0.9
+  },
+  {
+   "sheet": "sprites/hero/hurt.png",
+   "frame": 5,
+   "f": 0.55,
+   "psnr": 36.2,
+   "mae": 0.97
+  },
+  {
+   "sheet": "sprites/hero/idle.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.5,
+   "mae": 0.94
+  },
+  {
+   "sheet": "sprites/hero/idle.png",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 36.6,
+   "mae": 0.93
+  },
+  {
+   "sheet": "sprites/hero/jump.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.3,
+   "mae": 0.68
+  },
+  {
+   "sheet": "sprites/hero/jump.png",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 37.8,
+   "mae": 0.74
+  },
+  {
+   "sheet": "sprites/hero/parry_spark.png",
+   "frame": 0,
+   "f": 0.35,
+   "psnr": 32.4,
+   "mae": 0.92
+  },
+  {
+   "sheet": "sprites/hero/parry_spark.png",
+   "frame": 5,
+   "f": 0.35,
+   "psnr": 27.0,
+   "mae": 3.78
+  },
+  {
+   "sheet": "sprites/hero/run.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.3,
+   "mae": 0.97
+  },
+  {
+   "sheet": "sprites/hero/run.png",
+   "frame": 10,
+   "f": 0.55,
+   "psnr": 36.0,
+   "mae": 1.0
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Bite.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.9,
+   "mae": 3.12
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Bite.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 29.4,
+   "mae": 2.84
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Death.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.7,
+   "mae": 3.24
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Death.webp",
+   "frame": 21,
+   "f": 0.5,
+   "psnr": 29.7,
+   "mae": 2.88
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Emerge.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 38.8,
+   "mae": 0.39
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Emerge.webp",
+   "frame": 21,
+   "f": 0.5,
+   "psnr": 31.3,
+   "mae": 2.04
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Hurt.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.2,
+   "mae": 4.02
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Hurt.webp",
+   "frame": 4,
+   "f": 0.5,
+   "psnr": 28.1,
+   "mae": 4.09
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Idle.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 27.4,
+   "mae": 4.48
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Idle.webp",
+   "frame": 21,
+   "f": 0.5,
+   "psnr": 27.4,
+   "mae": 4.44
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Roar.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 27.7,
+   "mae": 4.03
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Roar.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 28.0,
+   "mae": 3.93
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Slam.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 30.6,
+   "mae": 2.27
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Slam.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 31.4,
+   "mae": 1.97
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Spit.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.5,
+   "mae": 3.27
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Spit.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 29.3,
+   "mae": 2.92
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Submerge.webp",
+   "frame": 0,
+   "f": 0.5,
+   "psnr": 28.1,
+   "mae": 3.61
+  },
+  {
+   "sheet": "sprites/serpent/Serpent_Submerge.webp",
+   "frame": 23,
+   "f": 0.5,
+   "psnr": 29.7,
+   "mae": 2.74
+  },
+  {
+   "sheet": "sprites/smuggler/smuggler_idle.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 33.8,
+   "mae": 1.71
+  },
+  {
+   "sheet": "sprites/smuggler/smuggler_idle.png",
+   "frame": 7,
+   "f": 0.55,
+   "psnr": 34.1,
+   "mae": 1.7
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Attack.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.6,
+   "mae": 1.0
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Attack.webp",
+   "frame": 19,
+   "f": 0.55,
+   "psnr": 39.2,
+   "mae": 0.89
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Death.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.1,
+   "mae": 1.09
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Death.webp",
+   "frame": 16,
+   "f": 0.55,
+   "psnr": 38.6,
+   "mae": 0.96
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Hurt.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 37.1,
+   "mae": 1.42
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Hurt.webp",
+   "frame": 3,
+   "f": 0.55,
+   "psnr": 36.7,
+   "mae": 1.45
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Idle.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.6,
+   "mae": 1.84
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Idle.webp",
+   "frame": 15,
+   "f": 0.55,
+   "psnr": 35.3,
+   "mae": 1.9
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Walk.webp",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 36.7,
+   "mae": 1.49
+  },
+  {
+   "sheet": "sprites/stoker/Stoker_Walk.webp",
+   "frame": 15,
+   "f": 0.55,
+   "psnr": 36.4,
+   "mae": 1.54
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Attack_v4.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 37.5,
+   "mae": 0.96
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Attack_v4.png",
+   "frame": 27,
+   "f": 0.55,
+   "psnr": 37.4,
+   "mae": 1.05
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Death.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 38.1,
+   "mae": 0.78
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Death.png",
+   "frame": 20,
+   "f": 0.55,
+   "psnr": 40.1,
+   "mae": 0.55
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Hurt.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.6,
+   "mae": 1.42
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Hurt.png",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 35.5,
+   "mae": 1.41
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Idle.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.5,
+   "mae": 1.53
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Idle.png",
+   "frame": 12,
+   "f": 0.55,
+   "psnr": 35.3,
+   "mae": 1.58
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Walk_v2.png",
+   "frame": 0,
+   "f": 0.55,
+   "psnr": 35.7,
+   "mae": 1.37
+  },
+  {
+   "sheet": "sprites/zvonar/Zvonar_Walk_v2.png",
+   "frame": 11,
+   "f": 0.55,
+   "psnr": 35.9,
+   "mae": 1.29
+  },
+  {
+   "sheet": "vfx/Boss_Spike_Impact.png",
+   "frame": 0,
+   "f": 0.4,
+   "psnr": 31.6,
+   "mae": 1.43
+  },
+  {
+   "sheet": "vfx/Boss_Spike_Impact.png",
+   "frame": 10,
+   "f": 0.4,
+   "psnr": 29.5,
+   "mae": 2.14
+  }
+ ]
+}
