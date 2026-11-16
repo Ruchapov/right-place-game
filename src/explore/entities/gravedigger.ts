@@ -5,6 +5,7 @@ import { ncSheet } from '../ncConstants'
 import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
+import { playSfx } from '../../audio/sound'
 
 /**
  * ГРОБОКОПАТЕЛЬ (09.11.2026). Дальше 3 и до 7 клеток — бросает ком земли
@@ -43,10 +44,12 @@ const behavior: NcBehavior = {
     if (action === 'Swing' && !nc.hitDone) {
       const [h0, h1] = ncSheet(SWING).hit!
       if (frame >= h0 && frame <= h1) {
+        if (!nc.keyDone) { nc.keyDone = true; playSfx('gravedigger_shovel', { x: e.x + e.width / 2, y: e.y }) }
         if (ctx.meleeStrike(e, SWING, ncHitDamage(N.GRAVEDIGGER_SHOVEL_DMG_MULT, e.attackDamage)) !== 'miss') nc.hitDone = true
       }
     } else if (action === 'Throw' && !nc.keyDone && frame >= ncSheet(THROW).release!) {
       nc.keyDone = true
+      playSfx('gravedigger_dirt', { x: e.x + e.width / 2, y: e.y })
       const p = ctx.spawnPoint(e, THROW)
       const pb = ctx.deps.getPlayerCombatBox()
       ctx.deps.projectiles.fire({

@@ -11,6 +11,7 @@ import { scaledEnemyAttackDamage, scaledEnemyMaxHp } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
 import { newNcState } from './ncEnemy'
 import { createShadowFilter, filterUniforms, syncFigureUniforms } from './ncFilters'
+import { playSfx } from '../../audio/sound'
 
 /**
  * ТЕНЬ ИЗ СУНДУКА (09.11.2026). Сундук с Тенью (решение сервера, isShadow)
@@ -234,6 +235,8 @@ export function createShadowSystem(deps: ShadowDeps) {
       if (nc.reveal < 1) {
         nc.reveal = Math.min(1, nc.reveal + deltaMS / REVEAL_MS)
         if (nc.reveal >= 1) {
+          // Тень встала — вспышка глаз и звук (16.11.2026).
+          playSfx('shadow_chest', { x: e.x + e.width / 2, y: e.y })
           e.hpBarBg.visible = true
           e.hpBarFill.visible = true
         }

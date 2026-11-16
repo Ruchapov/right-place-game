@@ -1,5 +1,47 @@
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import * as C from '../constants'
+import { getAudioSettings, setAudioSettings, subscribeAudioSettings } from '../../audio/sound'
+
+// Блок «Звук» панели настроек: два ползунка 0–100 и «Без звука». Стиль — как у
+// кнопок панели (тёмное поле, золотая рамка у включённого).
+function SoundBlock() {
+  const st = useSyncExternalStore(subscribeAudioSettings, getAudioSettings)
+  const row = (label: string, value: number, onChange: (v: number) => void) => (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#EDE7F2', fontSize: 13, fontWeight: 700 }}>
+      <span style={{ width: 62, flexShrink: 0 }}>{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={Math.round(value * 100)}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        disabled={st.muted}
+        style={{ flex: 1, minWidth: 0, height: 28, accentColor: '#E8B23A', opacity: st.muted ? 0.4 : 1 }}
+      />
+    </label>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 10px', borderRadius: 10, border: '1px solid #3A3344', background: '#221E2B' }}>
+      {row('Музыка', st.musicVolume, (v) => setAudioSettings({ musicVolume: v }))}
+      {row('Эффекты', st.sfxVolume, (v) => setAudioSettings({ sfxVolume: v }))}
+      <button
+        onClick={() => setAudioSettings({ muted: !st.muted })}
+        style={{
+          padding: '8px 0',
+          borderRadius: 6,
+          border: st.muted ? '2px solid #E8B23A' : '1px solid #3A3344',
+          background: '#15131A',
+          color: '#EDE7F2',
+          fontSize: 13,
+          fontWeight: 700,
+          cursor: 'pointer',
+        }}
+      >
+        {st.muted ? 'Без звука: ВКЛ' : 'Без звука'}
+      </button>
+    </div>
+  )
+}
 
 const TEMP_MAP_SWITCHER: { letter: string; file: string }[] = [
   { letter: 'A', file: 'map_A_burial-quarter.txt' },
@@ -198,25 +240,9 @@ export default function SettingsPanel({ mapFile, onSelectMap, invincible, onTogg
               >
                 Продолжить
               </button>
-              {['Звук', 'Музыка'].map((label) => (
-                <button
-                  key={label}
-                  disabled
-                  style={{
-                    padding: '14px 8px',
-                    borderRadius: 10,
-                    border: '1px solid #3A3344',
-                    background: '#221E2B',
-                    color: '#EDE7F2',
-                    fontSize: 15,
-                    fontWeight: 700,
-                    opacity: 0.5,
-                    cursor: 'default',
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+              {/* Звук (16.11.2026): громкость музыки и эффектов, «Без звука».
+                  Слышно сразу; хранится в localStorage (src/audio/sound.ts). */}
+              <SoundBlock />
               <button
                 onClick={() => { setRunTrophiesAtOpen(Math.max(0, Math.round(runTrophies()))); setExitConfirmOpen(true) }}
                 style={{

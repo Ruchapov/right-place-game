@@ -5,6 +5,7 @@ import { ncSheet } from '../ncConstants'
 import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
+import { playSfx } from '../../audio/sound'
 
 /**
  * БЕЗЛИКИЙ ФЕХТОВАЛЬЩИК (09.11.2026). Подходит и делает выпад (Fencer_Attack,
@@ -56,6 +57,8 @@ const behavior: NcBehavior = {
     if (action !== 'Attack' || nc.hitDone) return
     const [h0, h1] = ncSheet(ATTACK).hit!
     if (frame >= h0 && frame <= h1) {
+      // Звук выпада — один раз, в кадр удара (keyDone у выпада свободен).
+      if (!nc.keyDone) { nc.keyDone = true; playSfx('sword_swing_1', { x: e.x + e.width / 2, y: e.y }) }
       const r = ctx.meleeStrike(e, ATTACK, ncHitDamage(N.FENCER_DMG_MULT, e.attackDamage))
       if (r !== 'miss') nc.hitDone = true
     }

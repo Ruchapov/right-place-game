@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { getAudioSettings, setAudioSettings, subscribeAudioSettings } from './audio/sound'
 import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@telegram-apps/sdk'
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
@@ -836,6 +837,17 @@ function loadPastRunNotice(userId: number): PastRunNoticeData | null {
     clearPastRunNotice()
     return null
   }
+}
+
+// Кнопка-динамик меню (16.11.2026): «Без звука» из src/audio/sound.ts — та же
+// настройка, что в панели забега.
+function MuteButton({ border, bg, color }: { border: string; bg: string; color: string }) {
+  const st = useSyncExternalStore(subscribeAudioSettings, getAudioSettings)
+  return (
+    <button type="button" aria-label={st.muted ? 'Включить звук' : 'Выключить звук'} onClick={() => setAudioSettings({ muted: !st.muted })}
+      style={{ width:44, height:44, flexShrink:0, borderRadius:'50%', border:`1px solid ${border}`,
+        background:bg, color, fontSize:18, cursor:'pointer', padding:0 }}>{st.muted ? '🔇' : '🔊'}</button>
+  )
 }
 
 export default function App() {
@@ -3181,6 +3193,8 @@ export default function App() {
                 <button type="button" aria-label="Как играть" onClick={() => setHowToOpen(true)}
                   style={{ width:44, height:44, flexShrink:0, borderRadius:'50%', border:`1px solid ${C.stoneDark}`,
                     background:C.nicheDeep, color:C.glowCore, fontFamily:FONT_DISPLAY, fontSize:18, cursor:'pointer' }}>?</button>
+                {/* Звук вкл/выкл (16.11.2026) — тот же размер и стиль, что «?». */}
+                <MuteButton border={C.stoneDark} bg={C.nicheDeep} color={C.glowCore} />
               </div>
 
               {/* Строка валют: золото, трофеи, значки охотника, RP (последние две —

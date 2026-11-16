@@ -10,6 +10,7 @@ import { createNcBossCore } from './ncBoss'
 import type { NcBossDeps } from './ncBoss'
 import { sheetPointToWorld } from './ncEnemy'
 import type { NcProjectileSystem } from './ncProjectiles'
+import { playSfx } from '../../audio/sound'
 
 /**
  * КОСТЯНОЙ ЗМЕЙ (09.11.2026) — босс карт C и C2 (бросает сервер, bossKind).
@@ -266,6 +267,8 @@ export function createSerpentSystem(deps: NcBossDeps, extra: SerpentExtraDeps) {
     if (!nc.enraged && nc.action !== 'Roar' && !diving && boss.hp <= boss.maxHp * N.SERPENT_RAGE_HP_FRAC) {
       boss.hurtTimer = 0
       core.startAction(boss, 'Roar')
+      // Рёв ярости — рёв оборотня ниже (16.11.2026).
+      playSfx('werewolf_roar', { rate: 0.8, x: boss.x + boss.sprite.width / 2, y: boss.y })
       nc.invulnerable = true
     }
 
@@ -296,13 +299,16 @@ export function createSerpentSystem(deps: NcBossDeps, extra: SerpentExtraDeps) {
       const frame = boss.sprite.currentFrame
       if (action === 'Bite' && !nc.hitDone) {
         const [h0, h1] = ncSheet(sheet('Bite')).hit!
+        if (frame >= h0 && frame <= h1 && !nc.keyDone) { nc.keyDone = true; playSfx('serpent_bite', { x: boss.x + boss.sprite.width / 2, y: boss.y }) }
         if (frame >= h0 && frame <= h1 && core.strike(boss, sheet('Bite'), boss.meleeDamage) !== 'miss') nc.hitDone = true
       } else if (action === 'Spit' && !nc.keyDone && frame >= ncSheet(sheet('Spit')).release!) {
         nc.keyDone = true
+        playSfx('serpent_spit', { x: boss.x + boss.sprite.width / 2, y: boss.y })
         spitBones(boss)
       } else if (action === 'Slam' && !nc.keyDone && frame >= ncSheet(sheet('Slam')).impact!) {
         nc.keyDone = true
         nc.slamCooldownMs = N.SERPENT_SLAM_INTERVAL_MS
+        playSfx('boss_slam', { x: boss.x + boss.sprite.width / 2, y: boss.y })
         slamWave(boss)
       } else if (action === 'Submerge' && frame >= ncSheet(sheet('Submerge')).count / 2) {
         nc.invulnerable = true
@@ -317,6 +323,8 @@ export function createSerpentSystem(deps: NcBossDeps, extra: SerpentExtraDeps) {
           const pb2 = deps.getPlayerCombatBox()
           boss.facing = pb2.x + pb2.w / 2 >= nc.diveX ? 1 : -1
           core.startAction(boss, 'Emerge', { speedMult: speedOf('Emerge', nc) })
+          // Выныривание из-под пола — удар об пол (16.11.2026).
+          playSfx('boss_slam', { x: nc.diveX, y: nc.diveFloorY })
           nc.invulnerable = true
         }
       } else if (action === 'Emerge') {

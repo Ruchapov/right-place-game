@@ -4,6 +4,20 @@ import { init, mountViewport, bindViewportCssVars, isViewportCssVarsBound, mount
 import App from './App.tsx'
 import { keepFullscreenOnPhone } from './telegramFullscreen'
 import './index.css'
+import { initAudio, playSfx } from './audio/sound'
+import { enterMenuMusic } from './audio/music'
+
+// Звук (16.11.2026, docs/audio.md): контекст, разблокировка первым касанием,
+// пауза при сворачивании, фоновая загрузка эффектов; музыка меню.
+initAudio()
+enterMenuMusic()
+// Щелчок кнопок интерфейса — один обработчик на весь документ, а не правка
+// каждой кнопки. Боевые кнопки забега ([data-touch-controls]) — без щелчка.
+document.addEventListener('click', (e) => {
+  const el = e.target instanceof Element ? e.target : null
+  if (!el || !el.closest('button') || el.closest('[data-touch-controls]')) return
+  playSfx('ui_click')
+}, true)
 
 // Initialize Telegram SDK
 try {

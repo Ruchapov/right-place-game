@@ -7,6 +7,7 @@ import { isSolid, sweepFootBlock, cellFootBlockTop, isPlatformBandBlocking } fro
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, lookAround, syncMark, BOSS_PERCEPTION } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
+import { playSfx } from '../../audio/sound'
 
 // HP-бар босса — тот же приём, что у зверя (redrawEnemyHpBar, см.
 // explore/entities/enemy.ts). Экспортируется отдельно (не только через
@@ -624,6 +625,7 @@ export function createBossSystem(deps: BossDeps) {
           // Hurt её больше не обрывает.
           if (!boss.attackHitApplied && boss.sprite.currentFrame >= strikeFrame) {
             boss.attackHitApplied = true
+            playSfx('werewolf_claws', { x: boss.x + C.BOSS_WIDTH / 2, y: boss.y })
             // Атака дошла до удара — сброс стан-резиста (СЛОЙ 2, см.
             // задачу), тот же приём, что enemy.stunCount=0 у зверя.
             boss.stunCount = 0
@@ -678,6 +680,7 @@ export function createBossSystem(deps: BossDeps) {
           const stompFrames = deps.bossFrames.stomp
           if (!boss.stompStrikeApplied && boss.sprite.currentFrame >= C.BOSS_STOMP_STRIKE_FRAME) {
             boss.stompStrikeApplied = true
+            playSfx('boss_slam', { x: boss.x + C.BOSS_WIDTH / 2, y: boss.y })
             spawnBossWave(boss, -1)
             spawnBossWave(boss, 1)
           }

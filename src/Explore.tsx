@@ -91,6 +91,8 @@ import { BOSS_INTRO_CSS, BOSS_INTRO_TOTAL_MS, bossDisplayName, bossIntroBlend, r
 import { LIVE_DECOR_FLAMES } from './explore/liveDecorManifest'
 import { createRunnerSystem } from './explore/entities/runner'
 import { createDamageNumberSystem } from './explore/entities/damageNumbers'
+import { playSfx, setAudioListener } from './audio/sound'
+import { prepareRunMusic, enterMenuMusic, musicHeroHit, musicHeroDied, musicBossAppeared, musicBossDied, updateCombatMusic } from './audio/music'
 import { createHitFlashSystem } from './explore/entities/hitFlash'
 import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
@@ -1556,6 +1558,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     clearManaOrbsRef.current()
 
     setRunResult(buildClientResult(died))
+    // Экран итогов — музыка меню (16.11.2026).
+    enterMenuMusic()
 
     if (!token) {
       setSaveStatus('offline')
@@ -2416,6 +2420,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   function triggerDeath() {
     if (deathRef.current) return // уже идёт — не перезапускаем повторно
     deathRef.current = true
+    // Звук (16.11.2026): музыка гаснет за 1 с, крик смерти, дальше тишина до итогов.
+    musicHeroDied()
+    playSfx('hero_death')
     // Смерть важнее (31.10.2026): кнопка «Завершить вылазку» и отсчёт пропадают,
     // забег уйдёт смертью, как раньше. Обнуление отсчёта — чтобы конец тика не
     // отправил финиш пройденным (sendFinishExplore и так превратил бы его в
@@ -2484,6 +2491,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   function takeDamage(amount: number, source?: DamageSource): boolean {
     if (parryWindowRef.current > 0) {
       spawnParrySparkRef.current()
+      playSfx('block')
       // «Звон стали»: каждый отбитый удар — и два удара в одно окно тоже два.
       questCountersRef.current.parries += 1
       healOnParry()
@@ -2525,6 +2533,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     const g = enemy.gatekeeper
     if (g && g.parryPress !== 0 && g.parryPress === parryPressRef.current && parryingRef.current) {
       spawnParrySparkRef.current()
+      playSfx('block')
       // Тот же отбив, что в takeDamage, — для «Звона стали».
       questCountersRef.current.parries += 1
       healOnParry()
@@ -2635,6 +2644,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     updateHpBar()
     // Красная цифра над героем — сколько урона прошло (16.11.2026).
     if (armored > 0) heroDamageNumberRef.current(armored)
+    // Звук: удар врага — hero_hurt и бой в музыке; шипы и ловушки — spikes;
+    // горение — без звука (тики). Смертельный удар — крик смерти (triggerDeath).
+    if (armored > 0 && !opts.burn && hpRef.current > 0) playSfx(opts.foe ? 'hero_hurt' : 'spikes')
+    if (opts.foe && armored > 0) musicHeroHit()
     // Неуязвимость после удара врага — только если герой жив (смерть и подъём
     // оберегом ниже ведут свои окна).
     if (opts.foe && armored > 0 && hpRef.current > 0) heroHitIframeRef.current = C.HERO_HIT_IFRAME_MS
@@ -3581,6 +3594,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Какой босс (09.11.2026): называет сервер полем bossKind; нет поля
       // (сервер старше) — по карте, как раньше.
       const bossEvent = chosenEvents.find((ev) => ev.kind === 'boss')
+      // Музыка забега (16.11.2026): трек темы карты; boss.mp3 грузится только
+      // в забег с боссом.
+      prepareRunMusic(mapTheme, !!bossEvent)
       const bossKindNamed = bossEvent ? readBossKind(bossEvent.bossKind) : null
       // Какие листы «под событие» нужны ЭТОМУ забегу. Решается ЗДЕСЬ, как только
       // события известны, — в этом и был смысл того, что вид врагов приезжает со
@@ -4486,6 +4502,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // «Полная чаша» считает ману, ДОЛЕТЕВШУЮ до героя, — и ту, что сгорает
         // выше потолка (setMana обрежет её молча).
         gainMana: (amount) => {
+          playSfx('pickup')
           questCountersRef.current.manaCollected += amount
           // Кольцо перелива: шар в полный запас не сгорает, а лечит.
           if (manaRef.current >= C.MANA_MAX && gearRef.current.rings.includes('ring_overflow')) {
@@ -4570,6 +4587,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         worldY: number,
         rewards: RewardFloatRow[]
       ) {
+        // Подбор награды (16.11.2026) — один звук на пачку.
+        if (rewards.length > 0) playSfx('pickup', { x: worldX, y: worldY })
         rewards.forEach((reward, i) => {
           // Строка добычи: один спрайт, центрированный по worldX. Высота —
           // та же REWARD_ICON_H, что у иконок валют, поэтому ряды стоят
@@ -6205,6 +6224,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
         attackingRef.current = true
         attackHitDoneRef.current = false
+        playSfx('sword_swing_1')
         attackFacingRef.current = facingRef.current // facing зафиксирован на старте замаха
         // Хитбокс — прямоугольник шириной ATTACK_RANGE перед игроком, по
         // направлению взгляда (facingRef), высотой в его рост. Считается
@@ -6248,6 +6268,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           lungeMsLeft = 0
         }
         if (stage === 1) attackFacingRef.current = facingRef.current
+        playSfx('sword_swing_1')
         hero.textures = comboStrikeFrames[stage - 1]
         hero.loop = false
         hero.animationSpeed = C.HERO_COMBO_ANIM_SPEED / swingTime
@@ -6290,6 +6311,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (dashingRef.current || attackingRef.current || castingRef.current) return false
         dashingRef.current = true
         dashStartXRef.current = phys.x
+        playSfx('dash')
         hero.textures = dashFrames
         hero.loop = false
         hero.animationSpeed = C.DASH_ANIM_SPEED
@@ -6395,6 +6417,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               const foeFront = fb ? (staggerDir === 1 ? fb.x + fb.w : fb.x) : (staggerDir === 1 ? enemy.x + enemy.width : enemy.x)
               const chestY = fb ? fb.y + fb.h * 0.32 : enemy.y + enemy.height * 0.35
               spawnParrySparkRef.current({ x: foeFront, y: chestY })
+              playSfx('block', { x: foeFront, y: chestY })
               staggerMsLeft = N.FENCER_BLOCK_STAGGER_MS
               // Оглушение (13.11.2026): поверх отброса; замах, каст и комбо рвутся.
               heroStunMs = N.FENCER_BLOCK_STUN_MS
@@ -6423,7 +6446,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // takeDamage: добивающий удар не должен раздувать счётчик сверх
         // реального остатка HP врага.
         accumulator.current += Math.min(amount, enemy.hp)
+        const enemyHpBefore = enemy.hp
         enemy.hp = Math.max(0, enemy.hp - amount)
+        // Звук (16.11.2026): попадание мечом или навыком (тики — без звука);
+        // смерть — enemy_death. Позиция — центр врага.
+        {
+          const sx = enemy.x + enemy.width / 2
+          const sy = enemy.y + enemy.height / 2
+          if (enemy.hp <= 0 && enemyHpBefore > 0) playSfx('enemy_death', { x: sx, y: sy })
+          else if (amount > 0 && via !== 'tick' && via !== 'trap') playSfx('enemy_hit_1', { x: sx, y: sy })
+        }
         // Расследование (см. INVESTIGATE_MS): запоминаем, ОТКУДА прилетело, и
         // включаем режим. Здесь — потому что это единственная общая точка
         // списания HP: так реагируют ВСЕ источники (меч, кровотечение, взрыв
@@ -6508,6 +6540,14 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (boss.nc?.kind === 'crowking') crowKingSystem?.onHit(boss)
         accumulator.current += Math.min(amount, boss.hp)
         boss.hp = Math.max(0, boss.hp - amount)
+        // Звук (16.11.2026): урон по боссу (не тик), смерть — boss_death и
+        // тишина в музыке, потом спокойная тема.
+        {
+          const bx = boss.x + boss.sprite.width / 2
+          const by = boss.y
+          if (boss.hp <= 0) { playSfx('boss_death', { x: bx, y: by }); musicBossDied() }
+          else if (amount > 0 && via !== 'tick') playSfx('boss_hurt', { x: bx, y: by })
+        }
         // Удар по спящему боссу (навык издалека) будит его заставкой (13.11.2026).
         if (boss.hp > 0) wakeBossRef.current(boss)
         // Расследование — та же роль и та же причина, что у damageEnemy выше.
@@ -6725,6 +6765,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Хитстоп (30.10.2026): сколько мс игре ещё стоять. Не копится — новое
       // попадание только продлевает до HITSTOP_MS, а не прибавляет.
       let hitstopMsLeft = 0
+      // Звук шагов и приземления (16.11.2026): кадры касания ноги листа бега и
+      // сколько мс герой в воздухе.
+      const STEP_FRAMES = [8, 19] as const
+      const LAND_SOUND_MIN_AIR_MS = 150
+      let lastRunFrame = -1
+      let heroAirMs = 0
       function startHitstop(ms: number = C.HITSTOP_MS) {
         hitstopMsLeft = Math.max(hitstopMsLeft, ms)
         Ticker.shared.speed = 0
@@ -6965,6 +7011,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               hb.y + hb.height > box.y
             if (!overlap) continue
             chest.opening = true
+            playSfx('chest_open', { x: box.x + box.width / 2, y: box.y })
             // Броска здесь БОЛЬШЕ НЕТ (13.10.2026): ловушка это или нет, сервер
             // решил на старте забега, и chest.isMimic стоит с момента спавна.
             // Удар только запускает ту анимацию, что уже решена. Вернуть сюда
@@ -7065,9 +7112,17 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         const tc = document.querySelector<HTMLElement>('[data-touch-controls]')
         if (tc) tc.style.visibility = hidden ? 'hidden' : ''
       }
+      // Появление босса (16.11.2026): boss_appear, рёв Твари и музыка босса.
+      const announceBoss = (b: Boss) => {
+        const x = b.x + b.sprite.width / 2
+        playSfx('boss_appear', { x, y: b.y })
+        if (!b.abbot && !b.nc) playSfx('werewolf_roar', { x, y: b.y })
+        musicBossAppeared()
+      }
       const startBossIntro = (b: Boss) => {
         if (bossIntroPlayed) return
         bossIntroPlayed = true
+        announceBoss(b)
         bossIntroMs = 0
         bossIntroSkipRef.current = false
         bossIntroFrom.x = worldContainer.x
@@ -7084,7 +7139,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (bossAsleep() && !tutorialPausedRef.current && !deathRef.current) startBossIntro(b)
         // Под подсказкой обучения заставку не начинаем, но и спать дальше
         // ударенный босс не должен — заставки тогда не будет вовсе.
-        else if (bossAsleep()) { bossIntroPlayed = true; restartBossTimers(b) }
+        else if (bossAsleep()) { bossIntroPlayed = true; announceBoss(b); restartBossTimers(b) }
       }
       const endBossIntro = () => {
         bossIntroMs = null
@@ -7388,6 +7443,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           jumpBufferRef.current = 0
           coyoteRef.current = 0
           jumpedThisFrame = true
+          playSfx('jump')
         }
 
         // Прыжок от длины нажатия (30.10.2026): отпустил ▲ (или ArrowUp/Space),
@@ -7468,6 +7524,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // кадр) — запускает land, только если игрок не бежит и не прыгает
         // прямо сейчас (иначе движение/прыжок сразу перекрыли бы его же).
         const justLanded = !wasOnGround && phys.onGround
+        // Приземление — звук, если падали дольше LAND_SOUND_MIN_AIR_MS.
+        if (!phys.onGround) heroAirMs += ticker.deltaMS
+        else {
+          if (justLanded && heroAirMs > LAND_SOUND_MIN_AIR_MS && !deathRef.current) playSfx('land')
+          heroAirMs = 0
+        }
         if (justLanded && dirRef.current === 0 && !jumpedThisFrame) {
           landTimerRef.current = C.LAND_MS
         }
@@ -8066,6 +8128,23 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // д) на земле, land ещё идёт И нет горизонтального ввода — доигрываем
         //    land (движение прерывает его — переход в ветку е);
         // е) обычный idle/run по движению.
+        // ЗВУК (16.11.2026): слушатель — центр героя; шаги — на кадрах касания
+        // ноги листа бега (8 и 19), только на земле; музыка боя — если хоть один
+        // враг преследует героя, заметил его или атакует.
+        setAudioListener(phys.x + C.PLAYER_WIDTH / 2, phys.y + C.PLAYER_HEIGHT / 2)
+        if (hero.textures === runFrames && phys.onGround) {
+          const f = hero.currentFrame
+          if (f !== lastRunFrame && (STEP_FRAMES as readonly number[]).includes(f)) playSfx('step_stone')
+          lastRunFrame = f
+        } else lastRunFrame = -1
+        {
+          let engaged = false
+          for (const e of enemiesRef.current) {
+            if (e.dead || e.runner) continue
+            if (e.aggroMemoryTimer > 0 || e.noticePending || e.windingUp || e.attackAnimPlaying) { engaged = true; break }
+          }
+          if (!deathRef.current) updateCombatMusic(ticker.deltaMS, engaged)
+        }
         // Выход из комбо в idle прерывается движением, рывком, кастом,
         // парированием и питьём (16.11.2026) — ветки ниже подхватят своё.
         // Атака и прыжок прерывают его сами (startCombo, ветка воздуха).
@@ -8156,6 +8235,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           // и заряд/хил/кулдаун не применятся — как и требовалось.
           if (!potionHealedThisDrinkRef.current && hero.currentFrame >= C.POTION_GULP_FRAME) {
             potionHealedThisDrinkRef.current = true
+            playSfx('potion')
             // Пьётся всегда СТАРШИЙ доступный тир; кончился — следующий вниз,
             // прямо внутри забега. Выбор здесь, а не на нажатии: точка списания
             // одна, и решение о тире обязано жить рядом с ней.
@@ -8537,6 +8617,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     return () => {
       cancelled = true
       clearLoadWatchdog()
+      // Ушли из забега — музыка меню, буферы забега отпускаются.
+      enterMenuMusic()
       skills?.dispose()
       classHealFlashSystem?.dispose()
       critFlashSystem?.dispose()

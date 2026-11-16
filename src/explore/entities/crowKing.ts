@@ -6,6 +6,7 @@ import { isSolid, cellFootBlockTop } from '../collision'
 import { perceive, lookAround, BOSS_PERCEPTION } from '../perception'
 import { createNcBossCore } from './ncBoss'
 import type { NcBossDeps } from './ncBoss'
+import { playSfx } from '../../audio/sound'
 
 /**
  * ВОРОНИЙ КОРОЛЬ (09.11.2026) — босс карт C и C2 (бросает сервер, bossKind).
@@ -101,6 +102,7 @@ export function createCrowKingSystem(deps: NcBossDeps) {
           nc.unreachableMs = 0
           nc.scatterCooldownMs = N.CROWKING_SCATTER_INTERVAL_MS
           core.startAction(boss, 'Scatter')
+          playSfx('crowking_scatter', { x: boss.x + boss.sprite.width / 2, y: boss.y })
           nc.invulnerable = true
         } else if (sameTier && gap <= reach * 0.85 && boss.attackCooldownTimer <= 0) {
           core.startAction(boss, 'Strike')
@@ -131,6 +133,7 @@ export function createCrowKingSystem(deps: NcBossDeps) {
       const frame = boss.sprite.currentFrame
       if (action === 'Strike' && !nc.hitDone) {
         const [h0, h1] = ncSheet(sheet('Strike')).hit!
+        if (frame >= h0 && frame <= h1 && !nc.keyDone) { nc.keyDone = true; playSfx('crowking_wings', { x: boss.x + boss.sprite.width / 2, y: boss.y }) }
         if (frame >= h0 && frame <= h1 && core.strike(boss, sheet('Strike'), boss.meleeDamage) !== 'miss') nc.hitDone = true
       } else if (action === 'Fly') {
         if (nc.actionMs >= N.CROWKING_FLY_MS) {
@@ -141,6 +144,7 @@ export function createCrowKingSystem(deps: NcBossDeps) {
           const pb2 = deps.getPlayerCombatBox()
           boss.facing = pb2.x + pb2.w / 2 >= nc.targetX ? 1 : -1
           core.startAction(boss, 'Scatter', { reversed: true })
+          playSfx('crowking_scatter', { x: nc.targetX, y: nc.targetFloorY })
           nc.action = 'Gather'
           nc.invulnerable = true
         }

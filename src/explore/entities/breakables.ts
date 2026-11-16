@@ -2,6 +2,7 @@ import { AnimatedSprite } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import * as C from '../constants'
 import { BREAKABLE_HITS, type BreakableKind, type RunBreakable } from '../../breakables'
+import { playSfx } from '../../audio/sound'
 
 // Бочки и кувшины (12.11.2026, docs/explore-features.md). Где стоят, что внутри
 // и сколько их — решил сервер на старте (общий каталог breakables.ts); здесь
@@ -110,6 +111,7 @@ export function createBreakablesSystem(deps: BreakablesDeps) {
       p.hits += 1
       if (p.hits >= BREAKABLE_HITS[p.kind]) {
         p.broken = true
+        playSfx(p.kind === 'barrel' ? 'barrel_break' : 'jar_break', { x: p.centerX, y: p.topY })
         playOnce(p.sprite, p.kind === 'barrel' ? assets.barrelBreak : assets.jarBreak)
         deps.onBreak(p.index, p.centerX, p.topY)
       } else {

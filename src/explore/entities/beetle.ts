@@ -5,6 +5,7 @@ import { ncSheet } from '../ncConstants'
 import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
+import { playSfx } from '../../audio/sound'
 
 /**
  * НАВОЗНИК (жук, 09.11.2026). Дальше 3 и до 7 клеток — Beetle_Throw: на кадре
@@ -46,6 +47,7 @@ const behavior: NcBehavior = {
     if (action === 'Throw') {
       if (nc.keyDone || frame < ncSheet(THROW).release!) return
       nc.keyDone = true
+      playSfx('beetle_throw', { x: e.x + e.width / 2, y: e.y })
       const p = ctx.spawnPoint(e, THROW)
       const pb = ctx.deps.getPlayerCombatBox()
       ctx.deps.projectiles.fire({
@@ -65,6 +67,7 @@ const behavior: NcBehavior = {
     const spec = ncSheet(DASH)
     const [t0, t1] = spec.thrust!
     if (frame < t0) return
+    if (!nc.keyDone) { nc.keyDone = true; playSfx('beetle_dash', { x: e.x + e.width / 2, y: e.y }) }
     // Прогресс рывка — по времени действия от начала кадров thrust, ease-out.
     const tStart = (t0 / spec.fps!) * 1000
     const tEnd = ((t1 + 1) / spec.fps!) * 1000

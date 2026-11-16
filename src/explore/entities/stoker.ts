@@ -4,6 +4,7 @@ import { ncSheet } from '../ncConstants'
 import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
+import { playSfx } from '../../audio/sound'
 
 /**
  * КОЧЕГАР (09.11.2026). Удар кочергой (Stoker_Attack, урон в окне hit,
@@ -31,6 +32,7 @@ const behavior: NcBehavior = {
     if (action !== 'Attack' || nc.hitDone) return
     const [h0, h1] = ncSheet(ATTACK).hit!
     if (frame < h0 || frame > h1) return
+    if (!nc.keyDone) { nc.keyDone = true; playSfx('stoker_fire', { x: e.x + e.width / 2, y: e.y }) }
     const damage = ncHitDamage(N.STOKER_DMG_MULT, e.attackDamage)
     const r = ctx.meleeStrike(e, ATTACK, damage)
     if (r === 'miss') return

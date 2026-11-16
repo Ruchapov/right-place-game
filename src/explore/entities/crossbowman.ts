@@ -5,6 +5,7 @@ import { ncSheet } from '../ncConstants'
 import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
+import { playSfx } from '../../audio/sound'
 
 /**
  * АРБАЛЕТЧИК (09.11.2026). Держит дистанцию: ближе 2 клеток — пятится (не
@@ -59,6 +60,7 @@ const behavior: NcBehavior = {
     if (action !== 'Shoot' || nc.keyDone || frame < ncSheet(SHOOT).release!) return
     nc.keyDone = true
     nc.needReload = true
+    playSfx('crossbow_shot', { x: e.x + e.width / 2, y: e.y })
     const p = ctx.spawnPoint(e, SHOOT)
     ctx.deps.projectiles.fire({
       kind: 'bolt',

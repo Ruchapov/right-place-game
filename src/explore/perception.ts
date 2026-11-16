@@ -3,6 +3,7 @@ import type { Container } from 'pixi.js'
 import type { Enemy, Grid } from './types'
 import * as C from './constants'
 import { canSeePlayer } from './vision'
+import { playSfx } from '../audio/sound'
 
 // ВОСПРИЯТИЕ ВРАГА — общее для ВСЕХ противников (05–08.11.2026): зверь,
 // Звонарь, Привратник, босс-оборотень, Настоятель. Раньше у каждого был свой
@@ -108,9 +109,13 @@ export function perceive(
       e.noticePending = false
       e.aggroMemoryTimer = tune.graceMs
       startedChase = true
+      playSfx('enemy_alert', { x: body.x + body.w / 2, y: body.y })
     } else if (!e.noticePending) {
       e.noticeMs = tune.noticeMs
       e.noticePending = true
+      // Над врагом «!» — звук (16.11.2026). Стая, заметившая разом, — один
+      // звук: playSfx не повторяет тот же звук чаще раза в 50 мс.
+      playSfx('enemy_alert', { x: body.x + body.w / 2, y: body.y })
     }
   }
   if (e.noticePending && e.noticeMs === 0) {

@@ -10,6 +10,7 @@ import { clamp, parryStunFrame } from '../utils'
 import { perceive, lookAround, syncMark, BOSS_PERCEPTION } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 import { redrawBossHpBar } from './boss'
+import { playSfx } from '../../audio/sound'
 
 /**
  * НАСТОЯТЕЛЬ — второй босс, две стадии (29.10.2026).
@@ -517,6 +518,10 @@ export function createAbbotSystem(deps: AbbotDeps) {
         a.actionKeyDone = true
         // Атака дошла до удара — стан-резист сбрасывается, как у Твари.
         boss.stunCount = 0
+        // Звук (16.11.2026): кулак и колокол об пол — boss_slam, взмах колоколом — boss_bell_swing.
+        const sx = boss.x + boss.sprite.width / 2
+        if (action === 'attack' || action === 'slam') playSfx('boss_slam', { x: sx, y: boss.y })
+        else if (action === 'swing') playSfx('boss_bell_swing', { x: sx, y: boss.y })
         if (action === 'attack') strikeMelee(boss, C.ABBOT_FIST_RANGE, boss.meleeDamage)
         else if (action === 'swing') strikeMelee(boss, C.ABBOT_SWING_RANGE, boss.melee2Damage)
         else if (action === 'slam') spawnWaves(boss)

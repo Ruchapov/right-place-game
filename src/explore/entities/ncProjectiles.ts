@@ -5,6 +5,7 @@ import type { DamageSource, Grid } from '../types'
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { isSolid } from '../collision'
+import { playSfx } from '../../audio/sound'
 
 /**
  * СНАРЯДЫ НОВЫХ ВРАГОВ И ЗМЕЯ (09.11.2026): ком гробокопателя, грязь жука —
@@ -176,7 +177,7 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
             remove = true
             const parried = deps.takeDamage(p.damage, p.owner)
             if (!parried && p.kind === 'mud') deps.slowHero(N.SLOW_MS)
-            if (p.kind === 'clod') spawnBurst('crumbs', p.sprite.x, p.sprite.y)
+            if (p.kind === 'clod') { spawnBurst('crumbs', p.sprite.x, p.sprite.y); playSfx('gravedigger_dirt', { volume: 0.6, x: p.sprite.x, y: p.sprite.y }) }
           }
         }
         if (!remove) {
@@ -185,7 +186,7 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
           const hitFloor = p.vy > 0 && isSolid(deps.grid, C.TILE_SIZE, p.sprite.x, p.sprite.y + p.hh)
           if (hitWall || hitFloor) {
             remove = true
-            if (p.kind === 'clod') spawnBurst('crumbs', p.sprite.x, p.sprite.y + (hitFloor ? p.hh : 0))
+            if (p.kind === 'clod') { spawnBurst('crumbs', p.sprite.x, p.sprite.y + (hitFloor ? p.hh : 0)); playSfx('gravedigger_dirt', { volume: 0.6, x: p.sprite.x, y: p.sprite.y }) }
             else if (p.kind === 'mud' && hitFloor) {
               // Пятно ложится на пол: верх клетки под снарядом.
               const floorY = Math.floor((p.sprite.y + p.hh) / C.TILE_SIZE) * C.TILE_SIZE
