@@ -278,6 +278,7 @@ model Character {
   inventoryItems      InventoryItem[]
   idempotencyKeys     IdempotencyKey[]
   guildMember         GuildMember?
+  heroStats           HeroStats?
   guildRequests       GuildRequest[]
   guildMessages       GuildMessage[]
 
@@ -327,6 +328,30 @@ model InventoryItem {
 // Строки старше суток удаляются при записи нового ключа того же персонажа
 // (pruneIdempotencyKeys, routes/run.ts): клиент держит ключ для повтора
 // минуты, а не дни.
+// Летопись героя (17.11.2026): общие счётчики за всё время, 1:1 с Character.
+// Пишет их ТОЛЬКО settleExploreRun (routes/run.ts) — в той же транзакции, что
+// закрывает забег, upsert + increment; повтор финиша второй раз не считает
+// (фильтр по currentRun). Строки нет — все нули (heroStats.ts).
+model HeroStats {
+  id                Int       @id @default(autoincrement())
+  characterId       Int       @unique
+  character         Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  runsTotal         Int       @default(0)
+  runsCompleted     Int       @default(0)
+  runsDied          Int       @default(0)
+  killsTotal        Int       @default(0)
+  killsElite        Int       @default(0)
+  bossesKilled      Int       @default(0)
+  chestsOpened      Int       @default(0)
+  breakablesBroken  Int       @default(0)
+  potionsDrunk      Int       @default(0)
+  parries           Int       @default(0)
+  trophiesEarned    Int       @default(0)
+  questsCompleted   Int       @default(0)
+  timeInRunsMs      BigInt    @default(0)
+  createdAt         DateTime  @default(now())
+}
+
 model IdempotencyKey {
   id          Int       @id @default(autoincrement())
   characterId Int

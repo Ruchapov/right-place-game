@@ -213,6 +213,8 @@ export type LoginResponse = {
     classItems?: Record<string, number>
     // Руны (09.11.2026): { stock, found, used }. Разбирать ТОЛЬКО через readRunes.
     runes?: unknown
+    // Летопись героя (17.11.2026). Разбирать ТОЛЬКО через readHeroStats.
+    stats?: unknown
     // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
     // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
     ringSlots?: unknown
@@ -832,6 +834,8 @@ export type RunResultSummary = {
   classItems?: Record<string, number>
   /** Руны после забега (09.11.2026); нет поля — прежние числа. Через readRunes. */
   runes?: unknown
+  /** Летопись героя после забега (17.11.2026); нет поля — прежние числа. Через readHeroStats. */
+  stats?: unknown
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень (02.10.2026). Пустой список —
    * самый частый исход (первый уровень стоит 30 применений), и экран итогов
@@ -1689,6 +1693,8 @@ export type ProfileResult = {
   luck: number | null
   /** Портной (14.11.2026); null — сервер старше Портного или мусор. */
   skins: SkinState | null
+  /** Летопись героя (17.11.2026); null — сервер старше летописи или мусор. */
+  stats: HeroStatsView | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1727,6 +1733,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     endurance?: unknown
     level?: unknown
     runes?: unknown
+    stats?: unknown
     luck?: unknown
     skins?: unknown
     appliedRequestIds?: unknown
@@ -1766,6 +1773,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     runes: readRunes(raw.runes),
     luck: readCurrencyCount(raw.luck),
     skins: readSkinState(raw.skins),
+    stats: readHeroStats(raw.stats),
   }
 }
 
@@ -2757,6 +2765,46 @@ function readRuneCounts(raw: unknown, kinds: readonly RuneKind[]): Record<string
     out[k] = v
   }
   return out
+}
+
+// --- Летопись героя (17.11.2026) ---
+// КОПИЯ типа HeroStatsView из server/src/heroStats.ts — менять вместе.
+export type HeroStatsView = {
+  runsTotal: number
+  runsCompleted: number
+  runsDied: number
+  killsTotal: number
+  killsElite: number
+  bossesKilled: number
+  chestsOpened: number
+  breakablesBroken: number
+  potionsDrunk: number
+  parries: number
+  trophiesEarned: number
+  questsCompleted: number
+  timeInRunsMs: number
+  /** С какого момента ведётся летопись (ISO); null — строки ещё нет, всё по нулям. */
+  since: string | null
+}
+
+const HERO_STATS_COUNTERS = [
+  'runsTotal', 'runsCompleted', 'runsDied', 'killsTotal', 'killsElite', 'bossesKilled',
+  'chestsOpened', 'breakablesBroken', 'potionsDrunk', 'parries', 'trophiesEarned', 'questsCompleted', 'timeInRunsMs',
+] as const
+
+/** Разбор летописи. Не тот вид (или поля нет) — null, «неизвестно», а не нули. */
+export function readHeroStats(raw: unknown): HeroStatsView | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const out: Partial<HeroStatsView> = {}
+  for (const k of HERO_STATS_COUNTERS) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return null
+    out[k] = v
+  }
+  const since = o.since
+  if (since !== null && (typeof since !== 'string' || Number.isNaN(Date.parse(since)))) return null
+  return { ...(out as Omit<HeroStatsView, 'since'>), since }
 }
 
 /** Разбор рун из ответа сервера. Не тот вид (или поля нет) — null, «неизвестно». */

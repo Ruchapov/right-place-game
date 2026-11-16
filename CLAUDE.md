@@ -459,6 +459,33 @@ Reload Page. Что изменится для игрока — только на
 пиксель). Как устроено — `docs/meta-screens.md`, «Горизонталь: навигация
 слева»; что проверять — долг «МЕНЮ НАБОК»; нерешённое — «Открытые задачи (сессия
 28.10.2026: меню набок)».
+⚠️ **ЛЕТОПИСЬ ГЕРОЯ (17.11.2026, сервер + клиент + миграция
+`20261117120000_hero_stats_add`)** — порядок «`migrate deploy` → `git push` →
+Live на Render → `npm run deploy`». Миграция — только `CREATE TABLE "HeroStats"`;
+**сервер без неё роняет вход** (`heroStatsOf` читает таблицу в каждом ответе с
+персонажем). Новый фронт со старым сервером: поля `stats` нет — карточка пишет
+«Летопись не загрузилась», остальное работает. Что изменилось для игрока: на
+экране героя во вкладке «Статистика» над рунами — карточка «Летопись героя»:
+вылазки, повержено врагов и боссов, кольцо «вернулся / пал», сундуки, бочки,
+зелья, отбитые удары, трофеи, задания, время в вылазках. Считает с первой
+вылазки после выкладки — прошлого нет. Что проверять — долг «ЛЕТОПИСЬ».
+**Что считаем и откуда** (`server/src/heroStats.ts`; пишет ТОЛЬКО
+`settleExploreRun`, `routes/run.ts`, в той же транзакции, что закрывает забег,
+`upsert` + `increment`, после условной записи — повтор финиша второй раз не
+считает): `runsTotal` +1; `runsCompleted` / `runsDied` — по `died` итога;
+`killsTotal` — закрытые события (группа — `clusterPoints.length`, босс, Беглец,
+Тень из сундука — по 1) + убитые патрульные; `killsElite` — закрытые группы с
+`eliteIndex`; `bossesKilled` — закрытые боссы; `chestsOpened`, `parries`,
+`timeInRunsMs` — `collectQuestRunFacts` (считается и при смерти); `potionsDrunk`
+— по записи `/run/sip`, испорчена — по списанному; `breakablesBroken` —
+разбитые бочки и кувшины; `trophiesEarned` — прирост банка ЖИВОЙ вылазки
+(смерть — 0, кража у Контрабандиста — 0, не минус); `questsCompleted` +1, если
+финиш выполнил задание. ⚠️ Брошенный забег, закрытый входом СМЕРТЬЮ
+(`closeRunIfStillOpen`), в летопись НЕ идёт — так задано задачей; закрытый
+входом пройденным (по снимку) идёт через `settleExploreRun` и считается.
+Отдаётся полем `stats` (нет строки — нули, `since: null`) во входе (внутри
+`character`), `GET /character/profile`, финише (`RunResultSummary.stats`) и
+`use-rune`; клиент — `readHeroStats` (`src/api.ts`), вид — `src/ui/HeroStatsPanel.tsx`.
 ⚠️ **ВИДЕОПАМЯТЬ ЗАБЕГА (16.11.2026, только клиент, миграции нет)** — порядок
 безразличен: `git push` и `npm run deploy`. Что изменилось для игрока: мир в
 забеге не должен больше чернеть на iPhone — пик видеопамяти забега 133–184 МБ
@@ -1850,6 +1877,7 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
   | `RunDrop` (единица добычи) | `src/api.ts` | `server/src/routes/run.ts` | **нет** |
   | `AbandonedRunSummary` | `src/api.ts` | `server/src/routes/auth.ts` | **нет** |
   | `SkillLevelUp` (выросший навык в ответе финиша) | `src/api.ts` | `server/src/game.ts` | **нет** |
+  | `HeroStatsView` (летопись героя, 17.11.2026; поле `stats`) | `src/api.ts` | `server/src/heroStats.ts` | **нет** |
 
   Там, где скрипта нет, расхождение не упадёт ни сборкой, ни типами: HP-потолок
   молча разойдётся с тем, что реально заспавнено, награда за событие — с тем,
@@ -1950,6 +1978,14 @@ trophiesLost = died ? bank : 0         // как и раньше: смерть �
 сгоревший банк). Читать `trophiesEarned` на смерти как «сколько игрок получил»
 нельзя; до 27.09.2026 оно там значило добычу забега, теперь — прирост, который
 сгорел вместе с банком.
+
+**Prisma HeroStats** (17.11.2026, миграция `20261117120000_hero_stats_add`) —
+отдельная таблица 1:1 с `Character` (`characterId @unique`, `onDelete: Cascade`):
+`runsTotal`, `runsCompleted`, `runsDied`, `killsTotal`, `killsElite`,
+`bossesKilled`, `chestsOpened`, `breakablesBroken`, `potionsDrunk`, `parries`,
+`trophiesEarned`, `questsCompleted` (Int, default 0), `timeInRunsMs` (BigInt,
+default 0), `createdAt`. Строки нет — все нули. Что откуда — блок «ЛЕТОПИСЬ
+ГЕРОЯ» под таблицей деплоя.
 
 **Prisma Character fields** (сверено по `server/prisma/schema.prisma`, без id/userId/createdAt/updatedAt/relations) — плюс с 09.11.2026 (руны, миграция `20261109120000_runes_add`) `runeAttack`/`runeArmor`/`runeLuck` (в инвентаре), `runeAttackFound`/`runeArmorFound`/`runeLuckFound` (получено всего — против лимита), `runeAttackUsed`/`runeArmorUsed` (применено — постоянная прибавка), все Int default 0; раскладка — `runesOf`/`runeStockColumn`/`runeFoundColumn` (`runeState.ts`); удача руны — в `luck` (её с 09.11.2026 пишет `use-rune`) — плюс с 30.10.2026 (гильдии, миграция `20261030120000_guilds_add`, применена Андреем до пуша 31.10.2026) `eliteTrophies`, `guildLeftAt`, `reflectPotions`, `buffAttackPct`/`buffAttackUntil`, `buffArmorPct`/`buffArmorUntil`, `cauldronAt`, `libraryAt`, `lastSeenAt` и таблицы `Guild`, `GuildMember`, `GuildRequest`, `GuildStorage`, `GuildMessage` (`docs/guilds.md`) — плюс `hunterBadges` (Int, default 0) — значки охотника, `rp` (Int, default 0) — RP (поля под RP раньше не было) и `questState` (Json?, NULL — набора ещё не было) — ежедневные задания, 26.10.2026, миграция `20261026120000_daily_quests_add` (⚠️ СОЗДАНА, НЕ ПРИМЕНЕНА — применяет Андрей, до выкладки сервера). Значки и RP растут только наградой за задание (финиш, `increment`), тратить их пока не на что. `questState` пишут три ручки заданий и финиш, условно (фильтр по прежнему значению); читать ТОЛЬКО через `readQuestState` (`questState.ts`) — три состояния `none`/`state`/`malformed`, форма и правила — `docs/daily-quests.md`. Плюс `classId` (String?, NULL — класса нет; `'ghoul'` / `'sorcerer'` / `'duelist'`) и `classTier` (Int, default 0; 1 после выбора, 2 после возвышения) — класс героя, 20.10.2026, миграция `20261020120000_hero_class_add` (⚠️ применена ли, не проверено — сервер, который её читает, на GitHub с 26.10.2026). Пишут их только три ручки класса. Строка, а не enum Postgres — id сверяет `parseHeroClassId`; читать пару ТОЛЬКО через `heroClassOf` (`runState.ts`): испорченная пара (класс без ступени, ступень без класса, чужой id) — `'malformed'`, громко, а не тихое «класса нет», которое дало бы выбрать оплаченный класс второй раз. Плюс `soulShards`/`renounceSeals` (Int, default 0, 18.10.2026) — Осколки души и Печати отречения, миграция `20261018120000_class_item_stock_add` (⚠️ СОЗДАНА, НЕ ПРИМЕНЕНА — применяет Андрей, до выкладки сервера). Растут только дропом, убывают только продажей; раскладка id→колонка — `classItemStockOf` (`runState.ts`), куски для Prisma — `classItemStockIncrement`/`classItemStockFilter`/`classItemStockDecrement` (`routes/run.ts`), switch по `ClassItemId`. Плюс пять `scrollFire`/`scrollIce`/`scrollBleed`/`scrollHeal`/`scrollDash` (Int, default 0) — запас СТРАНИЦ книг, миграция `20260930120000_scroll_stock_add` (применена; сверено `migrate status` 06.10.2026). Растут ТОЛЬКО дропом: страниц в магазине нет и не будет. Ячейку сумки не тратят. Раскладка id→колонка — `scrollStockOf` (`runState.ts`), куски для Prisma — `scrollStockFilter`/`scrollStockDecrement`/`scrollStockIncrement` (`routes/run.ts`), switch по `ScrollId`: шестая страница без ветки не скомпилируется. Плюс `attackUpgrades`/`armorUpgrades` (Int, default 0) — сколько улучшений каждого вида куплено, миграция `20260929130000_upgrades_add` (применена). Хранится КОЛИЧЕСТВО, а не готовая прибавка: цена следующего считается именно от счётчика, а правка шага (+2/+1) тогда не требует переливки данных. Плюс `whetstones`, `charms`, пять `bookFire`/`bookIce`/`bookBleed`/`bookHeal`/`bookDash` (Int, default 0) — запасы расходников — и пять `skillLevelFireball`/`skillLevelIceball`/`skillLevelSlash`/`skillLevelHeal`/`skillLevelDash` (Int, **default 1**) — уровень каждого навыка, миграция `20260929120000_skill_levels_add` (применена). Уровень только РАСТЁТ (за книгу, `POST /character/upgrade-skill`) и не убывает: «забыть» навык снимает его из `equippedSkills`, уровень остаётся. Старт 1, а не 0: «навыка нет» выражено отсутствием в `equippedSkills`, а не нулевым уровнем. Плюс пять `skillUsesFireball`/`skillUsesIceball`/`skillUsesSlash`/`skillUsesHeal`/`skillUsesDash` (Int, default 0) — РЕЗУЛЬТАТИВНЫЕ применения навыка, накопленные в счёт СЛЕДУЮЩЕГО уровня, миграция `20261002120000_skill_uses_add` (создана 02.10.2026, применена; сверено `migrate status` 06.10.2026). Хранится ОСТАТОК, а не всего применений за историю: порог вычитается при каждом повышении. Раскладка id→колонка — `skillUsesOf`/`skillUsesToColumns`/`skillLevelGrowthColumns` (`runState.ts`), switch по `SkillBookSkillId`: шестой навык без ветки не скомпилируется. ⚠️ С 02.10.2026 уровень УСИЛИВАЕТ навык: урон и лечение скилла умножаются на `1 + √(уровень − 1) / 32` (`skillPowerMult`, общая пара `src/skillLevels.ts` ↔ `server/src/skillLevels.ts`), перезарядки и длительности не трогает. Растёт двумя независимыми путями: книга (+1) и применения в забегах; книга счётчик применений НЕ сбрасывает. Подробности — `docs/skills.md`, «УРОВЕНЬ НАВЫКА». Миграции расходников — миграции `20260927120000_whetstone_stock_add` (применена 28.09.2026), `20260928120000_charm_stock_add` и `20260928130000_skill_book_stock_add` (обе применены). По одной колонке на вид расходника, а не Json и не отдельная таблица — та же причина, что у `potionT1..T5`: видов мало и они фиксированы каталогом, а счётчику нужны атомарные `increment`/`decrement` в том же UPDATE, где золото. Новый расходник = новая колонка + миграция + ветка в `consumableStockIncrement`/`consumableRunSpend` (`routes/run.ts`), и забыть последнее нельзя — `switch` по `ConsumableId` не скомпилируется. ⚠️ Забыть строку в `consumableStockOf` (`runState.ts`) тоже нельзя, но там цена ошибки НЕ сборка, а экран: `Record<ConsumableId, number>` без ключа не скомпилируется на сервере, зато неполный объект, дошедший до клиента, `readConsumables` целиком превратит в null — «запас неизвестен» вместо чисел у ВСЕХ расходников сразу.
 `level, energy, lastEnergyUpdate, endurance, strength, agility, luck, strengthProgress, enduranceProgress, agilityProgress, bonusLevels, gold, trophies, crystals, potionT1..potionT5, equippedSkills([]), currentRun(Json?)`.
@@ -4290,6 +4326,10 @@ Postgres (не боевого), 44 из 44: зеркала
       (`{ id: 'ghoul' | 'sorcerer' | 'duelist', tier: 1 | 2 }`; Упырю нужен
       slash, Дуэлянту — dash, оба шара у заглушки надеты и так) — в коммит
       только `'none'`. Убрать вместе с заглушкой.
+    - **`TEMP_DEV_HERO_STATS`** в `App.tsx` (17.11.2026) — летопись
+      офлайн-заглушки `DevTester` (47 вылазок, 1 234 врага…). Влияет ТОЛЬКО на
+      неё: в Telegram летопись приходит со входом полем `character.stats`.
+      Убрать вместе с заглушкой.
     - **`TEMP_DEV_SKINS`** в `App.tsx` (14.11.2026) — облик офлайн-заглушки
       `DevTester`: золотая броня, красный удар куплен, плащ «Клинок» +5, две
       нашивки. Влияет ТОЛЬКО на неё: в Telegram облик приходит со входом полем
@@ -4343,6 +4383,20 @@ Postgres (не боевого), 44 из 44: зеркала
     Скриншоты и числа — в папке автоплейтеста (см. «Скрипты» в начале файла).
 
     Долги:
+    - **ДОЛГ: ЛЕТОПИСЬ НЕ проверена в Telegram** (17.11.2026):
+      (1) ⚠️ ПЕРВЫМ ДЕЛОМ после выкладки сервера вход работает (нет — миграция);
+      (2) «Персонаж» → «Статистика»: карточка «Летопись героя» над рунами, всё
+      по нулям, кольцо серое с «—», внизу «летопись начнётся с первой вылазки»;
+      (3) пройти вылазку — «вылазок» 1, «Дошёл до конца — 1», 100%, враги,
+      сундуки, бочки, зелья, отбитые удары, трофеи и время выросли на то, что
+      было в забеге; дата «ведётся с» — сегодняшняя;
+      (4) умереть — «Пал в бою» +1, трофеи не выросли, враги и сундуки —
+      выросли;
+      (5) числа набегают от нуля при каждом открытии вкладки, плитки появляются
+      по очереди; при «уменьшении движения» — сразу;
+      (6) телефон набок — летопись и руны в две колонки, ничего не обрезано;
+      (7) убить приложение посреди забега — эта вылазка в летописи НЕ появится
+      (так задано).
     - **ДОЛГ: ВИДЕОПАМЯТЬ НЕ проверена в Telegram** (16.11.2026):
       (1) ⚠️ ГЛАВНОЕ: iPhone, несколько забегов подряд на разных картах, с
       боссами (C, C2, W — Тварь, Настоятель, Змей, Король) — мир не чернеет,

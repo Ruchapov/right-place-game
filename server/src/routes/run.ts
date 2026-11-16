@@ -17,6 +17,7 @@ import { OTHER_TIER, RING_PROSPECTOR_MULT, RING_SLOT_COUNT, CRAFTER_LEVEL, FORGE
 import { grantInviteeReward } from './friends.js'
 import { brandBonus, runSkinsOf, type TailorItemId } from '../skins.js'
 import { skinStateOf } from '../skinState.js'
+import { addHeroStats, heroStatsOf, type HeroStatsDelta, type HeroStatsView } from '../heroStats.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -1306,6 +1307,8 @@ export type RunResultSummary = {
   runes?: RuneState
   /** Нашивки и клейма после забега (Портной, 14.11.2026); нет поля — прежние. */
   tailorItems?: { patch: number; brand: number }
+  /** Летопись героя после забега (17.11.2026, heroStats.ts). */
+  stats?: HeroStatsView
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
    * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
@@ -3048,6 +3051,8 @@ export async function runRoutes(server: FastifyInstance) {
       // Руны (09.11.2026) и своя удача героя (её растит руна удачи).
       runes: runesOf(character),
       luck: character.luck,
+      // Летопись героя (17.11.2026, heroStats.ts): нет строки — нули.
+      stats: await heroStatsOf(prisma, character.id),
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -3418,6 +3423,7 @@ export async function runRoutes(server: FastifyInstance) {
     }
     return reply.send({
       runes: runesOf(updated),
+      stats: await heroStatsOf(prisma, updated.id),
       hunterBadges: updated.hunterBadges,
       luck: updated.luck,
       ...(applied.replayed ? { replayed: true } : {}),
@@ -4011,6 +4017,38 @@ export async function settleExploreRun(
     }
     const questFacts = questFactsRead?.facts ?? null
 
+    // --- Летопись героя (17.11.2026, heroStats.ts) ---
+    // Прибавка этого забега; пишется в транзакции ниже, после условной записи
+    // (повтор финиша до неё не дойдёт). Факты — те же, что у заданий
+    // (collectQuestRunFacts), но и при смерти: сундуки, выпитое, отбитые удары
+    // и время в вылазке были и у павшего героя.
+    const statsFacts = collectQuestRunFacts(run, closedEvents, capped.progress.skillUses, questCounters.counters, finishedAt).facts
+    const closedRunEvents = closedEvents.map((i) => run.events[i])
+    const heroStatsDelta: HeroStatsDelta = {
+      runsTotal: 1,
+      runsCompleted: died ? 0 : 1,
+      runsDied: died ? 1 : 0,
+      // Группа — все её враги; босс, Беглец и Тень из сундука — по одному;
+      // плюс убитые патрульные.
+      killsTotal: closedRunEvents.reduce((sum, ev) => sum + (
+        ev.kind === 'enemy' ? ev.clusterPoints?.length ?? 0
+          : ev.kind === 'boss' || ev.kind === 'runner' || (ev.kind === 'chest' && ev.isShadow === true) ? 1
+            : 0), 0) + killedPatrols.length,
+      killsElite: closedRunEvents.filter((ev) => ev.kind === 'enemy' && ev.eliteIndex !== undefined).length,
+      bossesKilled: closedRunEvents.filter((ev) => ev.kind === 'boss').length,
+      chestsOpened: statsFacts.chests,
+      breakablesBroken: brokenBreakables.length,
+      // По записи /run/sip; испорчена — по списанному.
+      potionsDrunk: statsFacts.potionsDrunk ?? potionsSpent.reduce((sum, n) => sum + n, 0),
+      parries: statsFacts.counters.parries ?? 0,
+      // «Добыто» — прирост банка живой вылазки. Смерть (банк сгорел) и кража у
+      // Контрабандиста (итог меньше банка) добытого не отнимают: это счётчик
+      // добычи, а не баланс.
+      trophiesEarned: died ? 0 : Math.max(0, earned),
+      questsCompleted: 0, // ставится в транзакции — там решается задание
+      timeInRunsMs: statsFacts.durationMs ?? 0,
+    }
+
     // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
     // применяется, только если currentRun в базе всё ещё РОВНО тот, что
     // прочитан в начале обработчика (jsonb-сравнение, порядок ключей не
@@ -4149,6 +4187,7 @@ export async function settleExploreRun(
       // создания предметов: иначе снаряжение легло бы в сумку за забег, который
       // закрыл кто-то другой.
       if (result.count === 0) return null
+      await addHeroStats(tx, character.id, { ...heroStatsDelta, questsCompleted: questCompleted !== null ? 1 : 0 })
       for (const itemId of resolvedDrops.itemIds) {
         await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
       }
@@ -4185,6 +4224,7 @@ export async function settleExploreRun(
     let classItemsAfterFinish = classItemStockOf(character)
     let runesAfterFinish = runesOf(character)
     let tailorAfterFinish = { patch: character.patchCount, brand: character.brandCount }
+    let statsAfterFinish: HeroStatsView | undefined
     let potionsAfterFinish = newPotionStock
     // Золото, значки и RP — тоже перечитанные: награда задания легла
     // increment'ом поверх того, что успело случиться между чтением и записью.
@@ -4204,6 +4244,7 @@ export async function settleExploreRun(
         tailorAfterFinish = { patch: reread.patchCount, brand: reread.brandCount }
         potionsAfterFinish = potionStockOf(reread)
         walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
+        statsAfterFinish = await heroStatsOf(prisma, character.id)
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
@@ -4245,6 +4286,8 @@ export async function settleExploreRun(
       runes: runesAfterFinish,
       // Нашивки и клейма после забега (Портной, 14.11.2026) — перечитанные.
       tailorItems: tailorAfterFinish,
+      // Летопись после забега (17.11.2026) — перечитанная; нет — поля нет.
+      ...(statsAfterFinish !== undefined ? { stats: statsAfterFinish } : {}),
       // Уровни навыков НЕ перечитываются из БД, в отличие от склада выше:
       // здесь нужны ИМЕННО те числа, которые посчитал рост (из них же
       // собран skillLevelUps), а не всё, что успело случиться с колонкой после:

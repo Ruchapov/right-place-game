@@ -22,6 +22,7 @@ import {
 } from '../runState.js'
 import { emptyPotionStock } from '../potions.js'
 import { consumableStockOf, scrollStockOf, classItemStockOf, ringSlotsOf, runesOf, heroClassOf, heroClassField, skillLevelsOf, skillLevelGrowthColumns, skillUsesOf, skillUsesToColumns, upgradesOf } from '../runState.js'
+import { heroStatsOf } from '../heroStats.js'
 import { skinStateOf } from '../skinState.js'
 import { settleExploreRun, storeFinishResult, readRunCompletion, type RunResultSummary } from './run.js'
 import type { FastifyBaseLogger } from 'fastify'
@@ -594,6 +595,9 @@ export async function authRoutes(server: FastifyInstance) {
         // Руны (09.11.2026): в инвентаре, получено, использовано. Сырые колонки
         // уезжают и в ...charFields выше; клиент читает только это поле.
         runes: runesOf(char),
+        // Летопись героя (17.11.2026, heroStats.ts): нет строки — нули. Читается
+        // ПОСЛЕ закрытия забега выше — пройденный по снимку уже в ней.
+        stats: await heroStatsOf(prisma, char.id),
         // Уровни навыков — объектом по id навыка, той же формы, что в
         // GET /character/profile. Внутри character, как и склад: это свойство
         // персонажа, в отличие от trophyGoldRate ниже (правило экономики).
