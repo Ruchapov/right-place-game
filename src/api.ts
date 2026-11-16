@@ -3470,3 +3470,79 @@ export async function claimChannelReward(token: string): Promise<ChannelRewardRe
 export function readChannelRewardClaimed(raw: unknown): boolean | null {
   return typeof raw === 'boolean' ? raw : null
 }
+
+// --- Рейтинг (17.11.2026): GET /leaderboard?board=… ---
+// КОПИЯ формы ответа server/src/routes/leaderboard.ts — менять вместе.
+export const LEADERBOARD_BOARDS = ['level', 'newbies', 'guilds', 'hunters', 'bosses'] as const
+export type LeaderboardBoard = typeof LEADERBOARD_BOARDS[number]
+
+export type LeaderboardRow = {
+  place: number
+  /** Герой — имя (до 16 знаков); доска гильдий — название гильдии. */
+  name: string
+  guildTag: string | null
+  emblem: GuildEmblemView | null
+  value: number
+  isMe: boolean
+  /** Только у доски гильдий: число участников. */
+  members: number | null
+}
+
+export type LeaderboardView = {
+  board: LeaderboardBoard
+  rows: LeaderboardRow[]
+  me: { place: number; value: number } | null
+}
+
+const LEADERBOARD_TIMEOUT_MS = 8000
+
+function readCount(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null
+}
+
+function readEmblem(v: unknown): GuildEmblemView | null | undefined {
+  if (v === null) return null
+  if (typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  const symbol = readCount(o.symbol), frame = readCount(o.frame), bg = readCount(o.bg), color = readCount(o.color)
+  return symbol === null || frame === null || bg === null || color === null ? undefined : { symbol, frame, bg, color }
+}
+
+/** Строгий разбор: любое отклонение — null (экран пишет «Не удалось загрузить рейтинг»). */
+export function readLeaderboard(raw: unknown, board: LeaderboardBoard): LeaderboardView | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  if (o.board !== board || !Array.isArray(o.rows)) return null
+  const rows: LeaderboardRow[] = []
+  for (const r of o.rows) {
+    if (typeof r !== 'object' || r === null) return null
+    const x = r as Record<string, unknown>
+    const place = readCount(x.place), value = readCount(x.value)
+    const emblem = readEmblem(x.emblem)
+    const members = x.members === undefined ? null : readCount(x.members)
+    if (place === null || value === null || emblem === undefined || typeof x.name !== 'string' || typeof x.isMe !== 'boolean') return null
+    if (x.guildTag !== null && typeof x.guildTag !== 'string') return null
+    if (board === 'guilds' && members === null) return null
+    rows.push({ place, name: x.name, guildTag: x.guildTag as string | null, emblem, value, isMe: x.isMe, members })
+  }
+  let me: LeaderboardView['me'] = null
+  if (o.me !== null) {
+    if (typeof o.me !== 'object' || o.me === undefined) return null
+    const m = o.me as Record<string, unknown>
+    const place = readCount(m.place), value = readCount(m.value)
+    if (place === null || place < 1 || value === null) return null
+    me = { place, value }
+  }
+  return { board, rows, me }
+}
+
+/** Доска рейтинга. Только чтение: повтор безопасен, но экран повторяет кнопкой. */
+export async function fetchLeaderboard(token: string, board: LeaderboardBoard): Promise<LeaderboardView> {
+  const raw = await requestJson<unknown>(`${SERVER_URL}/leaderboard?board=${board}`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, LEADERBOARD_TIMEOUT_MS)
+  const view = readLeaderboard(raw, board)
+  if (view === null) {
+    console.error('fetchLeaderboard: ответ не того вида', raw)
+    throw new Error('Leaderboard response malformed')
+  }
+  return view
+}

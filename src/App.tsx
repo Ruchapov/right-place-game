@@ -56,6 +56,7 @@ import PastRunNotice, { type PastRunNoticeData } from './ui/PastRunNotice'
 import TutorialCard from './ui/TutorialCard'
 import { RuneInventory, RuneStats } from './ui/RunePanels'
 import { HeroStatsPanel } from './ui/HeroStatsPanel'
+import { LeaderboardPanel } from './ui/LeaderboardPanel'
 import { runeBonus, type RuneKind } from './runes'
 import { INTRO_CARDS, INTRO_ID, ITEM_TIPS, hasSeen, loadTutorial, markSeen, lastSeenLevel, setLastSeenLevel, pendingLevelTips, resetTutorial, type TutorialTip } from './tutorial'
 import SkillLevelNote from './ui/SkillLevelNote'
@@ -1084,7 +1085,7 @@ export default function App() {
   // «Сообщество» (до 30.10.2026 — «Друзья»): переключатель «Гильдия | Друзья»,
   // состояние гильдии (GuildPanel, docs/guilds.md) и код приглашения из
   // start_param (g_<код>), ещё не показанный игроку.
-  const [communityTab, setCommunityTab] = useState<'guild' | 'friends' | 'channel'>('guild')
+  const [communityTab, setCommunityTab] = useState<'guild' | 'friends' | 'channel' | 'rating'>('guild')
   // Бот (13.11.2026): получена ли награда за канал (null — сервер не назвал) и окно уведомлений.
   const [channelClaimed, setChannelClaimed] = useState<boolean | null>(null)
   const [notifyOpen, setNotifyOpen] = useState(false)
@@ -4868,10 +4869,11 @@ export default function App() {
 
               {/* «Сообщество» (30.10.2026): переключатель «Гильдия | Друзья».
                   Друзья — прежняя заглушка как есть. */}
-              <div data-community-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 10px' }}>
-                {([['guild', 'Гильдия'], ['friends', 'Друзья'], ['channel', 'Канал']] as const).map(([id, label]) => (
+              <div data-community-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 10px' }}>
+                {([['guild', 'Гильдия'], ['friends', 'Друзья'], ['channel', 'Канал'], ['rating', 'Рейтинг']] as const).map(([id, label]) => (
                   <button key={id} onClick={() => setCommunityTab(id)} style={{
-                    minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:13,
+                    minHeight:44, minWidth:0, padding:'0 2px', borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:12,
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
                     border:`1px solid ${communityTab === id ? C.glowEdge : C.stoneDark}`,
                     background: communityTab === id ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
                     color: communityTab === id ? C.glowCore : C.textMain,
@@ -4892,6 +4894,13 @@ export default function App() {
                   sideMenu={sideMenu}
                   overlayPad={sideOverlayPad}
                   overlayCard={sideOverlayCard}
+                />
+              )}
+
+              {communityTab === 'rating' && (
+                <LeaderboardPanel
+                  token={isTelegramSession ? localStorage.getItem('jwt') : null}
+                  sideMenu={sideMenu}
                 />
               )}
 
