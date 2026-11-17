@@ -31,7 +31,7 @@ function pct(x: number): string {
 function cloakBonusLine(id: CloakId, level: number): string {
   const b = cloakBonus(id, level)
   if (id === 'ash') return `Поглощает ${pct(b.damageAbsorbFrac)} урона. Зелья лечат на ${pct(b.potionHealBonusFrac)} больше`
-  if (id === 'midnight') return `Удар мечом быстрее на ${pct(b.attackSpeedFrac)}. Рывок перезаряжается на ${pct(b.dashCooldownCutFrac)} быстрее`
+  if (id === 'midnight') return `Удар мечом быстрее на ${pct(b.attackSpeedFrac)}. Таран перезаряжается на ${pct(b.dashCooldownCutFrac)} быстрее`
   return `Оглушение после парирования дольше на ${+(b.parryStunExtraMs / 1000).toFixed(2)} с. Первый удар после парирования сильнее на ${pct(b.parryStrikeBonusFrac)}`
 }
 
@@ -40,6 +40,15 @@ function brandBonusLine(target: 'armor' | 'weapon', level: number): string {
   const b = brandBonus(target, level)
   if (target === 'armor') return `+${pct(b.maxHpFrac)} к здоровью, урон по тебе меньше на ${pct(b.damageReduceFrac)}`
   return `+${pct(b.swordDamageFrac)} к урону мечом, шанс крита ×2 — ${pct(b.critChance)}`
+}
+
+/**
+ * Строка «что даст следующая нашивка/клеймо» (17.11.2026): бонусы уровня L+1
+ * той же функцией, что строка текущих; на пределе — «Максимум».
+ */
+function NextLevelLine({ level, line }: { level: number; line: (l: number) => string }) {
+  const text = level >= SKIN_UPGRADE_MAX_LEVEL ? 'Максимум' : `На +${level + 1}: ${line(level + 1)}`
+  return <div style={{ fontSize: 11, color: C.glowCore, lineHeight: 1.35, marginTop: 2, opacity: 0.85 }}>{text}</div>
 }
 
 /** Цвет плаща для плашки-образца (HSV каталога при яркости побольше). */
@@ -262,7 +271,8 @@ export function TailorShop({ skins, rp, level, online, columns, onState, onRefre
                 <div style={{ width: 28, height: 28, borderRadius: 6, background: swatch(cl.color), border: `1px solid ${C.stoneDark}`, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: C.textMain }}>{cl.nameRu}</div>
-                  <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.35 }}>{cloakBonusLine(cl.id, lvl)}</div>
+                  <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.35 }}>{cloakBonusLine(cl.id, locked ? 0 : lvl)}</div>
+                  {!locked && <NextLevelLine level={lvl} line={(l) => cloakBonusLine(cl.id, l)} />}
                 </div>
                 <div style={{ fontFamily: FONT_DISPLAY, fontSize: 14, color: C.glowCore, flexShrink: 0 }}>+{lvl} / {SKIN_UPGRADE_MAX_LEVEL}</div>
               </div>
@@ -296,6 +306,7 @@ export function TailorShop({ skins, rp, level, online, columns, onState, onRefre
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: C.textMain }}>{target === 'armor' ? 'Броня' : 'Оружие'}</div>
                   <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.35 }}>{brandBonusLine(target, lvl)}</div>
+                  <NextLevelLine level={lvl} line={(l) => brandBonusLine(target, l)} />
                 </div>
                 <div style={{ fontFamily: FONT_DISPLAY, fontSize: 14, color: C.glowCore, flexShrink: 0 }}>+{lvl} / {SKIN_UPGRADE_MAX_LEVEL}</div>
               </div>

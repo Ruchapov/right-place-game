@@ -1,6 +1,6 @@
 import { Rectangle, Texture, type RenderTexture, type Renderer } from 'pixi.js'
 import type { ArmorSkinId, CloakColor, SlashSkinId } from '../skins'
-import { bakeCloakSheet } from './entities/cloakTint'
+import { bakeHeroSheet, type HeroBakeSpec } from './entities/cloakTint'
 import * as C from './constants'
 import type { BossAnimKind, RewardKind } from './types'
 import { loadSheetFrames, loadTexture } from './spriteLoader'
@@ -56,14 +56,13 @@ export type CommonAssets = {
     // ⚠️ Клетка у листа ВЫШЕ остальных (394×342) — см. HERO_BLOCK_* в
     // constants.ts, там же про масштаб.
     block: Texture[]
+    // Комбо (16.11.2026; с 17.11.2026 — в наборе героя: облик брони, плащ и
+    // цвет удара перекрашивают и его). hero/Hero_Combo.png, 77 кадров.
+    combo: Texture[]
   }
   // Искра отбива (парирование) — ОДНОРАЗОВЫЙ VFX поверх героя, поэтому рядом с
   // healAura/slashStreak, а не в hero: это не его анимация, а вспышка на клинке.
   parrySpark: Texture[]
-  // Комбо из трёх ударов (16.11.2026): hero/Hero_Combo.png, 77 кадров. НЕ в
-  // hero: облик и плащ его не перекрашивают (лист один на все облики), а набор
-  // hero целиком уходит в перекраску плаща.
-  heroCombo: Texture[]
   // Аура лечения (скилл heal).
   healAura: Texture[]
   // Скилл slash: дуга взмаха (разовая). Петля кровотечения (Bleeding_Loop)
@@ -259,7 +258,7 @@ export function heroAttackSrc(look: HeroLook): string {
 // листы заново (Explore.tsx).
 export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promise<CommonAssets['hero']> {
   const a = look.armor
-  const [idle, run, jump, attack, drink, hurt, death, cast, block, dash] = await Promise.all([
+  const [idle, run, jump, attack, drink, hurt, death, cast, block, dash, combo] = await Promise.all([
     loadSheetFrames(heroSheetSrc(C.HERO_IDLE_SRC, 'idle.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 24),
     loadSheetFrames(heroSheetSrc(C.HERO_RUN_SRC, 'run.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 21),
     loadSheetFrames(heroSheetSrc(C.HERO_JUMP_SRC, 'jump.png', a), C.HERO_CELL_W, C.HERO_CELL_H, 24),
@@ -282,6 +281,9 @@ export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promis
     // ряд, файл лежит в assets/skills (см. DASH_* в constants.ts). COLS
     // передаётся ЯВНО: дефолт loadSheetFrames — 12, и на нём кадры съехали бы.
     loadCheckedSheet('Dash_Strike.png', C.DASH_SRC, C.DASH_CELL_W, C.DASH_CELL_H, C.DASH_COUNT, C.DASH_COLS),
+    // Комбо — 10 колонок × 8 рядов, клетка 405×382 (лист 4050×3056); облик
+    // брони — свой лист в папке armor_<id> (17.11.2026).
+    loadCheckedSheet('Hero_Combo.png', heroSheetSrc(C.HERO_COMBO_SRC, 'Hero_Combo.png', a), C.HERO_COMBO_CELL_W, C.HERO_COMBO_CELL_H, C.HERO_COMBO_COUNT, C.HERO_COMBO_COLS, C.HERO_COMBO_ROWS),
   ])
   return {
     idle,
@@ -297,6 +299,7 @@ export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promis
     cast,
     dash,
     block,
+    combo,
   }
 }
 
@@ -317,15 +320,13 @@ export async function loadHeroSheets(look: HeroLook = DEFAULT_HERO_LOOK): Promis
  */
 export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Promise<CommonAssets> {
   const [
-    hero, parrySpark, heroCombo, healAura, slashStreak,
+    hero, parrySpark, healAura, slashStreak,
     fireballProjectile, fireballImpact, iceballProjectile, iceballImpact,
     gold, trophy, rp, manaOrb,
   ] = await Promise.all([
     loadHeroSheets(look),
     // Искра отбива — своя клетка 192×192, 11 кадров в один ряд.
     loadCheckedSheet('parry_spark.png', C.PARRY_SPARK_SRC, C.PARRY_SPARK_CELL, C.PARRY_SPARK_CELL, C.PARRY_SPARK_COUNT, C.PARRY_SPARK_COLS),
-    // Комбо — 10 колонок × 8 рядов, клетка 405×382 (лист 4050×3056).
-    loadCheckedSheet('Hero_Combo.png', C.HERO_COMBO_SRC, C.HERO_COMBO_CELL_W, C.HERO_COMBO_CELL_H, C.HERO_COMBO_COUNT, C.HERO_COMBO_COLS, C.HERO_COMBO_ROWS),
     loadSheetFrames(C.HEAL_AURA_SRC, C.HEAL_AURA_CELL_W, C.HEAL_AURA_CELL_H, C.HEAL_AURA_COUNT, C.HEAL_AURA_COLS),
     // Slash — дуга взмаха. Размер клетки сверен по IHDR: 1920/12 = 160 нацело,
     // высота листа равна высоте кадра (один ряд).
@@ -360,7 +361,6 @@ export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Prom
   return {
     hero,
     parrySpark,
-    heroCombo,
     healAura,
     slashStreak,
     fireballProjectile,
@@ -380,12 +380,15 @@ export async function loadCommonAssets(look: HeroLook = DEFAULT_HERO_LOOK): Prom
  * Возвращает новый набор и текстуры, которые вызывающий обязан уничтожить,
  * когда забег кончится (их нет в кэше Assets — сами они не уйдут).
  */
-export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero'], color: Exclude<CloakColor, null>): Promise<{ hero: CommonAssets['hero']; baked: RenderTexture[]; rebake: (r: Renderer) => Promise<void> }> {
+// 17.11.2026: плюс лист комбо — плащ по своей маске и цвет удара по маске
+// росчерков (для комбо нет листов attack_<цвет>). color null (Пепельный) и
+// slash 'none' — комбо не печётся; color null — не печётся и остальное.
+export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero'], color: CloakColor, slash: SlashSkinId = 'none'): Promise<{ hero: CommonAssets['hero']; baked: RenderTexture[]; rebake: (r: Renderer) => Promise<void> }> {
   const mask = (name: string) => `${SKINS_DIR}/masks/${name}_cloak.png`
-  const keys = ['idle', 'run', 'jump', 'attack', 'drink', 'hurt', 'death', 'cast', 'block'] as const
+  const keys = ['idle', 'run', 'jump', 'attack', 'drink', 'hurt', 'death', 'cast', 'block', 'combo'] as const
   const maskName: Record<(typeof keys)[number], string> = {
     idle: 'idle', run: 'run', jump: 'jump', attack: 'attack', drink: 'drink',
-    hurt: 'hurt', death: 'death', cast: 'cast_v2', block: 'block',
+    hurt: 'hurt', death: 'death', cast: 'cast_v2', block: 'block', combo: 'Hero_Combo',
   }
   const baked: RenderTexture[] = []
   const rebakes: ((r: Renderer) => Promise<void>)[] = []
@@ -393,7 +396,11 @@ export async function bakeHeroCloak(renderer: Renderer, hero: CommonAssets['hero
   // По одному, а не Promise.all: каждая перекраска — свой проход рендера и
   // своя маска 4728×592 в памяти; разом это девять масок сразу.
   for (const key of keys) {
-    const r = await bakeCloakSheet(renderer, hero[key], mask(maskName[key]), color)
+    const spec: HeroBakeSpec = {}
+    if (color !== null) spec.cloak = { maskSrc: mask(maskName[key]), color }
+    if (key === 'combo' && slash !== 'none') spec.slash = { maskSrc: `${SKINS_DIR}/masks/Hero_Combo_slash.png`, rgb: C.SLASH_RGB[slash] }
+    if (!spec.cloak && !spec.slash) continue
+    const r = await bakeHeroSheet(renderer, hero[key], spec)
     baked.push(r.target)
     rebakes.push(r.rebake)
     out[key] = r.frames
@@ -679,7 +686,8 @@ async function loadBossAssets(): Promise<BossAssets> {
 const NC_EXTRA: Partial<Record<NcKind, Record<string, string>>> = {
   gravedigger: { clod: 'gravedigger/clod_game.png' },
   crossbowman: { bolt: 'crossbowman/bolt_game.png' },
-  beetle: { mud: 'beetle/mudball_game.png' },
+  // Лужи грязи (17.11.2026) — рисованные, 192×56, вариант случайный.
+  beetle: { mud: 'beetle/mudball_game.png', puddle1: 'beetle/mud_puddle_1.png', puddle2: 'beetle/mud_puddle_2.png', puddle3: 'beetle/mud_puddle_3.png' },
   serpent: { bones: 'serpent/bones3_game.png', eye: 'serpent/eye_glow.png' },
 }
 const extraSrc = (rel: string) => `${import.meta.env.BASE_URL}assets/sprites/${rel}`
@@ -746,7 +754,6 @@ export async function loadEventAssets(needs: RunAssetNeeds): Promise<EventAssets
 export type TrapArt = {
   textures: {
     gargoyleFrames: Texture[]
-    gargoylePost: Texture
     fireball: Texture
     plateUp: Texture
     plateDown: Texture
@@ -755,7 +762,7 @@ export type TrapArt = {
     sawBlade: Texture
     sawRail: Texture
   }
-  gargoyle: { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number; postX0: number; postX1: number }
+  gargoyle: { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number }
 }
 
 export async function loadTrapArt(gargoyles: boolean, stalactites: boolean, saws: boolean): Promise<TrapArt> {
@@ -763,28 +770,28 @@ export async function loadTrapArt(gargoyles: boolean, stalactites: boolean, saws
   const load = (on: boolean, src: string) => (on ? loadTexture(src) : Promise.resolve(E))
   const metaP: Promise<TrapArt['gargoyle'] | null> = gargoyles
     ? fetch(C.GARGOYLE_FIRE_JSON).then((r) => {
-      if (!r.ok) throw new Error(`GargoylePost_Fire.json: HTTP ${r.status}`)
+      if (!r.ok) throw new Error(`Gargoyle_Fire.json: HTTP ${r.status}`)
       return r.json()
     }).then((j: Record<string, unknown>) => {
       const n = (k: string) => {
         const v = j[k]
-        if (typeof v !== 'number') throw new Error(`GargoylePost_Fire.json: нет числа «${k}»`)
+        if (typeof v !== 'number') throw new Error(`Gargoyle_Fire.json: нет числа «${k}»`)
         return v
       }
-      return { frames: n('frames'), fps: n('fps'), eyesLitFrame: n('eyesLitFrame'), mouthOpenFrame: n('mouthOpenFrame'), mouthX: n('mouthX'), mouthY: n('mouthY'), frameW: n('frameWidth'), frameH: n('frameHeight'), postX0: n('postX0'), postX1: n('postX1') }
+      return { frames: n('frames'), fps: n('fps'), eyesLitFrame: n('eyesLitFrame'), mouthOpenFrame: n('mouthOpenFrame'), mouthX: n('mouthX'), mouthY: n('mouthY'), frameW: n('frameWidth'), frameH: n('frameHeight') }
     })
     : Promise.resolve(null)
-  const [fire, fireball, plateUp, plateDown, post, stal, rubble, blade, rail, meta] = await Promise.all([
+  const [fire, fireball, plateUp, plateDown, stal, rubble, blade, rail, meta] = await Promise.all([
     load(gargoyles, C.GARGOYLE_FIRE_SRC), load(gargoyles, C.GARGOYLE_FIREBALL_SRC),
-    load(gargoyles, C.PLATE_UP_SRC), load(gargoyles, C.PLATE_DOWN_SRC), load(gargoyles, C.GARGOYLE_POST_SRC),
+    load(gargoyles, C.PLATE_UP_SRC), load(gargoyles, C.PLATE_DOWN_SRC),
     load(stalactites, C.STALACTITE_SRC), load(stalactites, C.STALACTITE_RUBBLE_SRC),
     load(saws, C.SAW_BLADE_SRC), load(saws, C.SAW_RAIL_SRC), metaP,
   ])
-  const gm = meta ?? { frames: 1, fps: 18, eyesLitFrame: 0, mouthOpenFrame: 0, mouthX: 0, mouthY: 0, frameW: 1, frameH: 1, postX0: 0, postX1: 1 }
+  const gm = meta ?? { frames: 1, fps: 18, eyesLitFrame: 0, mouthOpenFrame: 0, mouthX: 0, mouthY: 0, frameW: 1, frameH: 1 }
   const frames: Texture[] = []
   if (meta) {
     if (fire.width !== meta.frameW * meta.frames || fire.height !== meta.frameH) {
-      throw new Error(`GargoylePost_Fire.png: ${fire.width}×${fire.height}, ожидалось ${meta.frameW * meta.frames}×${meta.frameH}`)
+      throw new Error(`Gargoyle_Fire.png: ${fire.width}×${fire.height}, ожидалось ${meta.frameW * meta.frames}×${meta.frameH}`)
     }
     for (let i = 0; i < meta.frames; i++) {
       frames.push(new Texture({ source: fire.source, frame: new Rectangle(i * meta.frameW, 0, meta.frameW, meta.frameH) }))
@@ -793,7 +800,7 @@ export async function loadTrapArt(gargoyles: boolean, stalactites: boolean, saws
     frames.push(E)
   }
   return {
-    textures: { gargoyleFrames: frames, gargoylePost: post, fireball, plateUp, plateDown, stalactite: stal, rubble, sawBlade: blade, sawRail: rail },
+    textures: { gargoyleFrames: frames, fireball, plateUp, plateDown, stalactite: stal, rubble, sawBlade: blade, sawRail: rail },
     gargoyle: gm,
   }
 }

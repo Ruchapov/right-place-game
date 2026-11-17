@@ -9,9 +9,10 @@
 //   • врезался в стену — стоп; у Тарана — ещё +25% урона Тарана;
 //   • врезался в другого врага — тот получает половину урона толкнувшего и летит
 //     дальше остаток пути (цепочка); толкнувший останавливается.
-// Не толкаются: Беглец (его не двигает ничто), невосприимчивые к ловушкам
-// Звонарь и Привратник сдвигаются не дальше bossLimitPx (Телекинез) или не
-// сдвигаются вовсе (Таран).
+// Телекинез: Беглец не толкается, Звонарь, Привратник и призванные — не дальше
+// heavyLimitPx. Таран (с 17.11.2026, решение Андрея) несёт ВСЕХ: Беглеца,
+// Звонаря, Привратника и призванных — как обычных врагов (heavyLimitPx =
+// RAM_CARRY_PX). Невосприимчивость к ловушкам (isTrapImmune) не меняется.
 import * as C from '../constants'
 import { isSolid } from '../collision'
 import type { Enemy, Grid } from '../types'
@@ -58,7 +59,7 @@ export function createShoveSystem(deps: ShoveDeps) {
    * Привратнику (0 — не двигать). Возвращает, сдвинется ли он вообще.
    */
   function shove(e: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: ShoveKind, heavyLimitPx: number, chain?: Set<Enemy>): boolean {
-    if (e.dead || e.runner) return false
+    if (e.dead || (e.runner && kind === 'tk')) return false
     let dist = distPx
     if (isHeavy(e)) {
       if (heavyLimitPx <= 0) return false
@@ -114,14 +115,14 @@ export function createShoveSystem(deps: ShoveDeps) {
       // Цепочка: врезался в живого врага, ещё не задетого этим толчком.
       let hitOther = false
       for (const o of deps.enemies.current) {
-        if (o === e || o.dead || s.chain.has(o) || o.runner) continue
+        if (o === e || o.dead || s.chain.has(o) || (o.runner && s.kind === 'tk')) continue
         const overlap = e.x < o.x + o.width && e.x + e.width > o.x && e.y < o.y + o.height && e.y + e.height > o.y
         if (!overlap) continue
         const half = Math.max(1, Math.floor(s.damage * C.RAM_CHAIN_FRAC))
         const died = deps.damageEnemy(o, half, e.x + e.width / 2)
         if (!died) {
           deps.hitReaction(o)
-          shove(o, s.dir, Math.max(s.leftPx, T), s.speed, half, s.kind, s.kind === 'tk' ? C.TELEKINESIS_BOSS_PUSH_PX : 0, s.chain)
+          shove(o, s.dir, Math.max(s.leftPx, T), s.speed, half, s.kind, s.kind === 'tk' ? C.TELEKINESIS_BOSS_PUSH_PX : C.RAM_CARRY_PX, s.chain)
         }
         s.chain.add(o)
         hitOther = true

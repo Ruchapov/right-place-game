@@ -4,7 +4,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -2774,9 +2774,14 @@ export default function App() {
       // Сбой сверки тоже виден: молча оставить игрока с погашенной кнопкой и
       // без объяснения нельзя. Блокировка сохраняется, кнопка остаётся.
       console.error('Fetch profile failed', e)
-      setShopBuyError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
-      setExchangeError('Баланс не сверен — сервер не ответил. Попробуй ещё раз.')
-      setClassActionError(['Баланс не сверен — сервер не ответил. Попробуй ещё раз.'])
+      // 17.11.2026: таймаут, обрыв или 5xx — почти всегда сервер на Render Free
+      // спит; говорим это игроку прямо. Отказ по существу — прежний текст.
+      const text = isServerAsleepError(e)
+        ? 'Сервер просыпается — подожди полминуты и нажми ещё раз.'
+        : 'Баланс не сверен — сервер не ответил. Попробуй ещё раз.'
+      setShopBuyError(text)
+      setExchangeError(text)
+      setClassActionError([text])
     } finally {
       setShopBalancePending(false)
     }

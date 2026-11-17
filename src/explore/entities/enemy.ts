@@ -3,8 +3,8 @@ import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../types'
 import * as C from '../constants'
-import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { climbStep, stepDownOk, stepUpY, wallAhead } from '../stepClimb'
+import { isSolid, cellFootBlockTop } from '../collision'
+import { climbStep, enemyGravity, stepDownOk, stepUpAhead, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
@@ -454,15 +454,8 @@ export function createEnemySystem(deps: EnemyDeps) {
       // нет пола (сошёл с края, преследуя игрока) — просто падает дальше,
       // разворот у края в погоне решает AI ниже (к герою вниз — спрыгивает,
       // в яму на той же высоте — не шагает).
-      enemy.vy = Math.min(enemy.vy + C.GRAVITY * dt, C.MAX_FALL)
-      const prevEnemyFootY = enemy.y + C.ENEMY_HEIGHT
-      enemy.y += enemy.vy * dt
-      const enemyFootY = enemy.y + C.ENEMY_HEIGHT
-      const enemyBlockTop = sweepFootBlock(deps.grid, C.TILE_SIZE, enemy.x, C.ENEMY_WIDTH, prevEnemyFootY, enemyFootY)
-      if (enemyBlockTop !== null) {
-        enemy.y = enemyBlockTop - C.ENEMY_HEIGHT
-        enemy.vy = 0
-      }
+      // С 17.11.2026 — спуск на клетку шагом (stepClimb.enemyGravity).
+      enemyGravity(deps.grid, enemy, dt)
 
       // Боевая уязвимая зона игрока (см. getPlayerCombatBox) — на земле
       // обычный хитбокс, в прыжке уменьшенный бокс по корпусу.
@@ -589,9 +582,11 @@ export function createEnemySystem(deps: EnemyDeps) {
               const d = enemy.dropDir ?? towardDir
               if (!stepX(d, true)) enemy.dropDir = d > 0 ? -1 : 1 // стена — к другому краю
               enemy.facing = d
-            } else if (playerAbove && stepUpY(deps.grid, enemy, towardDir > 0 ? enemy.x + C.ENEMY_WIDTH + 2 : enemy.x - 2) !== null) {
+            } else if (playerAbove && stepUpAhead(deps.grid, enemy, towardDir, C.ENEMY_STEP_SEEK_TILES)) {
               // ГЕРОЙ ВЫШЕ, но к нему ведёт ступень в клетку (13.11.2026) — идёт
               // по ней, как по лестнице (stepClimb.ts), а не ждёт внизу.
+              // 17.11.2026: ступень ищется по полу впереди (до
+              // ENEMY_STEP_SEEK_TILES клеток), а не только прямо перед ним.
               enemy.dropDir = null
               stepX(towardDir, false)
               enemy.facing = towardDir

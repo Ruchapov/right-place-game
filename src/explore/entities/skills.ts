@@ -102,7 +102,9 @@ export type SkillsDeps = {
   // Возвращает, началась ли анимация (false — герой мёртв/в хитстане/пьёт,
   // dash уже идёт либо идёт замах). ЭТАП 1: кулдауна, движения, урона и
   // неуязвимости у dash нет, гейтить тут больше нечем.
-  startPlayerDash: () => boolean
+  // 17.11.2026: 'later' — Таран сейчас нельзя по временной причине (хитстан,
+  // питьё, каст): нажатие запоминается на DASH_BUFFER_MS.
+  startPlayerDash: () => boolean | 'later'
   /**
    * Множитель перезарядки рывка (Портной, 14.11.2026: плащ «Клинок» её
    * укорачивает). Функцией, а не числом: в ?debugSkins=1 плащ меняется прямо в
@@ -293,8 +295,13 @@ export type SkillsDeps = {
    * Звонарю и Привратнику (0 — не двигать). true — враг сдвинется.
    */
   shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number) => boolean
-  /** Можно ли толкать врага Тараном (не Беглец, не Звонарь, не Привратник). */
+  /** Можно ли толкать врага Тараном (с 17.11.2026 — всех живых). */
   canCarry: (enemy: Enemy) => boolean
+  /**
+   * Можно ли сейчас толкать босса Тараном (17.11.2026): нельзя во время
+   * заставки, превращения Настоятеля и ухода Змея под землю.
+   */
+  canShoveBoss: () => boolean
   /** Волна Телекинеза — один кадр (Telekinesis_Wave.png); null — не загружена. */
   telekinesisWave: MutableRefObject<Texture | null>
   /** Множитель уровня Телекинеза (skillPowerMult): дальность отброса × это. */
@@ -450,6 +457,14 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // dashHitTargets и чистится там же, на старте рывка: рывок бьёт каждый кадр и
   // может задеть нескольких, а применение у него РОВНО ОДНО на нажатие.
   let dashUseCounted = false
+  // Запомненное нажатие Тарана (17.11.2026), мс; 0 — нет.
+  let dashBufferMs = 0
+  // Бокс героя на прошлом кадре рывка — удар считается по ОТРЕЗКУ пути за
+  // кадр (объединение двух боксов), чтобы на просевшем FPS узкий враг не
+  // проскакивал между кадрами.
+  let dashPrevBox: { x: number; y: number; w: number; h: number } | null = null
+  // Толчок босса Тараном (17.11.2026).
+  let bossRam: { boss: Boss; dir: 1 | -1; leftPx: number } | null = null
   // То же для текущего каста исцеления: импульсов HEAL_PULSE_COUNT, долить
   // может каждый, но применение одно на нажатие.
   let healUseCounted = false
@@ -1187,7 +1202,17 @@ export function createSkillsSystem(deps: SkillsDeps) {
   }
 
   function applyDashHits() {
-    const box = deps.getPlayerCombatBox()
+    const cur = deps.getPlayerCombatBox()
+    // Отрезок пути за кадр: объединение прошлого и текущего бокса.
+    const prev = dashPrevBox
+    dashPrevBox = { x: cur.x, y: cur.y, w: cur.w, h: cur.h }
+    const box = prev
+      ? (() => {
+          const x0 = Math.min(prev.x, cur.x), x1 = Math.max(prev.x + prev.w, cur.x + cur.w)
+          const y0 = Math.min(prev.y, cur.y), y1 = Math.max(prev.y + prev.h, cur.y + cur.h)
+          return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+        })()
+      : cur
 
     for (const enemy of deps.enemies.current) {
       // Уже задет ЭТИМ рывком — второй раз урон не идёт. Мёртвый пропускается
@@ -1217,8 +1242,10 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ТАРАН (13.11.2026): первый толкаемый враг на пути летит вперёд с героем
       // RAM_CARRY_PX; врезавшиеся в него — цепочкой (entities/shove.ts). Беглеца,
       // Звонаря и Привратника не несёт — только бьёт. Босса — тоже (он ниже).
+      // С 17.11.2026 Таран несёт ВСЕХ (Беглеца, Звонаря, Привратника,
+      // призванных — на полный RAM_CARRY_PX); босса — ниже, на половину.
       if (!died && !ramCarried && deps.canCarry(enemy)) {
-        ramCarried = deps.shove(enemy, deps.facing.current, C.RAM_CARRY_PX, C.RAM_SHOVE_SPEED, deps.skillDamage.dash, 'ram', 0)
+        ramCarried = deps.shove(enemy, deps.facing.current, C.RAM_CARRY_PX, C.RAM_SHOVE_SPEED, deps.skillDamage.dash, 'ram', C.RAM_CARRY_PX)
       }
     }
 
@@ -1235,6 +1262,35 @@ export function createSkillsSystem(deps: SkillsDeps) {
     countDashUse()
     const bossDied = deps.damageBoss(deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
     if (!bossDied) deps.applyBossHitReaction(boss)
+    // Босса Таран несёт на половину пути (17.11.2026), если сейчас можно.
+    if (!bossDied && !ramCarried && deps.canShoveBoss()) {
+      bossRam = { boss, dir: deps.facing.current, leftPx: C.RAM_CARRY_PX * C.RAM_BOSS_CARRY_FRAC }
+      ramCarried = true
+    }
+  }
+
+  // Толчок босса Тараном: шаг RAM_SHOVE_SPEED, не в стену (как nudgeBoss).
+  // Под заставкой и превращением — прерывается (canShoveBoss).
+  function updateBossRam(dt: number) {
+    if (!bossRam) return
+    const r = bossRam
+    if (r.boss.dead || deps.boss.current !== r.boss || !deps.canShoveBoss()) { bossRam = null; return }
+    const want = Math.min(r.leftPx, (C.RAM_SHOVE_SPEED * dt) / 1000)
+    const bb = bossBoxOf(r.boss)
+    const T = deps.tileSize
+    let moved = 0
+    while (moved < want) {
+      const step = Math.min(4, want - moved)
+      const lead = r.dir > 0 ? bb.x + bb.w + moved + step : bb.x - moved - step
+      if (deps.isSolid(deps.grid, T, lead, bb.y + 2) || deps.isSolid(deps.grid, T, lead, bb.y + bb.h / 2) || deps.isSolid(deps.grid, T, lead, bb.y + bb.h - 2)) {
+        r.leftPx = 0
+        break
+      }
+      moved += step
+    }
+    r.boss.x += r.dir * moved
+    r.leftPx -= moved
+    if (r.leftPx <= 0) bossRam = null
   }
 
   // Прямого урона у самого slash НЕТ — весь урон СКИЛЛА идёт кровотечением
@@ -1336,6 +1392,32 @@ export function createSkillsSystem(deps: SkillsDeps) {
     }
   }
 
+  // Старт Тарана. Кулдаун и мана тратятся ТОЛЬКО на реально начавшийся рывок
+  // (тот же приём, что у castSlash). 17.11.2026: отказ «по временной причине»
+  // (хитстан, питьё, каст — startPlayerDash вернул 'later') запоминает
+  // нажатие на DASH_BUFFER_MS: update пробует снова каждый кадр. В воздухе и
+  // мёртвым — отказ без запоминания.
+  function tryDash(): boolean {
+    if (dashCdMs > 0 || !canAffordSkill('dash')) { dashBufferMs = 0; return false }
+    const r = deps.startPlayerDash()
+    if (r === 'later') {
+      if (dashBufferMs <= 0) dashBufferMs = C.DASH_BUFFER_MS
+      return false
+    }
+    dashBufferMs = 0
+    if (!r) return false
+    dashCdMs = C.DASH_COOLDOWN_MS * deps.dashCooldownMult()
+    payOnPress('dash')
+    // Новый рывок — новый список задетых: каждая цель снова может получить
+    // урон ровно один раз. Чистим ИМЕННО на старте, а не по окончании рывка.
+    dashHitTargets.clear()
+    // Право засчитать применение принадлежит ОДНОМУ рывку.
+    dashUseCounted = false
+    ramCarried = false
+    dashPrevBox = null
+    return true
+  }
+
   // Нажатие слота 0/1. Скилл срабатывает, только если лежит ИМЕННО в этом
   // слоте — кнопка привязана к слоту, а не к скиллу.
   function pressSlot(slot: 0 | 1) {
@@ -1377,19 +1459,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // Отказ startPlayerDash — это герой мёртв/в хитстане/пьёт, он в
       // воздухе, либо рывок или замах уже идут; ни один из этих случаев не
       // должен съедать 5 секунд.
-      if (deps.startPlayerDash()) {
-        dashCdMs = C.DASH_COOLDOWN_MS * deps.dashCooldownMult()
-        payOnPress('dash')
-        // Новый рывок — новый список задетых: каждая цель снова может
-        // получить урон ровно один раз. Чистим ИМЕННО на старте, а не по
-        // окончании рывка: так набор не зависит от того, чем рывок кончился
-        // (доигранной анимацией, прыжком, хитстаном или смертью).
-        dashHitTargets.clear()
-        // Там же, где список задетых, и по той же причине: право засчитать
-        // применение принадлежит ОДНОМУ рывку.
-        dashUseCounted = false
-        ramCarried = false
-      }
+      tryDash()
       return
     }
     if (id === 'telekinesis') {
@@ -1528,6 +1598,13 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // (герой мог стартовать вплотную к врагу). Владелец состояния рывка —
     // Explore.tsx, отсюда чтение через deps.dashing.
     if (deps.dashing.current) applyDashHits()
+    else dashPrevBox = null
+    updateBossRam(dt)
+    // Запомненное нажатие Тарана — пробуем, пока не истекло.
+    if (dashBufferMs > 0) {
+      dashBufferMs = Math.max(0, dashBufferMs - dt)
+      if (dashBufferMs > 0 && deps.equipped.includes('dash')) tryDash()
+    }
 
     // Волны Телекинеза: полёт, отброс, угасание.
     updateTkWaves(dt)
@@ -1668,6 +1745,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Ссылки на Enemy/Boss — чтобы размонтированная сцена не держала их
     // живыми (сам набор чистится на старте каждого рывка, см. pressSlot).
     dashHitTargets.clear()
+    bossRam = null
   }
 
   // Удар мечом, который сейчас наносится, начат навыком slash (а не кнопкой

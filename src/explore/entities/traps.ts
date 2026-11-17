@@ -28,7 +28,7 @@
 //
 // Рисуются ПОВЕРХ слоя карты и живого декора, но ПОД героем и врагами — узел
 // вставляет Explore.tsx в нужное место списка мира (parent + index).
-import { Container, Graphics, Sprite, Texture, TilingSprite } from 'pixi.js'
+import { Container, Graphics, Sprite, Texture } from 'pixi.js'
 import * as C from '../constants'
 import { isSolid } from '../collision'
 import { SPIKE_H_RATIO } from '../../mapRenderer'
@@ -38,13 +38,12 @@ export type GargoyleSlot = { x: number; y: number; dir: 1 | -1; plate: [number, 
 export type StalactiteSlot = { x: number; y: number; ceil: number }
 export type SawSlot = { x0: number; x1: number; y: number }
 
-export type GargoyleMeta = { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number; postX0: number; postX1: number }
+export type GargoyleMeta = { frames: number; fps: number; eyesLitFrame: number; mouthOpenFrame: number; mouthX: number; mouthY: number; frameW: number; frameH: number }
 
 export type TrapTextures = {
   spike: Texture
   spikeGlint: Texture | null
   gargoyleFrames: Texture[]
-  gargoylePost: Texture
   fireball: Texture
   plateUp: Texture
   plateDown: Texture
@@ -55,6 +54,11 @@ export type TrapTextures = {
 }
 
 export type TrapsDeps = {
+  /**
+   * Насколько видимый верх пола ниже линии клетки под этой пилой, px (замер
+   * слоя, trapTints.ts; 17.11.2026). По нему рельс утапливается в пол.
+   */
+  sawSink?: (slot: SawSlot) => number
   parent: Container
   /** Позиция узла в списке мира: над слоем и живым декором, под героем. */
   index: number
@@ -183,50 +187,26 @@ export function createTrapsSystem(deps: TrapsDeps) {
   }
 
   // --- горгульи и плиты ---
-  // Верх столба: до потолка (первая твердь над полом), если он не выше
-  // GARGOYLE_POST_CEIL_MAX клеток, иначе GARGOYLE_POST_FREE_H клеток (та же
-  // формула, что post_top в tools/trap_rules.py — по ней чистится декор).
-  function postTopY(cx: number, cy: number): number {
-    let y = cy - 1
-    while (y >= 0 && !['#', '='].includes(deps.grid[y]?.[cx] ?? '#')) y--
-    if (y >= 0 && cy - y <= C.GARGOYLE_POST_CEIL_MAX) return (y + 1) * T
-    return (cy + 1 - C.GARGOYLE_POST_FREE_H) * T
-  }
+  // Голова В СТЕНЕ (17.11.2026): узел у грани стены (край клетки x со стороны
+  // −dir), зеркальный по dir (лист смотрит вправо). Затылок — GARGOYLE_WALL_INSET
+  // px кадра — за гранью; маска по грани срезает его, видна только морда.
   const gargoyles: Gargoyle[] = []
   const gm = deps.gargoyle
   for (const slot of deps.gargoyles) {
     const floorY = (slot.y + 1) * T
-    // Столб стоит в клетке x у её края со стороны -dir; всё, что дальше, —
-    // в узле, зеркальном по dir (лист смотрит вправо).
     const wallX = slot.dir === 1 ? slot.x * T : (slot.x + 1) * T
     const s = C.GARGOYLE_SCALE
     const node = new Container()
     node.x = wallX
     node.scale.x = slot.dir
     const frameTop = floorY - C.GARGOYLE_MOUTH_ABOVE_FLOOR - gm.mouthY * s
-    const frameBottom = frameTop + gm.frameH * s
-    const postTop = postTopY(slot.x, slot.y)
-    const postX = gm.postX0 * s
-    const postW = (gm.postX1 - gm.postX0) * s
-    const ov = C.GARGOYLE_POST_OVERLAP * s
-    // Тонкая тень у основания.
-    const shadow = new Graphics().ellipse(postX + postW / 2, floorY - 1, postW * 0.9, 3).fill({ color: 0x000000, alpha: 0.35 })
-    node.addChild(shadow)
-    // Плитка столба ниже и выше кадра (бесшовная по вертикали).
-    const tile = (y0: number, y1: number) => {
-      if (y1 - y0 <= 0) return
-      const t = new TilingSprite({ texture: tx.gargoylePost, width: postW / s, height: (y1 - y0) / s })
-      t.scale.set(s)
-      t.x = postX
-      t.y = y0
-      node.addChild(t)
-    }
-    tile(frameBottom - ov, floorY)
-    tile(postTop, frameTop + ov)
     const sprite = new Sprite(tx.gargoyleFrames[0])
     sprite.scale.set(s)
+    sprite.x = -C.GARGOYLE_WALL_INSET * s
     sprite.y = frameTop
-    node.addChild(sprite)
+    const mask = new Graphics().rect(0, frameTop - 4, gm.frameW * s, gm.frameH * s + 8).fill(0xffffff)
+    sprite.mask = mask
+    node.addChild(mask, sprite)
     const plateX = slot.plate[0] * T
     const mk = (tex: Texture) => {
       const p = new Sprite(tex)
@@ -271,25 +251,29 @@ export function createTrapsSystem(deps: TrapsDeps) {
   const saws: Saw[] = []
   for (const slot of deps.saws) {
     const floorY = (slot.y + 1) * T
+    // Видимый пол (17.11.2026): рельс лежит в пазу — над полом только его
+    // верхняя кромка (SAW_RAIL_TOP_ABOVE_SURFACE), диск наполовину в рельсе:
+    // центр на SAW_BLADE_ABOVE_SURFACE над полом, ниже рельса маска его режет.
+    // Раньше рельс стоял на 11 px НАД полом и пила «висела». Зона урона прежняя.
+    const surfaceY = floorY + (deps.sawSink?.(slot) ?? 0)
     const blade = new Sprite(tx.sawBlade)
     blade.anchor.set(0.5)
     blade.scale.set(T / tx.sawBlade.height)
-    const bladeMask = new Graphics().rect(slot.x0 * T - T, floorY - 2 * T, (slot.x1 - slot.x0 + 3) * T, 2 * T + 4).fill(0xffffff)
+    const bladeMask = new Graphics().rect(slot.x0 * T - T, floorY - 2 * T, (slot.x1 - slot.x0 + 3) * T, surfaceY + C.SAW_BLADE_MASK_BELOW_SURFACE - (floorY - 2 * T)).fill(0xffffff)
     blade.mask = bladeMask
     root.addChild(bladeMask, blade)
-    const railH = tx.sawRail.height * (T / tx.sawRail.width)
     for (let cx = slot.x0; cx <= slot.x1; cx++) {
       const r = new Sprite(tx.sawRail)
       r.scale.set(T / tx.sawRail.width)
       r.x = cx * T
-      r.y = floorY - railH * 0.6
+      r.y = surfaceY - C.SAW_RAIL_TOP_ABOVE_SURFACE
       root.addChild(r)
     }
     const minX = slot.x0 * T + T / 2
     const maxX = slot.x1 * T + T / 2
     const s: Saw = { slot, blade, x: minX + Math.random() * (maxX - minX), dir: Math.random() < 0.5 ? 1 : -1, minX, maxX, floorY, angle: 0 }
     blade.x = s.x
-    blade.y = floorY - C.SAW_CENTER_ABOVE_FLOOR
+    blade.y = surfaceY - C.SAW_BLADE_ABOVE_SURFACE
     saws.push(s)
     for (let cx = slot.x0; cx <= slot.x1; cx++) cells.set(key(cx, slot.y), { kind: 'rail', s })
   }
@@ -430,7 +414,7 @@ export function createTrapsSystem(deps: TrapsDeps) {
           g.sprite.texture = deps.textures.gargoyleFrames[f]
           if (!g.fired && f >= gm.mouthOpenFrame) {
             g.fired = true
-            const mx = g.wallX + g.slot.dir * gm.mouthX * C.GARGOYLE_SCALE
+            const mx = g.wallX + g.slot.dir * (gm.mouthX - C.GARGOYLE_WALL_INSET) * C.GARGOYLE_SCALE
             const my = g.frameTop + gm.mouthY * C.GARGOYLE_SCALE
             const sp = new Sprite(deps.textures.fireball)
             sp.anchor.set(0.82, 0.55)

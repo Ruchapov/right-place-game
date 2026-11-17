@@ -36,15 +36,20 @@ type Projectile = {
   hh: number
 }
 
-// Крошки кома и пятно грязи — простая графика, без арта (задача).
+// Крошки кома — простая графика. Лужа грязи (17.11.2026) — спрайт из
+// mud_puddle_{1,2,3}.png (случайный вариант и зеркало), брызги — те же крошки.
 type Burst = {
   g: Graphics
+  /** Спрайт лужи (splat), null — у крошек. */
+  sprite: Sprite | null
+  flip: number
   ms: number
   life: number
   kind: 'crumbs' | 'splat'
   x: number
   y: number
   parts: { dx: number; dy: number; vx: number; vy: number; r: number }[]
+  color: number
 }
 
 export type NcProjectileDeps = {
@@ -59,6 +64,10 @@ export type NcProjectileDeps = {
    * стояние в луже — MUD_PUDDLE_LINGER_MS каждый тик, пока стоит.
    */
   slowHero: (ms: number) => void
+  /** Картинки луж навозника (17.11.2026); пусто — лужа не рисуется, но замедляет. */
+  mudPuddles: () => Texture[]
+  /** Стоит ли герой на земле (лужа под ногами или ниже точки попадания). */
+  heroOnGround: () => boolean
 }
 
 export type FireSpec = {
@@ -132,19 +141,48 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
   }
 
   function spawnBurst(kind: Burst['kind'], x: number, y: number) {
+    let sprite: Sprite | null = null
+    let flip = 1
+    if (kind === 'splat') {
+      const tex = deps.mudPuddles()
+      if (tex.length > 0) {
+        sprite = new Sprite(tex[Math.floor(Math.random() * tex.length)])
+        // Низ видимой лужи (54 px из 56) — на верхе пола.
+        sprite.anchor.set(0.5, N.MUD_PUDDLE_ANCHOR_Y)
+        flip = Math.random() < 0.5 ? -1 : 1
+        sprite.x = x
+        sprite.y = y
+        deps.worldContainer.addChild(sprite)
+      }
+    }
     const g = new Graphics()
     g.x = x
     g.y = y
     deps.worldContainer.addChild(g)
     const parts: Burst['parts'] = []
-    if (kind === 'crumbs') {
-      for (let i = 0; i < 9; i++) {
-        const a = -Math.PI * (0.1 + 0.8 * Math.random())
-        const sp = 90 + Math.random() * 160
-        parts.push({ dx: 0, dy: 0, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 2 + Math.random() * 3 })
-      }
+    // Крошки кома; у лужи — пара брызг-капель цвета грязи в момент удара.
+    const n = kind === 'crumbs' ? 9 : N.MUD_SPLASH_DROPS
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI * (0.1 + 0.8 * Math.random())
+      const sp = 90 + Math.random() * 160
+      parts.push({ dx: 0, dy: kind === 'splat' ? -4 : 0, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 2 + Math.random() * 3 })
     }
-    bursts.push({ g, ms: 0, life: kind === 'crumbs' ? 450 : N.MUD_SPLAT_MS, kind, x, y, parts })
+    const color = kind === 'splat' ? N.MUD_DROP_COLOR : N.CLOD_CRUMB_COLOR
+    bursts.push({ g, sprite, flip, ms: 0, life: kind === 'crumbs' ? 450 : N.MUD_SPLAT_MS, kind, x, y, parts, color })
+  }
+
+  /**
+   * Ближайший пол под точкой (x, y): верх первой твёрдой клетки, над которой
+   * воздух, не глубже maxTiles клеток. null — пола нет.
+   */
+  function floorBelow(x: number, y: number, maxTiles: number): number | null {
+    const T = C.TILE_SIZE
+    const startRow = Math.floor(y / T)
+    for (let r = startRow; r <= startRow + maxTiles; r++) {
+      const cellY = r * T + 1
+      if (isSolid(deps.grid, T, x, cellY) && !isSolid(deps.grid, T, x, cellY - T)) return r * T
+    }
+    return null
   }
 
   function removeShot(p: Projectile) {
@@ -177,6 +215,17 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
             remove = true
             const parried = deps.takeDamage(p.damage, p.owner)
             if (!parried && p.kind === 'mud') deps.slowHero(N.SLOW_MS)
+            // Ком грязи попал в героя (17.11.2026) — лужа тоже ложится на пол:
+            // под ногами героя; в прыжке — под точкой попадания, на ближайший
+            // пол ниже, не дальше MUD_PUDDLE_DROP_TILES клеток; пола нет — без лужи.
+            if (p.kind === 'mud') {
+              const onGround = deps.heroOnGround()
+              const cx = b.x + b.w / 2
+              const floorY = onGround
+                ? floorBelow(cx, b.y + b.h - 2, 1)
+                : floorBelow(p.sprite.x, p.sprite.y, N.MUD_PUDDLE_DROP_TILES)
+              if (floorY !== null) spawnBurst('splat', onGround ? cx : p.sprite.x, floorY)
+            }
             if (p.kind === 'clod') { spawnBurst('crumbs', p.sprite.x, p.sprite.y); playSfx('gravedigger_dirt', { volume: 0.6, x: p.sprite.x, y: p.sprite.y }) }
           }
         }
@@ -207,8 +256,7 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
         b.ms += deltaMS
         const k = 1 - b.ms / b.life
         if (k <= 0) {
-          deps.worldContainer.removeChild(b.g)
-          b.g.destroy()
+          removeBurst(b)
           continue
         }
         b.g.clear()
@@ -217,7 +265,26 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
             part.vy += 900 * dt
             part.dx += part.vx * dt
             part.dy += part.vy * dt
-            b.g.circle(part.dx, part.dy, part.r).fill({ color: N.CLOD_CRUMB_COLOR, alpha: Math.min(1, k * 1.4) })
+            b.g.circle(part.dx, part.dy, part.r).fill({ color: b.color, alpha: Math.min(1, k * 1.4) })
+          }
+        } else if (b.sprite) {
+          // Лужа-спрайт (17.11.2026): «шлепок» — ширина 0.6 → 1 за
+          // MUD_PUDDLE_SPLAT_IN_MS, потом прежнее плавное исчезновение. Брызги
+          // летят первые 450 мс.
+          const left = b.life - b.ms
+          const a = left < N.MUD_PUDDLE_FADE_MS ? left / N.MUD_PUDDLE_FADE_MS : 1
+          const t = Math.min(1, b.ms / N.MUD_PUDDLE_SPLAT_IN_MS)
+          const sc = (N.MUD_PUDDLE_W_TILES * C.TILE_SIZE) / b.sprite.texture.width
+          b.sprite.scale.set(b.flip * sc * (0.6 + 0.4 * t), sc)
+          b.sprite.alpha = a
+          if (b.ms < 450) {
+            const ka = 1 - b.ms / 450
+            for (const part of b.parts) {
+              part.vy += 900 * dt
+              part.dx += part.vx * dt
+              part.dy += part.vy * dt
+              b.g.circle(part.dx, part.dy, part.r).fill({ color: b.color, alpha: Math.min(1, ka * 1.4) })
+            }
           }
         } else {
           // Лужа грязи (13.11.2026): видна и на тёмных картах — тёмная охра с
@@ -254,12 +321,18 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
     }
   }
 
+  function removeBurst(b: Burst) {
+    deps.worldContainer.removeChild(b.g)
+    b.g.destroy()
+    if (b.sprite) {
+      deps.worldContainer.removeChild(b.sprite)
+      b.sprite.destroy()
+    }
+  }
+
   function dispose() {
     for (const p of shots) removeShot(p)
-    for (const b of bursts) {
-      deps.worldContainer.removeChild(b.g)
-      b.g.destroy()
-    }
+    for (const b of bursts) removeBurst(b)
     shots = []
     bursts = []
   }

@@ -1703,6 +1703,15 @@ export type ProfileResult = {
 // логин, и он ЗАКРЫВАЕТ открытый на сервере забег (подтверждённый — как
 // смерть, со сгоранием банка трофеев). Делать это побочным эффектом кнопки
 // «Обновить баланс» нельзя.
+const PROFILE_ATTEMPT_TIMEOUT_MS = 20000
+const PROFILE_TOTAL_BUDGET_MS = 60000
+const PROFILE_RETRY_DELAYS_MS = [300, 1200, 2000]
+
+/** Сверка не прошла из-за сна сервера или сети (таймаут, обрыв, 5xx), а не отказом по существу. */
+export function isServerAsleepError(e: unknown): boolean {
+  return e instanceof RequestError && e.retryable
+}
+
 export async function fetchProfile(token: string): Promise<ProfileResult> {
   // Ключи покупок с неизвестным исходом — сервер скажет, какие из них уже
   // применены (см. keyedPurchase). Снимок списка ДО запроса: ключ, появившийся
@@ -1711,7 +1720,13 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
   const query = pending.length > 0
     ? `?requestIds=${encodeURIComponent(pending.map(([, p]) => p.key).join(','))}`
     : ''
-  const raw = await requestJson<{
+  // 17.11.2026: сверку зовёт только кнопка «Обновить баланс», и чаще всего —
+  // после того как сервер на Render Free уснул и не ответил на покупку. Одна
+  // попытка в 5 с упиралась в тот же сон, и игрок видел «сервер не ответил»
+  // дважды. Теперь — как вход и финиш: попытка до 20 с, весь вызов до 60 с,
+  // повтор только таймаута, сети и 5xx (GET, повтор безопасен). Отказ по
+  // существу (4xx) — сразу.
+  type ProfileRaw = {
     gold: number
     trophies: number
     potions: number[]
@@ -1737,11 +1752,27 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     luck?: unknown
     skins?: unknown
     appliedRequestIds?: unknown
-  }>(
-    `${SERVER_URL}/character/profile${query}`,
-    { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
-    SHOP_TIMEOUT_MS,
-  )
+  }
+  const deadline = Date.now() + PROFILE_TOTAL_BUDGET_MS
+  let retries = 0
+  let raw: ProfileRaw
+  while (true) {
+    const remaining = deadline - Date.now()
+    try {
+      raw = await requestJson<ProfileRaw>(
+        `${SERVER_URL}/character/profile${query}`,
+        { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
+        Math.max(1000, Math.min(PROFILE_ATTEMPT_TIMEOUT_MS, remaining)),
+      )
+      break
+    } catch (e) {
+      if (!(e instanceof RequestError) || !e.retryable) throw e
+      const delay = PROFILE_RETRY_DELAYS_MS[Math.min(retries, PROFILE_RETRY_DELAYS_MS.length - 1)]
+      if (Date.now() + delay >= deadline) throw e
+      await sleep(delay)
+      retries++
+    }
+  }
   // Старый сервер поля не присылает — ключи остаются, как было до правки.
   if (Array.isArray(raw.appliedRequestIds)) {
     const applied = new Set(raw.appliedRequestIds.filter((id): id is string => typeof id === 'string'))

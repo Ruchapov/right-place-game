@@ -1,7 +1,7 @@
 // ЗВУК (16.11.2026, docs/audio.md). Чистый Web Audio API, без пакетов.
 //
 // Один AudioContext, три GainNode: master → (music, sfx). На телефоне (iOS,
-// Telegram) звук молчит до первого касания: одноразовые pointerdown/touchend
+// Telegram) звук молчит до первого касания: pointerdown/touchend
 // на window зовут ctx.resume(), до этого play просто ничего не делает.
 // Свернули Telegram (document.visibilitychange → hidden) — ctx.suspend().
 //
@@ -171,13 +171,21 @@ export function initAudio(): void {
   master.connect(ctx.destination)
   applyBusVolumes()
 
+  // Разблокировка касанием. Слушатели НЕ снимаются (17.11.2026): iOS может
+  // «прервать» контекст (звонок, Siri, сворачивание Telegram), и тогда
+  // resume без касания не проходит — следующее касание поднимет его снова.
+  // Пока всё играет, обработчик выходит сразу.
   const unlock = () => {
     if (!ctx) return
+    // Аудиосессия iPhone — «воспроизведение», а не «окружение»: звук игры
+    // играет и при переключателе «Без звука» сбоку (решение Андрея
+    // 17.11.2026). Громкость и «Без звука» — только из настроек игры.
+    enablePlaybackSession()
+    if (ctx.state === 'running' && unlocked) return
     ctx.resume().then(() => {
+      const first = !unlocked
       unlocked = true
-      window.removeEventListener('pointerdown', unlock)
-      window.removeEventListener('touchend', unlock)
-      for (const cb of unlockCallbacks) cb()
+      if (first) for (const cb of unlockCallbacks) cb()
     }).catch(() => { /* следующее касание попробует снова */ })
   }
   window.addEventListener('pointerdown', unlock)
@@ -185,11 +193,70 @@ export function initAudio(): void {
 
   document.addEventListener('visibilitychange', () => {
     if (!ctx) return
-    if (document.hidden) void ctx.suspend().catch(() => {})
-    else if (unlocked) void ctx.resume().catch(() => {})
+    if (document.hidden) {
+      void ctx.suspend().catch(() => {})
+      silentKeeper?.pause()
+    } else if (unlocked) {
+      if (silentKeeper) void silentKeeper.play().catch(() => {})
+      void ctx.resume().catch(() => { /* поднимет следующее касание (unlock) */ })
+    }
   })
 
   preloadSfx()
+}
+
+// --- Звук и при переключателе «Без звука» (iPhone, 17.11.2026) ---
+// Web Audio на iOS по умолчанию в аудиосессии «ambient» — её глушит боковой
+// переключатель. iOS 16.4+ даёт navigator.audioSession.type = 'playback'.
+// Старым iOS — приём с тихим зацикленным <audio>: пока он играет, сессия
+// страницы «playback», и Web Audio звучит тоже. Запускать его можно только из
+// касания — поэтому всё это зовёт unlock.
+let silentKeeper: HTMLAudioElement | null = null
+let playbackSessionSet = false
+
+/** Короткая тишина WAV (0.5 с, 8 кГц, 8 бит моно) — без отдельного файла. */
+function silentWavUrl(): string {
+  const samples = 4000
+  const buf = new Uint8Array(44 + samples)
+  const dv = new DataView(buf.buffer)
+  const str = (o: number, t: string) => { for (let i = 0; i < t.length; i++) buf[o + i] = t.charCodeAt(i) }
+  str(0, 'RIFF'); dv.setUint32(4, 36 + samples, true); str(8, 'WAVE')
+  str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true)
+  dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true)
+  str(36, 'data'); dv.setUint32(40, samples, true)
+  buf.fill(128, 44) // 8-битная тишина — середина шкалы
+  let bin = ''
+  for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i])
+  return `data:audio/wav;base64,${btoa(bin)}`
+}
+
+function enablePlaybackSession(): void {
+  const nav = navigator as unknown as { audioSession?: { type: string } }
+  if (nav.audioSession) {
+    if (!playbackSessionSet) {
+      try {
+        nav.audioSession.type = 'playback'
+        playbackSessionSet = true
+      } catch (e) {
+        console.warn('audio: audioSession.type не принят', e)
+      }
+    }
+    return
+  }
+  // Старый iOS (и любой браузер без audioSession): тихий зацикленный <audio>.
+  // На ПК он безвреден. Только на устройствах Apple — на Android переключателя
+  // «Без звука» для страниц нет, а лишний медиаплеер в шторке ни к чему.
+  if (!/iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent) || !('ontouchend' in document)) return
+  if (!silentKeeper) {
+    const a = document.createElement('audio')
+    a.setAttribute('playsinline', '')
+    a.setAttribute('webkit-playsinline', '')
+    a.loop = true
+    a.preload = 'auto'
+    a.src = silentWavUrl()
+    silentKeeper = a
+  }
+  if (silentKeeper.paused && !document.hidden) void silentKeeper.play().catch(() => { /* попробует следующее касание */ })
 }
 
 const unlockCallbacks = new Set<() => void>()

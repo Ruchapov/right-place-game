@@ -106,9 +106,9 @@ const SKILL_BOOK_LINES: Record<SkillBookSkillId & SkillId, (level: number | null
     + `Перезарядка ${sec(HEAL_COOLDOWN_MS)} с.`,
   // Таран (13.11.2026) — переделанный рывок, id прежний.
   dash: (level, stats) =>
-    `Таран: рывок вперёд, урон ${valueAt('dash', level, stats)} каждому задетому. `
+    `Таран: бросок вперёд, урон ${valueAt('dash', level, stats)} каждому задетому. `
     + `Первого врага несёт с собой на ${RAM_CARRY_PX / TILE_SIZE} клетки: врезавшиеся в него получают половину урона и тоже отлетают, `
-    + `удар о стену — сильнее. Во время рывка герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
+    + `удар о стену — сильнее. Во время Тарана герой неуязвим. Перезарядка ${sec(DASH_COOLDOWN_MS)} с.`,
   // Дальность отброса растёт с уровнем — тем же множителем, что урон.
   telekinesis: (level, stats) =>
     `Волна перед героем на ${TELEKINESIS_RANGE_PX / TILE_SIZE} клетки отбрасывает врагов на `

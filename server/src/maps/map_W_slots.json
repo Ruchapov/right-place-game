@@ -313,12 +313,21 @@
   ],
   "gargoyles": [
     {
-      "x": 29,
+      "x": 26,
       "y": 20,
       "dir": 1,
       "plate": [
-        35,
+        32,
         20
+      ]
+    },
+    {
+      "x": 22,
+      "y": 34,
+      "dir": -1,
+      "plate": [
+        15,
+        34
       ]
     }
   ],
@@ -353,7 +362,7 @@
   "trapsPerRun": {
     "spikes": 7,
     "stalactites": 3,
-    "gargoyles": 1,
+    "gargoyles": 2,
     "saws": 0
   }
 }

@@ -175,8 +175,9 @@ export const FENCER_BLOCK_HOLD_MS = 600
  * Удар героя в блок ОГЛУШАЕТ героя (13.11.2026): ввод не работает вовсе,
  * герой стоит в кадре ранения, над головой звёзды. Сразу за блоком —
  * выпад фехтовальщика (onActionEnd), он успевает ударить оглушённого.
+ * 850 → 1500 мс (17.11.2026, решение Андрея по телефону).
  */
-export const FENCER_BLOCK_STUN_MS = 850
+export const FENCER_BLOCK_STUN_MS = 1500
 /** Скорость отталкивания героя, px/кадр при 60 к/с (первые 120 мс стаггера). */
 export const FENCER_BLOCK_PUSH_SPEED = 5
 export const FENCER_BLOCK_PUSH_MS = 120
@@ -203,6 +204,13 @@ export const MUD_SPLAT_MS = 4000
 export const MUD_PUDDLE_FADE_MS = 900
 export const MUD_PUDDLE_LINGER_MS = 500
 export const MUD_PUDDLE_W_TILES = 1.2
+// Лужа-спрайт (17.11.2026, beetle/mud_puddle_{1,2,3}.png, 192×56): низ видимого
+// края (54 px из 56) — на верх пола; «шлепок» по ширине за 120 мс; брызг — 4;
+// лужа от попадания в героя в прыжке — на пол не глубже 6 клеток.
+export const MUD_PUDDLE_ANCHOR_Y = 54 / 56
+export const MUD_PUDDLE_SPLAT_IN_MS = 120
+export const MUD_SPLASH_DROPS = 4
+export const MUD_PUDDLE_DROP_TILES = 6
 /** Лужа: тёмная охра, сверху светлый блик — видна и на тёмном болоте. */
 export const MUD_PUDDLE_COLOR = 0x7a4f1e
 export const MUD_PUDDLE_RIM_COLOR = 0x4e3214

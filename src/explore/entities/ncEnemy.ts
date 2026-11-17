@@ -5,8 +5,8 @@ import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, NcEnemyState, 
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { ncSheet } from '../ncConstants'
-import { sweepFootBlock, cellFootBlockTop } from '../collision'
-import { climbStep, stepDownOk, wallAhead } from '../stepClimb'
+import { cellFootBlockTop } from '../collision'
+import { climbStep, enemyGravity, stepDownOk, wallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyAttackDamage, scaledNcEnemyMaxHp } from '../scaling'
@@ -484,14 +484,8 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
 
       const prevX = e.x
       // --- Гравитация ---
-      e.vy = Math.min(e.vy + C.GRAVITY * dt, C.MAX_FALL)
-      const prevFootY = e.y + e.height
-      e.y += e.vy * dt
-      const blockTop = sweepFootBlock(deps.grid, C.TILE_SIZE, e.x, e.width, prevFootY, e.y + e.height)
-      if (blockTop !== null) {
-        e.y = blockTop - e.height
-        e.vy = 0
-      }
+      // С 17.11.2026 — спуск на клетку шагом (stepClimb.enemyGravity).
+      enemyGravity(deps.grid, e, dt)
 
       const pb = deps.getPlayerCombatBox()
       const dx = (pb.x + pb.w / 2) - (e.x + e.width / 2)

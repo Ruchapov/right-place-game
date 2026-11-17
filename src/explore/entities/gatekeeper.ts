@@ -3,8 +3,8 @@ import { AnimatedSprite, Graphics } from 'pixi.js'
 import type { Container, Texture } from 'pixi.js'
 import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, GatekeeperPhase } from '../types'
 import * as C from '../constants'
-import { sweepFootBlock, cellFootBlockTop } from '../collision'
-import { climbStep, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
+import { cellFootBlockTop } from '../collision'
+import { climbStep, enemyGravity, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
 import { clamp, parryStunFrame } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
@@ -481,15 +481,8 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
       const prevX = enemy.x
 
       // --- Гравитация и посадка (перенос от зверя) ---
-      enemy.vy = Math.min(enemy.vy + C.GRAVITY * dt, C.MAX_FALL)
-      const prevFootY = enemy.y + enemy.height
-      enemy.y += enemy.vy * dt
-      const footY = enemy.y + enemy.height
-      const blockTop = sweepFootBlock(deps.grid, C.TILE_SIZE, enemy.x, enemy.width, prevFootY, footY)
-      if (blockTop !== null) {
-        enemy.y = blockTop - enemy.height
-        enemy.vy = 0
-      }
+      // С 17.11.2026 — спуск на клетку шагом (stepClimb.enemyGravity).
+      enemyGravity(deps.grid, enemy, dt)
 
       const playerBox = deps.getPlayerCombatBox()
       const dx = (playerBox.x + playerBox.w / 2) - (enemy.x + enemy.width / 2)

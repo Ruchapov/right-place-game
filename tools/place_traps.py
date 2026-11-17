@@ -3,6 +3,8 @@
     python tools/place_traps.py                 все карты
     python tools/place_traps.py A B2 W          выбранные
     python tools/place_traps.py --dry           только посчитать, файлы не писать
+    python tools/place_traps.py --only gargoyles   переставить ТОЛЬКО горгулий
+                                                (остальные пулы как есть; 17.11.2026)
 
 Что делает для каждой карты (правила — tools/trap_rules.py, проверка —
 tools/check_map_slots.py):
@@ -29,9 +31,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import map_tools as mt  # noqa: E402
 import trap_rules as R  # noqa: E402
 
-# Как в src/explore/constants.ts (GARGOYLE_SCALE, GARGOYLE_MOUTH_ABOVE_FLOOR) — только для превью.
-GARGOYLE_SCALE = 0.455
+# Как в src/explore/constants.ts (GARGOYLE_SCALE, GARGOYLE_MOUTH_ABOVE_FLOOR,
+# GARGOYLE_WALL_INSET; кадр Gargoyle_Fire 277×254, пасть mouthY 150) — только для превью.
+GARGOYLE_SCALE = 0.4
 GARGOYLE_MOUTH_ABOVE_FLOOR = 60
+GARGOYLE_WALL_INSET = 16
+GARGOYLE_FRAME = (277, 254)
+GARGOYLE_MOUTH_Y = 150
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -60,10 +66,13 @@ def candidates(kind, ctx):
     H, W = len(g), len(g[0])
     out = []
     if kind == 'gargoyles':
-        # Столб на полу в клетке x, голова смотрит в d; плита в dd клетках.
+        # Голова в стене (17.11.2026): клетка x у стены «#» в столбце x-d, голова
+        # смотрит в d; плита в dd клетках. Остальное проверяет trap_rules.
         for (x, y) in sorted(S):
             for d in (1, -1):
-                for dd in (6, 5, 7, 4, 8):
+                if not (0 <= x - d < W) or g[y][x - d] != '#':
+                    continue
+                for dd in (6, 5, 7, 4, 8, 3, 2):
                     px = x + dd if d == 1 else x - dd - 1
                     out.append({'x': x, 'y': y, 'dir': d, 'plate': [px, y]})
     elif kind == 'stalactites':
@@ -144,14 +153,21 @@ def traps_art():
         base = R.ROOT / 'public' / 'assets' / 'objects'
         _ART = {
             'spike': Image.open(base / 'spikes.png').convert('RGBA'),
-            'garg': Image.open(base / 'traps' / 'GargoylePost_Idle.png').convert('RGBA'),
-            'post': Image.open(base / 'traps' / 'Gargoyle_Post.png').convert('RGBA'),
+            # Кадр 0 листа огня — горгулья в покое (лист уменьшен в res раз — по
+            # логическому кадру 277×254 его делит make_sprite_res, здесь — по факту).
+            'garg': _garg_frame0(Image.open(base / 'traps' / 'Gargoyle_Fire.png').convert('RGBA')),
             'plate': Image.open(base / 'traps' / 'Plate_Up.png').convert('RGBA'),
             'stal': Image.open(base / 'traps' / 'Stalactite_Full.png').convert('RGBA'),
             'blade': Image.open(base / 'traps' / 'Saw_Blade.png').convert('RGBA'),
             'rail': Image.open(base / 'traps' / 'Saw_Rail.png').convert('RGBA'),
         }
     return _ART
+
+
+def _garg_frame0(sheet):
+    n = 22
+    fw = sheet.width / n
+    return sheet.crop((0, 0, round(fw), sheet.height))
 
 
 def _paste(img, src, w, h, x, y, flip=False):
@@ -169,28 +185,20 @@ def draw_trap(img, k, t, art, g=None):
         x, y = t
         _paste(img, art['spike'], T, T * 0.48, x * T, y * T + T - T * 0.48)
     elif k == 'gargoyles':
-        # Горгулья на столбе — как entities/traps.ts: масштаб GARGOYLE_SCALE,
-        # пасть на GARGOYLE_MOUTH_ABOVE_FLOOR над полом, столб от пола до
-        # post_top плиткой Gargoyle_Post.png, кадр поверх.
+        # Голова в стене — как entities/traps.ts (17.11.2026): масштаб
+        # GARGOYLE_SCALE, пасть на GARGOYLE_MOUTH_ABOVE_FLOOR над полом, затылок
+        # (GARGOYLE_WALL_INSET px кадра) — за гранью стены, не виден.
         x, y, d = t['x'], t['y'], t['dir']
         s = GARGOYLE_SCALE
         floor = (y + 1) * T
         wall = x * T if d == 1 else (x + 1) * T
-        fw, fh = 330 * s, 324 * s
-        top = floor - GARGOYLE_MOUTH_ABOVE_FLOOR - 217 * s
-        pw = 51 * s
-        post_x = wall if d == 1 else wall - pw
-        post_top = R.post_top(g, x, y) * T if g is not None else floor - R.POST_FREE_H * T
-        tile_h = 120 * s
-        for y0, y1 in ((top + fh - 3 * s, floor), (post_top, top + 3 * s)):
-            yy = y0
-            while yy < y1 - 0.5:
-                h = min(tile_h, y1 - yy)
-                piece = art['post'].crop((0, 0, 51, max(1, round(h / s))))
-                _paste(img, piece, pw, h, post_x, yy)
-                yy += h
+        frame = art['garg']
+        k = frame.width / GARGOYLE_FRAME[0]
+        vis = frame.crop((round(GARGOYLE_WALL_INSET * k), 0, frame.width, frame.height))
+        fw, fh = (GARGOYLE_FRAME[0] - GARGOYLE_WALL_INSET) * s, GARGOYLE_FRAME[1] * s
+        top = floor - GARGOYLE_MOUTH_ABOVE_FLOOR - GARGOYLE_MOUTH_Y * s
         gx = wall if d == 1 else wall - fw
-        _paste(img, art['garg'], fw, fh, gx, top, flip=d == -1)
+        _paste(img, vis, fw, fh, gx, top, flip=d == -1)
         px = t['plate'][0]
         _paste(img, art['plate'], 2 * T, 51 * 0.4, px * T, floor - 51 * 0.4 + 6)
     elif k == 'stalactites':
@@ -212,26 +220,35 @@ def draw_trap(img, k, t, art, g=None):
 from collections import Counter  # noqa: E402
 
 
-def place_all(ctx, base, hazards):
+def place_all(ctx, base, hazards, only=None):
     """Пулы новых ловушек под цель за забег (trap_rules.per_run). Возвращает
-    (пулы, за забег, цель). Не хватило мест — за забег ставится сколько есть."""
+    (пулы, за забег, цель). Не хватило мест — за забег ставится сколько есть.
+    only — переставить только этот вид, остальные пулы оставить как есть."""
     letter = ctx['letter']
     want = R.per_run(letter, len(hazards))
     placed = [('hazard', h) for h in hazards]
     pools, got = {}, {'spikes': want['spikes']}
+    if only:
+        for kind in NEW_KINDS:
+            if kind != only:
+                pools[kind] = list(ctx['slots'].get(kind) or [])
+                placed += [(kind, t) for t in pools[kind]]
+                got[kind] = (ctx['slots'].get('trapsPerRun') or {}).get(kind, min(want[kind], len(pools[kind])))
     for kind in ('gargoyles', 'saws', 'stalactites'):
+        if only and kind != only:
+            continue
         need = math.ceil(want[kind] * R.POOL_MULT)
         pools[kind] = place_pool(kind, need, ctx, placed, base)
         got[kind] = min(want[kind], len(pools[kind]))
     return pools, got, want
 
 
-def run(letter, dry):
+def run(letter, dry, only=None):
     ctx = context(letter)
     g, start = ctx['grid'], ctx['start']
     base = R.waves_with(g, start, [], mt)
     hazards = [tuple(p) for p in ctx['slots'].get('hazard') or []]
-    pools, per_run, want = place_all(ctx, base, hazards)
+    pools, per_run, want = place_all(ctx, base, hazards, only)
     slots = dict(ctx['slots'])
     for kind in ('gargoyles', 'stalactites', 'saws'):
         slots[kind] = pools[kind]
@@ -249,11 +266,19 @@ def run(letter, dry):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    dry = '--dry' in sys.argv
+    argv = sys.argv[1:]
+    only = None
+    if '--only' in argv:
+        i = argv.index('--only')
+        only = argv[i + 1]
+        if only not in NEW_KINDS:
+            raise SystemExit(f'--only: {only}? (gargoyles, saws, stalactites)')
+        argv = argv[:i] + argv[i + 2:]
+    args = [a for a in argv if not a.startswith('--')]
+    dry = '--dry' in argv
     letters = args or sorted({p.name.split('_')[1] for p in R.MAPS.glob('map_*_slots.json')})
     for letter in letters:
-        run(letter, dry)
+        run(letter, dry, only)
 
 
 if __name__ == '__main__':

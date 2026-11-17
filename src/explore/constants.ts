@@ -1590,16 +1590,26 @@ export const KNOCKBACK_MS = 100
 export const HITSTOP_MS = 40
 
 // НОВАЯ БОЁВКА ГЕРОЯ (16.11.2026, docs/explore-engine.md, «Комбо из трёх
-// ударов»). Лёгкий удар (удары 1 и 2 комбо, удар в воздухе) и сильный (удар 3
-// комбо или любой крит) — разная реакция врага.
+// ударов»; с 17.11.2026 — из четырёх). Лёгкий удар (удары 1–3 комбо, удар в
+// воздухе) и сильный (удар 4 комбо или любой крит) — разная реакция врага.
 //
 // Лист комбо: hero/Hero_Combo.png, 4050×3056, 10 колонок × 8 рядов, клетка
 // 405×382, 77 кадров, герой смотрит вправо. Лист — как есть, без перекраски
 // обликом и плащом. Герой на нём на 8% мельче, чем на idle/attack, поэтому
 // масштаб — (HERO_DRAW_H / HERO_CELL_H) × HERO_COMBO_SIZE_MULT, а точка ног
 // клетки (161, 392) — якорь: она встаёт туда же, куда точка ног (197, 296)
+// (17.11.2026: облик брони, плащ и цвет удара — см. SLASH_RGB ниже)
 // старых листов (низ-центр клетки 394×296).
 export const HERO_COMBO_SRC = `${import.meta.env.BASE_URL}assets/sprites/hero/Hero_Combo.png`
+// С 17.11.2026 комбо — в облике брони (skins/armor_<id>/Hero_Combo.png), плащ
+// перекрашивается по маске Hero_Combo_cloak.png, цвет удара — по маске
+// белых росчерков Hero_Combo_slash.png (листов attack_<цвет> для комбо нет).
+// Цвета — те же, что у листов удара attack_<цвет>.png.
+export const SLASH_RGB = {
+  red: [235, 40, 55],
+  violet: [175, 95, 255],
+  gold: [255, 185, 70],
+} as const
 export const HERO_COMBO_CELL_W = 405
 export const HERO_COMBO_CELL_H = 382
 export const HERO_COMBO_COUNT = 77
@@ -1610,15 +1620,32 @@ export const HERO_COMBO_ANCHOR_X = 161 / HERO_COMBO_CELL_W
 export const HERO_COMBO_ANCHOR_Y = 392 / HERO_COMBO_CELL_H
 /** 30 кадров в секунду (animationSpeed — кадров листа за кадр тикера при 60). */
 export const HERO_COMBO_ANIM_SPEED = 30 / 60
-/** Кадры листа по ударам; hit — кадр урона (номер кадра листа). */
+/**
+ * Кадры листа по ударам; hit — кадр урона (номер кадра листа). 17.11.2026 —
+ * ЧЕТЫРЕ удара: на листе четыре взмаха (росчерки на кадрах 16–19, 28–30,
+ * 34–36, 48–50), прежний «удар 2» (26–38) был двумя. rangePx — по маске
+ * росчерков (Hero_Combo_slash.png): правый край росчерка на кадре урона от
+ * точки ног × масштаб листа (0.511) — 121 / 121 / 96 / 115 px мира — с тем же
+ * запасом ≈0.9, что был у ударов 1 и 3.
+ */
 export const HERO_COMBO_STRIKES = [
   { frames: [5, 7, 9, 11, 14, 16, 17, 18, 19, 20, 21], hit: 17, damageMult: 1, rangePx: 110 },
-  { frames: [26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38], hit: 29, damageMult: 1, rangePx: 110 },
+  { frames: [26, 27, 28, 29, 30, 31, 32], hit: 29, damageMult: 1, rangePx: 110 },
+  { frames: [33, 34, 35, 36, 37, 38], hit: 35, damageMult: 1, rangePx: 90 },
   { frames: [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52], hit: 49, damageMult: 1.5, rangePx: 105 },
 ] as const
-/** Выход в idle после удара 1, 2, 3 (комбо бросили или оно кончилось). */
+/** Последний удар комбо — сильный (×1.5, полная реакция врага). */
+export const HERO_COMBO_LAST: 4 = 4
+/**
+ * Выход в idle после удара 1, 2, 3, 4 (комбо бросили или оно кончилось).
+ * Подобраны по ступням (замер 17.11.2026, px клетки): конец удара 2 — кадр 32
+ * (ступни 116–254), дальше 33 (114–252, меч ещё поднят), 38 (107–246, присел,
+ * меч внизу) и прежний хвост 70–76 (93–247); конец удара 3 — кадр 38, хвост
+ * 70–76 — тот же стык, что был у прежнего удара 2.
+ */
 export const HERO_COMBO_EXITS = [
   [22, 25, 70, 71, 72, 73, 74, 75, 76],
+  [33, 38, 70, 71, 72, 73, 74, 75, 76],
   [70, 71, 72, 73, 74, 75, 76],
   [53, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76],
 ] as const
@@ -2672,24 +2699,20 @@ export const SPIKE_WARN_JITTER_PX = 1.5
 export const SPIKE_CYCLE_MS = SPIKE_HIDDEN_MS + SPIKE_WARN_MS + SPIKE_EXTENDED_MS
 
 // Горгулья и нажимная плита.
-// Горгулья на столбе (14.11.2026; до этого — голова на стене): лист 22 кадра
-// 330×324, столб в кадре на x postX0..postX1 во всю высоту, пасть mouthX/Y
-// (GargoylePost_Fire.json). Столб ниже и выше кадра — плитка Gargoyle_Post.png
-// (51×120, бесшовная по вертикали, тот же масштаб) с перекрытием GARGOYLE_POST_OVERLAP.
-// Столб НЕ твёрдый: в сетку не попадает.
-export const GARGOYLE_FIRE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/GargoylePost_Fire.png`
-export const GARGOYLE_FIRE_JSON = `${import.meta.env.BASE_URL}assets/objects/traps/GargoylePost_Fire.json`
-export const GARGOYLE_POST_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Post.png`
-export const GARGOYLE_POST_OVERLAP = 3 // px кадра: плитка столба заходит под кадр, без шва
+// Горгулья В СТЕНЕ (17.11.2026, решение Андрея: на столбе 14.11 она была
+// «палкой посреди прохода»): голова вделана в настоящую стену карты
+// (tools/trap_rules.py — «#» на 2 клетки от пола), смотрит в проход. Лист —
+// прежний, до столба: 22 кадра 277×254, левый край кадра — срез шеи у стены,
+// пасть mouthX/Y (Gargoyle_Fire.json). Затылок (GARGOYLE_WALL_INSET px кадра)
+// уходит за грань стены и срезается маской — видна только морда, без зазора.
+export const GARGOYLE_FIRE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.png`
+export const GARGOYLE_FIRE_JSON = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fire.json`
+export const GARGOYLE_WALL_INSET = 16
 export const GARGOYLE_MOUTH_ABOVE_FLOOR = 60 // пасть над полом, px мира (≈1 клетка: бьёт и героя, и низкого зверя)
-// Высота столба: до потолка, если он не выше POST_CEIL_MAX клеток над полом,
-// иначе POST_FREE_H клеток. Та же формула — post_top в tools/trap_rules.py.
-export const GARGOYLE_POST_CEIL_MAX = 9
-export const GARGOYLE_POST_FREE_H = 3
 export const GARGOYLE_FIREBALL_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Gargoyle_Fireball.png`
 export const PLATE_UP_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Up.png`
 export const PLATE_DOWN_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Plate_Down.png`
-export const GARGOYLE_SCALE = 0.455 // кадр 330×324: столб и голова (281 px) → 2 клетки шириной
+export const GARGOYLE_SCALE = 0.4 // кадр 277×254; 0.8 от прежних 0.5 (17.11.2026) — голова ≈1.2 клетки в высоту
 export const GARGOYLE_FIRE_DAMAGE_FRAC = 0.3 // героя; парируется
 export const GARGOYLE_FIREBALL_SPEED = 600 // px/с
 export const GARGOYLE_FIREBALL_SCALE = 0.25
@@ -2710,11 +2733,23 @@ export const STALACTITE_DAMAGE_FRAC = 0.4
 // Пила на рельсе.
 export const SAW_BLADE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Saw_Blade.png`
 export const SAW_RAIL_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Saw_Rail.png`
-export const SAW_SPEED = 120 // px/с
+export const SAW_SPEED = 200 // px/с (120 → 200 17.11.2026)
 export const SAW_RADIUS = 28 // радиус попадания (диск ≈ клетка)
-export const SAW_CENTER_ABOVE_FLOOR = 6 // центр диска над полом: наполовину в рельсе
+export const SAW_CENTER_ABOVE_FLOOR = 6 // центр ЗОНЫ УРОНА диска над полом (не меняется)
+// Вид (17.11.2026): рельс в пазу пола — над видимым полом его верхние 4 px;
+// центр диска на 2 px над полом, нижняя половина срезана маской (ниже пола
+// +6 px её закрывает рельс). Видимый пол — линия клетки + sawSink (trapTints.ts).
+export const SAW_RAIL_TOP_ABOVE_SURFACE = 4
+export const SAW_BLADE_ABOVE_SURFACE = 2
+export const SAW_BLADE_MASK_BELOW_SURFACE = 6
 export const SAW_DAMAGE_FRAC = 0.3
-export const SAW_CHASE_WAIT_PX = 2 * 64 // враг в погоне ждёт, пока диск ближе 2 клеток
+// Враг в погоне ждёт, пока диск ближе этого. Держим ВРЕМЯ подхода диска, а не
+// пиксели: при 120 px/с было 2 клетки ≈ 1.07 с, при 200 px/с то же время ≈ 3.3 клетки.
+export const SAW_CHASE_WAIT_MS = 1070
+// Зверь в погоне за героем выше: ищет ступень в клетку по полу впереди не
+// дальше этого (17.11.2026, stepClimb.stepUpAhead).
+export const ENEMY_STEP_SEEK_TILES = 12
+export const SAW_CHASE_WAIT_PX = Math.round((SAW_SPEED * SAW_CHASE_WAIT_MS) / 1000)
 
 // =============================================================================
 // ТАРАН (переделка рывка, id 'dash') и ТЕЛЕКИНЕЗ (id 'telekinesis') — 13.11.2026
@@ -2726,6 +2761,10 @@ export const RAM_CARRY_PX = 3 * 64
 export const RAM_SHOVE_SPEED = 560 // px/с — чуть быстрее рывка (≈510): цель летит впереди героя
 export const RAM_CHAIN_FRAC = 0.5
 export const RAM_WALL_BONUS_FRAC = 0.25
+// 17.11.2026: босса Таран несёт на половину RAM_CARRY_PX; нажатие Тарана в
+// хитстане, питье или касте запоминается на DASH_BUFFER_MS.
+export const RAM_BOSS_CARRY_FRAC = 0.5
+export const DASH_BUFFER_MS = 250
 // Сколько после толчка враг остаётся «втолкнутым» — ранится любой ловушкой.
 export const SHOVE_EXPOSED_MS = 600
 // Телекинез: волна летит перед героем, отбрасывает врагов.

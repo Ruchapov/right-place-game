@@ -33,6 +33,12 @@
   5. Превью: D:\\dev\\right-place-art\\audits\\traps-2026-11-13-fix\\ (PNG) и
      уменьшенные JPG в docs/audits/traps-2026-11-13-fix/ — зум на каждую
      ловушку: слева нетронутый слой, справа очищенный со спрайтом ловушки.
+
+17.11.2026 — зоны ещё и у сундуков и бочек/кувшинов (точки пулов `reward` и
+`breakables`, trap_rules.object_rects — прямоугольники спрайтов в пикселях, а
+не клетки): декор, который лежит за сундуком или пересекается с бочкой,
+стирается тем же способом. Превью ловушек — docs/audits/traps-2026-11-17/,
+сундуков и бочек — docs/audits/decor-chests-2026-11-17/.
 """
 import hashlib
 import json
@@ -56,8 +62,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 WORK = Path(r'D:\dev\right-place-art\game-export\trap-clean')
 PRISTINE = WORK / 'pristine'
 STATE = WORK / 'state.json'
-AUDIT = Path(r'D:\dev\right-place-art\audits\traps-2026-11-14')
-DOCS_AUDIT = R.ROOT / 'docs' / 'audits' / 'traps-2026-11-14'
+AUDIT = Path(r'D:\dev\right-place-art\audits\traps-2026-11-17')
+DOCS_AUDIT = R.ROOT / 'docs' / 'audits' / 'traps-2026-11-17'
+DOCS_AUDIT_OBJ = R.ROOT / 'docs' / 'audits' / 'decor-chests-2026-11-17'
 CLEARED_TS = R.ROOT / 'src' / 'explore' / 'trapDecorCleared.ts'
 ENCODER = R.ROOT / 'tools' / 'encode_webp_ladder.mjs'
 T = R.TS
@@ -106,6 +113,13 @@ def clean_map(letter, state, previews):
         for cx, cy in R.zone_cells(k, t, grid):
             if 0 <= cy < H and 0 <= cx < W and grid[cy][cx] not in '#=':
                 zone[cy * T:(cy + 1) * T, cx * T:(cx + 1) * T] = True
+    # Сундуки, бочки и кувшины (17.11.2026) — пиксельные прямоугольники спрайтов.
+    objects = R.object_rects(slots)
+    for _k, _p, x0, y0, x1, y1 in objects:
+        a, b = max(0, int(x0)), min(W * T, int(np.ceil(x1)))
+        c, d = max(0, int(y0)), min(H * T, int(np.ceil(y1)))
+        zone[c:d, a:b] = True
+    zone &= R.empty_pixels(grid)
     hit = np.unique(labels[zone & opaque & ~fringe])
     hit = hit[hit > 0]
     # Кромку платформы (R.components: область шире FRINGE_W клеток или выше
@@ -153,11 +167,11 @@ def clean_map(letter, state, previews):
             state[f] = sha(R.ART / f)
 
     if previews:
-        make_previews(letter, txt, grid, traps, pristine, rgba)
+        make_previews(letter, txt, grid, traps, pristine, rgba, objects)
     return {'letter': letter, 'items': len(whole), 'px': int(removed.sum()), 'big': big, 'cleared': cleared, 'sizes': sizes}
 
 
-def make_previews(letter, txt, grid, traps, pristine, cleaned):
+def make_previews(letter, txt, grid, traps, pristine, cleaned, objects=()):
     import place_traps as P
     AUDIT.mkdir(parents=True, exist_ok=True)
     DOCS_AUDIT.mkdir(parents=True, exist_ok=True)
@@ -180,8 +194,27 @@ def make_previews(letter, txt, grid, traps, pristine, cleaned):
     small = all_img.resize((int(all_img.width * 900 / all_img.width), int(all_img.height * 900 / all_img.width)))
     small.save(DOCS_AUDIT / f'{letter}_all.jpg', quality=70)
     colors = {'hazard': (255, 60, 60), 'gargoyles': (255, 160, 0), 'stalactites': (90, 200, 255), 'saws': (200, 90, 255)}
+    # Сундуки и бочки: превью только там, где что-то стёрто.
+    DOCS_AUDIT_OBJ.mkdir(parents=True, exist_ok=True)
+    m = {}
+    for k, p, x0, y0, x1, y1 in objects:
+        a, b = max(0, int(x0) - T), min(W, int(x1) + T)
+        c, d = max(0, int(y0) - T), min(H, int(y1) + T // 2)
+        if np.array_equal(pristine[c:d, a:b], cleaned[c:d, a:b]):
+            continue
+        m[k] = m.get(k, 0) + 1
+        before = full_before.crop((a, c, b, d))
+        dd = ImageDraw.Draw(before)
+        dd.rectangle([x0 - a, y0 - c, x1 - a - 1, y1 - c - 1], outline=(255, 220, 0), width=2)
+        after = full_after.crop((a, c, b, d))
+        both = Image.new('RGB', (before.width * 2 + 6, before.height), (0, 0, 0))
+        both.paste(before.convert('RGB'), (0, 0))
+        both.paste(after.convert('RGB'), (before.width + 6, 0))
+        both.save(DOCS_AUDIT_OBJ / f'{letter}_{k}_{p[0]}_{p[1]}.jpg', quality=70)
     n = {}
     for k, t in traps:
+        if k == 'hazard':
+            continue
         n[k] = n.get(k, 0) + 1
         cells = R.zone_cells(k, t, grid)
         x0 = max(0, (min(c[0] for c in cells) - 2) * T)

@@ -59,6 +59,8 @@ import type { GatekeeperFrames } from './explore/entities/gatekeeper'
 import { createBossSystem, redrawBossHpBar, bossBox } from './explore/entities/boss'
 import { BOSS_PERCEPTION } from './explore/perception'
 import { decayStepLift } from './explore/stepClimb'
+import { bakeStoneTint } from './explore/entities/stoneTint'
+import { TRAP_SRC_LUM, TRAP_TINTS } from './explore/trapTints'
 import { canSeePlayer } from './explore/vision'
 import { createFencerSystem, fencerSwordHit } from './explore/entities/fencer'
 import { createGravediggerSystem } from './explore/entities/gravedigger'
@@ -111,7 +113,7 @@ function withoutCleared<P extends { x: number; y: number }>(points: P[], cleared
   if (!cleared || cleared.length === 0) return points
   return points.filter((p) => !cleared.some(([x, y]) => Math.abs(p.x - x) < 0.01 && Math.abs(p.y - y) < 0.01))
 }
-import { createShoveSystem, isHeavy } from './explore/entities/shove'
+import { createShoveSystem } from './explore/entities/shove'
 import { C as Theme } from './ui/theme'
 import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
@@ -1212,8 +1214,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // выход в idle после удара N (0 — нет), нажата ли атака ещё раз во время
   // удара, нанесён ли урон этого удара. В refs, а не в setup(): их гасят
   // triggerHurt и triggerDeath (уровень компонента).
-  const comboStageRef = useRef<0 | 1 | 2 | 3>(0)
-  const comboExitRef = useRef<0 | 1 | 2 | 3>(0)
+  const comboStageRef = useRef<0 | 1 | 2 | 3 | 4>(0)
+  const comboExitRef = useRef<0 | 1 | 2 | 3 | 4>(0)
   const comboQueuedRef = useRef(false)
   const comboHitDoneRef = useRef(false)
   // Доля maxHp, с которой оберег поднимает. Из КАТАЛОГА, не литерал: витрина
@@ -1705,6 +1707,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   const parryStrikeMsRef = useRef(0)
   // Сон босса до заставки (13.11.2026): ставит setup(), зовут damageBoss и др.
   const bossAsleepRef = useRef<() => boolean>(() => false)
+  // Можно ли сейчас толкать босса Тараном (17.11.2026): не в заставке, не во
+  // время превращения Настоятеля и не пока Змей под землёй (invulnerable).
+  const canShoveBossRef = useRef<() => boolean>(() => false)
   const wakeBossRef = useRef<(b: Boss) => void>(() => {})
   // ?debugSkins=1: перебор облика в забеге (ставит setup()) и подпись кнопок.
   const debugSkinCycleRef = useRef<(what: 'armor' | 'slash' | 'cloak') => void>(() => {})
@@ -2951,6 +2956,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // Листы героя с перекрашенным плащом (Портной): своих текстур нет в кэше
     // Assets, и app.destroy их не снимет — уничтожаются в cleanup.
     const cloakBaked: RenderTexture[] = []
+    // Камень горгулий и сталактитов, перекрашенный под карту (17.11.2026,
+    // entities/stoneTint.ts) — свои текстуры, уничтожаются в cleanup.
+    const stoneBaked: RenderTexture[] = []
+    const stoneRebakes: ((r: NonNullable<typeof app>['renderer']) => Promise<void>)[] = []
     // Перерисовать плащ после возврата WebGL (нарисованное в видеопамяти теряется).
     let cloakRebake: ((r: NonNullable<typeof app>['renderer']) => Promise<void>) | null = null
     let glUnbind: (() => void) | null = null
@@ -3788,7 +3797,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         const onRestored = () => {
           console.warn('Explore: WebGL-контекст восстановлен')
           const done = () => { if (!cancelled) setGlState('restored') }
-          if (cloakRebake && app) cloakRebake(app.renderer).then(done, (e) => { console.error('Explore: плащ не перерисовался', e); done() })
+          // Перекрашенный плащ и камень ловушек (17.11.2026) — заново: нарисованное
+          // в RenderTexture после возврата контекста пустое.
+          const redo = async (r: NonNullable<typeof app>['renderer']) => {
+            if (cloakRebake) await cloakRebake(r)
+            for (const fn of stoneRebakes) await fn(r)
+          }
+          if (app) redo(app.renderer).then(done, (e) => { console.error('Explore: перекраска не перерисовалась', e); done() })
           else done()
         }
         canvasEl.addEventListener('webglcontextlost', onLost, false)
@@ -3969,6 +3984,29 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // герой, враги и предметы добавляются в мир ПОЗЖЕ и рисуются над ним.
       // Блик шипов — по образцу 29.10.2026 (spikeGlintAlpha), одна фаза на все.
       const trapsReduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+      // Камень ловушек под карту (17.11.2026): цвет кладки у самих ловушек
+      // замерен по слою (tools/measure_trap_tint.py → trapTints.ts); текстура
+      // перекрашивается один раз здесь. Без WebGL — исходный цвет.
+      const trapTint = TRAP_TINTS[resolvedMapFile ?? ''] ?? {}
+      if (app.renderer.type === RendererType.WEBGL) {
+        const bake = async (frames: Texture[], target: [number, number, number] | undefined, srcLum: number): Promise<Texture[]> => {
+          if (!target || frames.length === 0 || frames[0] === Texture.EMPTY) return frames
+          try {
+            const r = await bakeStoneTint(app!.renderer, frames, { target, srcLum })
+            stoneBaked.push(r.target)
+            stoneRebakes.push(r.rebake)
+            return r.textures
+          } catch (e) {
+            console.error('Explore: камень ловушки не перекрасился — исходный цвет', e)
+            return frames
+          }
+        }
+        if (chosenGargoyles.length > 0) trapArt.textures.gargoyleFrames = await bake(trapArt.textures.gargoyleFrames, trapTint.gargoyle, TRAP_SRC_LUM.gargoyle)
+        if (chosenStalactites.length > 0) {
+          trapArt.textures.stalactite = (await bake([trapArt.textures.stalactite], trapTint.stalactite, TRAP_SRC_LUM.stalactite))[0]
+          trapArt.textures.rubble = (await bake([trapArt.textures.rubble], trapTint.stalactite, TRAP_SRC_LUM.rubble))[0]
+        }
+      }
       const trapsLayerIndex = worldContainer.children.length
       // Урон ловушек по врагу — не урон героя: ни силу, ни ловкость он не растит
       // и в потолок нанесённого урона сервера не идёт. Аккумулятор-сток.
@@ -3989,6 +4027,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             ...trapArt.textures,
           },
           gargoyle: trapArt.gargoyle,
+          sawSink: (slot) => trapTint.sawSink?.[`${slot.x0},${slot.y}`] ?? 0,
           enemies: enemiesRef,
           heroBox: () => getPlayerCombatBox(),
           heroSpikeBody: () => ({
@@ -4108,7 +4147,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // Таран и Телекинез (13.11.2026): толкание — общая система shove.ts.
         shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx) =>
           shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx) ?? false,
-        canCarry: (enemy) => !enemy.runner && !isHeavy(enemy),
+        // С 17.11.2026 Таран несёт всех живых (решение Андрея).
+        canCarry: (enemy) => !enemy.dead,
+        canShoveBoss: () => canShoveBossRef.current(),
         telekinesisWave: telekinesisWaveRef,
         telekinesisPushMult,
         onSkillUse: (skillId) => { skillUsesRef.current[skillId] += 1 },
@@ -4279,19 +4320,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // ОДИН раз здесь, в видеопамяти (entities/cloakTint.ts), и дальше бой
       // играет уже перекрашенные кадры. Пепельный — без перекраски вовсе. Без
       // WebGL перекрашивать нечем — плащ остаётся исходным, громко в консоль.
-      async function bakeHeroSet(set: typeof assets.hero, cloak: RunSkins['cloak']): Promise<typeof assets.hero> {
+      // 17.11.2026: и цвет удара у листа комбо (для него нет листов
+      // attack_<цвет>) — тем же проходом, вторым каналом.
+      async function bakeHeroSet(set: typeof assets.hero, cloak: RunSkins['cloak'], slash: RunSkins['slash']): Promise<typeof assets.hero> {
         const color = cloakById(cloak).color
-        if (color === null) return set
+        if (color === null && slash === 'none') return set
         if (app!.renderer.type !== RendererType.WEBGL) {
-          console.warn('Explore: без WebGL плащ не перекрашивается — герой в исходном плаще')
+          console.warn('Explore: без WebGL плащ и цвет удара комбо не перекрашиваются — исходный вид')
           return set
         }
-        const r = await bakeHeroCloak(app!.renderer, set, color)
+        const r = await bakeHeroCloak(app!.renderer, set, color, slash)
         cloakBaked.push(...r.baked)
         cloakRebake = r.rebake
         return r.hero
       }
-      const heroSet = await bakeHeroSet(assets.hero, skinsRef.current.cloak)
+      const heroSet = await bakeHeroSet(assets.hero, skinsRef.current.cloak, skinsRef.current.slash)
       if (cancelled) return
       // Листы боя — в видеопамять СЕЙЧАС, на экране подготовки, а не в кадре
       // первого показа (13.11.2026: превращение Настоятеля впервые рисовало
@@ -4334,10 +4377,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Комбо (16.11.2026): кадры каждого удара и выхода в idle — массивы
       // текстур листа Hero_Combo в нужном порядке, собранные один раз.
       // comboHitIndex — номер кадра урона ВНУТРИ массива удара.
-      const comboStrikeFrames = C.HERO_COMBO_STRIKES.map((st) => st.frames.map((i) => assets.heroCombo[i]))
-      const comboExitFrames = C.HERO_COMBO_EXITS.map((ex) => ex.map((i) => assets.heroCombo[i]))
+      // С 17.11.2026 лист комбо — в наборе героя (облик, плащ, цвет удара) и
+      // пересобирается в ?debugSkins (let).
+      const comboFramesOf = (combo: Texture[]) => ({
+        strikes: C.HERO_COMBO_STRIKES.map((st) => st.frames.map((i) => combo[i])),
+        exits: C.HERO_COMBO_EXITS.map((ex) => ex.map((i) => combo[i])),
+      })
+      let comboStrikeFrames = comboFramesOf(heroSet.combo).strikes
+      let comboExitFrames = comboFramesOf(heroSet.combo).exits
       const comboHitIndex = C.HERO_COMBO_STRIKES.map((st) => (st.frames as readonly number[]).indexOf(st.hit))
-      const comboTextureSets = new Set<Texture[]>([...comboStrikeFrames, ...comboExitFrames])
+      let comboTextureSets = new Set<Texture[]>([...comboStrikeFrames, ...comboExitFrames])
 
       // Листы «под событие» бывают null: события этого вида в забеге нет, и
       // лист не запрашивался. Спрашивать его можно только там, куда без события
@@ -4693,7 +4742,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           if (what === 'cloak') s.cloak = next(CLOAKS.map((x) => x.id), s.cloak)
           const oldBaked = cloakBaked.splice(0)
           loadHeroSheets({ armor: s.armor, slash: s.slash })
-            .then((set) => bakeHeroSet(set, s.cloak))
+            .then((set) => bakeHeroSet(set, s.cloak, s.slash))
             .then((set) => {
               if (cancelled || hero.destroyed) return
               const old: Record<string, Texture[]> = { idleFrames, runFrames, jumpFrames, landFrames, attackFrames, drinkFrames, hurtFrames, deathFrames, castFrames, dashFrames, blockFrames }
@@ -4701,9 +4750,17 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
                 idleFrames: set.idle, runFrames: set.run, jumpFrames: set.jump, landFrames: set.land, attackFrames: set.attack,
                 drinkFrames: set.drink, hurtFrames: set.hurt, deathFrames: set.death, castFrames: set.cast, dashFrames: set.dash, blockFrames: set.block,
               }
+              // Комбо (17.11.2026): удар или выход, что сейчас на спрайте, — на
+              // тот же номер массива нового листа.
+              const fc = comboFramesOf(set.combo)
+              comboStrikeFrames.forEach((arr, i) => { old[`s${i}`] = arr; fresh[`s${i}`] = fc.strikes[i] })
+              comboExitFrames.forEach((arr, i) => { old[`e${i}`] = arr; fresh[`e${i}`] = fc.exits[i] })
               const key = Object.keys(old).find((k) => old[k] === hero.textures)
               const frame = hero.currentFrame
               const playing = hero.playing
+              comboStrikeFrames = fc.strikes
+              comboExitFrames = fc.exits
+              comboTextureSets = new Set<Texture[]>([...comboStrikeFrames, ...comboExitFrames])
               idleFrames = set.idle; runFrames = set.run; jumpFrames = set.jump; landFrames = set.land
               attackFrames = set.attack; drinkFrames = set.drink; hurtFrames = set.hurt; deathFrames = set.death
               castFrames = set.cast; dashFrames = set.dash; blockFrames = set.block
@@ -5176,6 +5233,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         takeDamage: (amount: number, source?: DamageSource) => takeDamageRef.current(amount, source),
         dashing: dashingRef,
         slowHero: (ms) => { slowMsLeft = Math.max(slowMsLeft, ms) },
+        mudPuddles: () => {
+          const ex = eventAssets.nc.beetle?.extra
+          return ex ? [ex.puddle1, ex.puddle2, ex.puddle3].filter((t): t is Texture => t !== undefined) : []
+        },
+        heroOnGround: () => phys.onGround,
       })
       const ncDeps: NcEnemyDeps = {
         trapBlocks: (e, leadX, feetY) => trapsSystem?.blocksStep(e, leadX, feetY) ?? false,
@@ -6253,13 +6315,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         return true
       }
 
-      // КОМБО ИЗ ТРЁХ УДАРОВ (16.11.2026, docs/explore-engine.md). Только на
+      // КОМБО ИЗ ЧЕТЫРЁХ УДАРОВ (16.11.2026, с 17.11.2026 — четыре; docs/explore-engine.md). Только на
       // земле; в воздухе — прежний одиночный удар (startPlayerAttack). Первое
-      // нажатие — удар 1; нажатие во время удара 1 или 2 — следующий удар сразу
+      // нажатие — удар 1; нажатие во время ударов 1–3 — следующий удар сразу
       // после последнего кадра текущего; не нажали — выход в idle. ATTACK_COOLDOWN
       // между ударами не действует. Урон — applyAttackHit на кадре урона удара,
       // хитбокс — от ЦЕНТРА героя вперёд на rangePx, высотой PLAYER_HEIGHT.
-      function startComboStrike(stage: 1 | 2 | 3) {
+      function startComboStrike(stage: 1 | 2 | 3 | 4) {
         // Плащ «Клинок» ускоряет и комбо — как одиночный удар.
         const swingTime = 1 - cloakBonus(skinsRef.current.cloak, skinsRef.current.cloakLevel).attackSpeedFrac
         comboStageRef.current = stage
@@ -6292,7 +6354,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         startComboStrike(1)
         return true
       }
-      function playComboExit(afterStage: 1 | 2 | 3) {
+      function playComboExit(afterStage: 1 | 2 | 3 | 4) {
         attackingRef.current = false
         comboStageRef.current = 0
         comboQueuedRef.current = false
@@ -6312,13 +6374,26 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Возвращает, началась ли анимация: false — герой мёртв/в хитстане/
       // пьёт, dash уже идёт, либо идёт замах (его dash не перебивает —
       // см. startPlayerAttack выше).
-      function startPlayerDash(): boolean {
-        if (deathRef.current || hurtTimerRef.current > 0 || drinkingRef.current) return false
-        // Только с земли. В воздухе отказ — тем же способом, что и остальные
-        // отказы выше: рывок не должен работать вторым прыжком и вытаскивать
-        // героя по горизонтали над ямой.
+      // 17.11.2026 (правки по телефону): Таран ПРЕРЫВАЕТ удар мечом и комбо —
+      // удар, не дошедший до кадра урона, урона не наносит. 'later' — Таран
+      // сейчас нельзя по временной причине (хитстан, оглушение, питьё, каст):
+      // skills.ts запомнит нажатие на DASH_BUFFER_MS. В воздухе и мёртвым —
+      // просто отказ, без запоминания (в прыжке Таран не работает).
+      function startPlayerDash(): boolean | 'later' {
+        if (deathRef.current) return false
         if (!phys.onGround) return false
-        if (dashingRef.current || attackingRef.current || castingRef.current) return false
+        if (dashingRef.current) return false
+        if (hurtTimerRef.current > 0 || drinkingRef.current || castingRef.current || staggerMsLeft > 0 || heroStunMs > 0) return 'later'
+        if (attackingRef.current || comboStageRef.current !== 0 || comboExitRef.current !== 0) {
+          attackingRef.current = false
+          attackActiveRef.current = false
+          attackActiveTimerRef.current = 0
+          attackHitDoneRef.current = true
+          comboHitDoneRef.current = true
+          comboStageRef.current = 0
+          comboExitRef.current = 0
+          comboQueuedRef.current = false
+        }
         dashingRef.current = true
         dashStartXRef.current = phys.x
         playSfx('dash')
@@ -6789,7 +6864,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // KNOCKBACK_MS. Не боссу (его ведёт boss.ts), не Привратнику с поднятой
       // дверью и не замороженному льдом (лёд держит на месте). Повторный удар
       // начинает отъезд заново, а не складывает.
-      // С 16.11.2026 отскок только у СИЛЬНОГО удара (удар 3 комбо, крит):
+      // С 16.11.2026 отскок только у СИЛЬНОГО удара (удар 4 комбо, крит):
       // STRONG_KNOCKBACK_PX за STRONG_KNOCKBACK_MS с замедлением к концу.
       function startKnockback(enemy: Enemy, sourceX: number, px: number = C.KNOCKBACK_PX, ms: number = C.KNOCKBACK_MS) {
         if (enemy.kind === 'gatekeeper' && enemy.gatekeeper?.guard === 'up') return
@@ -6829,8 +6904,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
       }
 
-      // opts (16.11.2026, комбо): damageMult — доля обычного урона удара (удар 3
-      // комбо — 1.5); strong — сильный удар (удар 3): полный хитстан, отскок,
+      // opts (16.11.2026, комбо): damageMult — доля обычного урона удара (удар 4
+      // комбо — 1.5); strong — сильный удар (удар 4): полный хитстан, отскок,
       // хитстоп 80 мс. Крит — тоже сильный. Остальные удары мечом (1, 2 комбо и
       // удар в воздухе) — лёгкие: applyLightHitReaction.
       function applyAttackHit(opts: { damageMult: number; strong: boolean } = { damageMult: 1, strong: false }) {
@@ -6927,7 +7002,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               if (bladeBleeding) healPlayerByClassRef.current((attackDamageDealtRef.current - swordDealtBefore) * blood.bladeHealFrac)
               lifesteal(attackDamageDealtRef.current - swordDealtBefore)
               if (crit) critFlashSystem!.strike(overlapCenter(hb.x, hb.width, body.x, body.w), overlapCenter(hb.y, hb.height, body.y, body.h), enemy.sprite)
-              // Сильный удар — удар 3 комбо или крит (16.11.2026).
+              // Сильный удар — удар 4 комбо или крит (16.11.2026).
               const strongHit = opts.strong || crit
               const swordDealt = attackDamageDealtRef.current - swordDealtBefore
               if (swordDealt > 0) damageNumberSystem!.spawn(body.x + body.w / 2, enemy.y - 6, swordDealt, strongHit ? 'big' : 'normal')
@@ -7117,6 +7192,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         return !bossIntroPlayed && b !== null && !b.dead && b.hp > 0
       }
       bossAsleepRef.current = bossAsleep
+      canShoveBossRef.current = () => {
+        const b = bossRef.current
+        if (!b || b.dead || bossIntroMs !== null) return false
+        if (b.abbot?.transforming) return false
+        if (b.nc?.invulnerable) return false
+        return true
+      }
       const bossIntroFrom = { x: 0, y: 0, s: 1 }
       const setTouchControlsHidden = (hidden: boolean) => {
         const tc = document.querySelector<HTMLElement>('[data-touch-controls]')
@@ -7621,11 +7703,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           // со скиллом slash, который использует ту же анимацию). Результат
           // здесь не нужен: нажатие в неподходящий момент — тихий no-op,
           // ровно как было инлайн.
-          // Комбо (16.11.2026): на земле — удары комбо; нажатие во время удара 1
-          // или 2 ставит следующий, во время удара 3 — ничего; в воздухе —
-          // прежний одиночный удар.
-          if (comboStageRef.current === 1 || comboStageRef.current === 2) comboQueuedRef.current = true
-          else if (comboStageRef.current === 3) { /* последний удар — дальше выход */ }
+          // Комбо (16.11.2026; 17.11.2026 — четыре удара): на земле — удары
+          // комбо; нажатие во время ударов 1–3 ставит следующий, во время
+          // последнего — ничего; в воздухе — прежний одиночный удар.
+          if (comboStageRef.current !== 0 && comboStageRef.current < C.HERO_COMBO_LAST) comboQueuedRef.current = true
+          else if (comboStageRef.current === C.HERO_COMBO_LAST) { /* последний удар — дальше выход */ }
           else if (phys.onGround) startCombo()
           else startPlayerAttack()
         }
@@ -8304,11 +8386,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             attackHitboxRef.current = attackFacingRef.current === 1
               ? { x: cx, y: phys.y, width: strike.rangePx, height: C.PLAYER_HEIGHT }
               : { x: cx - strike.rangePx, y: phys.y, width: strike.rangePx, height: C.PLAYER_HEIGHT }
-            applyAttackHit({ damageMult: strike.damageMult, strong: stage === 3 })
+            applyAttackHit({ damageMult: strike.damageMult, strong: stage === C.HERO_COMBO_LAST })
           }
           // Удар мог оборвать блок фехтовальщика (applyAttackHit → damageEnemy).
           if (comboStageRef.current === stage && (hero.currentFrame >= comboStrikeFrames[stage - 1].length - 1 || !hero.playing)) {
-            if (comboQueuedRef.current && stage < 3) startComboStrike((stage + 1) as 2 | 3)
+            if (comboQueuedRef.current && stage < C.HERO_COMBO_LAST) startComboStrike((stage + 1) as 2 | 3 | 4)
             else playComboExit(stage)
           }
         } else if (comboExitRef.current !== 0) {
@@ -8693,6 +8775,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       if (swayTextures) for (const t of swayTextures.values()) t.destroy(true)
       // Перекрашенные листы героя — свои текстуры, кэш Assets их не держит.
       for (const t of cloakBaked) t.destroy(true)
+      for (const t of stoneBaked) t.destroy(true)
+      stoneBaked.length = 0
       cloakBaked.length = 0
       glUnbind?.()
       glUnbind = null
@@ -9210,25 +9294,31 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         </div>
       )}
 
-      {/* Таймер Беглеца (11.11.2026; 13.11.2026 — крупнее и на виду: на
-          телефоне его не заметили в узкой щели между плитой HP и шестерёнкой).
-          По центру экрана сразу под плитой HP, цифры крупнее обелисковых,
-          последние 10 с — красные и пульсируют. Появляется с первого тика
-          бегства (onHud). Тапы не ловит. */}
+      {/* Таймер Беглеца (11.11.2026; 13.11.2026 — крупнее; 17.11.2026 — по
+          просьбе Андрея СРАЗУ СПРАВА от плиты HP, на её высоте: левый край =
+          левый край плиты + HP_FRAME_W + 8 px, по вертикали — по центру плиты,
+          значок и цифры по высоте плиты). Если в том же забеге идёт таймер
+          обелисков — он остаётся на своём месте (в просвете справа от плиты),
+          а таймер Беглеца уходит строкой ПОД плиту, у её левого края, чтобы
+          они не пересекались. Последние 10 с — красные и пульсируют. Тапы не
+          ловит. */}
       {ready && runnerHudSeconds !== null && (
         <div
           data-runner-hud=""
           style={{
             position: 'fixed',
-            top: `calc(var(--rp-safe-top, 0px) + 6px + ${C.HP_FRAME_H} + ${obeliskHud?.active ? 52 : 10}px)`,
-            left: 'var(--rp-safe-left, 0px)',
-            right: 'var(--rp-safe-right, 0px)',
+            top: obeliskHud?.active
+              ? `calc(var(--rp-safe-top, 0px) + 6px + ${C.HP_FRAME_H} + 6px)`
+              : 'calc(var(--rp-safe-top, 0px) + 6px)',
+            left: obeliskHud?.active
+              ? 'calc(var(--rp-safe-left, 0px) + 8px)'
+              : `calc(var(--rp-safe-left, 0px) + 8px + ${C.HP_FRAME_W} + 8px)`,
+            height: obeliskHud?.active ? `calc(${C.HP_FRAME_H} * 0.6)` : C.HP_FRAME_H,
             zIndex: 1001,
             display: 'flex',
             flexDirection: 'row',
-            justifyContent: 'center',
             alignItems: 'center',
-            gap: 6,
+            gap: 3,
             pointerEvents: 'none',
           }}
         >
@@ -9236,12 +9326,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             src={C.EVENT_ICON_SRC.runner}
             alt=""
             draggable={false}
-            style={{ width: 'clamp(30px, 9vmin, 44px)', height: 'clamp(30px, 9vmin, 44px)', objectFit: 'contain', flexShrink: 0 }}
+            style={{ width: `calc(${C.HP_FRAME_H} * 0.42)`, height: `calc(${C.HP_FRAME_H} * 0.42)`, objectFit: 'contain', flexShrink: 0 }}
           />
           <div
             style={{
               fontFamily: C.FONT_DISPLAY,
-              fontSize: 'clamp(30px, 9.5vmin, 46px)',
+              fontSize: `calc(${C.HP_FRAME_H} * 0.36)`,
               fontWeight: 900,
               letterSpacing: '0.02em',
               lineHeight: 1,

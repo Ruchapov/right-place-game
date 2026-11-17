@@ -272,44 +272,7 @@
       27
     ]
   ],
-  "gargoyles": [
-    {
-      "x": 75,
-      "y": 11,
-      "dir": -1,
-      "plate": [
-        70,
-        11
-      ]
-    },
-    {
-      "x": 45,
-      "y": 11,
-      "dir": 1,
-      "plate": [
-        49,
-        11
-      ]
-    },
-    {
-      "x": 101,
-      "y": 11,
-      "dir": 1,
-      "plate": [
-        107,
-        11
-      ]
-    },
-    {
-      "x": 81,
-      "y": 11,
-      "dir": 1,
-      "plate": [
-        85,
-        11
-      ]
-    }
-  ],
+  "gargoyles": [],
   "stalactites": [
     {
       "x": 10,
@@ -352,7 +315,7 @@
   "trapsPerRun": {
     "spikes": 7,
     "stalactites": 3,
-    "gargoyles": 3,
+    "gargoyles": 0,
     "saws": 2
   }
 }

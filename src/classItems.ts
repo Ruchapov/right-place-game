@@ -166,7 +166,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     id: 'ring_ash',
     nameRu: 'Кольцо пепла',
     icon: 'ring_ash.png',
-    desc: 'Рывок оставляет тлеющий след, который обжигает врагов.',
+    desc: 'Таран оставляет тлеющий след, который обжигает врагов.',
     useLine: 'Надевается в гнездо Дланей иного места.',
     sellPrice: 1000,
     takesCell: true,

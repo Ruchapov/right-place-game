@@ -120,6 +120,13 @@ for (const [name, count] of Object.entries(HERO_COUNTS)) {
   for (const f of files) addSheet(f, val('HERO_BLOCK_CELL_W'), val('HERO_BLOCK_CELL_H'), val('HERO_BLOCK_COUNT'), val('HERO_BLOCK_COLS'))
   heroGroups.block = files
 }
+// Комбо (17.11.2026): исходный лист, три облика брони и две маски (плащ и
+// росчерки удара) — одна раскладка на всех, как у остальных листов героя.
+{
+  const files = ['sprites/hero/Hero_Combo.png', 'sprites/hero/skins/armor_crimson/Hero_Combo.png', 'sprites/hero/skins/armor_gold/Hero_Combo.png', 'sprites/hero/skins/armor_violet/Hero_Combo.png', 'sprites/hero/skins/masks/Hero_Combo_cloak.png', 'sprites/hero/skins/masks/Hero_Combo_slash.png']
+  for (const f of files) addSheet(f, val('HERO_COMBO_CELL_W'), val('HERO_COMBO_CELL_H'), val('HERO_COMBO_COUNT'), val('HERO_COMBO_COLS'))
+  heroGroups.combo = files
+}
 
 // --- Масштаб отрисовки (px мира на px листа) — откуда число, в комментарии ---
 const HERO = val('HERO_DRAW_H') / val('HERO_CELL_H') // 140/296
@@ -298,7 +305,7 @@ async function buildGroup(files, manifest) {
 
 // Одиночные картинки без клеток — только коэффициент.
 const PLAIN = {
-  'objects/traps/GargoylePost_Fire.png': () => val('GARGOYLE_SCALE'), // кадры режет loadTrapArt по логическому размеру
+  'objects/traps/Gargoyle_Fire.png': () => val('GARGOYLE_SCALE'), // голова в стене (17.11.2026); кадры режет loadTrapArt по логическому размеру
   'vfx/Boss_Wave.png': () => val('BOSS_WAVE_DRAW_H') / val('BOSS_WAVE_CELL_H'), // режет loadBossWave пополам по логическим клеткам
 }
 async function buildPlain(rel, s, manifest) {

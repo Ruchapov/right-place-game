@@ -1,4 +1,4 @@
-import { Assets, Geometry, GlProgram, Mesh, RenderTexture, Rectangle, Shader, Texture, UniformGroup, type Renderer } from 'pixi.js'
+import { Assets, Geometry, GlProgram, Mesh, RenderTexture, Rectangle, Shader, Texture, UniformGroup, type Renderer, type TextureSource } from 'pixi.js'
 import { loadTexture } from '../spriteLoader'
 import type { CloakColor } from '../../skins'
 
@@ -49,7 +49,10 @@ in vec2 vUV;
 out vec4 finalColor;
 uniform sampler2D uTexture;
 uniform sampler2D uMask;
+uniform sampler2D uSlashMask;
 uniform vec3 uHsv;
+uniform vec3 uSlashRgb;
+uniform vec2 uOn;
 vec3 hsv2rgb(vec3 c) {
   vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
@@ -58,14 +61,27 @@ vec3 hsv2rgb(vec3 c) {
 void main() {
   vec4 c = texture(uTexture, vUV);
   if (c.a <= 0.0) { finalColor = vec4(0.0); return; }
-  float m = texture(uMask, vUV).r;
   vec3 rgb = c.rgb / c.a;
   float v = max(rgb.r, max(rgb.g, rgb.b));
-  float ink = clamp((v - 0.05) / 0.10, 0.0, 1.0);
-  float nv = uHsv.z * pow(clamp(v / 0.19, 0.0, 4.0), 0.6);
-  nv = mix(v, clamp(nv, 0.0, 1.0), ink);
-  vec3 n = hsv2rgb(vec3(uHsv.x, uHsv.y, nv));
-  vec3 o = mix(rgb, n, m);
+  vec3 o = rgb;
+  if (uOn.x > 0.5) {
+    float m = texture(uMask, vUV).r;
+    float ink = clamp((v - 0.05) / 0.10, 0.0, 1.0);
+    float nv = uHsv.z * pow(clamp(v / 0.19, 0.0, 4.0), 0.6);
+    nv = mix(v, clamp(nv, 0.0, 1.0), ink);
+    vec3 n = hsv2rgb(vec3(uHsv.x, uHsv.y, nv));
+    o = mix(rgb, n, m);
+  }
+  // Цвет удара (17.11.2026, только лист комбо): белый росчерк под маской —
+  // цвет удара с яркостью росчерка; самые яркие пиксели светлеют к белому.
+  // Подобрано по листам attack_<цвет>.png (docs/explore-engine.md, «Правки
+  // 17.11»): средний цвет полос яркости совпал до 3–10 единиц из 255.
+  if (uOn.y > 0.5) {
+    float ms = texture(uSlashMask, vUV).r;
+    vec3 sc = clamp(uSlashRgb * (v / 0.886), 0.0, 1.0);
+    sc = mix(sc, vec3(1.0), clamp((v - 0.9) / 0.1, 0.0, 1.0) * 0.45);
+    o = mix(o, sc, ms);
+  }
   finalColor = vec4(o * c.a, c.a);
 }
 `
@@ -84,6 +100,20 @@ export type BakedSheet = { frames: Texture[]; target: RenderTexture; rebake: (re
  * Кадры результата — те же прямоугольники, что у исходных, на новой текстуре.
  */
 export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], maskSrc: string, color: Exclude<CloakColor, null>): Promise<BakedSheet> {
+  return bakeHeroSheet(renderer, frames, { cloak: { maskSrc, color } })
+}
+
+/**
+ * Что перекрасить в листе героя (17.11.2026): плащ по маске плаща и/или цвет
+ * удара по маске росчерков (сейчас — только у листа комбо: для него нет листов
+ * attack_<цвет>). rgb — 0..255.
+ */
+export type HeroBakeSpec = {
+  cloak?: { maskSrc: string; color: Exclude<CloakColor, null> }
+  slash?: { maskSrc: string; rgb: readonly [number, number, number] }
+}
+
+export async function bakeHeroSheet(renderer: Renderer, frames: Texture[], spec: HeroBakeSpec): Promise<BakedSheet> {
   const source = frames[0].source
   // Тот же логический размер и тот же коэффициент, что у листа (16.11.2026,
   // «Видеопамять забега»): у листа по размеру экрана пикселей в res² меньше —
@@ -91,7 +121,7 @@ export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], mask
   // копия — того же размера атласа, а не всей сетки клеток.
   const target = RenderTexture.create({ width: source.width, height: source.height, resolution: source.resolution })
   target.source.scaleMode = 'linear' // как у исходных листов (spriteLoader)
-  const rebake = (r: Renderer) => renderInto(r, frames, maskSrc, color, target)
+  const rebake = (r: Renderer) => renderInto(r, frames, spec, target)
   await rebake(renderer)
   const out = frames.map((f) => new Texture({
     source: target.source,
@@ -102,17 +132,24 @@ export async function bakeCloakSheet(renderer: Renderer, frames: Texture[], mask
   return { frames: out, target, rebake }
 }
 
-async function renderInto(renderer: Renderer, frames: Texture[], maskSrc: string, color: Exclude<CloakColor, null>, target: RenderTexture): Promise<void> {
+async function renderInto(renderer: Renderer, frames: Texture[], spec: HeroBakeSpec, target: RenderTexture): Promise<void> {
   const source = frames[0].source
   const w = source.width
   const h = source.height
-  // Маска — того же размера и раскладки, что лист (tools/make_sprite_res.mjs
-  // кладёт их в одну группу); через loadTexture — чтобы ей встали тот же
-  // коэффициент и логический размер. Без учёта забега: выгружается ниже сразу.
-  const mask = await loadTexture(maskSrc, { track: false })
-  if (mask.source.width !== w || mask.source.height !== h) {
-    throw new Error(`Маска плаща ${maskSrc}: ${mask.source.width}×${mask.source.height}, а лист ${w}×${h} — кадры маски не совпадут с кадрами героя`)
+  // Маски — того же размера и раскладки, что лист (tools/make_sprite_res.mjs
+  // кладёт их в одну группу); через loadTexture — чтобы им встали тот же
+  // коэффициент и логический размер. Без учёта забега: выгружаются ниже сразу.
+  const loadMask = async (src: string): Promise<TextureSource> => {
+    const m = await loadTexture(src, { track: false })
+    if (m.source.width !== w || m.source.height !== h) {
+      throw new Error(`Маска ${src}: ${m.source.width}×${m.source.height}, а лист ${w}×${h} — кадры маски не совпадут с кадрами героя`)
+    }
+    return m.source
   }
+  const cloakMask = spec.cloak ? await loadMask(spec.cloak.maskSrc) : Texture.WHITE.source
+  const slashMask = spec.slash ? await loadMask(spec.slash.maskSrc) : Texture.WHITE.source
+  const color = spec.cloak?.color ?? { h: 0, s: 0, v: 0 }
+  const rgb = spec.slash?.rgb ?? [255, 255, 255]
   const geometry = new Geometry({
     attributes: {
       aPosition: new Float32Array([0, 0, w, 0, w, h, 0, h]),
@@ -121,8 +158,12 @@ async function renderInto(renderer: Renderer, frames: Texture[], maskSrc: string
     indexBuffer: [0, 1, 2, 0, 2, 3],
   })
   const glProgram = GlProgram.from({ vertex: VERTEX, fragment: FRAGMENT, name: 'cloak-tint' })
-  const uniforms = new UniformGroup({ uHsv: { value: new Float32Array([color.h / 360, color.s, color.v]), type: 'vec3<f32>' } })
-  const shader = new Shader({ glProgram, resources: { uTexture: source, uMask: mask.source, cloakUniforms: uniforms } })
+  const uniforms = new UniformGroup({
+    uHsv: { value: new Float32Array([color.h / 360, color.s, color.v]), type: 'vec3<f32>' },
+    uSlashRgb: { value: new Float32Array([rgb[0] / 255, rgb[1] / 255, rgb[2] / 255]), type: 'vec3<f32>' },
+    uOn: { value: new Float32Array([spec.cloak ? 1 : 0, spec.slash ? 1 : 0]), type: 'vec2<f32>' },
+  })
+  const shader = new Shader({ glProgram, resources: { uTexture: source, uMask: cloakMask, uSlashMask: slashMask, cloakUniforms: uniforms } })
   const mesh = new Mesh({ geometry, shader })
   renderer.render({ container: mesh, target, clear: true })
   mesh.destroy()
@@ -132,5 +173,6 @@ async function renderInto(renderer: Renderer, frames: Texture[], maskSrc: string
   // Исходный лист больше не рисуется — освобождаем его видеопамять (картинка
   // остаётся в кэше Assets: следующий забег перекрасит её снова без скачивания).
   source.unload()
-  await Assets.unload(maskSrc)
+  if (spec.cloak) await Assets.unload(spec.cloak.maskSrc)
+  if (spec.slash) await Assets.unload(spec.slash.maskSrc)
 }
