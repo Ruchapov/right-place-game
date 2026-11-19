@@ -6,7 +6,7 @@ import { mapArtFor, gridChecksum } from './explore/mapArt'
 import * as C from './explore/constants'
 import SettingsPanel from './explore/ui/SettingsPanel'
 import TutorialCard from './ui/TutorialCard'
-import { RUN_TIPS, runTipSeen, markSeen, tutorialReady, type RunTipId, type TutorialTip } from './tutorial'
+import { RUN_TIPS, runTipSeen, markSeen, hasSeen, tutorialReady, SKILL_BUTTON_TIP_ID, type RunTipId, type TutorialTip } from './tutorial'
 import TouchControls, { CONTROLS_BLOCK_H, LEFT_BLOCK_EDGE, RIGHT_BLOCK_EDGE, paintSkillAffordable, paintSkillCooldown, type SkillButtonSlot } from './explore/ui/TouchControls'
 import HudPlate from './explore/ui/HudPlate'
 import type {
@@ -115,12 +115,13 @@ function withoutCleared<P extends { x: number; y: number }>(points: P[], cleared
 }
 import { createShoveSystem } from './explore/entities/shove'
 import { C as Theme } from './ui/theme'
-import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
+import { startRunExplore, confirmRunReady, finishRunExplore, FinishExploreError, recordSip, SipError, recordProgress, ProgressError, smugglerQuote, smugglerDeal, readConsumables, readEventReward, readEnemyKind, readChestMimic, readChestShadow, readBossKind, readFlameGoal, type StartExploreBossKind, readHeroClass, readStarbloom, readPatrols, readBreakables, readEliteIndex, readGuildBuffs, readAchievementList, RequestError, emptyQuestRunCounters, type QuestRunCounters, type RunDrop, type RunProgressSnapshot, type RunResultSummary, type StartExploreResult, type StartExplorePatrol } from './api'
 import { questById } from './quests'
 // Награда задания на экране итогов — теми же тремя иконками, что на доске.
 import { QuestRewardRow } from './ui/QuestBoard'
 import { dropView } from './ui/dropView'
 import { ResultsFrame, ResultsDivider, ResultsSectionTitle, TrophyPlate } from './ui/ResultsFrame'
+import { NewAchievementCard } from './ui/AchievementsPanel'
 import { consumableById, consumableReviveFrac, consumableReflectsFirstHit, consumableSkillBook, CONSUMABLES, type ConsumableId, type SkillBookSkillId } from './consumables'
 import { skillValue, type SkillStats } from './skillDamage'
 import { skillPowerMult } from './skillLevels'
@@ -532,6 +533,12 @@ function sameSkillUses(a: Record<SkillBookSkillId, number>, b: Record<SkillBookS
   return true
 }
 
+// TEMP: пример новых достижений на экране итогов офлайн-заглушки (20.11.2026).
+const TEMP_DEV_RUN_ACHIEVEMENTS = [
+  { key: 'first_steps_1', title: 'Первый шаг за порог', phrase: 'Тьма выпустила тебя обратно. Возьми — пригодится в следующий раз.', reward: 'Книга огня, Книга исцеления', icon: 'book_fire.png', earnedAt: '2026-11-20T10:00:00.000Z', rewardPending: false },
+  { key: 'parries_100', title: 'Звон стали', phrase: 'Сто раз сталь встретила сталь. Клинку нужен камень.', reward: '3 Точильных камня', icon: 'whetstone.png', earnedAt: '2026-11-20T10:00:00.000Z', rewardPending: true },
+]
+
 type FinishPayload = {
   token: string
   closedEvents: number[]
@@ -558,6 +565,8 @@ type FinishPayload = {
   starbloomCut: boolean
   killedPatrols: number[]
   brokenBreakables: number[]
+  // Причина смерти (20.11.2026, достижение trap_10); жив — undefined.
+  diedTo?: 'trap' | 'enemy' | 'other'
 }
 
 /**
@@ -810,7 +819,9 @@ function ResultsScreen({
   const hasDrops = result.drops.length > 0 || result.dropsLost.length > 0 || eliteEarned > 0
   // Правая колонка набок (см. ResultsFrame) — только если в ней есть что
   // показать; иначе левая занимает обе.
-  const hasRight = hasProgress || hasDrops || !!result.questCompleted
+  // Новые достижения этой вылазки (20.11.2026) — только из ответа сервера.
+  const newAchievements = readAchievementList(result.achievements) ?? []
+  const hasRight = hasProgress || hasDrops || !!result.questCompleted || newAchievements.length > 0
   return (
     <ResultsFrame
       head={
@@ -1062,6 +1073,14 @@ function ResultsScreen({
                   iconSize={20}
                   gap={12}
                 />
+              </div>
+            )}
+
+            {/* 7. Достижения (20.11.2026, docs/achievements.md) — карточка на
+                каждое новое. Награда не влезла — строка «Сумка полна…». */}
+            {newAchievements.length > 0 && (
+              <div data-results-achievements="" style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%', flexShrink: 0 }}>
+                {newAchievements.map((a) => <NewAchievementCard key={a.key} a={a} compact />)}
               </div>
             )}
           </>
@@ -1524,6 +1543,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // же приёмом, что drops выше). skillLevels/skillUses не заполняем вовсе —
       // они опциональные, и выдуманные числа попали бы прямо в player.
       skillLevelUps: [],
+      // TEMP: офлайн-заглушка вне Telegram — пример карточек «Новое достижение»
+      // (20.11.2026). В Telegram достижения называет только сервер. Убрать вместе
+      // с заглушкой.
+      ...(!token ? { achievements: TEMP_DEV_RUN_ACHIEVEMENTS } : {}),
     }
   }
 
@@ -1592,6 +1615,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       starbloomCut: starbloomCutRef.current,
       killedPatrols: [...killedPatrolsRef.current],
       brokenBreakables: [...brokenBreakablesRef.current],
+      // Причина смерти (20.11.2026, достижение trap_10); жив — поля нет.
+      diedTo: died ? lastHitByRef.current : undefined,
     }
     submitFinish()
   }
@@ -1623,6 +1648,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       payload.starbloomCut,
       payload.killedPatrols,
       payload.brokenBreakables,
+      payload.diedTo,
     )
       .then((result) => {
         setRunResult(result)
@@ -1804,6 +1830,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // шипы). Обновляется тем же эффектом, что и takeDamageRef — тикер-эффект
   // (mount-once, deps []) обязан звать актуальную takeDamageUnblockable.
   const trapHurtRef = useRef<(amount: number) => void>(() => {})
+  // Причина смерти (20.11.2026, достижения): уходит в финиш полем diedTo.
+  // trapHitRef — «сейчас бьёт ловушка» (ставят обёртки ловушек на время вызова);
+  // lastHitByRef — чем был ПОСЛЕДНИЙ удар, прошедший в applyDamage; killPlayer
+  // (обелиск) пишет 'other'. Смертельный удар — последний.
+  const trapHitRef = useRef(false)
+  const lastHitByRef = useRef<'trap' | 'enemy' | 'other'>('other')
 
   // dirRef (см. выше) — только МГНОВЕННЫЙ ввод, сбрасывается в 0 при отпускании
   // кнопки, а не "куда смотрит игрок" — такого флага в файле раньше не было.
@@ -1896,6 +1928,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // кадре. Пока она открыта, игра стоит — тикер выходит в самом начале, как в
   // хитстопе, анимации спрайтов (общий Ticker.shared) — на speed 0.
   const [runTip, setRunTip] = useState<TutorialTip | null>(null)
+  // Пузырь у кнопки навыка (20.11.2026): точка левого края кнопки на экране.
+  const [skillTipAt, setSkillTipAt] = useState<{ x: number; y: number } | null>(null)
   const tutorialPausedRef = useRef(false)
   // Заставка босса (12.11.2026, entities/bossIntro.ts): титр поверх холста — DOM,
   // ведёт его тикер (data-on, текст); тап по нему пропускает заставку.
@@ -2648,6 +2682,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // amount=20) раздувает счётчик за забег на лишние 15 (см. damageTakenRef).
     // После брони, не до — иначе выносливость росла бы от урона, которого
     // игрок не получил.
+    // Причина удара (diedTo финиша): ловушка поставила 'trap' перед вызовом;
+    // удар врага — 'enemy'; остальное — 'other'.
+    lastHitByRef.current = trapHitRef.current ? 'trap' : opts.foe || opts.burn ? 'enemy' : 'other'
     const actualDamage = Math.min(armored, hpRef.current)
     damageTakenRef.current += actualDamage
     hpRef.current = Math.max(0, hpRef.current - armored)
@@ -2770,6 +2807,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // а не часть боевого баланса, который отменяет обелиск.
   function killPlayer() {
     if (invincible) return
+    lastHitByRef.current = 'other'
     hpRef.current = 0
     updateHpBar()
     triggerDeath()
@@ -4042,8 +4080,15 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           heroMaxHp: maxHp,
           spikeMult: gearRef.current.spikeMult,
           heroDead: () => deathRef.current,
-          hurtHero: (amount) => trapHurtRef.current(amount),
-          hurtHeroParryable: (amount) => takeDamageRef.current(amount),
+          hurtHero: (amount) => {
+            trapHitRef.current = true
+            try { trapHurtRef.current(amount) } finally { trapHitRef.current = false }
+          },
+          // Огонь горгульи — тоже ловушка (достижение trap_10).
+          hurtHeroParryable: (amount) => {
+            trapHitRef.current = true
+            try { return takeDamageRef.current(amount) } finally { trapHitRef.current = false }
+          },
           // «Тихий шаг»: удар шипов карты — тот же, что запускает окно неуязвимости.
           onHeroSpikeHit: () => { questCountersRef.current.spikeHits += 1 },
           damageEnemy: (enemy, amount, sourceX) => damageEnemy(enemy, amount, trapDamageSink, sourceX, 'trap'),
@@ -8646,6 +8691,17 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             tutorialPausedRef.current = true
             Ticker.shared.speed = 0
             setRunTip(RUN_TIPS[tipId])
+          } else if (!hasSeen(SKILL_BUTTON_TIP_ID)) {
+            // Обучалка навыков (20.11.2026): первая вылазка с надетым навыком —
+            // один раз пузырь у кнопки навыка. Кнопки нет (навык не надет) —
+            // молчим до вылазки, где она есть.
+            const btn = skill1BtnRef.current?.isConnected ? skill1BtnRef.current : skill2BtnRef.current?.isConnected ? skill2BtnRef.current : null
+            const r = btn?.getBoundingClientRect()
+            if (r && r.width > 0) {
+              tutorialPausedRef.current = true
+              Ticker.shared.speed = 0
+              setSkillTipAt({ x: r.left, y: r.top + r.height / 2 })
+            }
           }
         }
         // Блик шипов: одна фаза на все шипы карты, по игровому времени.
@@ -9454,6 +9510,26 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           />
         </div>
       </div>
+
+      {/* Подсказка у кнопки навыка (20.11.2026): пузырь слева от кнопки, игра
+          стоит до тапа. Один раз (tutorial.ts). */}
+      {skillTipAt && (
+        <div data-skill-tip="" onClick={() => {
+          markSeen(SKILL_BUTTON_TIP_ID)
+          setSkillTipAt(null)
+          tutorialPausedRef.current = false
+          Ticker.shared.speed = 1
+        }} style={{ position: 'fixed', inset: 0, zIndex: 1300, background: 'rgba(0,0,0,0.35)' }}>
+          <div style={{
+            position: 'fixed', left: `max(12px, ${skillTipAt.x - 12}px)`, top: skillTipAt.y,
+            transform: 'translate(-100%, -50%)', width: 'min(230px, calc(100vw - 120px))', boxSizing: 'border-box',
+            background: 'linear-gradient(180deg, #4a3a22, #2e2416)', border: `1px solid ${Theme.glowCore}`, borderRadius: 10,
+            padding: '10px 12px', color: Theme.textMain, fontSize: 13, lineHeight: 1.45, boxShadow: '0 4px 14px rgba(0,0,0,.6)',
+          }}>
+            Твой навык — здесь. Он тратит ману: береги её для толпы.
+          </div>
+        </div>
+      )}
 
       {/* Подсказка обучения (08.11.2026): игра стоит, пока не нажато «Понятно». */}
       {runTip && (

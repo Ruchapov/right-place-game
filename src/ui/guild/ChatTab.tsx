@@ -62,7 +62,10 @@ export function ChatTab({ chat, members, online }: { chat: GuildChat; members: G
       <div key={m.id} style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
         {author ? <LevelCircle level={author.level} size={32} ring={ring} /> : <div style={{ width:32, flexShrink:0 }} />}
         <div style={{ maxWidth:'72%', padding:'8px 11px', borderRadius:'14px 14px 14px 4px', background:C.nicheDeep, border:`1px solid ${C.niche}`, wordBreak:'break-word' }}>
-          <div style={{ fontSize:11, color:C.bone, fontWeight:600, marginBottom:2 }}>{m.author ?? '?'}</div>
+          <div style={{ fontSize:11, color:C.bone, fontWeight:600, marginBottom:2 }}>
+            {m.author ?? '?'}
+            {m.authorTitle !== null && <span style={{ fontWeight:400, fontStyle:'italic', color:C.textDim }}> · {m.authorTitle}</span>}
+          </div>
           <div style={{ fontSize:14, lineHeight:1.4 }}>{m.text}</div>
         </div>
       </div>

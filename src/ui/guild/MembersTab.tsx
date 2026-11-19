@@ -80,6 +80,9 @@ export function MembersTab({ me, pending, run, now, onSettings, overlayPad, over
                   <span style={{ fontSize:14, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>
                     {m.name}{isSelf ? ' · вы' : ''}
                   </span>
+                  {m.title !== null && (
+                    <span style={{ fontSize:11, fontStyle:'italic', color:C.bone, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>{m.title}</span>
+                  )}
                   {r === 'leader' && (
                     <span style={{ display:'flex', alignItems:'center', gap:3, height:20, padding:'0 7px', borderRadius:10, background:G.leaderBg, color:C.glowCore, fontSize:11, fontWeight:600 }}>
                       <CrownIcon color={C.glowCore} />Глава

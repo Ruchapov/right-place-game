@@ -4,7 +4,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, readTitleKey, readAchievementList, fetchAchievements, claimAchievement, setAchievementTitle, type AchievementView, type AchievementsState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -14,7 +14,7 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCapacity, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
 // Каталог СТРАНИЦ книг — тоже общая пара (src/scrolls.ts ↔ server/src/scrolls.ts).
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
@@ -32,6 +32,7 @@ import { HUNTER_STATS, hunterStatPrice, type HunterStat } from './hunter'
 // Портной (14.11.2026) — общий каталог src/skins.ts ↔ server/src/skins.ts.
 import { runSkinsOf, type SkinState } from './skins'
 import { TailorShop } from './ui/TailorShop'
+import { AchievementsPanel, LearnBubble, RedDot } from './ui/AchievementsPanel'
 import { heroClassById, type HeroClassId, type HeroClassState, type HeroClassTier, type HeroClassWallet } from './heroClasses'
 // Иконка предмета по слоту и тиру — общий модуль с экраном итогов забега
 // (Explore.tsx, блок «ДОБЫЧА»): импортировать App.tsx оттуда нельзя — цикл.
@@ -162,7 +163,12 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   // Летопись героя (17.11.2026, src/ui/HeroStatsPanel.tsx): общие счётчики за
   // всё время. null — сервер не назвал (readHeroStats): карточка пишет
   // «Летопись не загрузилась», а не нули.
-  stats: HeroStatsView | null }
+  stats: HeroStatsView | null
+  // Достижения (20.11.2026, docs/achievements.md): ячейки сумки, подаренные
+  // достижениями (вместимость — bagCapacity), и выбранный титул (key). null у
+  // ячеек — сервер не назвал: счётчик сумки — прочерк.
+  bagBonusCells: number | null
+  titleKey: string | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -532,6 +538,15 @@ const TEMP_DEV_SKINS: SkinState = {
   cloakLevels: { ash: 2, midnight: 5, wine: 0 }, brandLevels: { armor: 3, weapon: 1 }, patchCount: 2, brandCount: 0,
 }
 // TEMP: летопись офлайн-заглушки DevTester (17.11.2026). Убрать вместе с заглушкой.
+// TEMP: достижения офлайн-заглушки DevTester (20.11.2026) — проверить вёрстку
+// вкладки вне Telegram. В Telegram список приходит с GET /achievements. Убрать
+// вместе с заглушкой.
+const TEMP_DEV_ACHIEVEMENTS: AchievementView[] = [
+  { key: 'parries_100', title: 'Звон стали', phrase: 'Сто раз сталь встретила сталь. Клинку нужен камень.', reward: '3 Точильных камня', icon: 'whetstone.png', earnedAt: '2026-11-20T10:00:00.000Z', rewardPending: true },
+  { key: 'first_steps_1', title: 'Первый шаг за порог', phrase: 'Тьма выпустила тебя обратно. Возьми — пригодится в следующий раз.', reward: 'Книга огня, Книга исцеления', icon: 'book_fire.png', earnedAt: '2026-11-19T10:00:00.000Z', rewardPending: false },
+  { key: 'kills_1000', title: 'Жнец', phrase: 'Тысяча. Ты сбился со счёта — тьма считает за тебя.', reward: '+1 сила', icon: 'icon_strength.png', earnedAt: '2026-11-18T10:00:00.000Z', rewardPending: false },
+]
+
 const TEMP_DEV_HERO_STATS: HeroStatsView = {
   runsTotal: 47, runsCompleted: 31, runsDied: 16, killsTotal: 1234, killsElite: 9, bossesKilled: 6,
   chestsOpened: 58, breakablesBroken: 211, potionsDrunk: 73, parries: 145, trophiesEarned: 18450, questsCompleted: 12,
@@ -947,7 +962,16 @@ export default function App() {
   const [runeError, setRuneError] = useState<string | null>(null)
   const runePendingRef = useRef(false)
   // Вкладка экрана героя: сам герой или «Статистика» (блок «Получено рун»).
-  const [heroTab, setHeroTab] = useState<'hero' | 'stats'>('hero')
+  const [heroTab, setHeroTab] = useState<'hero' | 'stats' | 'achievements'>('hero')
+  // Достижения (20.11.2026, docs/achievements.md): полученные (сервер), что
+  // идёт сейчас, отказ последнего действия, непросмотренные новые.
+  const [achList, setAchList] = useState<AchievementView[] | null>(null)
+  const [achStatus, setAchStatus] = useState<'loading' | 'ready' | 'error' | 'offline'>('loading')
+  const [achPendingKey, setAchPendingKey] = useState<string | null>(null)
+  const [achError, setAchError] = useState<{ key: string; text: string } | null>(null)
+  const [achSeenState, setAchSeenState] = useState<{ key: string; seen: ReadonlySet<string> } | null>(null)
+  // Обучалка навыков (20.11.2026): шаг подсказки на экране героя.
+  const [learnStep, setLearnStep] = useState<'book' | 'slot' | null>(null)
   const hunterPendingRef = useRef(false)
   const [hunterError, setHunterError] = useState<string | null>(null)
   // Мастер у Кузнеца и гнёзда колец (29.10.2026, docs/crafter.md).
@@ -1326,7 +1350,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, titleKey: 'kills_1000' })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1377,7 +1401,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats) })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), titleKey: readTitleKey(data.character.titleKey) ?? null })
     setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
@@ -1492,11 +1516,15 @@ export default function App() {
   const bagUsed = bagCellsOf(inventory.filter((i) => !i.equipped).length, bagStacks ?? [])
   // Неизвестно хоть одно слагаемое — счётчик не врёт числом, а ставит прочерк, и
   // «Сумка полна» в карточке не утверждается.
-  const bagKnown = inventoryStatus === 'ready' && bagStacks !== null
+  // Вместимость — своя у героя (20.11.2026): BAG_CAPACITY + подаренные
+  // достижениями ячейки. Неизвестны ячейки — неизвестна и вместимость.
+  const bagCap = player?.bagBonusCells == null ? null : bagCapacity(player.bagBonusCells)
+  const bagKnown = inventoryStatus === 'ready' && bagStacks !== null && bagCap !== null
+  const bagCapN = bagCap ?? BAG_CAPACITY
   // Нет места даже под одну штуку. У героев, накопивших стопки до нового правила,
   // занято может быть больше 30 (счётчик тогда красный): у них ничего не
   // отнимается, но новое не кладётся — та же bagFits, что у сервера.
-  const bagFull = bagKnown && !bagFits(bagUsed, 1)
+  const bagFull = bagKnown && !bagFits(bagUsed, 1, bagCapN)
 
   // Карточка предмета/зелья/расходника/книги. Живёт ЗДЕСЬ, а не внутри вкладки
   // «Инвентарь»: ту же карточку открывает тап по гнезду снаряжения на экране
@@ -1884,6 +1912,9 @@ export default function App() {
         ...(readRunes(result.runes) !== null ? { runes: readRunes(result.runes) } : {}),
         // Летопись после забега (17.11.2026): вкладка «Статистика» — сразу новая.
         ...(readHeroStats(result.stats) !== null ? { stats: readHeroStats(result.stats) } : {}),
+        // Достижения (20.11.2026): награды могли поднять удачу и вместимость.
+        ...(typeof result.luck === 'number' ? { luck: result.luck } : {}),
+        ...(typeof result.bagBonusCells === 'number' ? { bagBonusCells: result.bagBonusCells } : {}),
         trophies: result.trophies,
         strength: result.strength,
         endurance: result.endurance,
@@ -1925,6 +1956,8 @@ export default function App() {
     // Награда за приглашение (12.11.2026): этот забег довёл до порога — окно
     // поверх итогов забега.
     if (result.referralReward) setReferralRewardNotice(result.referralReward)
+    // Достижения этой вылазки (20.11.2026): в список сразу, потом — GET.
+    applyNewAchievements(result.achievements)
   }
 
   // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
@@ -2015,6 +2048,144 @@ export default function App() {
     // вход) — все три в зависимостях по смыслу.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, isTelegramSession, playerLoaded])
+
+  // --- Достижения (20.11.2026, docs/achievements.md) ---
+  //
+  // Список полученных — с сервера (GET /achievements) после входа и после
+  // каждого финиша; новые за вылазку приходят ещё и в ответе финиша — их кладём
+  // сразу. «Просмотрено» — по key в localStorage на этом устройстве (не в облаке
+  // обучения: «Сбросить подсказки» не должен заново зажигать точки).
+  const achSeqRef = useRef(0)
+  const achSeenKey = player ? `rp_ach_seen_${player.id}` : null
+  // Просмотренное: state хранит снимок для своего игрока; нет снимка — читаем
+  // localStorage. Нет хранилища — null: все считаются просмотренными, точек нет.
+  const achSeen: ReadonlySet<string> | null = achSeenKey === null ? null
+    : achSeenState?.key === achSeenKey ? achSeenState.seen : readAchievementsSeen(achSeenKey)
+  function markAchievementsSeen(keys: readonly string[]) {
+    if (achSeenKey === null || achSeen === null || keys.every((k) => achSeen.has(k))) return
+    const next = new Set([...achSeen, ...keys])
+    setAchSeenState({ key: achSeenKey, seen: next })
+    try { window.localStorage.setItem(achSeenKey, JSON.stringify([...next])) } catch { /* нет — значит нет */ }
+  }
+  const achUnseen: ReadonlySet<string> = new Set(
+    achSeen === null || achList === null ? [] : achList.filter((a) => !achSeen.has(a.key)).map((a) => a.key),
+  )
+  // Красная точка: есть награда, ждущая «Забрать», или непросмотренное новое.
+  const achDot = achList !== null && (achList.some((a) => a.rewardPending) || achUnseen.size > 0)
+
+  function applyAchievementsState(s: AchievementsState) {
+    setAchList(s.achievements)
+    setAchStatus('ready')
+    setPlayer((prev) => prev ? {
+      ...prev,
+      titleKey: s.titleKey,
+      bagBonusCells: s.bagBonusCells,
+      ...(s.consumables !== null ? { consumables: s.consumables } : {}),
+      ...(s.runes !== null ? { runes: s.runes } : {}),
+      ...(s.luck !== null ? { luck: s.luck } : {}),
+      ...(s.strength !== null ? { strength: s.strength } : {}),
+      ...(s.agility !== null ? { agility: s.agility } : {}),
+      ...(s.endurance !== null ? { endurance: s.endurance } : {}),
+      ...(s.level !== null ? { level: s.level } : {}),
+      ...(s.patchCount !== null && prev.skins ? { skins: { ...prev.skins, patchCount: s.patchCount } } : {}),
+    } : prev)
+  }
+
+  async function loadAchievements() {
+    const token = localStorage.getItem('jwt')
+    // Вне Telegram — сервера нет. Заглушка (player есть) — тестовый список.
+    if (!isTelegramSession || !token) {
+      if (player !== null && !isTelegramSession) { setAchList(TEMP_DEV_ACHIEVEMENTS); setAchStatus('ready') }
+      return
+    }
+    const seq = ++achSeqRef.current
+    try {
+      const s = await fetchAchievements(token)
+      if (seq === achSeqRef.current) applyAchievementsState(s)
+    } catch (e) {
+      console.error('Achievements: список не загрузился', e)
+      if (seq === achSeqRef.current) setAchStatus((prev) => (achList === null ? 'error' : prev))
+    }
+  }
+
+  /** Новые за вылазку (ответ финиша или interruptedRun входа) — в список сразу, следом GET. */
+  function applyNewAchievements(raw: unknown) {
+    const fresh = readAchievementList(raw)
+    if (fresh === null) console.error('Achievements: в итогах вылазки список не того вида', raw)
+    if (fresh !== null && fresh.length > 0) {
+      setAchList((prev) => [...fresh, ...(prev ?? []).filter((a) => !fresh.some((f) => f.key === a.key))])
+    }
+    void loadAchievements()
+  }
+
+  async function handleAchievementClaim(key: string) {
+    const token = localStorage.getItem('jwt')
+    if (!token || achPendingKey !== null) return
+    setAchPendingKey(key)
+    setAchError(null)
+    try {
+      applyAchievementsState(await claimAchievement(token, key))
+      // Награда легла в сумку — склад поменялся; инвентарь снаряжения не трогает.
+    } catch (e) {
+      const text = e instanceof RequestError && e.serverError === 'Bag is full'
+        ? 'Сумка полна — освободи место.'
+        : e instanceof RequestError && e.kind !== 'http'
+          ? 'Ответ не пришёл. Нажми ещё раз — второй раз не выдастся.'
+          : 'Не получилось забрать награду.'
+      setAchError({ key, text })
+    } finally {
+      setAchPendingKey(null)
+    }
+  }
+
+  async function handleAchievementTitle(key: string | null) {
+    const token = localStorage.getItem('jwt')
+    const at = key ?? player?.titleKey ?? ''
+    if (!token || achPendingKey !== null) return
+    setAchPendingKey(at)
+    setAchError(null)
+    try {
+      applyAchievementsState(await setAchievementTitle(token, key))
+    } catch (e) {
+      console.error('Achievements: титул не сменился', e)
+      setAchError({ key: at, text: 'Титул не сменился — попробуй ещё раз.' })
+    } finally {
+      setAchPendingKey(null)
+    }
+  }
+
+  // После входа (и смены сессии) — список полученных.
+  useEffect(() => {
+    if (!playerLoaded) return
+    // Отдельной задачей, не в теле эффекта: запрос и setState — после рендера.
+    const t = window.setTimeout(() => { void loadAchievements() }, 0)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTelegramSession, playerLoaded])
+
+  // Открыл вкладку «Достижения» (нажатием) — всё, что в списке, просмотрено.
+  // Подсветка новых в этом заходе — по снимку на момент открытия.
+  const [achHighlight, setAchHighlight] = useState<ReadonlySet<string>>(new Set())
+  function openAchievementsTab() {
+    setHeroTab('achievements')
+    setAchHighlight(new Set([...achHighlight, ...achUnseen]))
+    if (achList !== null) markAchievementsSeen(achList.map((a) => a.key))
+  }
+  const achStatusShown = isTelegramSession || achList !== null ? achStatus : 'offline'
+
+  // Обучалка навыков (20.11.2026): «Выучить» на карточке first_steps_*.
+  function startLearnSkills() {
+    setActiveTab('hero')
+    setHeroTab('hero')
+    const hasBook = CONSUMABLES.some((c) => parseSkillBookId(c.id) !== null && (player?.consumables?.[c.id] ?? 0) > 0)
+    setLearnStep(hasBook && !hasSeen('learn_book') ? 'book' : !hasSeen('learn_slot') ? 'slot' : null)
+    window.setTimeout(() => {
+      document.querySelector('[data-hero-skills]')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 60)
+  }
+
+  // Титул под именем: название — из списка полученных (каталога на клиенте нет).
+  const heroTitle = player?.titleKey ? achList?.find((a) => a.key === player.titleKey)?.title ?? null : null
 
   // Отсчёт нового набора дошёл до нуля (questCountdownOver выше) — набор уже
   // ждёт на сервере: перечитать ОДИН раз на полученный вид (новый вид приходит
@@ -2748,6 +2919,9 @@ export default function App() {
         runes: profile.runes,
         luck: profile.luck,
         stats: profile.stats,
+        // Достижения (20.11.2026): ячейки и титул меняют «Забрать» и выбор титула.
+        bagBonusCells: profile.bagBonusCells,
+        ...(profile.titleKey !== undefined ? { titleKey: profile.titleKey } : {}),
         // Портной (14.11.2026): потерянный ответ покупки или нашивки снимается этой
         // сверкой. null перезаписывает намеренно — «сервер не назвал».
         skins: profile.skins,
@@ -3132,19 +3306,48 @@ export default function App() {
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
 
-            // Вкладки экрана героя (09.11.2026): «Герой» и «Статистика».
+            // Вкладки экрана героя (09.11.2026): «Герой» и «Статистика»; с
+            // 20.11.2026 третья — «Достижения» (красная точка — есть новое или
+            // награда ждёт «Забрать»).
             const heroSwitch = (
-              <div data-hero-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 0' }}>
-                {([['hero', 'Герой'], ['stats', 'Статистика']] as const).map(([id, label]) => (
-                  <button key={id} type="button" onClick={() => setHeroTab(id)} style={{
-                    minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:13,
+              <div data-hero-switch="" style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap:6, padding: sideMenu ? '0 8px 10px' : '16px 8px 0' }}>
+                {([['hero', 'Герой'], ['stats', 'Статистика'], ['achievements', 'Достижения']] as const).map(([id, label]) => (
+                  <button key={id} type="button" onClick={() => (id === 'achievements' ? openAchievementsTab() : setHeroTab(id))} style={{
+                    position:'relative', minHeight:44, borderRadius:8, cursor:'pointer', fontFamily:FONT_DISPLAY, fontSize:12,
+                    padding:'0 4px', minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
                     border:`1px solid ${heroTab === id ? C.glowEdge : C.stoneDark}`,
                     background: heroTab === id ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
                     color: heroTab === id ? C.glowCore : C.textMain,
-                  }}>{label}</button>
+                  }}>
+                    {label}
+                    {id === 'achievements' && achDot && <RedDot style={{ position:'absolute', top:5, right:5 }} />}
+                  </button>
                 ))}
               </div>
             )
+            if (heroTab === 'achievements') {
+              return (
+                <div data-hero-achievements="" style={sideMenu
+                  ? { height:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch', boxSizing:'border-box' }
+                  : { padding:'0 4px', paddingBottom:20 }}>
+                  {heroSwitch}
+                  <div style={{ padding: sideMenu ? '0 8px 12px' : '12px 8px 0' }}>
+                    <AchievementsPanel
+                      list={achList}
+                      status={achStatusShown}
+                      titleKey={p.titleKey}
+                      unseen={achHighlight}
+                      pendingKey={achPendingKey}
+                      error={achError}
+                      onClaim={(key) => { void handleAchievementClaim(key) }}
+                      onTitle={(key) => { void handleAchievementTitle(key) }}
+                      onLearn={() => startLearnSkills()}
+                      onRetry={() => { setAchStatus('loading'); void loadAchievements() }}
+                    />
+                  </div>
+                </div>
+              )
+            }
             if (heroTab === 'stats') {
               return (
                 <div data-hero-stats="" style={sideMenu
@@ -3206,6 +3409,10 @@ export default function App() {
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>
                     {p.firstName}
                   </div>
+                  {/* Титул (20.11.2026, достижения): выбран во вкладке «Достижения». */}
+                  {heroTitle !== null && (
+                    <div data-hero-title="" style={{ fontSize:11, fontStyle:'italic', color:C.bone, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{heroTitle}</div>
+                  )}
                   {/* Строка класса (20.10.2026): просто текст, без тапа —
                       docs/classes.md, «Строка класса на «Персонаже»». Уровень —
                       тот же, что на плашке справа (с сервера). */}
@@ -3344,14 +3551,47 @@ export default function App() {
               <div data-hero-col="right" style={sideMenu ? { flex:'1 1 0', minWidth:0, overflowY:'auto', WebkitOverflowScrolling:'touch' } : { display:'contents' }}>
 
               {/* Скиллы */}
-              <div style={{ margin:'0 8px 16px' }}>
+              <div data-hero-skills="" style={{ margin:'0 8px 16px' }}>
                 <div style={sectionHeaderStyle}>СКИЛЛЫ</div>
+                {/* Обучалка навыков (20.11.2026): «Выучить» на карточке достижения.
+                    Шаг 1 — книги из сумки прямо здесь, тап открывает карточку
+                    книги с «Надеть»; шаг 2 — подсказка у гнёзд. Каждая — один раз. */}
+                {learnStep === 'book' && (() => {
+                  const owned = CONSUMABLES.filter((c) => parseSkillBookId(c.id) !== null && (p.consumables?.[c.id] ?? 0) > 0)
+                  if (owned.length === 0) return null
+                  return (
+                    <div data-learn-book="" style={{ marginBottom:10 }}>
+                      <LearnBubble text="Книга у тебя. Нажми на неё — и навык твой." />
+                      <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:8 }}>
+                        {owned.map((c) => (
+                          <button key={c.id} type="button" className="rp-learn-glow" aria-label={c.nameRu}
+                            onClick={() => {
+                              markSeen('learn_book')
+                              setLearnStep(hasSeen('learn_slot') ? null : 'slot')
+                              setGearSelectedItem({ kind: 'consumable', consumableId: c.id })
+                              setGearEquipError(null)
+                              setSkillActionError(null)
+                            }}
+                            style={{ width:52, height:52, borderRadius:10, cursor:'pointer', background:C.nicheDeep, border:`1px solid ${C.glowCore}`, display:'flex', alignItems:'center', justifyContent:'center', padding:0 }}>
+                            <img src={`${import.meta.env.BASE_URL}assets/icons/${c.icon}`} alt="" width={34} height={34} style={{ display:'block', objectFit:'contain' }} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+                {learnStep === 'slot' && (
+                  <div style={{ marginBottom:10 }}>
+                    <LearnBubble text="Ячеек две — навыка два. Выбирай, что тебе ближе. Остальные книги поднимут уровень навыка."
+                      onOk={() => { markSeen('learn_slot'); setLearnStep(null) }} />
+                  </div>
+                )}
                 {/* minmax(0, 1fr) — то же правило, что у витрины магазина: у
                     сетки с фиксированным числом колонок трек не должен получать
                     авто-минимум по содержимому. Здесь картинок пока нет (гнёзда
                     скиллов — заглушки), и вылета нет, но исключений из правила
                     держать в голове не нужно. */}
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:7 }}>
+                <div className={learnStep === 'slot' ? 'rp-learn-glow' : undefined} style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:7, borderRadius:10 }}>
                   {heroSkillSlots.map((raw, i) => {
                     // raw — строка из equippedSkills. Сужаем её каталогом: обложку
                     // и карточку можно рисовать только для известного навыка.
@@ -4163,10 +4403,10 @@ export default function App() {
                       // при нуле кнопка гаснет со своей строкой. Размер сумки
                       // неизвестен — не запрещаем: ответит сервер тем же правилом.
                       const bagLimited = shopCard.takesCell === true && bagKnown
-                      const bagRoom = bagLimited ? bagFreeCells(bagUsed) : Number.POSITIVE_INFINITY
+                      const bagRoom = bagLimited ? bagFreeCells(bagUsed, bagCapN) : Number.POSITIVE_INFINITY
                       const bagMsg = bagLimited && bagRoom < 1
-                        ? (bagUsed > BAG_CAPACITY
-                          ? `Сумка переполнена (${bagUsed} / ${BAG_CAPACITY}) — освободи место.`
+                        ? (bagUsed > bagCapN
+                          ? `Сумка переполнена (${bagUsed} / ${bagCapN}) — освободи место.`
                           : 'Сумка полна — освободи ячейку.')
                         : null
                       const msg = shopBuyError ?? affordMsg ?? bagMsg
@@ -4595,8 +4835,8 @@ export default function App() {
                     показано, видно по самой сетке. Переполнение — красным и
                     как есть (см. BAG_CAPACITY). Неизвестные данные — прочерк,
                     не ноль. */}
-                <div style={{ fontSize:12, color: bagKnown && bagUsed > BAG_CAPACITY ? C.danger : C.textDim, ...(sideMenu ? { order:3, marginLeft:'auto', flex:'none' } : {}) }}>
-                  {bagKnown ? `${bagUsed} / ${BAG_CAPACITY}` : '—'}
+                <div style={{ fontSize:12, color: bagKnown && bagUsed > bagCapN ? C.danger : C.textDim, ...(sideMenu ? { order:3, marginLeft:'auto', flex:'none' } : {}) }}>
+                  {bagKnown ? `${bagUsed} / ${bagCapN}` : '—'}
                 </div>
               </div>
 
@@ -5572,6 +5812,7 @@ export default function App() {
                 if (tab.id === 'gear') { setGearTab('equipment'); setSlotFilter(null) }
               }}
               style={{
+                position:'relative',
                 flex:1, padding:'8px 0', border:'none', background:'none',
                 fontSize:10, display:'flex', flexDirection:'column',
                 alignItems:'center', gap:2, cursor:'pointer',
@@ -5593,6 +5834,8 @@ export default function App() {
                   transition: 'opacity .18s, filter .18s'
                 }}
               />
+              {/* Достижения (20.11.2026): новое или награда ждёт — точка на «Персонаже». */}
+              {tab.id === 'hero' && achDot && <RedDot style={{ position:'absolute', top: sideMenu ? 2 : 6, left:'calc(50% + 8px)' }} />}
               <span style={{
                 color: active ? C.glowCore : C.textDim,
                 textShadow: '0 1px 3px rgba(0,0,0,0.9)',
@@ -6419,4 +6662,14 @@ export default function App() {
       )}
     </div>
   )
+}
+// Достижения (20.11.2026): просмотренные key из localStorage. Нет хранилища — null.
+function readAchievementsSeen(key: string): ReadonlySet<string> | null {
+  try {
+    const raw = window.localStorage.getItem(key)
+    const v: unknown = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return null
+  }
 }

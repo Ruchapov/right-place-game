@@ -113,6 +113,14 @@ export const RUN_TIPS: Record<RunTipId, TutorialTip> = {
   run_boss_crowking: { id: 'run_boss_crowking', title: 'Вороний Король', text: 'Рассыпается стаей и собирается у тебя за спиной.\nНе стой на месте.', icon: 'event_boss.png' },
 }
 
+/**
+ * Обучалка навыков (20.11.2026, docs/achievements.md): «Выучить» на карточке
+ * достижения first_steps_* — подсветка книги (learn_book) и гнёзд навыков
+ * (learn_slot) на экране героя; в первой вылазке с надетым навыком — пузырь у
+ * кнопки навыка (SKILL_BUTTON_TIP_ID). Каждая — один раз.
+ */
+export const SKILL_BUTTON_TIP_ID = 'run_skill_button'
+
 /** Показана ли подсказка забега. Тварь — ещё и по прежней общей run_boss (до 11.11.2026). */
 export function runTipSeen(id: RunTipId): boolean {
   return hasSeen(id) || (id === 'run_boss_werewolf' && hasSeen('run_boss'))

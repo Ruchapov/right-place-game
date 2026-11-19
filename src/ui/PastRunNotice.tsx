@@ -1,4 +1,6 @@
 import type { RunResultSummary, AbandonedRunSummary } from '../api'
+import { readAchievementList } from '../api'
+import { NewAchievementCard } from './AchievementsPanel'
 import * as C from '../explore/constants'
 import { C as Theme } from './theme'
 import { skillSealSrc } from '../skillBooks'
@@ -86,6 +88,9 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
   const eliteEarned = completed && interrupted !== null ? (interrupted.eliteTrophiesEarned ?? 0) : 0
   const hasDrops = completed && interrupted !== null && (interrupted.drops.length > 0 || interrupted.dropsLost.length > 0 || eliteEarned > 0)
   const questDone = completed && interrupted !== null ? (interrupted.questCompleted ?? null) : null
+  // Достижения (20.11.2026): вход, закрывший вылазку по снимку, выдаёт их тем же
+  // кодом, что финиш. Нет поля — нет новых.
+  const achievements = interrupted !== null ? (readAchievementList(interrupted.achievements) ?? []) : []
 
   return (
     <ResultsFrame
@@ -133,7 +138,7 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
         )
       }
       right={
-        !hasProgress && energyLine === null && !hasDrops && questDone === null ? null : (
+        !hasProgress && energyLine === null && !hasDrops && questDone === null && achievements.length === 0 ? null : (
           <>
             {/* 3. Прокачка — ТОЛЬКО прибавка, только у interrupted. Те же строки,
                 что в ResultsScreen (Explore.tsx), менять вместе. Нули с сервера
@@ -231,6 +236,11 @@ export default function PastRunNotice({ notice, onClose }: { notice: PastRunNoti
                   Задание выполнено: {questById(questDone.questId)?.nameRu ?? questDone.questId}
                 </div>
                 <QuestRewardRow reward={questDone} numberStyle={{ fontSize: 'clamp(11px, 3.2vmin, 13px)', color: Theme.glowCore }} iconSize={20} gap={12} />
+              </div>
+            )}
+            {achievements.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%', flexShrink: 0 }}>
+                {achievements.map((a) => <NewAchievementCard key={a.key} a={a} compact />)}
               </div>
             )}
 
