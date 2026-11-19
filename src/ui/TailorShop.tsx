@@ -1,11 +1,15 @@
 // Портной — пятый житель Убежища (14.11.2026, docs/shop.md, «ПОРТНОЙ»; задача —
 // docs/skins-task.md, раздел 7 главнее разделов 1–6). Четыре раздела:
-//   1. Облик тела — Обычная / Золотая / Багровая / Фиолетовая, превью — кадр
-//      стойки из листа облика, цена или «Куплено», «Надеть».
-//   2. Цвет удара — Обычный / Красный / Фиолетовый / Золотой, превью — кадр 6
-//      удара (вспышка) из листа надетой брони с этим цветом.
-//   3. Плащи — три карточки: бонусы на текущем уровне, «+L / 20», замок по
-//      уровню, «Надеть» и «Пришить нашивку».
+//   1. Облик тела — Обычная / Золотая / Багровая / Фиолетовая, превью — герой
+//      в полный рост в этом облике, цена или «Куплено», «Надеть».
+//   2. Цвет удара — Обычный / Красный / Фиолетовый / Золотой, превью — удар с
+//      росчерком этого цвета.
+//   3. Плащи — три карточки: герой в этом плаще, бонусы на текущем уровне,
+//      «+L / 20», замок по уровню, «Надеть» и «Пришить нашивку».
+// Превью (18.11.2026) — готовые картинки public/assets/ui/tailor/ (герой
+// 217×320, удар 507×320), обычные <img> меню. Прежде превью вырезалось фоном
+// из клетки (0,0) листа героя, а с 16.11.2026 листы упакованы (sheetRes.ts) —
+// вырез показывал обрезанного героя, у цвета удара все карточки были одинаковы.
 //   4. Закалка облика — Кузнечное клеймо: броня и оружие, «Поставить клеймо».
 // Числа бонусов — только из общего каталога skins.ts (cloakBonus, brandBonus):
 // карточка пишет ровно то, чем бьётся бой и что держит сервер.
@@ -17,10 +21,12 @@ import {
   type ArmorSkinId, type CloakColor, type CloakId, type SkinState, type SlashSkinId, type UpgradeTarget,
 } from '../skins'
 import { RequestError, buySkin, equipSkins, patchSkin, type SkinActionResult } from '../api'
-import * as HC from '../explore/constants'
-import { heroAttackSrc, heroSheetSrc } from '../explore/assets'
 
 const ICONS = `${import.meta.env.BASE_URL}assets/icons`
+const TAILOR_ART = `${import.meta.env.BASE_URL}assets/ui/tailor`
+/** Пропорции картинок превью: герой в полный рост и удар. */
+const FIGURE_RATIO = '217 / 320'
+const SLASH_RATIO = '507 / 320'
 
 /** Процент без лишних нулей: 0.035 → «3.5%», 0.1 → «10%». */
 function pct(x: number): string {
@@ -64,22 +70,31 @@ function swatch(color: CloakColor): string {
 }
 
 /**
- * Кадр листа героя фоном: col/row — клетка 394×296, w — ширина окна. Фигура
- * занимает середину клетки, поэтому окно — обрезка вокруг неё: по ширине доля
- * cropW клетки по центру, по высоте — от 40 px сверху до низа клетки.
+ * «Ниша-сцена» превью (18.11.2026): тёмная ниша с тёплым отсветом у пола,
+ * картинка целиком (object-fit: contain), ничего не обрезано. Надетое — рамка
+ * со свечением и плашка «НАДЕТО».
  */
-function framePreview(src: string, col: number, row: number, w: number, cropW = 0.55): CSSProperties {
-  const top = 40
-  const k = w / (HC.HERO_CELL_W * cropW)
-  const left = (HC.HERO_CELL_W * (1 - cropW)) / 2
-  return {
-    width: w,
-    height: Math.round((HC.HERO_CELL_H - top) * k),
-    backgroundImage: `url(${src})`,
-    backgroundRepeat: 'no-repeat',
-    backgroundSize: `${HC.HERO_CELL_W * 12 * k}px auto`,
-    backgroundPosition: `${-(col * HC.HERO_CELL_W + left) * k}px ${-(row * HC.HERO_CELL_H + top) * k}px`,
-  }
+function Stage({ src, ratio, worn, dim = false }: { src: string; ratio: string; worn: boolean; dim?: boolean }) {
+  return (
+    <div style={{
+      position: 'relative', width: '100%', aspectRatio: ratio, borderRadius: 8, overflow: 'hidden',
+      background: `radial-gradient(ellipse 70% 22% at 50% 92%, rgba(245,188,91,${worn ? 0.32 : 0.16}), transparent 70%), linear-gradient(180deg, ${C.appBg} 0%, ${C.nicheDeep} 100%)`,
+      border: `1px solid ${worn ? C.glowEdge : C.stoneDark}`,
+      boxShadow: worn ? '0 0 10px rgba(245,188,91,0.35), inset 0 0 14px rgba(0,0,0,0.6)' : 'inset 0 0 14px rgba(0,0,0,0.6)',
+    }}>
+      <img src={src} alt="" draggable={false} style={{
+        position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', display: 'block',
+        filter: dim ? 'grayscale(0.7) brightness(0.65)' : undefined,
+      }} />
+      {worn && (
+        <div style={{
+          position: 'absolute', top: 5, left: '50%', transform: 'translateX(-50%)', padding: '1px 7px', borderRadius: 4,
+          background: 'rgba(23,20,28,0.82)', border: `1px solid ${C.glowEdge}`, color: C.glowCore,
+          fontFamily: FONT_DISPLAY, fontSize: 9, letterSpacing: 1, whiteSpace: 'nowrap',
+        }}>НАДЕТО</div>
+      )}
+    </div>
+  )
 }
 
 export function TailorShop({ skins, rp, level, online, columns, onState, onRefreshBalance }: {
@@ -178,19 +193,22 @@ export function TailorShop({ skins, rp, level, online, columns, onState, onRefre
     cursor: disabled ? 'default' : 'pointer',
   })
   const grid: CSSProperties = { display: 'grid', gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gap: 8 }
+  // Облик в вертикали — 2 в ряд, но колонка не шире 128 px: фигура 217×320
+  // иначе вырастает почти на экран. Набок — 4 в ряд по 120 px (экран низкий).
+  const figureGrid: CSSProperties = { ...grid, gridTemplateColumns: `repeat(${columns}, minmax(0, ${columns > 2 ? '120px' : '128px'}))`, justifyContent: 'center' }
   const rpIcon = <img src={`${ICONS}/icon_rp.png`} alt="" width={14} height={14} style={{ display: 'inline-block', verticalAlign: 'middle' }} />
   const note = <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.35, textAlign: 'center' }}>Шанс 50%. Неудача — уровень сбросится до 0</div>
 
   // Карточка покупаемого облика или удара: превью, имя, цена/«Куплено», кнопка.
-  function lookCard(kind: 'armor' | 'slash', id: ArmorSkinId | SlashSkinId, name: string, price: number | null, preview: CSSProperties) {
+  function lookCard(kind: 'armor' | 'slash', id: ArmorSkinId | SlashSkinId, name: string, price: number | null) {
     const owned = id === 'none' || (kind === 'armor' ? skins!.ownedArmor.includes(id as never) : skins!.ownedSlash.includes(id as never))
     const worn = kind === 'armor' ? skins!.armor === id : skins!.slash === id
     const canBuy = !owned && price !== null && rp !== null && rp >= price
     const key = `${kind}:${id}`
     return (
       <div key={key} data-tailor-look={key} style={{ ...card, borderColor: worn ? C.glowEdge : C.stoneDark }}>
-        <div style={{ ...preview, maxWidth: '100%' }} />
-        <div style={{ fontSize: 11, color: C.textMain, textAlign: 'center', minHeight: 28, display: 'flex', alignItems: 'center' }}>{name}</div>
+        <Stage src={`${TAILOR_ART}/${kind}_${id}.png`} ratio={kind === 'armor' ? FIGURE_RATIO : SLASH_RATIO} worn={worn} />
+        <div style={{ fontSize: 12, color: C.textMain, textAlign: 'center', minHeight: 28, display: 'flex', alignItems: 'center', fontFamily: FONT_DISPLAY }}>{name}</div>
         <div style={{ fontSize: 11, color: owned ? C.bone : C.textDim }}>
           {owned ? (id === 'none' ? 'Есть у всех' : 'Куплено') : <>{price} {rpIcon}</>}
         </div>
@@ -247,15 +265,15 @@ export function TailorShop({ skins, rp, level, online, columns, onState, onRefre
       {error !== null && <div data-tailor-error="" style={{ marginTop: 8, fontSize: 11, color: C.danger }}>{error}</div>}
 
       <div style={head}>ОБЛИК ТЕЛА</div>
-      <div style={grid}>
-        {lookCard('armor', 'none', ARMOR_NONE_NAME, null, framePreview(heroSheetSrc(HC.HERO_IDLE_SRC, 'idle.png', 'none'), 0, 0, 84))}
-        {ARMOR_SKINS.map((s) => lookCard('armor', s.id, s.nameRu, s.price, framePreview(heroSheetSrc(HC.HERO_IDLE_SRC, 'idle.png', s.id), 0, 0, 84)))}
+      <div style={figureGrid}>
+        {lookCard('armor', 'none', ARMOR_NONE_NAME, null)}
+        {ARMOR_SKINS.map((s) => lookCard('armor', s.id, s.nameRu, s.price))}
       </div>
 
       <div style={head}>ЦВЕТ УДАРА</div>
       <div style={grid}>
-        {lookCard('slash', 'none', SLASH_NONE_NAME, null, framePreview(heroAttackSrc({ armor: skins.armor, slash: 'none' }), 6, 0, 84, 0.8))}
-        {SLASH_SKINS.map((s) => lookCard('slash', s.id, s.nameRu, s.price, framePreview(heroAttackSrc({ armor: skins.armor, slash: s.id }), 6, 0, 84, 0.8)))}
+        {lookCard('slash', 'none', SLASH_NONE_NAME, null)}
+        {SLASH_SKINS.map((s) => lookCard('slash', s.id, s.nameRu, s.price))}
       </div>
 
       <div style={head}>ПЛАЩИ</div>
@@ -266,11 +284,16 @@ export function TailorShop({ skins, rp, level, online, columns, onState, onRefre
           const worn = skins.cloak === cl.id
           const key = `patch:cloak:${cl.id}`
           return (
-            <div key={cl.id} data-tailor-cloak={cl.id} style={{ ...card, alignItems: 'stretch', borderColor: worn ? C.glowEdge : C.stoneDark, opacity: locked ? 0.6 : 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 28, height: 28, borderRadius: 6, background: swatch(cl.color), border: `1px solid ${C.stoneDark}`, flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, color: C.textMain }}>{cl.nameRu}</div>
+            <div key={cl.id} data-tailor-cloak={cl.id} style={{ ...card, alignItems: 'stretch', borderColor: worn ? C.glowEdge : C.stoneDark }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 78, flexShrink: 0 }}>
+                  <Stage src={`${TAILOR_ART}/cloak_${cl.id}.png`} ratio={FIGURE_RATIO} worn={worn} dim={locked} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0, opacity: locked ? 0.6 : 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.textMain, fontFamily: FONT_DISPLAY }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: swatch(cl.color), border: `1px solid ${C.stoneDark}`, flexShrink: 0 }} />
+                    {cl.nameRu}
+                  </div>
                   <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.35 }}>{cloakBonusLine(cl.id, locked ? 0 : lvl)}</div>
                   {!locked && <NextLevelLine level={lvl} line={(l) => cloakBonusLine(cl.id, l)} />}
                 </div>

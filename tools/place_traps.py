@@ -238,6 +238,8 @@ def place_all(ctx, base, hazards, only=None):
         if only and kind != only:
             continue
         need = math.ceil(want[kind] * R.POOL_MULT)
+        if kind == 'gargoyles':
+            need = min(need, R.GARGOYLE_PER_MAP)
         pools[kind] = place_pool(kind, need, ctx, placed, base)
         got[kind] = min(want[kind], len(pools[kind]))
     return pools, got, want
@@ -256,6 +258,8 @@ def run(letter, dry, only=None):
     short = []
     for kind, name in (('gargoyles', 'горгулий'), ('stalactites', 'сталактитов'), ('saws', 'пил')):
         need = math.ceil(want[kind] * R.POOL_MULT)
+        if kind == 'gargoyles':
+            need = min(need, R.GARGOYLE_PER_MAP)
         if len(pools[kind]) < need:
             short.append(f'{name}: пул {len(pools[kind])} из {need}, за забег {per_run[kind]} из {want[kind]}')
     print(f"== {letter}: за забег шипы {per_run['spikes']}, сталактиты {per_run['stalactites']}, горгульи {per_run['gargoyles']}, "

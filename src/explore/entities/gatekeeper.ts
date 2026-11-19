@@ -5,7 +5,7 @@ import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, Gatekeep
 import * as C from '../constants'
 import { cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
 import { lightHurtSpeed, redrawEnemyHpBar } from './enemy'
@@ -382,7 +382,7 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
     // HP стоят на месте.
     const shake = g.shakeMs > 0 ? (Math.floor(g.shakeMs / 30) % 2 === 0 ? 1 : -1) * C.GATEKEEPER_DOOR_SHAKE_PX : 0
     enemy.sprite.x = enemy.x + enemy.width / 2 + shake
-    enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
+    enemy.sprite.y = standLineY(surfaceY ?? footBottom) + (enemy.stepLiftPx ?? 0)
     enemy.hpBarBg.x = enemy.x
     enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
     enemy.hpBarFill.x = enemy.x

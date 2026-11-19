@@ -90,7 +90,13 @@ export function createShoveSystem(deps: ShoveDeps) {
       if (e.trapExposedMs && e.trapExposedMs > 0 && !find(e)) e.trapExposedMs = Math.max(0, e.trapExposedMs - deltaMS)
     }
     // По снимку: цепочка добавляет новые толчки посреди обхода.
-    const drop = (s: Shove) => { const k = active.indexOf(s); if (k >= 0) active.splice(k, 1) }
+    // Таран отпускает врага в хитстане (RAM_RELEASE_STUN_MS, 18.11.2026): иначе
+    // принесённый вплотную враг бьёт раньше первого удара героя.
+    const drop = (s: Shove) => {
+      const k = active.indexOf(s)
+      if (k >= 0) active.splice(k, 1)
+      if (s.kind === 'ram' && !s.enemy.dead) s.enemy.hurtTimer = Math.max(s.enemy.hurtTimer, C.RAM_RELEASE_STUN_MS)
+    }
     for (const s of active.slice()) {
       if (!active.includes(s)) continue
       const e = s.enemy

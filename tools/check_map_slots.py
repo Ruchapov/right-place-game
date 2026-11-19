@@ -13,7 +13,10 @@ Read-only, ничего не чинит. Печатает таблицу по к
   d) точки слотов: клетка стояния, без повторов; враги не ближе 8 тайлов от
      старта (по прямой); враг, сундук, NPC и босс не на ловушке и не вплотную к
      ней (x±1, тот же ряд); ловушка не ближе 2 тайлов к краю площадки; рядом с
-     сундуком есть клетка стояния без ловушки (не щель в 1 тайл);
+     сундуком есть клетка стояния без ловушки (не щель в 1 тайл); (18.11.2026)
+     сундук, бочка и кувшин не на проступи ступени шириной в клетку и не вплотную
+     к подъёму на 1–2 клетки (соседняя клетка — «#», над ней клетка стояния):
+     тело сундука — стена по X, и на B2 он запирал лестницу;
   e) сколько точек врагов на каждом ряду;
   f) (13.11.2026) ловушки: пулы gargoyles / stalactites / saws и trapsPerRun —
      правила расстановки и геометрия (tools/trap_rules.py, общие с
@@ -56,6 +59,28 @@ TRAP_EDGE_MIN = 2
 
 def load_grid(path):
     return [list(r.rstrip('\r')) for r in path.read_text(encoding='utf-8').split('\n') if r.rstrip('\r')]
+
+
+def step_problem(g, S, x, y):
+    """(18.11.2026) Сундук или бочка на ступени: на проступи шириной в клетку или
+    вплотную к подъёму на 1–2 клетки — соседняя клетка «#», над ней клетка
+    стояния (через неё идёт путь наверх). Пусто — место годное."""
+    if (x, y) not in S:
+        return ''
+    left, right = x, x
+    while (left - 1, y) in S:
+        left -= 1
+    while (right + 1, y) in S:
+        right += 1
+    if right == left:
+        return 'на проступи ступени шириной в клетку'
+    for d in (1, -1):
+        nx = x + d
+        if 0 <= nx < len(g[0]) and g[y][nx] == '#':
+            for k in (1, 2):
+                if (nx, y - k) in S:
+                    return f'вплотную к подъёму на {k} в столбце {nx}'
+    return ''
 
 
 def waves(g, start):
@@ -138,6 +163,11 @@ def check(letter):
     for x, y in chests:
         if not any((nx, y) in S and (nx, y) not in trapset for nx in (x - 1, x + 1)):
             d.append(f'сундук {[x, y]} в щели: рядом нет клетки, где стоять')
+    for kind, pts in (('сундук', chests), ('бочка', [tuple(p) for p in slots.get('breakables') or []])):
+        for x, y in pts:
+            why = step_problem(g, S, x, y)
+            if why:
+                d.append(f'{kind} {[x, y]} {why}')
     if d:
         fails.append('4d: ' + '; '.join(d))
 

@@ -8,6 +8,7 @@ import { lineOfSight } from '../vision'
 import { destroyMark } from '../perception'
 import type { BeastFrames } from './enemy'
 import { lightHurtSpeed } from './enemy'
+import { standLineY } from '../utils'
 
 // БЕГЛЕЦ (11.11.2026, событие 'runner', docs/explore-features.md).
 //
@@ -282,7 +283,7 @@ export function createRunnerSystem(deps: RunnerDeps) {
     const foot = enemy.y + H
     const surface = deps.findGroundSurfaceY(enemy.x, W, foot)
     enemy.sprite.x = enemy.x + W / 2
-    enemy.sprite.y = (surface ?? foot) + C.FOOT_TUNE
+    enemy.sprite.y = standLineY(surface ?? foot)
     enemy.sprite.scale.x = enemy.facing === -1 ? Math.abs(enemy.sprite.scale.x) : -Math.abs(enemy.sprite.scale.x)
     enemy.hpBarBg.x = enemy.x
     enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT

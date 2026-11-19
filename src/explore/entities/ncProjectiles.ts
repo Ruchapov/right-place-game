@@ -5,6 +5,7 @@ import type { DamageSource, Grid } from '../types'
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { isSolid } from '../collision'
+import { standLineY } from '../utils'
 import { playSfx } from '../../audio/sound'
 
 /**
@@ -140,24 +141,48 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
     })
   }
 
+  /**
+   * Лужа целиком на полу (18.11.2026): центр сдвигается внутрь площадки, если
+   * у края половина лужи повисла бы над пустотой. y — верх клетки пола.
+   */
+  function puddleCenterX(x: number, y: number): number {
+    const T = C.TILE_SIZE
+    const r = Math.round(y / T)
+    const floorCell = (cx: number) => isSolid(deps.grid, T, cx * T + T / 2, r * T + 1) && !isSolid(deps.grid, T, cx * T + T / 2, r * T + 1 - T)
+    let left = Math.floor(x / T)
+    let right = left
+    while (floorCell(left - 1)) left--
+    while (floorCell(right + 1)) right++
+    const half = (N.MUD_PUDDLE_W_TILES * T) / 2
+    const lo = left * T + half
+    const hi = (right + 1) * T - half
+    return lo <= hi ? Math.min(hi, Math.max(lo, x)) : (left * T + (right + 1) * T) / 2
+  }
+
   function spawnBurst(kind: Burst['kind'], x: number, y: number) {
     let sprite: Sprite | null = null
     let flip = 1
+    // y — верх клетки пола (по нему проверка «герой стоит в луже»); рисуется лужа
+    // на линии ступней — той же standLineY, что сажает героя и врагов (18.11.2026:
+    // на линии клетки она висела на FOOT_TUNE выше их ступней).
+    let drawY = y
     if (kind === 'splat') {
+      x = puddleCenterX(x, y)
+      drawY = standLineY(y)
       const tex = deps.mudPuddles()
       if (tex.length > 0) {
         sprite = new Sprite(tex[Math.floor(Math.random() * tex.length)])
-        // Низ видимой лужи (54 px из 56) — на верхе пола.
+        // Низ видимой лужи (54 px из 56) — на линии ступней.
         sprite.anchor.set(0.5, N.MUD_PUDDLE_ANCHOR_Y)
         flip = Math.random() < 0.5 ? -1 : 1
         sprite.x = x
-        sprite.y = y
+        sprite.y = drawY
         deps.worldContainer.addChild(sprite)
       }
     }
     const g = new Graphics()
     g.x = x
-    g.y = y
+    g.y = drawY
     deps.worldContainer.addChild(g)
     const parts: Burst['parts'] = []
     // Крошки кома; у лужи — пара брызг-капель цвета грязи в момент удара.

@@ -5,7 +5,7 @@ import type { DamageSource, Enemy, Grid, MapEvent, PlayerPhysics } from '../type
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { destroyMark } from '../perception'
 import { scaledEnemyAttackDamage, scaledEnemyMaxHp } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
@@ -172,7 +172,7 @@ export function createShadowSystem(deps: ShadowDeps) {
     const footBottom = e.y + e.height
     const surfaceY = deps.findGroundSurfaceY(e.x, e.width, footBottom)
     e.sprite.x = e.x + e.width / 2
-    e.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE
+    e.sprite.y = standLineY(surfaceY ?? footBottom)
     // Лист героя смотрит ВПРАВО по умолчанию.
     e.sprite.scale.set(e.facing === 1 ? scale : -scale, scale)
     e.rect.x = e.x

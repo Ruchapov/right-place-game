@@ -121,7 +121,7 @@
           29
         ],
         [
-          94,
+          98,
           21
         ]
       ]
@@ -272,7 +272,17 @@
       37
     ]
   ],
-  "gargoyles": [],
+  "gargoyles": [
+    {
+      "x": 102,
+      "y": 21,
+      "dir": -1,
+      "plate": [
+        95,
+        21
+      ]
+    }
+  ],
   "stalactites": [
     {
       "x": 101,
@@ -315,7 +325,7 @@
   "trapsPerRun": {
     "spikes": 7,
     "stalactites": 3,
-    "gargoyles": 0,
+    "gargoyles": 1,
     "saws": 2
   }
 }

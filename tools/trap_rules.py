@@ -74,6 +74,7 @@ SPIKES_PER_RUN = 7
 POOL_MULT = 1.5
 # Цель за забег по видам (14.11.2026).
 GARGOYLE_TARGET = {'B': 3, 'D': 3, 'F': 3}       # остальные 2
+GARGOYLE_PER_MAP = 2   # (18.11.2026, решение Андрея) горгулий в пуле и за забег — не больше
 STAL_TARGET = {'B2': 2, 'Y': 2}                  # остальные 3
 SAW_TARGET = {'C': 3, 'D': 3, 'F': 3, 'B2': 1, 'Y': 1}   # остальные 2
 
@@ -94,7 +95,7 @@ def per_run(letter, n_hazard):
     return {
         'spikes': min(SPIKES_PER_RUN, n_hazard),
         'stalactites': STAL_TARGET.get(letter, 3),
-        'gargoyles': GARGOYLE_TARGET.get(letter, 2),
+        'gargoyles': min(GARGOYLE_TARGET.get(letter, 2), GARGOYLE_PER_MAP),
         'saws': SAW_TARGET.get(letter, 2),
     }
 

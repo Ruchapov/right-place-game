@@ -7,7 +7,7 @@ import * as N from '../ncConstants'
 import { ncSheet } from '../ncConstants'
 import { cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, wallAhead } from '../stepClimb'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyAttackDamage, scaledNcEnemyMaxHp } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
@@ -404,7 +404,7 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
     const surfaceY = deps.findGroundSurfaceY(e.x, e.width, footBottom)
     // Фигура стоит в боксе серединой: точка ног сдвинута на середину фигуры.
     e.sprite.x = e.x + e.width / 2 + e.facing * figMid * scale
-    e.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (e.stepLiftPx ?? 0)
+    e.sprite.y = standLineY(surfaceY ?? footBottom) + (e.stepLiftPx ?? 0)
     e.sprite.scale.set(e.facing === -1 ? scale : -scale, scale)
     e.rect.x = e.x
     e.rect.y = e.y

@@ -5,7 +5,7 @@ import type { Boss, BossAnimKind, DamageSource, Grid, NcBossState, PlayerPhysics
 import * as C from '../constants'
 import * as N from '../ncConstants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { syncMark } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossSpikeDamage, scaledBossWaveDamage, scaledEnemyAttackDamage } from '../scaling'
 import { redrawBossHpBar } from './boss'
@@ -177,7 +177,7 @@ export function createNcBossCore(kind: SheetBossKind, deps: NcBossDeps) {
     const footBottom = boss.y + nc.h
     const surfaceY = deps.findGroundSurfaceY(boss.x, nc.w, footBottom)
     boss.sprite.x = boss.x + nc.w / 2 + boss.facing * figMid * scale
-    boss.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE
+    boss.sprite.y = standLineY(surfaceY ?? footBottom)
     boss.sprite.scale.set(boss.facing === -1 ? scale : -scale, scale)
     boss.sprite.visible = !nc.hidden
     boss.hpBarBg.x = boss.x + (nc.w - C.BOSS_HP_BAR_WIDTH) / 2

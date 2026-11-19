@@ -27,6 +27,16 @@ export function parryStunFrame(timerMs: number, poseFrame: number, lastFrame: nu
 
 // Зажимает value в [min, max]. Если min > max (карта меньше экрана по этой
 // оси), выворачивать диапазон нельзя — ставим 0.
+/**
+ * Линия ступней на полу (18.11.2026): поверхность клетки (findGroundSurfaceY,
+ * или низ бокса в воздухе) + FOOT_TUNE. ОДНА функция посадки на всех: герой,
+ * враги, боссы — и лужа навозника (она лежит там, где стоят ступни, а не на
+ * линии клетки, иначе висит на 11 px выше пола).
+ */
+export function standLineY(surfaceY: number): number {
+  return surfaceY + C.FOOT_TUNE
+}
+
 export function clamp(value: number, min: number, max: number): number {
   if (min > max) return 0
   return Math.min(max, Math.max(min, value))

@@ -5,7 +5,7 @@ import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent, ZvonarAnimKind
 import * as C from '../constants'
 import { isSolid, cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, wallAhead } from '../stepClimb'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledZvonarMaxHp, scaledZvonarWaveDamage } from '../scaling'
 import { lightHurtSpeed, redrawEnemyHpBar } from './enemy'
@@ -676,7 +676,7 @@ export function createZvonarSystem(deps: ZvonarDeps) {
       const footBottom = enemy.y + enemy.height
       const surfaceY = deps.findGroundSurfaceY(enemy.x, enemy.width, footBottom)
       enemy.sprite.x = enemy.x + enemy.width / 2
-      enemy.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
+      enemy.sprite.y = standLineY(surfaceY ?? footBottom) + (enemy.stepLiftPx ?? 0)
       enemy.hpBarBg.x = enemy.x
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x

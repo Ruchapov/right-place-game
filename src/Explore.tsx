@@ -41,7 +41,7 @@ import {
 } from './explore/collision'
 import { backdropForMap, slotsFileForMap, isPointXY, readTrapsPerRun, isGargoyleSlot, isStalactiteSlot, isSawSlot, buildEventCandidates, devPlaceFlame, devPlaceRunner, eventCells } from './explore/mapEvents'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier, potionHealAmount } from './potions'
-import { clamp, isLowLandscape, pickRandom, worldScaleFor } from './explore/utils'
+import { clamp, isLowLandscape, pickRandom, worldScaleFor, standLineY } from './explore/utils'
 import { rollTrophies } from './explore/rewards'
 // Каталог книг/навыков: по id надетого навыка берём его печать для кнопки.
 import { parseSkillBookSkillId } from './consumables'
@@ -94,7 +94,7 @@ import { LIVE_DECOR_FLAMES } from './explore/liveDecorManifest'
 import { createRunnerSystem } from './explore/entities/runner'
 import { createDamageNumberSystem } from './explore/entities/damageNumbers'
 import { playSfx, setAudioListener } from './audio/sound'
-import { prepareRunMusic, enterMenuMusic, musicHeroHit, musicHeroDied, musicBossAppeared, musicBossDied, updateCombatMusic } from './audio/music'
+import { prepareRunMusic, startRunMusic, enterMenuMusic, musicHeroHit, musicHeroDied, musicBossAppeared, musicBossDied, updateCombatMusic } from './audio/music'
 import { createHitFlashSystem } from './explore/entities/hitFlash'
 import { createSmokePuffSystem } from './explore/entities/smokePuff'
 import { createStarbloomSystem } from './explore/entities/starbloom'
@@ -3612,8 +3612,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // Какой босс (09.11.2026): называет сервер полем bossKind; нет поля
       // (сервер старше) — по карте, как раньше.
       const bossEvent = chosenEvents.find((ev) => ev.kind === 'boss')
-      // Музыка забега (16.11.2026): трек темы карты; boss.mp3 грузится только
-      // в забег с боссом.
+      // Музыка забега (16.11.2026): треки темы карты; boss.mp3 грузится только
+      // в забег с боссом. Здесь — только загрузка (18.11.2026): играть трек
+      // карты начинает startRunMusic, когда забег показан (setReady ниже).
       prepareRunMusic(mapTheme, !!bossEvent)
       const bossKindNamed = bossEvent ? readBossKind(bossEvent.bossKind) : null
       // Какие листы «под событие» нужны ЭТОМУ забегу. Решается ЗДЕСЬ, как только
@@ -5152,7 +5153,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         const bossFootBottom = boss.y + C.BOSS_HEIGHT
         const bossSurfaceY = findGroundSurfaceY(boss.x, C.BOSS_WIDTH, bossFootBottom)
         boss.sprite.x = boss.x + C.BOSS_WIDTH / 2
-        boss.sprite.y = (bossSurfaceY ?? bossFootBottom) + C.FOOT_TUNE + C.BOSS_OFFSET_Y
+        boss.sprite.y = standLineY(bossSurfaceY ?? bossFootBottom) + C.BOSS_OFFSET_Y
 
         boss.hpBarBg.x = boss.x + (C.BOSS_WIDTH - C.BOSS_HP_BAR_WIDTH) / 2
         boss.hpBarBg.y = boss.y - C.BOSS_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
@@ -8198,7 +8199,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           const heroFootBottom = player.y + C.PLAYER_HEIGHT
           const heroSurfaceY = findGroundSurfaceY(player.x, C.PLAYER_WIDTH, heroFootBottom)
           heroSpriteRef.current.x = player.x + C.PLAYER_WIDTH / 2
-          heroSpriteRef.current.y = (heroSurfaceY ?? heroFootBottom) + C.FOOT_TUNE
+          heroSpriteRef.current.y = standLineY(heroSurfaceY ?? heroFootBottom)
         }
 
         // Приоритет анимаций героя (сверху вниз):
@@ -8510,6 +8511,34 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
               : C.HERO_DRAW_H / idleFrames[0].height
         hero.scale.y = heroScaleMag
         hero.scale.x = heroFlipDir === 1 ? heroScaleMag : -heroScaleMag
+        // Ступни — на ту же линию, что у врагов (18.11.2026, HERO_FEET_ROW в
+        // constants.ts): у врагов якорь стоит на строке ступней, у героя — на
+        // низу клетки, и он висел на ≈6.6 px выше пола. Сдвиг — после выбора
+        // листа и масштаба этого тика, поэтому на смене листа скачка нет.
+        {
+          const tex = hero.textures as Texture[]
+          const cellH = tex[0].height
+          let lift: number
+          if (comboTextureSets.has(tex)) {
+            lift = C.HERO_COMBO_ANCHOR_Y * C.HERO_COMBO_CELL_H - C.HERO_FEET_ROW.combo
+          } else if (tex === deathFrames) {
+            lift = cellH - C.HERO_DEATH_FEET[Math.min(hero.currentFrame, C.HERO_DEATH_FEET.length - 1)]
+          } else {
+            const row =
+              tex === runFrames ? C.HERO_FEET_ROW.run
+                : tex === attackFrames ? C.HERO_FEET_ROW.attack
+                  : tex === blockFrames ? C.HERO_FEET_ROW.block
+                    : tex === hurtFrames ? C.HERO_FEET_ROW.hurt
+                      : tex === drinkFrames ? C.HERO_FEET_ROW.drink
+                        : tex === castFrames ? C.HERO_FEET_ROW.cast
+                          : tex === landFrames ? C.HERO_FEET_ROW.land
+                            : tex === dashFrames ? C.HERO_FEET_ROW.dash
+                              // idle и прыжок (в воздухе — сдвиг стойки, см. HERO_FEET_ROW)
+                              : C.HERO_FEET_ROW.idle
+            lift = (tex === jumpFrames ? idleFrames[0].height : cellH) - row
+          }
+          hero.y += lift * heroScaleMag
+        }
 
         // Значок стана над оглушёнными парированием (см. explore/entities/
         // stunStars.ts). Стоит ЗДЕСЬ, после всего, что в этом кадре меняет
@@ -8692,6 +8721,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (!cancelled) {
           clearLoadWatchdog() // страховка: забег показан, сторожить нечего
           setReady(true)
+          // Музыка карты — только теперь, когда забег показан (18.11.2026;
+          // на «ПОДГОТОВКЕ» играет меню, docs/audio.md).
+          startRunMusic()
         }
       }
     }

@@ -115,7 +115,13 @@ export function setMusicState(next: MusicState, fade: number = FADE_MENU): void 
   })
 }
 
-/** Вход в забег: трек темы, память — только треки забега. */
+/**
+ * Подготовка забега («ПОДГОТОВКА», setup() в Explore.tsx): ТОЛЬКО загрузить
+ * треки забега, память — только им. Музыку не переключает (18.11.2026: трек
+ * карты играл, пока шла загрузка): из меню меню и звучит; смена карты посреди
+ * забега — прежний трек тихо гаснет. Трек карты включает startRunMusic — в
+ * момент, когда забег показан.
+ */
 export function prepareRunMusic(theme: BackdropPreset | string, hasBoss: boolean): void {
   exploreTrack = exploreTrackFor(theme)
   exploreOffset = 0
@@ -123,12 +129,20 @@ export function prepareRunMusic(theme: BackdropPreset | string, hasBoss: boolean
   const keep = new Set<Track>([exploreTrack, 'battle'])
   if (exploreTrack === 'graveyard_explore') keep.add('crypt_explore') // запасной
   if (hasBoss) keep.add('boss')
-  releaseAudioBuffer(trackPath('menu'))
-  for (const t of RUN_TRACKS) if (!keep.has(t)) releaseAudioBuffer(trackPath(t))
+  for (const t of RUN_TRACKS) if (!keep.has(t) && !(current && current.track === t)) releaseAudioBuffer(trackPath(t))
   for (const t of keep) if (t !== 'crypt_explore' || exploreTrack === 'crypt_explore') void loadAudioBuffer(trackPath(t))
-  // Смена карты посреди забега — новый трек темы с начала.
-  if (state === 'explore' || state === 'battle' || state === 'boss') state = 'off'
+  if (state === 'explore' || state === 'battle' || state === 'boss') setMusicState('off', FADE_MENU)
+}
+
+/**
+ * Забег показан игроку (загрузочный экран убран, /run/ready ушёл) — трек темы
+ * карты кроссфейдом с начала. Ошибка загрузки или «ЗАБЕГ ПРЕРВАН» сюда не
+ * доходят: трек карты не включается, остаётся меню.
+ */
+export function startRunMusic(): void {
+  exploreOffset = 0
   setMusicState('explore', FADE_MENU)
+  releaseAudioBuffer(trackPath('menu'))
 }
 
 /** Меню (вне забега или экран итогов): отпустить треки забега, играть menu. */

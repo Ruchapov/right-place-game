@@ -5,7 +5,7 @@ import type { DamageSource, Grid, PlayerPhysics, Enemy, MapEvent } from '../type
 import * as C from '../constants'
 import { isSolid, cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, stepUpAhead, wallAhead } from '../stepClimb'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyMaxHp, scaledEnemyAttackDamage } from '../scaling'
 
@@ -880,7 +880,7 @@ export function createEnemySystem(deps: EnemyDeps) {
       const enemyFootBottom = enemy.y + C.ENEMY_HEIGHT
       const enemySurfaceY = deps.findGroundSurfaceY(enemy.x, C.ENEMY_WIDTH, enemyFootBottom)
       enemy.sprite.x = enemy.x + C.ENEMY_WIDTH / 2
-      enemy.sprite.y = (enemySurfaceY ?? enemyFootBottom) + C.FOOT_TUNE + (enemy.stepLiftPx ?? 0)
+      enemy.sprite.y = standLineY(enemySurfaceY ?? enemyFootBottom) + (enemy.stepLiftPx ?? 0)
       enemy.hpBarBg.x = enemy.x
       enemy.hpBarBg.y = enemy.y - C.ENEMY_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
       enemy.hpBarFill.x = enemy.x

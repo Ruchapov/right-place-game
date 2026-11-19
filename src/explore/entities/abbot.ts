@@ -6,7 +6,7 @@ import type { AbbotAssets } from '../assets'
 import type { ZvonarFrames } from './zvonar'
 import * as C from '../constants'
 import { isSolid, sweepFootBlock, cellFootBlockTop } from '../collision'
-import { clamp, parryStunFrame } from '../utils'
+import { clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, lookAround, syncMark, BOSS_PERCEPTION } from '../perception'
 import { scaledBossMaxHp, scaledBossMeleeDamage, scaledBossMelee2Damage, scaledBossSpikeDamage, scaledBossWaveDamage } from '../scaling'
 import { redrawBossHpBar } from './boss'
@@ -118,7 +118,7 @@ export function createAbbotSystem(deps: AbbotDeps) {
     const footBottom = boss.y + C.BOSS_HEIGHT
     const surfaceY = deps.findGroundSurfaceY(boss.x, C.BOSS_WIDTH, footBottom)
     boss.sprite.x = boss.x + C.BOSS_WIDTH / 2
-    boss.sprite.y = (surfaceY ?? footBottom) + C.FOOT_TUNE + C.ABBOT_OFFSET_Y
+    boss.sprite.y = standLineY(surfaceY ?? footBottom) + C.ABBOT_OFFSET_Y
     boss.sprite.scale.x = boss.facing === -1 ? C.ABBOT_SCALE : -C.ABBOT_SCALE
     boss.hpBarBg.x = boss.x + (C.BOSS_WIDTH - C.BOSS_HP_BAR_WIDTH) / 2
     boss.hpBarBg.y = boss.y - C.BOSS_HPBAR_OFFSET_Y - C.ENEMY_HP_BAR_MARGIN - C.ENEMY_HP_BAR_HEIGHT
