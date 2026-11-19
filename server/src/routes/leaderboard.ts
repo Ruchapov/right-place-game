@@ -23,6 +23,7 @@ import type { FastifyInstance } from 'fastify'
 import { Prisma, PrismaClient } from '@prisma/client'
 import { getUserId } from './run.js'
 
+import { achievementTitle } from '../achievements.js'
 const prisma = new PrismaClient()
 
 export const LEADERBOARD_BOARDS = ['level', 'newbies', 'guilds', 'hunters', 'bosses'] as const
@@ -34,7 +35,7 @@ const NEWBIE_DAYS = 14
 const NAME_MAX = 16
 
 type Emblem = { symbol: number; frame: number; bg: number; color: number }
-type Row = { place: number; name: string; guildTag: string | null; emblem: Emblem | null; value: number; members?: number }
+type Row = { place: number; name: string; title?: string | null; guildTag: string | null; emblem: Emblem | null; value: number; members?: number }
 /** Строка кэша: строка ответа + чей это id (героя или гильдии) — для isMe. */
 type CachedRow = { row: Row; ownerId: number }
 
@@ -56,6 +57,7 @@ type HeroSqlRow = {
   id: number
   value: number
   firstName: string
+  titleKey: string | null
   tag: string | null
   emblemSymbol: number | null
   emblemFrame: number | null
@@ -70,6 +72,8 @@ function heroRow(r: HeroSqlRow, place: number): CachedRow {
     row: {
       place,
       name: shortName(r.firstName),
+      // Титул героя (20.11.2026, достижения); нет — null.
+      title: achievementTitle(r.titleKey),
       guildTag: inGuild ? r.tag : null,
       emblem: inGuild ? { symbol: r.emblemSymbol!, frame: r.emblemFrame!, bg: r.emblemBg!, color: r.emblemColor! } : null,
       value: Number(r.value),
@@ -91,7 +95,7 @@ async function loadTop(board: LeaderboardBoard): Promise<CachedRow[]> {
   if (board === 'level' || board === 'newbies') {
     const where = board === 'newbies' ? Prisma.sql`WHERE c."createdAt" >= ${newbieCutoff()}` : Prisma.empty
     const rows = await prisma.$queryRaw<HeroSqlRow[]>`
-      SELECT c.id, c.level AS value, u."firstName", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
+      SELECT c.id, c.level AS value, u."firstName", c."titleKey", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
       FROM "Character" c ${HERO_GUILD_JOIN}
       ${where}
       ORDER BY c.level DESC, (c.strength + c.agility + c.endurance) DESC, c.id ASC
@@ -101,7 +105,7 @@ async function loadTop(board: LeaderboardBoard): Promise<CachedRow[]> {
   if (board === 'hunters' || board === 'bosses') {
     const col = statColumn(board)
     const rows = await prisma.$queryRaw<HeroSqlRow[]>`
-      SELECT c.id, ${col} AS value, u."firstName", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
+      SELECT c.id, ${col} AS value, u."firstName", c."titleKey", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
       FROM "HeroStats" h JOIN "Character" c ON c.id = h."characterId" ${HERO_GUILD_JOIN}
       WHERE ${col} > 0
       ORDER BY ${col} DESC, c.id ASC

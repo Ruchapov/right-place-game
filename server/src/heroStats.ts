@@ -30,10 +30,14 @@ export type HeroStatsView = {
   since: string | null
 }
 
-/** Прибавка одного забега — то, что settleExploreRun кладёт increment'ами. */
-export type HeroStatsDelta = Omit<HeroStatsView, 'since'>
+/**
+ * Прибавка одного забега — то, что settleExploreRun кладёт increment'ами.
+ * trapDeaths (20.11.2026) — смерть от ловушки или шипов; клиенту в летописи не
+ * отдаётся: по нему считается тайное достижение trap_10 (achievements.ts).
+ */
+export type HeroStatsDelta = Omit<HeroStatsView, 'since'> & { trapDeaths: number }
 
-const ZERO: HeroStatsDelta = {
+const ZERO: Omit<HeroStatsView, 'since'> = {
   runsTotal: 0, runsCompleted: 0, runsDied: 0,
   killsTotal: 0, killsElite: 0, bossesKilled: 0,
   chestsOpened: 0, breakablesBroken: 0, potionsDrunk: 0, parries: 0,

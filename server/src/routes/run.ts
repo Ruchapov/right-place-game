@@ -8,7 +8,7 @@ import { rollRunEvents, rollRunPatrols, rollRunBreakables, clientRunEvents, pick
 import type { RunBreakable } from '../breakables.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
-import { BAG_CAPACITY, CONSUMABLES, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { BAG_CAPACITY, CONSUMABLES, bagCapacity, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
@@ -18,6 +18,8 @@ import { grantInviteeReward } from './friends.js'
 import { brandBonus, runSkinsOf, type TailorItemId } from '../skins.js'
 import { skinStateOf } from '../skinState.js'
 import { addHeroStats, heroStatsOf, type HeroStatsDelta, type HeroStatsView } from '../heroStats.js'
+import { grantRunAchievements, type AchievementGrant } from '../achievementState.js'
+import type { AchievementRunFacts } from '../achievements.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId, type ClassItemId } from '../classItems.js'
 import { CLASS_CHOOSE_SHARDS, CLASS_CHOOSE_GOLD, CLASS_ASCEND_SHARDS, CLASS_ASCEND_GOLD, heroClassById, parseHeroClassId, heroClassToWire, chooseShortfalls, ascendShortfalls, renounceShortfalls, shortfallLine, type HeroClass, type HeroClassState, type HeroClassWallet, type ClassShortfall } from '../heroClasses.js'
 // Форма currentRun, её читатели и потолки на выпитое — в общем модуле: тот же
@@ -888,7 +890,7 @@ type AppliedDrops = {
 async function applyDrops(
   db: Prisma.TransactionClient,
   drops: EventDrop[],
-  character: { id: number } & ConsumableColumns & ClassItemColumns,
+  character: { id: number; bagBonusCells: number } & ConsumableColumns & ClassItemColumns,
   log: FastifyRequest['log'],
   // Кольцо старателя на этот забег (снимок currentRun.gear): каждая находка
   // сырья — две штуки, и каждая берёт своё место в сумке.
@@ -920,7 +922,7 @@ async function applyDrops(
     switch (drop.category) {
       case 'equipment': {
         const view: RunDrop = { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
-        if (!bagFits(cellsUsed, 1)) {
+        if (!bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
           lost.push(view)
           continue
         }
@@ -935,7 +937,7 @@ async function applyDrops(
         // ложилась бейджем «×2» в ту же). Занимает ли — решает каталог; книги
         // нет в каталоге — считаем, что занимает (осторожная сторона).
         const needsCell = consumableById(drop.id)?.takesCell ?? true
-        if (needsCell && !bagFits(cellsUsed, 1)) {
+        if (needsCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
           lost.push(view)
           continue
         }
@@ -971,7 +973,7 @@ async function applyDrops(
         }
         const view: RunDrop = { category: drop.category }
         const needsCell = spec.takesCell
-        if (needsCell && !bagFits(cellsUsed, 1)) {
+        if (needsCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
           lost.push(view)
           continue
         }
@@ -992,7 +994,7 @@ async function applyDrops(
         const pieces = isRaw && prospector ? RING_PROSPECTOR_MULT : 1
         for (let i = 0; i < pieces; i++) {
           const view: RunDrop = { category: 'crafter', id: spec.id }
-          if (spec.takesCell && !bagFits(cellsUsed, 1)) {
+          if (spec.takesCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
             lost.push(view)
             continue
           }
@@ -1309,6 +1311,15 @@ export type RunResultSummary = {
   tailorItems?: { patch: number; brand: number }
   /** Летопись героя после забега (17.11.2026, heroStats.ts). */
   stats?: HeroStatsView
+  /** Удача и подаренные ячейки сумки после забега (20.11.2026, достижения). */
+  luck?: number
+  bagBonusCells?: number
+  /**
+   * Достижения, полученные ЭТОЙ вылазкой (20.11.2026, docs/achievements.md).
+   * Необязательное: вход, закрывший забег смертью, достижений не выдаёт.
+   * ⚠️ КОПИЯ — в src/api.ts.
+   */
+  achievements?: AchievementGrant[]
   /**
    * Навыки, у которых ЗА ЭТОТ ЗАБЕГ вырос уровень, с НОВЫМ уровнем
    * каждого (02.10.2026). Пустой список — самый частый исход (первый уровень
@@ -2445,7 +2456,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!character) return 'no-character'
 
       const bookTakesCell = consumableById(bookId)?.takesCell ?? true
-      if (bookTakesCell && !bagFits(await bagCellsUsed(tx, character.id, consumableStockOf(character), classItemStockOf(character)), 1)) return 'bag-full'
+      if (bookTakesCell && !bagFits(await bagCellsUsed(tx, character.id, consumableStockOf(character), classItemStockOf(character)), 1, bagCapacity(character.bagBonusCells))) return 'bag-full'
 
       // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
       // «страниц хватает».
@@ -2462,7 +2473,7 @@ export async function runRoutes(server: FastifyInstance) {
       case 'no-character':
         return reply.status(404).send({ error: 'Character not found' })
       case 'bag-full':
-        return reply.status(400).send({ error: 'Bag is full', capacity: BAG_CAPACITY })
+        return reply.status(400).send({ error: 'Bag is full' })
       case 'no-scrolls':
         // Страниц не хватило. Тот же код, что и раньше: клиент на него уже
         // перечитывает профиль.
@@ -2856,8 +2867,8 @@ export async function runRoutes(server: FastifyInstance) {
         if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
         if (spec.takesCell) {
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh))
-          if (!bagFits(used, count)) {
-            throw new RouteRejection(400, { error: 'Bag is full', capacity: BAG_CAPACITY, used, free: bagFreeCells(used), need: count })
+          if (!bagFits(used, count, bagCapacity(fresh.bagBonusCells))) {
+            throw new RouteRejection(400, { error: 'Bag is full', capacity: bagCapacity(fresh.bagBonusCells), used, free: bagFreeCells(used, bagCapacity(fresh.bagBonusCells)), need: count })
           }
         }
         const written = await db.character.updateMany({
@@ -3053,6 +3064,9 @@ export async function runRoutes(server: FastifyInstance) {
       luck: character.luck,
       // Летопись героя (17.11.2026, heroStats.ts): нет строки — нули.
       stats: await heroStatsOf(prisma, character.id),
+      // Достижения (20.11.2026): подаренные ячейки сумки и выбранный титул.
+      bagBonusCells: character.bagBonusCells,
+      titleKey: character.titleKey,
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -3213,7 +3227,7 @@ export async function runRoutes(server: FastifyInstance) {
         let critLost = false
         if (crit) {
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
-          if (bagFits(used, SMELT_CRIT_INGOTS - 1)) ingots = SMELT_CRIT_INGOTS
+          if (bagFits(used, SMELT_CRIT_INGOTS - 1, bagCapacity(fresh.bagBonusCells))) ingots = SMELT_CRIT_INGOTS
           else critLost = true
         }
         const written = await db.character.updateMany({
@@ -3341,7 +3355,7 @@ export async function runRoutes(server: FastifyInstance) {
         } else {
           if (prev === '') throw new RouteRejection(400, { error: 'Slot is empty' })
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
-          if (!bagFits(used, 1)) throw new RouteRejection(400, { error: 'Bag is full' })
+          if (!bagFits(used, 1, bagCapacity(fresh.bagBonusCells))) throw new RouteRejection(400, { error: 'Bag is full' })
           data = { ...classItemStockIncrement(prev, 1) }
         }
         const next = slots.map((s, i) => (i === slotIndex ? (ringId ?? '') : s))
@@ -3666,7 +3680,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (inventoryItem.equipped) {
         const fresh = await tx.character.findUnique({ where: { userId } })
         if (!fresh) return { kind: 'reject', status: 404, error: 'Character not found' }
-        if (!bagFits(await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)), 1)) {
+        if (!bagFits(await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)), 1, bagCapacity(fresh.bagBonusCells))) {
           return { kind: 'reject', status: 400, error: 'Сумка полна — освободи ячейку.' }
         }
       }
@@ -4047,6 +4061,19 @@ export async function settleExploreRun(
       trophiesEarned: died ? 0 : Math.max(0, earned),
       questsCompleted: 0, // ставится в транзакции — там решается задание
       timeInRunsMs: statsFacts.durationMs ?? 0,
+      // Смерть от ловушки или шипов (20.11.2026, достижение trap_10): причину
+      // называет клиент полем diedTo; нет поля — не ловушка. Штрафной путь —
+      // телу не верим.
+      trapDeaths: died && !unconfirmedPenalty && body.diedTo === 'trap' ? 1 : 0,
+    }
+    // Факты вылазки для достижений (achievements.ts): одиночные условия.
+    const achievementRunFacts: AchievementRunFacts = {
+      died,
+      damageTaken: reportedProgress.damageTaken,
+      kills: heroStatsDelta.killsTotal,
+      bossClosed,
+      potionsDrunk: unconfirmedPenalty ? null : statsFacts.potionsDrunk,
+      mimics: statsFacts.mimics,
     }
 
     // Условная запись — ТОТ ЖЕ приём, что у /run/sip и /run/progress выше:
@@ -4188,17 +4215,23 @@ export async function settleExploreRun(
       // закрыл кто-то другой.
       if (result.count === 0) return null
       await addHeroStats(tx, character.id, { ...heroStatsDelta, questsCompleted: questCompleted !== null ? 1 : 0 })
+      // Достижения (20.11.2026, achievementState.ts) — в ЭТОЙ ЖЕ транзакции,
+      // после условной записи: повтор финиша сюда не дойдёт.
+      const achievements = await grantRunAchievements(tx, userId, character.id, achievementRunFacts)
       for (const itemId of resolvedDrops.itemIds) {
         await tx.inventoryItem.create({ data: { characterId: character.id, itemId } })
       }
-      return { count: result.count, resolvedDrops, newPotionStock, questRead, questState, questCompleted }
+      return { count: result.count, resolvedDrops, newPotionStock, questRead, questState, questCompleted, achievements }
     }, { maxWait: 10000, timeout: 15000 })
     if (txResult === null) {
       // Забег закрыли или изменили между чтением и записью — НИЧЕГО не
       // записано. Финиш отвечает 409 (клиент повторит), вход перечитывает.
       return { kind: 'conflict' }
     }
-    const { count: written, resolvedDrops, newPotionStock, questRead, questState, questCompleted } = txResult
+    const { count: written, resolvedDrops, newPotionStock, questRead, questState, questCompleted, achievements } = txResult
+    if (achievements.length > 0) {
+      log.info({ userId, achievements: achievements.map((a) => ({ key: a.key, rewardPending: a.rewardPending })) }, 'finish-explore: achievements earned')
+    }
     if (questCompleted !== null) {
       log.info({ userId, questId: questCompleted.questId, reward: questCompleted.reward }, 'finish-explore: daily quest completed')
     }
@@ -4226,6 +4259,12 @@ export async function settleExploreRun(
     let tailorAfterFinish = { patch: character.patchCount, brand: character.brandCount }
     let statsAfterFinish: HeroStatsView | undefined
     let potionsAfterFinish = newPotionStock
+    // Статы, удача и вместимость — после наград достижений (те пишутся поверх
+    // роста в той же транзакции); перечитанные.
+    let heroAfterFinish = {
+      strength: growth.strength, endurance: growth.endurance, agility: growth.agility,
+      level: growth.level, luck: character.luck, bagBonusCells: character.bagBonusCells,
+    }
     // Золото, значки и RP — тоже перечитанные: награда задания легла
     // increment'ом поверх того, что успело случиться между чтением и записью.
     let walletAfterFinish = {
@@ -4245,6 +4284,10 @@ export async function settleExploreRun(
         potionsAfterFinish = potionStockOf(reread)
         walletAfterFinish = { eliteTrophies: reread.eliteTrophies, gold: reread.gold, hunterBadges: reread.hunterBadges, rp: reread.rp }
         statsAfterFinish = await heroStatsOf(prisma, character.id)
+        heroAfterFinish = {
+          strength: reread.strength, endurance: reread.endurance, agility: reread.agility,
+          level: reread.level, luck: reread.luck, bagBonusCells: reread.bagBonusCells,
+        }
       } else {
         // Строка исчезла между записью и чтением — практически невозможно
         // (updateMany только что её нашёл). Ответ 500 здесь был бы хуже
@@ -4274,10 +4317,14 @@ export async function settleExploreRun(
       agilityGained: growth.agility - character.agility,
       leveledUp: growth.level > characterLevel,
       trophies: died ? 0 : newTrophies,
-      strength: growth.strength,
-      endurance: growth.endurance,
-      agility: growth.agility,
-      level: growth.level,
+      strength: heroAfterFinish.strength,
+      endurance: heroAfterFinish.endurance,
+      agility: heroAfterFinish.agility,
+      level: heroAfterFinish.level,
+      luck: heroAfterFinish.luck,
+      bagBonusCells: heroAfterFinish.bagBonusCells,
+      // Новые за эту вылазку достижения (20.11.2026); пустой — ничего нового.
+      achievements,
       potions: potionsAfterFinish,
       bonusLevels: newBonusLevels,
       consumables: consumablesAfterFinish,

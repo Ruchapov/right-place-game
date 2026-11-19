@@ -409,6 +409,17 @@ export const RUN_CONSUMABLE_SLOTS = 5
 export const BAG_CAPACITY = 30
 
 /**
+ * Вместимость сумки КОНКРЕТНОГО героя (20.11.2026, достижения): стартовые
+ * BAG_CAPACITY плюс ячейки, подаренные достижениями (Character.bagBonusCells).
+ * Ею — и только ею — кормятся bagFits / bagFreeCells на сервере и на клиенте:
+ * голое BAG_CAPACITY в проверке молча отняло бы у героя подаренные ячейки.
+ * Мусор (не целое, отрицательное) — без прибавки.
+ */
+export function bagCapacity(bonusCells: number): number {
+  return BAG_CAPACITY + (Number.isInteger(bonusCells) && bonusCells > 0 ? bonusCells : 0)
+}
+
+/**
  * Снаряжение (строки InventoryItem из БД, а не каталог этого файла) место в
  * сумке занимает — каждый НЕнадетый предмет своя ячейка. Константой рядом с
  * правилом, а не голым true по месту: значок в карточке и подсчёт читают одно.
@@ -442,18 +453,18 @@ export function bagCellsOf(unequippedItems: number, stacks: readonly { takesCell
 /**
  * Влезут ли ещё `adding` штук, занимающих место, в сумку, где занято `used`.
  * Покупка N штук при свободных меньше N — отказ ЦЕЛИКОМ, а не «сколько влезло»
- * (решение Андрея 26.10.2026). Сумка, уже переполненная (used > BAG_CAPACITY —
+ * (решение Андрея 26.10.2026). Сумка, уже переполненная (used > capacity —
  * так бывает у героев, накопивших стопки до этого правила), не принимает ничего:
  * у неё не отнимается лишнее, но и нового в неё не кладётся.
  */
-export function bagFits(used: number, adding: number): boolean {
+export function bagFits(used: number, adding: number, capacity: number): boolean {
   // Класть нечего — влезает всегда, даже в переполненную сумку.
-  return adding <= 0 || used + adding <= BAG_CAPACITY
+  return adding <= 0 || used + adding <= capacity
 }
 
 /** Свободно ячеек; у переполненной сумки — 0, а не отрицательное число. */
-export function bagFreeCells(used: number): number {
-  return Math.max(0, BAG_CAPACITY - used)
+export function bagFreeCells(used: number, capacity: number): number {
+  return Math.max(0, capacity - used)
 }
 
 /**

@@ -271,6 +271,14 @@ model Character {
   brandLevelWeapon    Int      @default(0)
   patchCount          Int      @default(0)
   brandCount          Int      @default(0)
+  // Р”РѕСЃС‚РёР¶РµРЅРёСЏ (20.11.2026, docs/achievements.md, РјРёРіСЂР°С†РёСЏ
+  // 20261120120000_achievements_add). bagBonusCells вЂ” СЏС‡РµР№РєРё СЃСѓРјРєРё, РїРѕРґР°СЂРµРЅРЅС‹Рµ
+  // РґРѕСЃС‚РёР¶РµРЅРёСЏРјРё: РІРјРµСЃС‚РёРјРѕСЃС‚СЊ = BAG_CAPACITY + bagBonusCells (bagCapacity,
+  // consumables.ts) РІРµР·РґРµ. titleKey вЂ” РІС‹Р±СЂР°РЅРЅС‹Р№ С‚РёС‚СѓР» (key РїРѕР»СѓС‡РµРЅРЅРѕРіРѕ
+  // РґРѕСЃС‚РёР¶РµРЅРёСЏ); NULL вЂ” Р±РµР· С‚РёС‚СѓР»Р°.
+  bagBonusCells       Int      @default(0)
+  titleKey            String?
+  achievements        Achievement[]
   botNotifications    BotNotification[]
   currentRun         Json?    // активный забег: { rooms, index }; null = забега нет
   createdAt           DateTime @default(now())
@@ -349,7 +357,25 @@ model HeroStats {
   trophiesEarned    Int       @default(0)
   questsCompleted   Int       @default(0)
   timeInRunsMs      BigInt    @default(0)
+  // РЎРјРµСЂС‚Рё РѕС‚ Р»РѕРІСѓС€РєРё РёР»Рё С€РёРїРѕРІ (20.11.2026, РґРѕСЃС‚РёР¶РµРЅРёРµ trap_10): РєР»РёРµРЅС‚
+  // РЅР°Р·С‹РІР°РµС‚ РїСЂРёС‡РёРЅСѓ СЃРјРµСЂС‚Рё РїРѕР»РµРј diedTo С„РёРЅРёС€Р°.
+  trapDeaths        Int       @default(0)
   createdAt         DateTime  @default(now())
+}
+
+// Р”РѕСЃС‚РёР¶РµРЅРёСЏ (20.11.2026, docs/achievements.md). РЎС‚СЂРѕРєР° вЂ” РїРѕР»СѓС‡РµРЅРЅРѕРµ
+// РґРѕСЃС‚РёР¶РµРЅРёРµ; РєР°С‚Р°Р»РѕРі СѓСЃР»РѕРІРёР№ Рё РЅР°РіСЂР°Рґ вЂ” С‚РѕР»СЊРєРѕ РЅР° СЃРµСЂРІРµСЂРµ (achievements.ts).
+// РџРёС€РµС‚ РёС… РўРћР›Р¬РљРћ settleExploreRun РІ С‚СЂР°РЅР·Р°РєС†РёРё С„РёРЅРёС€Р°. rewardPending вЂ” РЅР°РіСЂР°РґР°
+// РЅРµ РІР»РµР·Р»Р° РІ СЃСѓРјРєСѓ Рё Р¶РґС‘С‚ В«Р—Р°Р±СЂР°С‚СЊВ» (POST /achievements/claim).
+model Achievement {
+  id            Int       @id @default(autoincrement())
+  characterId   Int
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  key           String
+  earnedAt      DateTime  @default(now())
+  rewardPending Boolean   @default(false)
+
+  @@unique([characterId, key])
 }
 
 model IdempotencyKey {
