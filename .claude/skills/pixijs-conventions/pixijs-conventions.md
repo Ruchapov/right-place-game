@@ -82,8 +82,11 @@ recomputes from level:
   enemy HP     = round(ENEMY_MAX_HP + ENEMY_HP_PER_LEVEL * (lvl-1))
   enemy damage = round(ENEMY_ATTACK_DAMAGE + ENEMY_DAMAGE_PER_LEVEL * (lvl-1))
 Boss stats are multipliers on top of the already-scaled enemy stats at the same
-level (BOSS_HP_MULT=2.5, BOSS_MELEE_DMG_MULT=1.3, BOSS_MELEE2_DMG_MULT=1.9,
+level (BOSS_HP_MULT=9 since 21.11.2026 — was 2.5; ENEMY_MAX_HP 180, +16.2/lvl; BOSS_MELEE_DMG_MULT=1.3, BOSS_MELEE2_DMG_MULT=1.9,
 BOSS_SPIKE_DMG_MULT=1.0, BOSS_WAVE_DMG_MULT=1.15), not an independent formula.
+Every single hit (hero sword once per swing, skills per target, enemy/boss hits
+before armor) rolls 80–120% via rollHitDamage (src/playerDamage.ts); ticks,
+heals, spikes and traps do not (docs/explore-engine.md, 21.11.2026).
 
 ## Mobile / Telegram constraints
 - The game runs inside Telegram's in-app browser (WebView), often on weak phones.

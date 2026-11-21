@@ -1084,3 +1084,22 @@ exchange`), но различить "первый применился" и "не
 
 ---
 
+
+## ЯЧЕЙКИ СУМКИ (21.11.2026)
+
+У Торговца последней плиткой — «+1 ячейка сумки» (иконка — мешочек
+`nav_shop.png`, плашка — цена). Карточка: «Сумка: N ячеек. Ещё одна — X
+золота», кнопка «Купить — X».
+- Цена — `bagCellPrice(bought) = round(1000 × 1.3^bought)`: 1000, 1300, 1690,
+  2197… Потолка нет. Общий каталог `consumables.ts` (`BAG_CELL_BASE_PRICE`,
+  `BAG_CELL_PRICE_GROWTH`), копия байт в байт на сервере.
+- `POST /character/buy-bag-cell {requestId}`: `applyOnce`, блокировка строки,
+  условная запись (золото ≥ цены, `bagCellsBought` тот же, `currentRun` пуст) —
+  `gold` −цена, `bagCellsBought` +1, `bagBonusCells` +1. Вместимость считается
+  одним местом — `bagCapacity(bagBonusCells)`, правок у вызывающих нет. В вылазке
+  — 400 `Run in progress`; 400 `Not enough gold` (+`price`, `gold`); 409 — гонка
+  (две параллельные покупки по одной цене не пройдут). Ответ `{gold,
+  bagBonusCells, bagCellsBought}` (+`replayed`).
+- Колонка `Character.bagCellsBought` (миграция `20261121120000_boss_hearts_add`);
+  отдаётся во входе (внутри `character`) и в `GET /character/profile`. Нет поля —
+  плитки нет.
