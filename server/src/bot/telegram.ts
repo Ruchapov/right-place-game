@@ -15,6 +15,8 @@ export const GAME_WEB_URL = 'https://ruchapov.github.io/right-place-game/'
 export const GAME_LINK = 'https://t.me/RightPlaceGame_bot/game'
 export const CHANNEL_USERNAME = '@rightplace_news'
 export const CHANNEL_URL = 'https://t.me/rightplace_news'
+// Общий чат игроков (22.11.2026): публичная группа, она же обсуждение канала.
+export const CHAT_URL = 'https://t.me/rightplace_chat'
 /** Эффект 🔥 у приветствия (message_effect_id). */
 export const FIRE_EFFECT_ID = '5104841245755180586'
 

@@ -23,7 +23,7 @@ import { CRAFTER_LEVEL, OTHER_TIER, BOOTS_SPEED_CAP_PCT, gearEffectsOf, otherIte
 import { CrafterSection } from './ui/CrafterSection'
 import { RingSlots } from './ui/RingSlots'
 import { GuildPanel, GuildBuffChips } from './ui/GuildPanel'
-import { ChannelPanel } from './ui/ChannelPanel'
+import { ChannelPanel, ChatTile } from './ui/ChannelPanel'
 import { NotifySettingsSheet } from './ui/NotifySettingsSheet'
 import { hasActiveGuildBuff } from './ui/guildText'
 import { GUILD_INVITE_PREFIX, parseGuildInviteCode } from './guild'
@@ -5295,6 +5295,8 @@ export default function App() {
                   sideMenu={sideMenu}
                 />
               )}
+              {/* Чат игроков (22.11.2026) — плиткой под каналом. */}
+              {communityTab === 'channel' && <ChatTile sideMenu={sideMenu} />}
 
               {communityTab === 'friends' && (<>
               {/* Шапка */}

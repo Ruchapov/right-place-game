@@ -12,6 +12,9 @@ import { CheckIcon } from './guild/common'
 import { claimChannelReward } from '../api'
 
 export const CHANNEL_URL = 'https://t.me/rightplace_news'
+// Общий чат игроков (22.11.2026): публичная группа, она же обсуждение канала.
+// Без награды и без проверок — просто ссылка (ChatTile ниже).
+export const CHAT_URL = 'https://t.me/rightplace_chat'
 export const CHANNEL_REWARD_RP = 50
 const GOLD = '#D99A3E'
 
@@ -190,5 +193,51 @@ function StepMark({ n, done, gold }: { n: number; done: boolean; gold: boolean }
     }}>
       {done ? <CheckIcon color={ink} size={14} /> : n}
     </span>
+  )
+}
+
+/**
+ * «Чат игроков» (22.11.2026) — плитка под карточкой канала во вкладке
+ * «Сообщество → Канал». Открывает группу так же, как канал: openTelegramLink,
+ * вне Telegram — window.open. Награды и проверок нет.
+ */
+export function ChatTile({ sideMenu }: { sideMenu: boolean }) {
+  const open = () => {
+    if (openTelegramLink.isAvailable()) openTelegramLink(CHAT_URL)
+    else window.open(CHAT_URL, '_blank')
+  }
+  return (
+    <div className="rp-ch-anim" style={{ fontFamily: TEXT_FONT, margin: sideMenu ? '10px 8px 0' : '12px 8px 0', animation: 'rp-ch-in .32s ease-out both' }}>
+      <style>{CSS}</style>
+      <button className="rp-press" onClick={open} aria-label="Открыть чат игроков" style={{
+        width:'100%', boxSizing:'border-box', minHeight:64, display:'flex', alignItems:'center', gap:14,
+        padding:'10px 14px', borderRadius:14, border:`1px solid ${C.stoneDark}`, cursor:'pointer', textAlign:'left',
+        background:`linear-gradient(180deg, ${G.sheet} 0%, ${C.appBg} 100%)`,
+        boxShadow:`inset 0 1px 0 rgba(164,151,164,.12), 0 6px 18px rgba(0,0,0,.4)`, color:C.textMain,
+      }}>
+        <ChatEmblem />
+        <span style={{ display:'flex', flexDirection:'column', gap:3, minWidth:0, flex:1 }}>
+          <span style={{ fontFamily:FONT_DISPLAY, fontWeight:700, fontSize:17, color:C.textMain }}>Чат игроков</span>
+          <span style={{ fontSize:12.5, color:G.textSoft, lineHeight:1.4 }}>Здесь ищут гильдию, делятся находками и спорят о боссах</span>
+        </span>
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" style={{ flexShrink:0 }}>
+          <path d="M6 3l6 6-6 6" stroke={GOLD} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+/** Два облачка разговора в каменной нише — пара к колоколу канала. */
+function ChatEmblem() {
+  return (
+    <svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true" style={{ flexShrink:0 }}>
+      <circle cx="22" cy="22" r="20.5" fill={C.niche} stroke={C.stoneDark} strokeWidth="2" />
+      <path d="M10 13.5c0-1.9 1.6-3.5 3.5-3.5h11c1.9 0 3.5 1.6 3.5 3.5v6c0 1.9-1.6 3.5-3.5 3.5H17l-4.5 3.5V23h0c-1.4-.5-2.5-1.8-2.5-3.5z"
+        fill={C.glowEdge} stroke={C.outline} strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M31 18c1.7 0 3 1.3 3 3v5c0 1.5-1 2.7-2.4 3v3.2L27.8 29H21c-1.7 0-3-1.3-3-3v-1h6.5c2.5 0 4.5-2 4.5-4.5V18z"
+        fill={C.glowCore} stroke={C.outline} strokeWidth="1.3" strokeLinejoin="round" />
+      <circle cx="15" cy="16.5" r="1.3" fill={C.outline} /><circle cx="19" cy="16.5" r="1.3" fill={C.outline} /><circle cx="23" cy="16.5" r="1.3" fill={C.outline} />
+    </svg>
   )
 }

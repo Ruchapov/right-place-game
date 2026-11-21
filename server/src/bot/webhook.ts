@@ -28,7 +28,7 @@ import { PrismaClient } from '@prisma/client'
 import { referralUrl } from '../referral.js'
 import { ensureReferralCode } from '../routes/friends.js'
 import {
-  answerCallbackQuery, backButton, botArt, call, CHANNEL_URL, editMessageMedia, editMessageReplyMarkup, FIRE_EFFECT_ID,
+  answerCallbackQuery, backButton, botArt, call, CHANNEL_URL, CHAT_URL, editMessageMedia, editMessageReplyMarkup, FIRE_EFFECT_ID,
   isNotModified, playButton, sendCard, sendMessage, type InlineButton, type Keyboard,
 } from './telegram.js'
 import {
@@ -127,6 +127,8 @@ async function renderScreen(screen: Screen, telegramId: number, param: string | 
           [playButton(param)],
           [{ text: '🔔 Уведомления', callback_data: nav('notify', param) }, { text: '👥 Друзья', callback_data: nav('friends', param) }],
           [{ text: '📣 Канал: +50 RP', style: 'primary', callback_data: nav('channel', param) }, { text: '📖 Об игре', callback_data: nav('help', param) }],
+          // Общий чат игроков (22.11.2026) — своим рядом, ссылкой на группу.
+          [{ text: '💬 Чат игроков', url: CHAT_URL }],
         ],
       }
     case 'notify': {
