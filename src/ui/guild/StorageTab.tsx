@@ -95,7 +95,7 @@ function PutCard({ me, pending, inventory, overlayPad, overlayCard, onClose, onP
   const items = inventory.filter((i) => !i.equipped)
   const stacks = [
     ...CONSUMABLES.filter((c) => c.takesCell && (consumables?.[c.id] ?? 0) > 0).map((c) => ({ kind: 'consumable', ref: c.id, name: c.nameRu, icon: ICON(c.icon), count: consumables?.[c.id] ?? 0 })),
-    ...CLASS_ITEMS.filter((c) => c.takesCell && (classItems?.[c.id] ?? 0) > 0).map((c) => ({ kind: 'classItem', ref: c.id, name: c.nameRu, icon: ICON(c.icon), count: classItems?.[c.id] ?? 0 })),
+    ...CLASS_ITEMS.filter((c) => c.takesCell && !c.bound && (classItems?.[c.id] ?? 0) > 0).map((c) => ({ kind: 'classItem', ref: c.id, name: c.nameRu, icon: ICON(c.icon), count: classItems?.[c.id] ?? 0 })),
   ]
   const row: CSSProperties = { display:'flex', alignItems:'center', gap:8, padding:'6px 0', borderTop:`1px solid ${C.niche}` }
   return (

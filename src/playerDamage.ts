@@ -24,3 +24,18 @@
 export function playerAttackDamage(strength: number, weaponDamage: number, upgradeBonus: number): number {
   return 15 + Math.floor(strength / 2) + weaponDamage + upgradeBonus
 }
+
+// РАЗБРОС УРОНА (21.11.2026, docs/explore-engine.md, «Разброс урона»). Каждый
+// удар — 80–120% своей базы, целым числом, не меньше 1. Бросают: меч героя (раз
+// на взмах, после клейма/Дуэли/множителя удара комбо, ДО крита и бонусов по
+// цели), навыки (огненный и ледяной шар, Таран, Телекинез — на каждое
+// попадание по каждой цели), враги и боссы (каждый удар по герою, ДО брони).
+// НЕ бросают: тики кровотечения и горения, лечение, шипы, ловушки, ловушка
+// мимика, killPlayer и строка «Урон» на «Персонаже» — там база как есть.
+// Сервер не меняется: потолки считаются от HP врагов и лечения, а не от ударов.
+export const DAMAGE_SPREAD_MIN = 0.8
+export const DAMAGE_SPREAD_MAX = 1.2
+
+export function rollHitDamage(base: number): number {
+  return Math.max(1, Math.round(base * (DAMAGE_SPREAD_MIN + Math.random() * (DAMAGE_SPREAD_MAX - DAMAGE_SPREAD_MIN))))
+}

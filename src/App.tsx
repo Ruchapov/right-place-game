@@ -4,7 +4,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, readTitleKey, readAchievementList, fetchAchievements, claimAchievement, setAchievementTitle, type AchievementView, type AchievementsState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, eatBossHeart, buyBagCell, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, readTitleKey, readAchievementList, fetchAchievements, claimAchievement, setAchievementTitle, type AchievementView, type AchievementsState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -14,7 +14,7 @@ import { POTION_TIERS, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, parsePurchase
 // Потолок покупки расходников берётся ИЗ ОБЩЕЙ ПАРЫ (src/consumables.ts ↔
 // server/src/consumables.ts, байт-в-байт, сверка check_potion_sync.py) — своей
 // копии числа на клиенте нет и заводить её нельзя.
-import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCapacity, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
+import { BAG_CAPACITY, CONSUMABLES, EQUIPMENT_TAKES_CELL, bagCapacity, bagCellPrice, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, consumableSkillBook, consumableSellPrice, bookBySkillId, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, type ConsumableId, type ConsumableShopTab, type SkillBookId, type SkillBookSkillId } from './consumables'
 // Каталог СТРАНИЦ книг — тоже общая пара (src/scrolls.ts ↔ server/src/scrolls.ts).
 // Страницы не продаются в магазине: они только выпадают в забегах.
 import { SCROLLS, SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, scrollById, type ScrollId } from './scrolls'
@@ -68,6 +68,7 @@ import { useMediaQuery } from './ui/useMediaQuery'
 // кнопки и камеру забега (см. комментарий у константы).
 import { LOW_LANDSCAPE_MAX_H } from './explore/constants'
 import './App.css'
+import { plural } from './ui/guild/buildingTexts'
 
 type PlayerData = { id: number; firstName: string; level: number; gold: number; strength: number; endurance: number; agility: number; trophies: number
   /**
@@ -168,6 +169,9 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   // достижениями (вместимость — bagCapacity), и выбранный титул (key). null у
   // ячеек — сервер не назвал: счётчик сумки — прочерк.
   bagBonusCells: number | null
+  // Ячейки, купленные у Торговца (21.11.2026): от них цена следующей
+  // (bagCellPrice). null — сервер не назвал: плитка покупки гаснет.
+  bagCellsBought: number | null
   titleKey: string | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
@@ -560,6 +564,8 @@ const TEMP_DEV_CLASS_ITEM_STOCK: Record<ClassItemId, number> = {
   // переплавка, и выбор кольца в гнездо.
   dark_clot: 2, star_pollen: 1, other_ingot: 1,
   ring_saving: 1, ring_skill_search: 0, ring_ash: 1, ring_overflow: 0, ring_prospector: 0, ring_return: 0,
+  // Сердце босса (21.11.2026): два — видно «×2» и выбор стата в карточке.
+  boss_heart: 2,
 }
 /**
  * TEMP_DEV_HERO_CLASS — ТЕСТОВЫЙ класс героя для офлайн-заглушки DevTester
@@ -973,6 +979,12 @@ export default function App() {
   // Обучалка навыков (20.11.2026): шаг подсказки на экране героя.
   const [learnStep, setLearnStep] = useState<'book' | 'slot' | null>(null)
   const hunterPendingRef = useRef(false)
+  // Сердце босса (21.11.2026): какой стат сейчас покупается сердцем, отказ,
+  // и тост «+1 к …» после удачи. Ячейка сумки у Торговца — то же самое.
+  const [heartPending, setHeartPending] = useState<HunterStat | null>(null)
+  const [heartError, setHeartError] = useState<string | null>(null)
+  const heartPendingRef = useRef(false)
+  const bagCellPendingRef = useRef(false)
   const [hunterError, setHunterError] = useState<string | null>(null)
   // Мастер у Кузнеца и гнёзда колец (29.10.2026, docs/crafter.md).
   const [crafterPending, setCrafterPending] = useState(false)
@@ -983,7 +995,7 @@ export default function App() {
   // Выбранный товар витрины. Размеченный union, а не номер тира строкой: в
   // «Расходниках» теперь два каталога, и `Number(id)` на 'whetstone' дал бы NaN.
   const [shopSelected, setShopSelected] = useState<
-    { kind: 'potion'; tier: number } | { kind: 'consumable'; id: ConsumableId } | { kind: 'upgrade'; upgradeKind: UpgradeKind } | null
+    { kind: 'potion'; tier: number } | { kind: 'consumable'; id: ConsumableId } | { kind: 'upgrade'; upgradeKind: UpgradeKind } | { kind: 'bagCell' } | null
   >(null)
   // Ошибка последней попытки покупки (видимая строка под кнопкой — тем же
   // приёмом, что "Недостаточно энергии" под кнопкой забега ниже).
@@ -1350,7 +1362,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, titleKey: 'kills_1000' })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, bagCellsBought: 0, titleKey: 'kills_1000' })
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1401,7 +1413,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), titleKey: readTitleKey(data.character.titleKey) ?? null })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), bagCellsBought: readCurrencyCount(data.character.bagCellsBought), titleKey: readTitleKey(data.character.titleKey) ?? null })
     setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
@@ -1674,6 +1686,8 @@ export default function App() {
         sellPrice: spec.sellPrice,
         confirmSale: spec.confirmSale,
         takesCell: spec.takesCell,
+        // Сердце босса (21.11.2026): не продаётся — вместо продажи выбор стата.
+        bound: spec.bound,
       }
     }
     // Страница — СВОЯ ветка: у неё два действия («Собрать книгу» и
@@ -2347,6 +2361,96 @@ export default function App() {
     }
   }
 
+  // Сердце босса (21.11.2026, docs/items.md, «СЕРДЦЕ БОССА»): +1 к стату
+  // навсегда. Как Ловчий: ключ идемпотентности, повторное нажатие после
+  // потерянного ответа второе сердце не тратит.
+  async function handleEatBossHeart(stat: HunterStat): Promise<boolean> {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setHeartError('Сердце можно съесть только в Telegram — здесь сервера нет.')
+      return false
+    }
+    if (heartPendingRef.current) return false
+    heartPendingRef.current = true
+    setHeartPending(stat)
+    setHeartError(null)
+    try {
+      const r = await eatBossHeart(token, stat)
+      if (r.stats === null || r.classItems === null) {
+        console.error('use-boss-heart: сервер не назвал итог', r)
+        await handleRefreshBalance()
+        return true
+      }
+      const { stats, classItems } = r
+      setPlayer(prev => prev ? { ...prev, ...stats, classItems } : prev)
+      return true
+    } catch (e) {
+      console.error('use-boss-heart failed', e)
+      const refusal = e instanceof RequestError ? e.serverError : null
+      if (refusal === 'State changed, retry' || refusal === 'No boss heart') {
+        await handleRefreshBalance()
+        setHeartError(refusal === 'No boss heart' ? 'Сердец больше нет.' : 'Значения изменились — показаны актуальные.')
+        return false
+      }
+      if (refusal === 'Run in progress') {
+        setHeartError('Пока идёт вылазка, сердце не съесть.')
+        return false
+      }
+      if (e instanceof RequestError && e.retryable) {
+        setHeartError('Ответ не пришёл. Нажми ещё раз — второе сердце не потратится.')
+        return false
+      }
+      setHeartError('Не вышло — попробуй позже.')
+      return false
+    } finally {
+      heartPendingRef.current = false
+      setHeartPending(null)
+    }
+  }
+
+  // Ячейка сумки у Торговца (21.11.2026, docs/shop.md, «ЯЧЕЙКИ СУМКИ»).
+  async function handleBuyBagCell() {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setShopBuyError('Торговец продаёт ячейки только в Telegram — здесь сервера нет.')
+      return
+    }
+    if (bagCellPendingRef.current) return
+    bagCellPendingRef.current = true
+    setShopBuyPending(true)
+    setShopBuyError(null)
+    try {
+      const r = await buyBagCell(token)
+      if (r.gold === null || r.bagBonusCells === null || r.bagCellsBought === null) {
+        console.error('buy-bag-cell: сервер не назвал итог', r)
+        await handleRefreshBalance()
+        return
+      }
+      const { gold, bagBonusCells, bagCellsBought } = r
+      setPlayer(prev => prev ? { ...prev, gold, bagBonusCells, bagCellsBought } : prev)
+    } catch (e) {
+      console.error('buy-bag-cell failed', e)
+      const refusal = e instanceof RequestError ? e.serverError : null
+      if (refusal === 'State changed, retry' || refusal === 'Not enough gold') {
+        await handleRefreshBalance()
+        setShopBuyError(refusal === 'Not enough gold' ? 'Не хватает золота.' : 'Цена изменилась — показана актуальная.')
+        return
+      }
+      if (refusal === 'Run in progress') {
+        setShopBuyError('Пока идёт вылазка, Торговец не торгует ячейками.')
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        setShopBuyError('Ответ не пришёл. Нажми ещё раз — второй раз не спишется.')
+        return
+      }
+      setShopBuyError('Торговец отказал — попробуй позже.')
+    } finally {
+      bagCellPendingRef.current = false
+      setShopBuyPending(false)
+    }
+  }
+
   // Продажа предмета из инвентаря. Цену считает сервер; клиент показывает ту,
   // что пришла с инвентарём (sellPrice каждой строки), и своей копии формулы не
   // держит. После успеха инвентарь перечитывается — проданной строки в нём уже
@@ -2921,6 +3025,7 @@ export default function App() {
         stats: profile.stats,
         // Достижения (20.11.2026): ячейки и титул меняют «Забрать» и выбор титула.
         bagBonusCells: profile.bagBonusCells,
+        bagCellsBought: profile.bagCellsBought,
         ...(profile.titleKey !== undefined ? { titleKey: profile.titleKey } : {}),
         // Портной (14.11.2026): потерянный ответ покупки или нашивки снимается этой
         // сверкой. null перезаписывает намеренно — «сервер не назвал».
@@ -3890,6 +3995,17 @@ export default function App() {
                 levelRequired: 1,
                 select: () => setExchangeCardOpen(true),
               }] : []),
+              // Ячейка сумки за золото (21.11.2026, docs/shop.md, «ЯЧЕЙКИ
+              // СУМКИ»): плашка — цена следующей. Счётчик не назван сервером —
+              // плитки нет (цена была бы выдумана).
+              ...(shopTab === 'Торговец' && player !== null && player.bagCellsBought !== null ? [{
+                key: 'bag-cell',
+                icon: 'nav_shop.png',
+                alt: '+1 ячейка сумки',
+                badge: String(bagCellPrice(player.bagCellsBought)),
+                levelRequired: 1,
+                select: () => setShopSelected({ kind: 'bagCell' as const }),
+              }] : []),
             ]
 
             // Улучшения — свой список ячеек: их «товар» это не запись каталога
@@ -3963,6 +4079,25 @@ export default function App() {
                 | { kind: 'single'; label: string; buy: () => void }
             }
             const shopCard: ShopCardView | null = shopSelected === null ? null : (() => {
+              if (shopSelected.kind === 'bagCell') {
+                if (player === null || player.bagCellsBought === null) return null
+                const price = bagCellPrice(player.bagCellsBought)
+                return {
+                  icon: 'nav_shop.png',
+                  nameRu: '+1 ячейка сумки',
+                  desc: 'Торговец знает, как перешить мешок, чтобы влезло ещё немного. Каждый новый шов даётся ему труднее — и дороже.',
+                  price,
+                  levelRequired: 1,
+                  mechanic: { line: bagCap === null
+                    ? `Ещё одна — ${price} золота`
+                    : `Сумка: ${bagCap} ${plural(bagCap, 'ячейка', 'ячейки', 'ячеек')}. Ещё одна — ${price} золота` },
+                  skillId: null,
+                  owned: undefined,
+                  // Сама ячейка в сумку не ложится — значка мешочка нет.
+                  takesCell: null,
+                  purchase: { kind: 'single' as const, label: 'Купить', buy: () => { void handleBuyBagCell() } },
+                }
+              }
               if (shopSelected.kind === 'upgrade') {
                 const spec = UPGRADES[shopSelected.upgradeKind]
                 // Цена следующего — от СВОЕГО счётчика. Счётчиков нет (сервер не
@@ -5966,7 +6101,46 @@ export default function App() {
             {/* Действия. У страницы их две, у книги три и своя раскладка;
                 у предмета — «Надеть»/«Снять» (+ «Продать за N», если он не
                 надет), у зелья и расходника — только заглушка продажи. */}
-            {selectedEntry.kind === 'classItem' ? (() => {
+            {selectedEntry.kind === 'classItem' && selectedEntry.bound ? (() => {
+              // Сердце босса (21.11.2026, docs/items.md, «СЕРДЦЕ БОССА»): продать
+              // нельзя — три кнопки стата, +1 навсегда, сердце уходит. Стат
+              // и уровень на «Персонаже» обновляются ответом сервера.
+              const statIcon: Record<HunterStat, string> = { strength: 'icon_strength.png', agility: 'icon_agility.png', endurance: 'icon_hp.png' }
+              const none = selectedEntry.qty < 1
+              return (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                <div style={{ fontSize:12, color:C.textDim, textAlign:'center' }}>Что забрать себе?</div>
+                <div style={{ display:'flex', gap:8 }}>
+                  {HUNTER_STATS.map((st) => {
+                    const disabled = none || heartPending !== null
+                    const value = player === null ? null : player[st.id]
+                    return (
+                      <div
+                        key={st.id}
+                        onClick={() => { if (!disabled) void handleEatBossHeart(st.id) }}
+                        style={{
+                          flex:1, minWidth:0, boxSizing:'border-box', minHeight:64,
+                          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3,
+                          background:C.nicheDeep, border:`1px solid ${C.glowEdge}`,
+                          borderRadius:9, padding:'6px 4px', textAlign:'center',
+                          color:C.glowCore, fontSize:13,
+                          boxShadow:'inset 0 0 12px rgba(209,151,68,0.28)',
+                          cursor: disabled ? 'default' : 'pointer',
+                          opacity: disabled ? 0.5 : 1,
+                        }}>
+                        <img src={`${import.meta.env.BASE_URL}assets/icons/${statIcon[st.id]}`} alt="" style={{ width:22, height:22 }} />
+                        <span>{heartPending === st.id ? '...' : st.nameRu}</span>
+                        {value !== null && <span style={{ fontSize:11, color:C.textDim }}>{value} → {value + 1}</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+                {heartError !== null && (
+                  <div style={{ fontSize:11, color:C.danger, textAlign:'center' }}>{heartError}</div>
+                )}
+              </div>
+              )
+            })() : selectedEntry.kind === 'classItem' ? (() => {
               // Предмет класса (18.10.2026): одно действие — продать ОДИН.
               // Кнопки применения нет: классов, выбора и отречения в игре ещё
               // нет (docs/classes.md). Уходит одна штука за нажатие. Цена — из

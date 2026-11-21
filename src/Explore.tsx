@@ -129,7 +129,7 @@ import { skillPowerMult } from './skillLevels'
 // итогов: имя и картинку выпавшего клиент берёт из своих каталогов по id.
 import * as CR from './crafter'
 import type { GearEffects } from './crafter'
-import { playerAttackDamage } from './playerDamage'
+import { playerAttackDamage, rollHitDamage } from './playerDamage'
 
 // Признаки двух отказов, у которых на экране ошибки свой текст. Это ПРЕФИКСЫ
 // сообщения, а не подстроки чужого ответа: их кладёт сюда только код ниже, и
@@ -606,7 +606,7 @@ const TEMP_DEV_EVENT_DROPS: Record<EventKind, RunDrop[]> = {
   enemy: [{ category: 'soul_shard' }, { category: 'rune', kind: 'attack' }, { category: 'tailor', id: 'patch' }],
   chest: [{ category: 'equipment', nameRu: 'Тестовый клинок', slot: 'weapon', tier: 2 }],
   obelisk: [{ category: 'potion', tier: 1 }],
-  boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }, { category: 'tailor', id: 'brand' }],
+  boss: [{ category: 'book', id: 'book_ice' }, { category: 'renounce_seal' }, { category: 'tailor', id: 'brand' }, { category: 'boss_heart' }],
   // У Контрабандиста и загадки добычи не бывает и на сервере.
   smuggler: [],
   puzzle: [],
@@ -776,6 +776,7 @@ function dropIconKey(drop: RunDrop): string {
     case 'book': return `book:${drop.id}`
     case 'soul_shard': return 'soul_shard'
     case 'renounce_seal': return 'renounce_seal'
+    case 'boss_heart': return 'boss_heart'
     case 'crafter': return `crafter:${drop.id}`
     case 'rune': return `rune:${drop.kind}`
     case 'tailor': return `tailor:${drop.id}`
@@ -2544,6 +2545,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
     // Неуязвимость после удара врага (16.11.2026): удар не проходит вовсе — и
     // зелье отражения на него не тратится.
     if (heroHitIframeRef.current > 0) return false
+    // Разброс 80–120% (21.11.2026) — каждый удар врага, ДО брони и до зелья
+    // отражения. Огонь горгульи — ловушка (trapHitRef), он идёт без разброса.
+    if (!trapHitRef.current) amount = rollHitDamage(amount)
     // Зелье отражения: ПЕРВЫЙ удар врага за забег гасится целиком, его урон до
     // брони уходит ударившему. Парирование главнее (выше) — отбитый удар зелье не
     // тратит. Не тратится и там, где урона всё равно не было бы (рывок, окно
@@ -2616,7 +2620,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
   // с неуязвимостью после удара, в отличие от шипов и ловушек выше.
   function takeFoeDamageUnblockable(amount: number): void {
     if (heroHitIframeRef.current > 0) return
-    applyDamage(amount, { foe: true })
+    // Разброс 80–120% (21.11.2026): волны и непарируемые удары боссов.
+    applyDamage(rollHitDamage(amount), { foe: true })
   }
 
   // foe — урон врага или его снаряда: запускает неуязвимость после удара
@@ -4161,6 +4166,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // тикера.
         damageEnemy,
         damageBoss,
+        damageNumber: skillDamageNumber,
         applyEnemyHitReaction,
         applyBossHitReaction,
         skillDamageDealt: skillDamageDealtRef,
@@ -6954,6 +6960,21 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // комбо — 1.5); strong — сильный удар (удар 4): полный хитстан, отскок,
       // хитстоп 80 мс. Крит — тоже сильный. Остальные удары мечом (1, 2 комбо и
       // удар в воздухе) — лёгкие: applyLightHitReaction.
+      // Цифра урона навыка (21.11.2026): над врагом — как у меча, над боссом
+      // (target === null) — над его рамкой. Тик кровотечения — обычная, Таяние —
+      // крупная. Хитстопа у навыков нет.
+      function skillDamageNumber(target: Enemy | null, dealt: number, big: boolean) {
+        if (!(dealt > 0) || !damageNumberSystem) return
+        if (target) {
+          damageNumberSystem.spawn(target.x + target.width / 2, target.y - 6, dealt, big ? 'big' : 'normal')
+          return
+        }
+        const boss = bossRef.current
+        if (!boss) return
+        const bb = bossBox(boss)
+        damageNumberSystem.spawn(bb.x + bb.w / 2, bb.y - 6, dealt, big ? 'big' : 'normal')
+      }
+
       function applyAttackHit(opts: { damageMult: number; strong: boolean } = { damageMult: 1, strong: false }) {
         // Крит ветки «Клинок» (26.10.2026) решается ОДИН раз на взмах: Выпад
         // (этот взмах забрал окно после рывка) или Острый глаз (бросок). Оба
@@ -6991,7 +7012,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         const swingBase = skills!.isSlashStrike() ? attackDamageRef.current : plainSwordDamage
         const swingSkinMult = (1 + brandW.swordDamageFrac) * parryStrikeMult
         const swingSkinned = swingSkinMult !== 1 ? Math.floor(swingBase * swingSkinMult) : swingBase
-        const swingDamage = opts.damageMult !== 1 ? Math.floor(swingSkinned * opts.damageMult) : swingSkinned
+        const swingFixed = opts.damageMult !== 1 ? Math.floor(swingSkinned * opts.damageMult) : swingSkinned
+        // Разброс 80–120% (21.11.2026) — один бросок на взмах, до крита и
+        // бонусов по цели (rollHitDamage, src/playerDamage.ts).
+        const swingDamage = rollHitDamage(swingFixed)
         // Рамка тела новых врагов (NC_BODY_X) — для удара мечом героя, не взмаха
         // навыка «Кровотечение» (умения не менялись).
         const useBodyBox = !skills!.isSlashStrike()
@@ -7328,7 +7352,14 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         grid,
         worldWidthPx,
         enemies: enemiesRef,
-        damageEnemy: (enemy, amount, sourceX) => damageEnemy(enemy, amount, skillDamageDealtRef, sourceX, 'skill'),
+        // Удар о стену и цепочка Тарана/Телекинеза — разброс 80–120% и цифра
+        // по снятому (21.11.2026).
+        damageEnemy: (enemy, amount, sourceX) => {
+          const before = skillDamageDealtRef.current
+          const died = damageEnemy(enemy, rollHitDamage(amount), skillDamageDealtRef, sourceX, 'skill')
+          skillDamageNumber(enemy, skillDamageDealtRef.current - before, false)
+          return died
+        },
         hitReaction: (enemy) => applyEnemyHitReaction(enemy),
       })
       app.ticker.add((ticker) => {

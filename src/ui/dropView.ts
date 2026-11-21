@@ -52,8 +52,10 @@ export function dropView(drop: RunDrop): { key: string; name: string; iconSrc: s
       }
     }
     // Предметы классов (18.10.2026): у категории один вид, id каталога — она сама.
+    // Сердце босса (21.11.2026) — тот же каталог classItems.ts.
     case 'soul_shard':
-    case 'renounce_seal': {
+    case 'renounce_seal':
+    case 'boss_heart': {
       const spec = classItemById(drop.category)
       return {
         key: drop.category,

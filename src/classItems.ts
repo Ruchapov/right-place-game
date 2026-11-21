@@ -40,6 +40,10 @@ export const CLASS_ITEM_IDS = [
   // этой машинерии. Свойства колец — в общем каталоге crafter.ts.
   'dark_clot', 'star_pollen', 'other_ingot',
   'ring_saving', 'ring_skill_search', 'ring_ash', 'ring_overflow', 'ring_prospector', 'ring_return',
+  // Сердце босса (21.11.2026, docs/items.md, «СЕРДЦЕ БОССА»): одно с каждого
+  // убитого босса; в инвентаре — +1 к силе, ловкости или выносливости навсегда.
+  // Не продаётся и не кладётся на склад гильдии (bound), в забег не едет.
+  'boss_heart',
 ] as const
 export type ClassItemId = typeof CLASS_ITEM_IDS[number]
 
@@ -82,6 +86,12 @@ export type ClassItem = {
    * «28 / 30» и терял бы добычу.
    */
   takesCell: boolean
+  /**
+   * Привязан к герою (21.11.2026): НЕ продаётся (кнопки продажи нет, ручка
+   * sell-class-item отвечает 400) и НЕ кладётся на склад гильдии. Сейчас так
+   * только у сердца босса — его тратят на стат (POST /character/use-boss-heart).
+   */
+  bound: boolean
 }
 
 /**
@@ -98,6 +108,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 50,
     takesCell: false,
     confirmSale: false,
+    bound: false,
   },
   {
     id: 'renounce_seal',
@@ -108,6 +119,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 500,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   // --- Мастер (29.10.2026). Всё занимает место в сумке, каждая штука своё
   // (решение Андрея 26.10.2026). Цены продажи — предложение, Андрей их не
@@ -121,6 +133,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 300,
     takesCell: true,
     confirmSale: false,
+    bound: false,
   },
   {
     id: 'star_pollen',
@@ -131,6 +144,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 300,
     takesCell: true,
     confirmSale: false,
+    bound: false,
   },
   {
     id: 'other_ingot',
@@ -141,6 +155,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1500,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_saving',
@@ -151,6 +166,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_skill_search',
@@ -161,6 +177,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_ash',
@@ -171,6 +188,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_overflow',
@@ -181,6 +199,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_prospector',
@@ -191,6 +210,7 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
   },
   {
     id: 'ring_return',
@@ -201,6 +221,20 @@ export const CLASS_ITEMS: ClassItem[] = [
     sellPrice: 1000,
     takesCell: true,
     confirmSale: true,
+    bound: false,
+  },
+  // --- Сердце босса (21.11.2026). Падает с каждого убитого босса, занимает
+  // ячейку, продать нельзя: цена 0 не показывается нигде (bound).
+  {
+    id: 'boss_heart',
+    nameRu: 'Сердце босса',
+    icon: 'heart_stat.png',
+    desc: 'Ещё бьётся, хотя хозяин давно затих. Съешь — и часть его силы останется с тобой навсегда.',
+    useLine: 'Навсегда +1 к силе, ловкости или выносливости — выбираешь сам.',
+    sellPrice: 0,
+    takesCell: true,
+    confirmSale: false,
+    bound: true,
   },
 ]
 

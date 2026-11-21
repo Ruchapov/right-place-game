@@ -218,6 +218,8 @@ export type LoginResponse = {
     // Достижения (20.11.2026): подаренные ячейки сумки (readCurrencyCount) и
     // выбранный титул (readTitleKey).
     bagBonusCells?: unknown
+    // Ячейки, купленные у Торговца (21.11.2026), — readCurrencyCount.
+    bagCellsBought?: unknown
     titleKey?: unknown
     // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
     // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
@@ -527,6 +529,8 @@ export type StartExploreEvent = {
   runeDrop?: RunDrop | null
   /** Нашивка и клеймо (14.11.2026) — свои броски; [] — не выпало. Через readEventReward. */
   tailorDrops?: RunDrop[]
+  /** Сердце босса (21.11.2026) — у каждого босса; null у остальных. Через readEventReward. */
+  heartDrop?: RunDrop | null
 }
 
 // Response shape of POST /run/start-explore (server/src/routes/run.ts; форму
@@ -775,6 +779,8 @@ export type RunDrop =
   | { category: 'rune'; kind: RuneKind }
   // Портной (14.11.2026): нашивка и клеймо, имя и иконка — каталог skins.ts.
   | { category: 'tailor'; id: TailorItemId }
+  // Сердце босса (21.11.2026): имя и иконка — каталог classItems.ts (boss_heart).
+  | { category: 'boss_heart' }
 
 export type RunResultSummary = {
   interrupted: boolean
@@ -1712,6 +1718,8 @@ export type ProfileResult = {
   stats: HeroStatsView | null
   /** Подаренные достижениями ячейки сумки (20.11.2026); null — сервер не назвал. */
   bagBonusCells: number | null
+  /** Ячейки, купленные у Торговца (21.11.2026); null — сервер не назвал. */
+  bagCellsBought: number | null
   /** Титул (20.11.2026); undefined — сервер не назвал, null — без титула. */
   titleKey: string | null | undefined
 }
@@ -1769,6 +1777,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     runes?: unknown
     stats?: unknown
     bagBonusCells?: unknown
+    bagCellsBought?: unknown
     titleKey?: unknown
     luck?: unknown
     skins?: unknown
@@ -1827,6 +1836,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     skins: readSkinState(raw.skins),
     stats: readHeroStats(raw.stats),
     bagBonusCells: readCurrencyCount(raw.bagBonusCells),
+    bagCellsBought: readCurrencyCount(raw.bagCellsBought),
     titleKey: readTitleKey(raw.titleKey),
   }
 }
@@ -2163,7 +2173,7 @@ export function readRunDrops(raw: unknown): RunDrop[] {
     } else if (e.category === 'scroll' || e.category === 'book') {
       if (typeof e.id !== 'string') continue
       out.push({ category: e.category, id: e.id })
-    } else if (e.category === 'soul_shard' || e.category === 'renounce_seal') {
+    } else if (e.category === 'soul_shard' || e.category === 'renounce_seal' || e.category === 'boss_heart') {
       out.push({ category: e.category })
     } else if (e.category === 'crafter') {
       if (typeof e.id !== 'string') continue
@@ -2291,7 +2301,7 @@ export function readEventReward(raw: unknown): { trophies: number | null; drops:
   // Обе добычи разбираем тем же валидатором, что список на экране итогов —
   // завернув в массив: второй разбор той же формы разошёлся бы с первым.
   const tailor = Array.isArray(e.tailorDrops) ? e.tailorDrops : []
-  const listed = [e.drop, e.extraDrop, e.runeDrop, ...tailor].filter((d) => d !== undefined && d !== null)
+  const listed = [e.drop, e.extraDrop, e.runeDrop, ...tailor, e.heartDrop].filter((d) => d !== undefined && d !== null)
   return { trophies, drops: readRunDrops(listed) }
 }
 
@@ -2944,6 +2954,61 @@ export async function buyHunterStat(token: string, stat: HunterStat): Promise<Bu
   return {
     stats: strength !== null && agility !== null && endurance !== null && level !== null ? { strength, agility, endurance, level } : null,
     hunterBadges: readCurrencyCount(raw.hunterBadges),
+    replayed: raw.replayed === true,
+  }
+}
+
+// --- СЕРДЦЕ БОССА И ЯЧЕЙКИ СУМКИ (21.11.2026) ---
+
+export type EatBossHeartResult = {
+  stats: { strength: number; agility: number; endurance: number; level: number } | null
+  classItems: Record<ClassItemId, number> | null
+  replayed: boolean
+}
+
+/**
+ * Съесть сердце босса: +1 к стату навсегда (POST /character/use-boss-heart).
+ * С ключом идемпотентности, как у Ловчего: после потерянного ответа повторное
+ * нажатие несёт тот же ключ и второе сердце не тратит.
+ */
+export async function eatBossHeart(token: string, stat: HunterStat): Promise<EatBossHeartResult> {
+  const raw = await keyedPurchase(`boss-heart:${stat}`, (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/character/use-boss-heart`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stat, requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  const strength = readCurrencyCount(raw.strength)
+  const agility = readCurrencyCount(raw.agility)
+  const endurance = readCurrencyCount(raw.endurance)
+  const level = readCurrencyCount(raw.level)
+  return {
+    stats: strength !== null && agility !== null && endurance !== null && level !== null ? { strength, agility, endurance, level } : null,
+    classItems: readClassItems(raw.classItems),
+    replayed: raw.replayed === true,
+  }
+}
+
+export type BuyBagCellResult = { gold: number | null; bagBonusCells: number | null; bagCellsBought: number | null; replayed: boolean }
+
+/** +1 ячейка сумки у Торговца (POST /character/buy-bag-cell), с ключом идемпотентности. */
+export async function buyBagCell(token: string): Promise<BuyBagCellResult> {
+  const raw = await keyedPurchase('bag-cell', (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/character/buy-bag-cell`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  return {
+    gold: readCurrencyCount(raw.gold),
+    bagBonusCells: readCurrencyCount(raw.bagBonusCells),
+    bagCellsBought: readCurrencyCount(raw.bagCellsBought),
     replayed: raw.replayed === true,
   }
 }

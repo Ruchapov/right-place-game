@@ -6,6 +6,7 @@ import type { PlayerPhysics, Enemy, Boss, DamageVia } from '../types'
 import * as C from '../constants'
 import { BLOOD_PRICE_EXCLUDED_SKILLS } from '../../heroClasses'
 import { bossBox as bossBoxOf } from './boss'
+import { rollHitDamage } from '../../playerDamage'
 
 // Скиллы игрока (heal/fireball/iceball/slash/dash) — модуль подключён к
 // игровому циклу ПУСТЫМ, до реализации самих скиллов (см. задачу).
@@ -83,6 +84,9 @@ export type SkillsDeps = {
   // ⚠️ Тик кровотечения slash их НЕ зовёт НАМЕРЕННО: он идёт раз в секунду
   // пять секунд подряд, и хитстан держал бы цель в локе весь этот срок.
   // Разовые попадания скиллов таким свойством не обладают — отсюда разница.
+  // Цифра урона навыка над целью (21.11.2026): dealt — СНЯТОЕ (прирост
+  // аккумулятора), big — сильная (Таяние). Позицию считает Explore.tsx.
+  damageNumber: (target: Enemy | null, dealt: number, big: boolean) => void
   applyEnemyHitReaction: (enemy: Enemy) => void
   applyBossHitReaction: (boss: Boss) => void
   // Аккумулятор урона СКИЛЛОВ (Explore.tsx: skillDamageDealtRef) — растит
@@ -835,8 +839,8 @@ export function createSkillsSystem(deps: SkillsDeps) {
         // тик по врагу с 3 HP снял 3, а не полный урон тика.
         const dealtBefore = deps.skillDamageDealt.current
         const died = bleed.enemy
-          ? deps.damageEnemy(bleed.enemy, dmg, deps.skillDamageDealt, bleedSourceX, 'tick')
-          : deps.damageBoss(dmg, deps.skillDamageDealt, bleedSourceX)
+          ? hitEnemy(bleed.enemy, dmg, bleedSourceX, 'tick', false)
+          : hitBoss(dmg, bleedSourceX, false)
         // Упырь (26.10.2026): тик возвращает здоровьем долю СНЯТОГО — в том числе
         // добивающий. На полном HP долить нечего, и вспышки нет (решает
         // healPlayerByClass). Без класса доля 0 — вызова нет вовсе.
@@ -1019,6 +1023,23 @@ export function createSkillsSystem(deps: SkillsDeps) {
     return spec.id === 'fireball' && deps.meltMult > 0 && target.stunTimer > 0
   }
 
+  // Попадание навыка по врагу / боссу (21.11.2026): разброс 80–120%
+  // (rollHitDamage) — только у разовых попаданий (roll), тик кровотечения
+  // бьёт базой; цифра — по СНЯТОМУ, приросту аккумулятора (дверь Привратника
+  // и остаток HP уже учтены в damageEnemy/damageBoss).
+  function hitEnemy(enemy: Enemy, base: number, sourceX: number, via: DamageVia, roll: boolean, big = false): boolean {
+    const before = deps.skillDamageDealt.current
+    const died = deps.damageEnemy(enemy, roll ? rollHitDamage(base) : base, deps.skillDamageDealt, sourceX, via)
+    deps.damageNumber(enemy, deps.skillDamageDealt.current - before, big)
+    return died
+  }
+  function hitBoss(base: number, sourceX: number, roll: boolean, big = false): boolean {
+    const before = deps.skillDamageDealt.current
+    const died = deps.damageBoss(roll ? rollHitDamage(base) : base, deps.skillDamageDealt, sourceX)
+    deps.damageNumber(null, deps.skillDamageDealt.current - before, big)
+    return died
+  }
+
   // Урон взрыва по одной цели. Таяние множит ГОТОВОЕ число забега (в нём уже
   // +15% Чародея), и урон наносится, ПОКА цель ещё заморожена: замороженный
   // Привратник открыт (gatekeeperIsOpen), и Таяние бьёт его целиком — сними мы
@@ -1075,7 +1096,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // возвращался в патруль, ни на шаг не приблизившись к игроку.
       blastHitAny = true
       const melt = meltsTarget(spec, enemy)
-      const died = deps.damageEnemy(enemy, blastDamage(spec, melt), deps.skillDamageDealt, sourceX, 'skill')
+      const died = hitEnemy(enemy, blastDamage(spec, melt), sourceX, 'skill', true, melt)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Взрыв разовый, поэтому стан-лока он не даёт: каждая
       // цель проходит этот цикл один раз за взрыв.
@@ -1096,7 +1117,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const d = overlapDepth(blast, bossBox(boss))
     if (d.x <= 0 || d.y <= 0) return
     const bossMelt = meltsTarget(spec, boss)
-    const bossDied = deps.damageBoss(blastDamage(spec, bossMelt), deps.skillDamageDealt, sourceX)
+    const bossDied = hitBoss(blastDamage(spec, bossMelt), sourceX, true, bossMelt)
     if (!bossDied) deps.applyBossHitReaction(boss)
     if (bossMelt && !bossDied) thaw(boss)
     // Босс задет — применение результативно, даже если обычных врагов рядом не
@@ -1234,7 +1255,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ровно для одного: не трясти труп (см. ниже).
       // Источник — сам игрок: рывок это контактный удар телом.
       countDashUse()
-      const died = deps.damageEnemy(enemy, deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2, 'skill')
+      const died = hitEnemy(enemy, deps.skillDamage.dash, deps.phys.x + C.PLAYER_WIDTH / 2, 'skill', true)
       // Встряска — как от удара мечом (см. applyEnemyHitReaction в
       // Explore.tsx). Ровно один раз за рывок на цель: дедуп тот же
       // dashHitTargets, что и у урона — цель добавлена в набор строкой выше.
@@ -1260,7 +1281,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     if (!bossOverlap) return
     dashHitTargets.add(boss)
     countDashUse()
-    const bossDied = deps.damageBoss(deps.skillDamage.dash, deps.skillDamageDealt, deps.phys.x + C.PLAYER_WIDTH / 2)
+    const bossDied = hitBoss(deps.skillDamage.dash, deps.phys.x + C.PLAYER_WIDTH / 2, true)
     if (!bossDied) deps.applyBossHitReaction(boss)
     // Босса Таран несёт на половину пути (17.11.2026), если сейчас можно.
     if (!bossDied && !ramCarried && deps.canShoveBoss()) {
@@ -1689,7 +1710,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
         if (!(e.x < x1 && e.x + e.width > x0 && e.y < y1 && e.y + e.height > y0)) continue
         w.hit.add(e)
         if (!w.counted) { w.counted = true; deps.onSkillUse('telekinesis') }
-        const died = deps.damageEnemy(e, deps.skillDamage.telekinesis, deps.skillDamageDealt, w.originX, 'skill')
+        const died = hitEnemy(e, deps.skillDamage.telekinesis, w.originX, 'skill', true)
         if (!died) {
           deps.applyEnemyHitReaction(e)
           deps.shove(e, w.dir, push, C.TELEKINESIS_SHOVE_SPEED, deps.skillDamage.telekinesis, 'tk', C.TELEKINESIS_BOSS_PUSH_PX)
@@ -1701,7 +1722,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
         if (bb.x < x1 && bb.x + bb.w > x0 && bb.y < y1 && bb.y + bb.h > y0) {
           w.hit.add(boss)
           if (!w.counted) { w.counted = true; deps.onSkillUse('telekinesis') }
-          const died = deps.damageBoss(deps.skillDamage.telekinesis, deps.skillDamageDealt, w.originX)
+          const died = hitBoss(deps.skillDamage.telekinesis, w.originX, true)
           if (!died) nudgeBoss(boss, w.dir)
         }
       }

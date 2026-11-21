@@ -349,7 +349,8 @@ export const BOSS_ANIM_LOOP: Record<BossAnimKind, boolean> = {
 // (было 300 фиксированно без масштабирования — теперь 250, ровно то, что
 // формула даёт на уровне 1: round(2.5 * 100)), живой HP заспавненного босса
 // берётся из boss.maxHp, посчитанного в boss.ts.
-export const BOSS_MAX_HP = 250
+// 21.11.2026: справочное значение на 1 уровне — round(9 × 180) = 1620.
+export const BOSS_MAX_HP = 1620
 // Хитстан ЖЁСТКО выведен из длины/скорости hurt-листа босса (31 кадр,
 // BOSS_ANIM_SPEED.hurt) — та же причина, что у ENEMY_HURT_MS выше: иначе
 // таймер и анимация могли бы разъехаться (таймер истёк бы раньше конца
@@ -420,7 +421,8 @@ export const BOSS_MELEE_DAMAGE = 22
 export const BOSS_MELEE_STRIKE_FRAME = 9
 export const BOSS_MELEE2_DAMAGE = 32
 export const BOSS_MELEE2_STRIKE_FRAME = 19
-export const BOSS_HP_MULT = 2.5
+// 21.11.2026: 2.5 → 9 (см. ENEMY_MAX_HP); ручная копия — server/src/game.ts.
+export const BOSS_HP_MULT = 9
 export const BOSS_MELEE_DMG_MULT = 1.3
 export const BOSS_MELEE2_DMG_MULT = 1.9
 // RANGE/COOLDOWN — зафиксированы после подбора живым тюнером (тюнер убран,
@@ -1181,8 +1183,11 @@ export const TOUCH_EPS = 4
 // масштабирования, как раньше (было 120, без level; см. CLAUDE.md "normal
 // 120HP" — устарело). ENEMY_HP_PER_LEVEL — прирост HP за каждый уровень
 // сверх первого.
-export const ENEMY_MAX_HP = 100
-export const ENEMY_HP_PER_LEVEL = 9.0
+// 21.11.2026: 100 → 180 и 9.0 → 16.2 (×1.8). Комбо из 4 ударов дало +75% урона
+// меча — враг снова держится ~2 с, босс (BOSS_HP_MULT 9) ~минуту с уворотами.
+// Ручная копия — server/src/game.ts (ENEMY_HP_BASE/ENEMY_HP_PER_LEVEL).
+export const ENEMY_MAX_HP = 180
+export const ENEMY_HP_PER_LEVEL = 16.2
 export const ENEMY_HP_BAR_HEIGHT = 8
 export const ENEMY_HP_BAR_MARGIN = 6 // зазор между полоской HP и головой врага
 // Спрайт зверя (BEAST_CELL_RENDER_H) заметно выше хитбокса (ENEMY_HEIGHT) —

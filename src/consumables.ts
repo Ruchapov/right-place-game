@@ -420,6 +420,20 @@ export function bagCapacity(bonusCells: number): number {
 }
 
 /**
+ * Ячейки сумки за золото (21.11.2026, docs/shop.md, «ЯЧЕЙКИ СУМКИ»): плитка
+ * «+1 ячейка сумки» у Торговца. Цена следующей — round(1000 × 1.3^куплено):
+ * 1000, 1300, 1690, 2197… Потолка нет. Купленная ячейка растит и
+ * Character.bagCellsBought (от него цена), и bagBonusCells (от него
+ * вместимость, bagCapacity выше) — одной записью POST /character/buy-bag-cell.
+ */
+export const BAG_CELL_BASE_PRICE = 1000
+export const BAG_CELL_PRICE_GROWTH = 1.3
+export function bagCellPrice(bought: number): number {
+  const n = Number.isInteger(bought) && bought > 0 ? bought : 0
+  return Math.round(BAG_CELL_BASE_PRICE * Math.pow(BAG_CELL_PRICE_GROWTH, n))
+}
+
+/**
  * Снаряжение (строки InventoryItem из БД, а не каталог этого файла) место в
  * сумке занимает — каждый НЕнадетый предмет своя ячейка. Константой рядом с
  * правилом, а не голым true по месту: значок в карточке и подсчёт читают одно.
