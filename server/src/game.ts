@@ -303,8 +303,10 @@ export function calculateLevel(strength: number, agility: number, endurance: num
 // BY HAND. If the client's ENEMY_MAX_HP/ENEMY_HP_PER_LEVEL ever change,
 // update these two to match, or the anti-cheat cap in /run/finish-explore
 // will silently drift from what the client actually spawned.
-export const ENEMY_HP_BASE = 100
-export const ENEMY_HP_PER_LEVEL = 9.0
+// 21.11.2026: 100 → 180, 9.0 → 16.2, босс 2.5 → 9 — комбо из 4 ударов дало +75%
+// урона меча, враг снова ~2 с, босс ~минута с уворотами.
+export const ENEMY_HP_BASE = 180
+export const ENEMY_HP_PER_LEVEL = 16.2
 
 export function scaledEnemyMaxHp(level: number): number {
   return Math.round(ENEMY_HP_BASE + ENEMY_HP_PER_LEVEL * (level - 1))
@@ -313,7 +315,7 @@ export function scaledEnemyMaxHp(level: number): number {
 // Босс — не отдельная формула, а множитель поверх уже отмасштабированного
 // HP обычного врага (mirrors BOSS_HP_MULT в src/explore/constants.ts на
 // клиенте, тот же ручной синк, что у ENEMY_HP_BASE/ENEMY_HP_PER_LEVEL выше).
-export const BOSS_HP_MULT = 2.5
+export const BOSS_HP_MULT = 9
 
 export function scaledBossMaxHp(level: number): number {
   return Math.round(BOSS_HP_MULT * scaledEnemyMaxHp(level))

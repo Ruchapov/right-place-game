@@ -277,6 +277,13 @@ model Character {
   // consumables.ts) РІРµР·РґРµ. titleKey вЂ” РІС‹Р±СЂР°РЅРЅС‹Р№ С‚РёС‚СѓР» (key РїРѕР»СѓС‡РµРЅРЅРѕРіРѕ
   // РґРѕСЃС‚РёР¶РµРЅРёСЏ); NULL вЂ” Р±РµР· С‚РёС‚СѓР»Р°.
   bagBonusCells       Int      @default(0)
+  // Сердце босса и ячейки за золото (21.11.2026, миграция
+  // 20261121120000_boss_hearts_add). bossHearts — склад сердец (каталог
+  // classItems.ts, id boss_heart); bagCellsBought — сколько ячеек куплено у
+  // Торговца: цена следующей round(1000 × 1.3^bagCellsBought). Каждая покупка
+  // растит и bagBonusCells — вместимость считается одним местом (bagCapacity).
+  bossHearts          Int      @default(0)
+  bagCellsBought      Int      @default(0)
   titleKey            String?
   achievements        Achievement[]
   botNotifications    BotNotification[]

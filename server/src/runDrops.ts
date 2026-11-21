@@ -268,6 +268,8 @@ export type EventDrop =
   // Портной (14.11.2026): нашивка и Кузнечное клеймо — только в поле события
   // tailorDrops, своими бросками (rollTailorDrops ниже).
   | { category: 'tailor'; id: TailorItemId }
+  // Сердце босса (21.11.2026): только в поле события heartDrop (rollBossHeart).
+  | { category: 'boss_heart' }
 
 /** Равновероятный выбор одного элемента. Пустой список — null, не исключение. */
 function pickOne<T>(items: readonly T[]): T | null {
@@ -449,6 +451,15 @@ export function rollTailorDrops(kind: RunEventKind, luck: number): EventDrop[] {
   return out
 }
 
+/**
+ * Сердце босса (21.11.2026, docs/items.md, «СЕРДЦЕ БОССА»): каждый босс — одно
+ * сердце сверх трофеев и всей остальной добычи. Шанс 100%, без порога уровня,
+ * удача ни при чём. Отдельным полем события (heartDrop), как Печать — extraDrop.
+ */
+export function rollBossHeart(kind: RunEventKind): EventDrop | null {
+  return kind === 'boss' ? { category: 'boss_heart' } : null
+}
+
 /** Звёздоцвет на карте (docs/crafter.md): 0,5% на вылазку, с 5 уровня. */
 export const STARBLOOM_CHANCE = 0.005
 export function rollStarbloom(level: number, luck: number): boolean {
@@ -510,6 +521,8 @@ export function parseEventDrop(raw: unknown): { kind: 'none' } | { kind: 'drop';
       const kind = parseRuneKind(d.kind)
       return kind === null ? { kind: 'malformed' } : { kind: 'drop', drop: { category: 'rune', kind } }
     }
+    case 'boss_heart':
+      return { kind: 'drop', drop: { category: 'boss_heart' } }
     case 'tailor':
       return d.id === 'patch' || d.id === 'brand' ? { kind: 'drop', drop: { category: 'tailor', id: d.id } } : { kind: 'malformed' }
     default:

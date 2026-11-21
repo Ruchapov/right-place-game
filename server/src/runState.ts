@@ -1145,6 +1145,8 @@ export type ClassItemColumns = {
   ringOverflow: number
   ringProspector: number
   ringReturn: number
+  // Сердце босса (21.11.2026).
+  bossHearts: number
 }
 
 /**
@@ -1168,6 +1170,7 @@ export function classItemStockOf(character: ClassItemColumns): Record<ClassItemI
     ring_overflow: character.ringOverflow,
     ring_prospector: character.ringProspector,
     ring_return: character.ringReturn,
+    boss_heart: character.bossHearts,
   }
 }
 

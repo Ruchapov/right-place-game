@@ -340,6 +340,12 @@ export type RunEvent = {
    * выпало. Поля нет — забег начат сервером старше Портного.
    */
   tailorDrops?: EventDrop[]
+  /**
+   * Сердце босса (21.11.2026) — у КАЖДОГО босса, шанс 100%, без порога уровня
+   * (rollBossHeart, runDrops.ts); у остальных событий null. Поля нет — забег
+   * начат сервером старше 21.11.2026, сердец тогда не было.
+   */
+  heartDrop?: EventDrop | null
 }
 
 type SlotsFile = {
@@ -707,6 +713,8 @@ export type ClientRunEvent = {
   runeDrop: ClientEventDrop | null
   /** Нашивка и клеймо (14.11.2026). [] — не выпало. */
   tailorDrops: ClientEventDrop[]
+  /** Сердце босса (21.11.2026). null — не босс. */
+  heartDrop: ClientEventDrop | null
 }
 
 /** Добыча в том виде, в каком её видит клиент: снаряжение — без itemId. */
@@ -763,6 +771,8 @@ export function clientRunEvents(events: RunEvent[]): ClientRunEvent[] {
     runeDrop: clientEventDrop(ev.runeDrop),
     // Нашивка и клеймо (14.11.2026) — всегда списком; клиент старше их не читает.
     tailorDrops: (ev.tailorDrops ?? []).map((d) => clientEventDrop(d)).filter((d): d is ClientEventDrop => d !== null),
+    // Сердце босса (21.11.2026) — всегда, null у не-босса; клиент старше не читает.
+    heartDrop: clientEventDrop(ev.heartDrop),
   }))
 }
 

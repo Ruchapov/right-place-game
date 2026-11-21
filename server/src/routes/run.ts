@@ -8,11 +8,11 @@ import { rollRunEvents, rollRunPatrols, rollRunBreakables, clientRunEvents, pick
 import type { RunBreakable } from '../breakables.js'
 import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
-import { BAG_CAPACITY, CONSUMABLES, bagCapacity, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { BAG_CAPACITY, CONSUMABLES, bagCapacity, bagCellPrice, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
-import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, rollTailorDrops, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
+import { ITEM_DROP_FLOOR_TIER, rollEventDrop, rollEventExtraDrop, rollRunDrops, parseEventDrop, rollStarbloom, rollTailorDrops, rollBossHeart, type DropIntent, type DropRings, type EventDrop } from '../runDrops.js'
 import { OTHER_TIER, RING_PROSPECTOR_MULT, RING_SLOT_COUNT, CRAFTER_LEVEL, FORGE_GOLD, FORGE_RP, FORGE_INGOTS, FORGE_SOURCE_TIER, SMELT_POTION_TIER, SMELT_CRIT_CHANCE, SMELT_CRIT_INGOTS, parseCrafterRawId, parseOtherItemId, parseRingId, otherItemById, gearEffectsOf, runMaxHpOf } from '../crafter.js'
 import { grantInviteeReward } from './friends.js'
 import { brandBonus, runSkinsOf, type TailorItemId } from '../skins.js'
@@ -271,6 +271,7 @@ const CLASS_ITEM_COLUMN: Record<ClassItemId, keyof ClassItemColumns> = {
   ring_overflow: 'ringOverflow',
   ring_prospector: 'ringProspector',
   ring_return: 'ringReturn',
+  boss_heart: 'bossHearts',
 }
 
 export function classItemStockIncrement(id: ClassItemId, count: number): Prisma.CharacterUpdateManyMutationInput {
@@ -685,6 +686,8 @@ export type RunDrop =
   | { category: 'rune'; kind: RuneKind }
   // Портной (14.11.2026): нашивка и клеймо, имя и иконка — каталог skins.ts.
   | { category: 'tailor'; id: TailorItemId }
+  // Сердце босса (21.11.2026): имя и иконка — каталог classItems.ts (boss_heart).
+  | { category: 'boss_heart' }
 
 /**
  * Выбирает КОНКРЕТНУЮ вещь под брошенный интент.
@@ -780,7 +783,9 @@ async function attachEventDrops(
     }
     // Нашивка и клеймо (Портной, 14.11.2026) — свои броски поверх всего.
     const tailorDrops = rollTailorDrops(event.kind, luck)
-    out.push({ ...event, drop, extraDrop, runeDrop, tailorDrops })
+    // Сердце босса (21.11.2026) — каждый босс, 100%.
+    const heartDrop = rollBossHeart(event.kind)
+    out.push({ ...event, drop, extraDrop, runeDrop, tailorDrops, heartDrop })
   }
   return out
 }
@@ -846,6 +851,15 @@ function storedEventDrops(run: ActiveExploreRun, closed: number[], log: FastifyR
           if (t.kind === 'malformed') log.error({ index, tailorDrop: raw }, 'finish-explore: currentRun.events[].tailorDrops entry is malformed')
           else if (t.kind === 'drop') out.push(t.drop)
         }
+      }
+    }
+    // Сердце босса (21.11.2026) — та же дисциплина: поля нет — забег старше.
+    if (event.heartDrop !== undefined) {
+      const heart = parseEventDrop(event.heartDrop)
+      if (heart.kind === 'malformed') {
+        log.error({ index, heartDrop: event.heartDrop }, 'finish-explore: currentRun.events[].heartDrop is malformed')
+      } else if (heart.kind === 'drop') {
+        out.push(heart.drop)
       }
     }
   }
@@ -1009,6 +1023,18 @@ async function applyDrops(
         // +1 в инвентарь и +1 в «получено» — в той же условной записи.
         runeGain[drop.kind]++
         gained.push({ category: 'rune', kind: drop.kind })
+        break
+      }
+      case 'boss_heart': {
+        // Сердце босса (21.11.2026): своя ячейка, как Печать; не влезло — пропало.
+        const view: RunDrop = { category: 'boss_heart' }
+        if (!bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+          lost.push(view)
+          continue
+        }
+        cellsUsed++
+        classGain.boss_heart = (classGain.boss_heart ?? 0) + 1
+        gained.push(view)
         break
       }
       case 'tailor': {
@@ -2532,6 +2558,8 @@ export async function runRoutes(server: FastifyInstance) {
       request.log.error({ itemId }, 'sell-class-item: id есть в списке, но нет в каталоге')
       return reply.status(500).send({ error: 'Catalog mismatch' })
     }
+    // Сердце босса (21.11.2026) не продаётся — его тратят на стат.
+    if (spec.bound) return reply.status(400).send({ error: 'Item cannot be sold' })
 
     const written = await prisma.character.updateMany({
       where: { userId, ...classItemStockFilter(itemId) },
@@ -3066,6 +3094,8 @@ export async function runRoutes(server: FastifyInstance) {
       stats: await heroStatsOf(prisma, character.id),
       // Достижения (20.11.2026): подаренные ячейки сумки и выбранный титул.
       bagBonusCells: character.bagBonusCells,
+      // Ячейки за золото (21.11.2026): от счётчика — цена следующей.
+      bagCellsBought: character.bagCellsBought,
       titleKey: character.titleKey,
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
@@ -3524,6 +3554,133 @@ export async function runRoutes(server: FastifyInstance) {
       endurance: updated.endurance,
       level: calculateLevel(updated.strength, updated.agility, updated.endurance, updated.bonusLevels),
       hunterBadges: updated.hunterBadges,
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
+  })
+
+  // СЕРДЦЕ БОССА (21.11.2026, docs/items.md, «СЕРДЦЕ БОССА»): +1 к силе,
+  // ловкости или выносливости навсегда, сердце списывается. Устроено как
+  // Ловчий выше: стат из тела (parseHunterStat — те же три), уровень —
+  // calculateLevel от новых статов, во время вылазки 400 Run in progress (финиш
+  // и вход пишут статы абсолютом со снимка — купленное затёрлось бы), ключ
+  // идемпотентности applyOnce, блокировка строки и одна условная запись
+  // (сердце >= 1, все входы уровня те же, currentRun пуст). 0 строк — 409.
+  server.post<{ Body: { stat?: unknown; requestId?: unknown } }>('/character/use-boss-heart', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const stat = parseHunterStat(request.body?.stat)
+    if (stat === null) return reply.status(400).send({ error: 'Unknown stat' })
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'use-boss-heart', request.log, async (db) => {
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        if (fresh.currentRun !== null) throw new RouteRejection(400, { error: 'Run in progress' })
+        if (fresh.bossHearts < 1) throw new RouteRejection(400, { error: 'No boss heart' })
+        const read = { strength: fresh.strength, agility: fresh.agility, endurance: fresh.endurance }
+        const next: Record<HunterStat, number> = { ...read, [stat]: read[stat] + 1 }
+        const level = calculateLevel(next.strength, next.agility, next.endurance, fresh.bonusLevels)
+        const written = await db.character.updateMany({
+          where: {
+            userId,
+            currentRun: { equals: Prisma.DbNull },
+            ...classItemStockFilter('boss_heart'),
+            strength: read.strength,
+            agility: read.agility,
+            endurance: read.endurance,
+            bonusLevels: fresh.bonusLevels,
+          },
+          data: {
+            ...classItemStockDecrement('boss_heart'),
+            [stat]: { increment: 1 },
+            level, // денормализованный снимок — см. комментарий к полю в schema.prisma
+          },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry' })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'use-boss-heart: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Heart used but state could not be read' })
+    }
+    return reply.send({
+      strength: updated.strength,
+      agility: updated.agility,
+      endurance: updated.endurance,
+      level: calculateLevel(updated.strength, updated.agility, updated.endurance, updated.bonusLevels),
+      classItems: classItemStockOf(updated),
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
+  })
+
+  // ЯЧЕЙКИ СУМКИ ЗА ЗОЛОТО (21.11.2026, docs/shop.md, «ЯЧЕЙКИ СУМКИ»): +1
+  // ячейка у Торговца. Цена — bagCellPrice(bagCellsBought) из общего каталога
+  // consumables.ts (1000 × 1.3^куплено), потолка нет. Запись одна и условная:
+  // золото >= цены, счётчик тот же, что прочитан под блокировкой (иначе две
+  // параллельные покупки прошли бы по одной цене), currentRun пуст. +1 и к
+  // bagCellsBought (цена), и к bagBonusCells (вместимость — одним местом,
+  // bagCapacity). Во время вылазки — 400 Run in progress (так задано задачей).
+  server.post<{ Body: { requestId?: unknown } }>('/character/buy-bag-cell', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    let applied: AppliedOnce<void>
+    try {
+      applied = await applyOnce(character.id, requestId, 'buy-bag-cell', request.log, async (db) => {
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        if (fresh.currentRun !== null) throw new RouteRejection(400, { error: 'Run in progress' })
+        const price = bagCellPrice(fresh.bagCellsBought)
+        if (fresh.gold < price) throw new RouteRejection(400, { error: 'Not enough gold', price, gold: fresh.gold })
+        const written = await db.character.updateMany({
+          where: {
+            userId,
+            currentRun: { equals: Prisma.DbNull },
+            gold: { gte: price },
+            bagCellsBought: fresh.bagCellsBought,
+          },
+          data: {
+            gold: { decrement: price },
+            bagCellsBought: { increment: 1 },
+            bagBonusCells: { increment: 1 },
+          },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry' })
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'buy-bag-cell: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but state could not be read' })
+    }
+    return reply.send({
+      gold: updated.gold,
+      bagBonusCells: updated.bagBonusCells,
+      bagCellsBought: updated.bagCellsBought,
       ...(applied.replayed ? { replayed: true } : {}),
     })
   })

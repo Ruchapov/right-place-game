@@ -1090,6 +1090,8 @@ function storageSpec(kind: Exclude<GuildStorageKind, 'item'>, ref: string): Stor
     const spec = id === null ? null : classItemById(id)
     if (id === null || spec === null || !CLASS_ITEMS.includes(spec)) throw new RouteRejection(400, { error: 'Unknown ref' })
     if (!spec.takesCell) throw new RouteRejection(400, { error: 'Does not take a cell' })
+    // Сердце босса (21.11.2026) привязано к герою — на склад гильдии не идёт.
+    if (spec.bound) throw new RouteRejection(400, { error: 'Bound item' })
     return {
       nameRu: spec.nameRu,
       filter: (n) => classItemStockFilter(id, n),
