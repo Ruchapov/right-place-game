@@ -61,7 +61,8 @@ server.get('/health', async () => {
 const port = Number(process.env.PORT) || 3000
 const start = async () => {
   try {
-    await server.listen({ port, host: '0.0.0.0' })
+    // HOST=127.0.0.1 на своём сервере (за Caddy, 24.11.2026); по умолчанию — все адреса
+    await server.listen({ port, host: process.env.HOST || '0.0.0.0' })
     console.log(`Right Place server running on port ${port}`)
     void registerBotWebhook(server.log)
   } catch (err) {
