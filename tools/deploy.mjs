@@ -51,7 +51,7 @@ function out(cmd, args) {
 
 // ssh/scp с повтором ТОЛЬКО если соединение не установилось (сеть до Москвы
 // иногда теряет рукопожатие). Если команда уже пошла — не повторяем.
-const CONNECT_ERR = /banner exchange|Connection timed out|Connection refused|Connection reset|Could not resolve|Network is unreachable/i
+const CONNECT_ERR = /banner exchange|Connection closed|Connection timed out|Connection refused|Connection reset|Could not resolve|Network is unreachable/i
 function remote(tool, args) {
   for (let attempt = 1; attempt <= 6; attempt++) {
     const r = spawnSync(tool, [...SSH_OPTS, ...args], { cwd: ROOT, stdio: ['inherit', 'inherit', 'pipe'], encoding: 'utf8' })
