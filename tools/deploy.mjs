@@ -51,10 +51,12 @@ function out(cmd, args) {
 
 // ssh/scp с повтором ТОЛЬКО если соединение не установилось (сеть до Москвы
 // иногда теряет рукопожатие). Если команда уже пошла — не повторяем.
-const CONNECT_ERR = /banner exchange|Connection closed|Connection timed out|Connection refused|Connection reset|Could not resolve|Network is unreachable/i
+const CONNECT_ERR = /banner exchange|kex_exchange|lost connection|Connection closed|Connection timed out|Connection refused|Connection reset|Could not resolve|Network is unreachable/i
 function remote(tool, args) {
   for (let attempt = 1; attempt <= 6; attempt++) {
     const r = spawnSync(tool, [...SSH_OPTS, ...args], { cwd: ROOT, stdio: ['inherit', 'inherit', 'pipe'], encoding: 'utf8' })
+    // scp без -q почти ничего не пишет, кроме ошибок: пустой stderr при 255 — тоже сеть
+    if (r.status === 255 && tool === 'scp' && !(r.stderr || '').trim()) r.stderr = 'Connection closed'
     if (r.error) fail(`${tool}: ${r.error.message}`)
     if (r.status === 255 && CONNECT_ERR.test(r.stderr || '')) {
       console.log(`  (${tool}: сервер не ответил, попытка ${attempt}/6, жду 8 с)`)
