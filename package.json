@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist",
+    "deploy": "node tools/deploy.mjs all",
+    "deploy:front": "node tools/deploy.mjs front",
+    "deploy:server": "node tools/deploy.mjs server",
     "lint": "eslint .",
     "preview": "vite preview"
   },

@@ -9,9 +9,9 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-/** Адрес картинок бота (public/bot/ на GitHub Pages). */
-export const BOT_ART_URL = 'https://ruchapov.github.io/right-place-game/bot'
-export const GAME_WEB_URL = 'https://ruchapov.github.io/right-place-game/'
+/** Адрес картинок бота (public/bot/ на сайте игры, rightplace-game.ru). */
+export const BOT_ART_URL = 'https://rightplace-game.ru/bot'
+export const GAME_WEB_URL = 'https://rightplace-game.ru/'
 export const GAME_LINK = 'https://t.me/RightPlaceGame_bot/game'
 export const CHANNEL_USERNAME = '@rightplace_news'
 export const CHANNEL_URL = 'https://t.me/rightplace_news'

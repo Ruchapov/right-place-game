@@ -24,6 +24,9 @@ const server = Fastify({
 await server.register(cors, {
   origin: [
     'http://localhost:5173',
+    'https://rightplace-game.ru',
+    'https://www.rightplace-game.ru',
+    // GitHub Pages — запасной фронт на время переезда (24.11.2026)
     'https://ruchapov.github.io',
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],

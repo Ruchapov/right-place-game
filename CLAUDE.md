@@ -432,9 +432,42 @@ C2 — 11) вынуты из слоя пересборкой (рабочая в�
 ## Project Info
 - **Bot:** @RightPlaceGame_bot | **Mini App:** t.me/RightPlaceGame_bot/game
 - **GitHub:** https://github.com/Ruchapov/right-place-game
-- **Frontend:** https://ruchapov.github.io/right-place-game/ (GitHub Pages)
-- **Server:** https://right-place-game.onrender.com (Render, Frankfurt, Free)
+- **Frontend:** https://rightplace-game.ru (свой сервер, Caddy) — с 24.11.2026; до этого GitHub Pages (https://ruchapov.github.io/right-place-game/, ветка `gh-pages` — откат, НЕ удалять)
+- **Server:** https://api.rightplace-game.ru (свой сервер, Москва) — с 24.11.2026; Render (https://right-place-game.onrender.com) приостановлен, Neon не трогаем — запасной вариант минимум до 08.12.2026
+- **Хостинг:** REG.RU, Ubuntu 22.04, IP 161.104.30.53, вход `ssh root@161.104.30.53` только по ключу `%USERPROFILE%\.ssh\id_ed25519` (пароль выключен). Раздел «Свой сервер» ниже
 - **Dev:** Andrey Rychapov (solo) | **Working dir:** D:\dev\telegram-game
+
+## Свой сервер (с 24.11.2026)
+
+Игра и сервер переехали с GitHub Pages + Render + Neon на один сервер в Москве.
+
+| Что | Где |
+|---|---|
+| Сайт (собранный `dist`) | `/var/www/rightplace` → ссылка на `/var/www/releases/<время>`, хранятся 3 |
+| Сервер игры | `/opt/rightplace/current` → `/opt/rightplace/releases/<время>` (содержимое `server/` из коммита, файл `REVISION`), хранятся 3 |
+| Секреты | ТОЛЬКО `/opt/rightplace/.env` (600, владелец `rp`); у Андрея копия вне репозитория. В git, в сборку и в чат — никогда |
+| Процесс | systemd `rightplace.service` от пользователя `rp`, порт 3000 только локально, `Restart=always`. Логи: `journalctl -u rightplace` |
+| HTTPS, раздача | Caddy, `/etc/caddy/Caddyfile`: сайт со SPA-фолбэком, 404 на скрытые файлы, `.md/.map/.env/.ts` и папки репозитория; `www` → редирект; `api.` → `localhost:3000` (WebSocket проходит сам); HSTS, nosniff, без `Server` |
+| База | PostgreSQL **18** (как у Neon; Ubuntu 22.04, репозиторий PGDG), только localhost, база и пользователь `rightplace` |
+| Cron бота | systemd `rightplace-cron.timer` раз в минуту → `/opt/rightplace/bin/cron-tick.sh` → `GET /cron/tick` (ключ из `.env`, не в unit-файле). cron-job.org больше не нужен |
+| Бэкап | `rightplace-backup.timer` в 04:00 МСК → `/var/backups/rightplace/daily-*.dump` (`pg_dump -Fc`), 14 дней; перед каждой миграцией — `predeploy-*.dump` |
+| Защита | ufw: 22, 80, 443; fail2ban на ssh; автообновления безопасности; swap 2 ГБ |
+
+**Деплой — одна команда из cmd** (`tools/deploy.mjs`): `npm run deploy` (сервер, потом
+фронт), `npm run deploy:server`, `npm run deploy:front`. Откажется при
+незакоммиченных изменениях. Сервер: `git archive HEAD server` → `npm ci` →
+`prisma generate` → бэкап → `prisma migrate deploy` → build → переключение →
+проверка `/health`, не «ok» — сам откат на прошлую версию. ⚠️ `git push` больше
+НЕ деплоит ничего (Render приостановлен) — пушить всё равно, чтобы GitHub не
+отставал. ⚠️ Миграции теперь применяет сам деплой сервера (с бэкапом перед ней) —
+отдельный `migrate deploy` руками не нужен; `server/.env` на машине Андрея всё ещё
+смотрит в Neon, то есть в ЗАПАСНУЮ, а не боевую базу.
+
+**Откат на старый хостинг:** Render → Resume; `SERVER_URL` в `src/api.ts` →
+`https://right-place-game.onrender.com`, `base` в `vite.config.ts` →
+`'/right-place-game/'`, собрать и `npx gh-pages -d dist`; в BotFather вернуть
+URL `https://ruchapov.github.io/right-place-game/`. ⚠️ Данные, записанные на
+новом сервере, в Neon не попадут.
 
 ## Состояние деплоя (снимок 31.10.2026, 23:19 — `git fetch`, вершины веток и имя бандла СВЕРЕНЫ командами 31.10 в 23:19; `migrate status` сессия не запускала (смотрит в боевую базу); на GitHub — всё по `81e1459` включительно, `git log origin/main..main` пуст; последний серверный коммит — `7de2e74` (31.10 23:17, четыре фона герба); на Pages — `f3068ca` (31.10 23:19, `index-VO7-F2-F.js` — гильдии с артом и всё, что было в `main` к этому часу); строки таблицы ниже — снимок 28.10.2026, дополненный только первой фразой)
 
@@ -1131,12 +1164,16 @@ read-only (ничего не пишет и ничего не применяет,
 ## Key Commands
 ```
 # Frontend
-npm run dev -- --host     # dev server, ROOT, port 5173
-npm run deploy            # deploy to GitHub Pages (hard-reload Mini App after!)
+npm run dev -- --host     # dev server, ROOT, port 5173 (с 24.11.2026 — корень, без /right-place-game)
+
+# Deploy на свой сервер (с 24.11.2026, tools/deploy.mjs)
+npm run deploy            # сервер + фронт (hard-reload Mini App after!)
+npm run deploy:server     # только сервер (бэкап базы + миграции + откат при сбое)
+npm run deploy:front      # только фронт
 
 # Server
 cd server && npm run dev  # tsx (NOT ts-node), port 3000
-git push                  # triggers Render auto-deploy (sometimes needs Manual Deploy)
+git push                  # только GitHub; Render с 24.11.2026 приостановлен
 ```
 
 ## Critical Gotchas
@@ -1148,7 +1185,7 @@ git push                  # triggers Render auto-deploy (sometimes needs Manual 
 - **Render auto-deploy sometimes doesn't fire** → Manual Deploy → Deploy latest commit
 - **Prisma `migrate dev` reset prompt**: NEVER auto-confirm — already wiped test data once.
 - **Open as Mini App** (t.me/RightPlaceGame_bot/game) — initData only works in Telegram, NOT in browser
-- **UI-отладка теперь и через `localhost:5173/right-place-game`** (`npm run
+- **UI-отладка теперь и через `localhost:5173/`** (до 24.11.2026 — `/right-place-game`) (`npm run
   dev -- --host`, hot-reload): `App.tsx` при отсутствии/ошибке
   `retrieveRawInitData()` (т.е. вне Telegram) подставляет заглушку-игрока
   `DevTester` и НЕ ходит на сервер — быстро проверять вёрстку/расположение

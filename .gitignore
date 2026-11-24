@@ -36,3 +36,6 @@ __pycache__/
 # оригиналом молча — см. AGENTS.md.
 .agents/
 shaders_task/
+
+# Временные файлы деплоя (tools/deploy.mjs)
+.deploy-tmp/

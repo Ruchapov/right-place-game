@@ -12,7 +12,7 @@ import type { HunterStat } from './hunter'
 import { parseBreakable, type RunBreakable } from './breakables'
 import type { FriendState } from './referral'
 
-const SERVER_URL = 'https://right-place-game.onrender.com'
+const SERVER_URL = 'https://api.rightplace-game.ru'
 
 // --- Id запроса и id текущего забега (15.10.2026) ---
 //

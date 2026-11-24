@@ -65,25 +65,32 @@
 
 ## Commit + Deploy (give the matching one each step)
 
+С 24.11.2026 игра живёт на своём сервере в Москве (REG.RU, 161.104.30.53):
+игра — https://rightplace-game.ru, сервер — https://api.rightplace-game.ru.
+Деплой — одна команда из cmd, по ssh-ключу (`%USERPROFILE%\.ssh\id_ed25519`).
+`git push` больше НЕ деплоит сервер (Render остановлен, это запасной вариант);
+пушить всё равно надо — чтобы GitHub не отставал.
+
 Frontend only:
 ```
 cd D:\dev\telegram-game
 git add src/
 git commit -m "feat: <what changed>"
-npm run deploy
+npm run deploy:front
+git push
 ```
 Then in Telegram: `•••` → Reload Page
 
-Backend only:
+Backend only (миграции применяются сами, перед ними — бэкап базы):
 ```
 cd D:\dev\telegram-game
 git add server/
 git commit -m "feat: <what changed>"
+npm run deploy:server
 git push
 ```
-Then check Render — if no auto-deploy → Manual Deploy → Deploy latest commit
 
-Both:
+Both (сначала сервер, потом фронт — скрипт так и делает):
 ```
 cd D:\dev\telegram-game
 git add src/ server/
@@ -91,13 +98,15 @@ git commit -m "feat: <what changed>"
 npm run deploy
 git push
 ```
+Скрипт откажется работать, если есть незакоммиченные изменения. Сервер берётся
+из ПОСЛЕДНЕГО КОММИТА (`git archive HEAD server`), не из рабочей копии.
 
 ---
 
 ## Project gotchas to remember
 - `RUN_COST = 3` in `server/src/routes/run.ts` — keep 3 in dev, restore to 10 before release.
 - Telegram caches hard → always `•••` → Reload Page after `npm run deploy`.
-- Render auto-deploy sometimes fails → check, manual deploy if needed.
+- Если `/health` после деплоя сервера не ответил «ok», скрипт сам вернёт прошлую версию — читать его вывод.
 - Never run `prisma migrate dev` without backing up DB first (already lost data once).
 - Run server from `server/`: `cd server && npm run dev`.
 - ESM imports need `.js`: `from '../game.js'` not `from '../game'`.
