@@ -10,11 +10,13 @@
 //   /hook             → POST на наш вебхук ORIGIN_HOOK_URL, заголовок
 //       X-Telegram-Bot-Api-Secret-Token передаётся как есть; секрет проверяет
 //       сам сервер игры (BOT_WEBHOOK_SECRET), воркер его не знает.
-//   /art/<файл>       → картинки бота. Telegram сам качает фото по ссылке из
-//       sendPhoto. Картинки лежат В САМОМ воркере (static assets из public/bot,
-//       wrangler.toml): с серверов Telegram через Cloudflare до московского сайта
-//       докачать не вышло — «failed to get HTTP URL content». Если файла среди
-//       них нет — запасной путь: https://rightplace-game.ru/bot/<файл>.
+//   /art/<файл>       → картинки бота (лежат В САМОМ воркере: static assets из
+//       public/bot, wrangler.toml). Сервер шлёт sendPhoto / editMessageMedia со
+//       ссылкой на /art/<файл>, а воркер подменяет ссылку самим файлом
+//       (multipart) — см. artAsUpload. Почему так (проверено 25.11.2026):
+//       Telegram по ссылке с workers.dev фото не качает (запроса нет вовсе),
+//       до московского сервера тоже не достаёт, а сам сервер не может
+//       отправить через Cloudflare больше ~16 КБ — соединение замирает.
 //       ⚠️ Поменяли картинку в public/bot — выложить воркер заново.
 //
 // Секреты — только `wrangler secret put PROXY_KEY`. В этом файле и в
@@ -44,16 +46,47 @@ async function proxyTelegram(request, env, url) {
   if (!rest.startsWith('/bot')) return new Response('Forbidden', { status: 403 })
   const headers = new Headers()
   const ct = request.headers.get('Content-Type')
-  if (ct) headers.set('Content-Type', ct)
-  const res = await fetch(TG_API + rest + url.search, {
-    method: request.method,
-    headers,
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
-  })
+  let body = request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body
+  // Фото по ссылке на /art/ этого же воркера — загружаем файлом отсюда.
+  // Telegram сам с workers.dev не качает, а сервер в Москве не может отправить
+  // через Cloudflare больше ~16 КБ: короткий JSON приходит сюда, файл уходит отсюда.
+  const method = rest.split('/')[2] || ''
+  if (env.ASSETS && ct && ct.includes('application/json') && (method === 'sendPhoto' || method === 'editMessageMedia')) {
+    const json = await request.json()
+    const form = await artAsUpload(json, method, env, url)
+    body = form ?? JSON.stringify(json)
+    if (!form) headers.set('Content-Type', 'application/json')
+  } else if (ct) {
+    headers.set('Content-Type', ct)
+  }
+  const res = await fetch(TG_API + rest + url.search, { method: request.method, headers, body })
   return new Response(res.body, {
     status: res.status,
     headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' },
   })
+}
+
+// Тело sendPhoto / editMessageMedia со ссылкой на <этот воркер>/art/<файл> →
+// multipart с самим файлом из ASSETS. Не наша ссылка или файла нет — null.
+async function artAsUpload(json, method, env, url) {
+  const prefix = `${url.origin}/art/`
+  const link = method === 'sendPhoto' ? json.photo : json.media && json.media.media
+  if (typeof link !== 'string' || !link.startsWith(prefix)) return null
+  const name = link.slice(prefix.length)
+  if (!/^[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/.test(name)) return null
+  const asset = await env.ASSETS.fetch(new Request(`${url.origin}/${name}`))
+  if (!asset.ok) return null
+  const file = new File([await asset.arrayBuffer()], name, { type: asset.headers.get('Content-Type') || 'image/jpeg' })
+  const fields = { ...json }
+  if (method === 'sendPhoto') delete fields.photo
+  else fields.media = { ...json.media, media: 'attach://photo' }
+  const form = new FormData()
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue
+    form.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v))
+  }
+  form.append('photo', file)
+  return form
 }
 
 async function proxyHook(request, env) {
