@@ -10,8 +10,12 @@
 //   /hook             → POST на наш вебхук ORIGIN_HOOK_URL, заголовок
 //       X-Telegram-Bot-Api-Secret-Token передаётся как есть; секрет проверяет
 //       сам сервер игры (BOT_WEBHOOK_SECRET), воркер его не знает.
-//   /art/<файл>       → https://rightplace-game.ru/bot/<файл>, с кэшем.
-//       Telegram сам качает фото по ссылке из sendPhoto.
+//   /art/<файл>       → картинки бота. Telegram сам качает фото по ссылке из
+//       sendPhoto. Картинки лежат В САМОМ воркере (static assets из public/bot,
+//       wrangler.toml): с серверов Telegram через Cloudflare до московского сайта
+//       докачать не вышло — «failed to get HTTP URL content». Если файла среди
+//       них нет — запасной путь: https://rightplace-game.ru/bot/<файл>.
+//       ⚠️ Поменяли картинку в public/bot — выложить воркер заново.
 //
 // Секреты — только `wrangler secret put PROXY_KEY`. В этом файле и в
 // wrangler.toml секретов нет и быть не должно.
@@ -67,6 +71,14 @@ async function proxyArt(request, env, url, ctx) {
   const name = url.pathname.slice('/art/'.length)
   // только картинки бота, без подпапок и выхода наверх
   if (!/^[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/.test(name)) return notFound()
+  if (env.ASSETS) {
+    const asset = await env.ASSETS.fetch(new Request(`${url.origin}/${name}`, { method: 'GET' }))
+    if (asset.ok) {
+      const headers = new Headers(asset.headers)
+      headers.set('Cache-Control', 'public, max-age=86400')
+      return new Response(request.method === 'HEAD' ? null : asset.body, { status: 200, headers })
+    }
+  }
   const cache = caches.default
   const key = new Request(url.origin + url.pathname, { method: 'GET' })
   let res = await cache.match(key)

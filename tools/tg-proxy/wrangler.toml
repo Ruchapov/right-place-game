@@ -8,3 +8,11 @@ workers_dev = true
 [vars]
 ORIGIN_HOOK_URL = "https://api.rightplace-game.ru/bot/webhook"
 ORIGIN_ART_URL = "https://rightplace-game.ru/bot"
+
+# Картинки бота — прямо в воркере (их качает Telegram по ссылке /art/<файл>).
+# run_worker_first: каждый запрос сначала идёт в код — /tg, /hook и проверки
+# остаются в силе, а сами файлы по корню воркера не раздаются.
+[assets]
+directory = "../../public/bot"
+binding = "ASSETS"
+run_worker_first = true
