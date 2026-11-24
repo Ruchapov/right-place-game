@@ -129,12 +129,17 @@ function guildName(payload: unknown): string {
  * этот тип (callback `no:<настройка>`) и меняет кнопку на «↩️ Вернуть» (`yes:<…>`).
  */
 export function notificationKeyboard(setting: NotifySettingKey, muted: boolean): Keyboard {
-  return [[
-    playButton(),
-    muted
-      ? { text: '↩️ Вернуть', callback_data: `yes:${setting}` }
-      : { text: '🔕 Не присылать такое', callback_data: `no:${setting}` },
-  ]]
+  // «🏠 В меню» — callback 'm', как «‹ Назад»: карточка уведомления сама
+  // становится главной карточкой бота (editMessageMedia, без нового сообщения).
+  return [
+    [playButton()],
+    [
+      { text: '🏠 В меню', callback_data: 'm' },
+      muted
+        ? { text: '↩️ Вернуть', callback_data: `yes:${setting}` }
+        : { text: '🔕 Не присылать такое', callback_data: `no:${setting}` },
+    ],
+  ]
 }
 
 /** Картинка и подпись уведомления; null — тип или payload не узнан. */
