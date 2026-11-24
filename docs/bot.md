@@ -1,5 +1,14 @@
 # Бот @RightPlaceGame_bot (13.11.2026)
 
+> ⚠️ **С 24–25.11.2026 сервер живёт в Москве (`api.rightplace-game.ru`), и всё про
+> Render и cron-job.org ниже — история.** Telegram с сервера недоступен, бот ходит
+> через Cloudflare Worker `rightplace-tg` (`tools/tg-proxy/`): Bot API — `/tg`,
+> вебхук — `/hook`, картинки — `/art` (воркер сам загружает их файлом). `/cron/tick`
+> зовёт systemd-таймер `rightplace-cron.timer` раз в минуту; задача на cron-job.org
+> выключена (не удалена — для отката). Переменные: `TELEGRAM_API_BASE`, `PROXY_KEY`,
+> `TELEGRAM_WEBHOOK_URL`, `BOT_ART_URL`, `PUBLIC_URL`. Под уведомлениями с 25.11.2026
+> кнопка «🏠 В меню» (callback `m`). Подробно — CLAUDE.md, «Свой сервер».
+
 Уведомления («Колокол Убежища»), карточки с картинками, канал @rightplace_news с
 наградой +50 RP. Bot API — голым `fetch`, без пакетов. Код — `server/src/bot/`.
 
