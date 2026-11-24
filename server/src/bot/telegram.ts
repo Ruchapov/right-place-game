@@ -9,8 +9,15 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-/** Адрес картинок бота (public/bot/ на сайте игры, rightplace-game.ru). */
+/** Адрес картинок бота (public/bot/ на сайте игры, rightplace-game.ru).
+ *  С 25.11.2026 его можно подменить переменной BOT_ART_URL: Telegram качает фото
+ *  по ссылке сам, а до московского сервера не достаёт — ходим через посредника
+ *  на Cloudflare (tools/tg-proxy, путь /art). Читается при вызове, а не при
+ *  загрузке модуля: dotenv в index.ts срабатывает позже импортов. */
 export const BOT_ART_URL = 'https://rightplace-game.ru/bot'
+const botArtBase = () => (process.env.BOT_ART_URL || BOT_ART_URL).replace(/\/+$/, '')
+/** База Bot API: TELEGRAM_API_BASE (посредник …/tg) или сам Telegram. */
+const telegramApiBase = () => (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/+$/, '')
 export const GAME_WEB_URL = 'https://rightplace-game.ru/'
 export const GAME_LINK = 'https://t.me/RightPlaceGame_bot/game'
 export const CHANNEL_USERNAME = '@rightplace_news'
@@ -21,7 +28,7 @@ export const CHAT_URL = 'https://t.me/rightplace_chat'
 export const FIRE_EFFECT_ID = '5104841245755180586'
 
 export function botArt(name: string): string {
-  return `${BOT_ART_URL}/${name}.jpg`
+  return `${botArtBase()}/${name}.jpg`
 }
 
 /** Кнопка инлайн-клавиатуры; style — Bot API 9.4 (success / primary / danger). */
@@ -48,9 +55,12 @@ async function callOnce(method: string, body: Record<string, unknown>): Promise<
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS)
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    // ключ посредника (tools/tg-proxy): без него воркер отвечает 403
+    if (process.env.PROXY_KEY) headers['X-Proxy-Key'] = process.env.PROXY_KEY
+    const res = await fetch(`${telegramApiBase()}/bot${token}/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal: ctrl.signal,
     })

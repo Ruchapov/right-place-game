@@ -1,0 +1,10 @@
+# Посредник Telegram (Cloudflare Worker). Секретов здесь нет:
+# PROXY_KEY кладётся командой  npx wrangler secret put PROXY_KEY
+name = "rightplace-tg"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[vars]
+ORIGIN_HOOK_URL = "https://api.rightplace-game.ru/bot/webhook"
+ORIGIN_ART_URL = "https://rightplace-game.ru/bot"

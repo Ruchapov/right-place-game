@@ -312,13 +312,16 @@ export async function botWebhookRoutes(server: FastifyInstance) {
 
 /** При старте сервера: вебхук и меню команд. Ошибки — только в лог. */
 export async function registerBotWebhook(log: FastifyBaseLogger): Promise<void> {
+  // TELEGRAM_WEBHOOK_URL — полный адрес вебхука (посредник …/hook, 25.11.2026);
+  // иначе PUBLIC_URL + /bot/webhook, как раньше
   const publicUrl = process.env.PUBLIC_URL
-  if (!publicUrl) { log.info('bot: PUBLIC_URL is not set, webhook not registered'); return }
+  const hookUrl = process.env.TELEGRAM_WEBHOOK_URL || (publicUrl ? `${publicUrl.replace(/\/+$/, '')}/bot/webhook` : '')
+  if (!hookUrl) { log.info('bot: PUBLIC_URL / TELEGRAM_WEBHOOK_URL is not set, webhook not registered'); return }
   const secret = process.env.BOT_WEBHOOK_SECRET
   if (!secret) { log.error('bot: BOT_WEBHOOK_SECRET is not set, webhook not registered'); return }
   try {
     const hook = await call('setWebhook', {
-      url: `${publicUrl.replace(/\/+$/, '')}/bot/webhook`,
+      url: hookUrl,
       secret_token: secret,
       allowed_updates: ['message', 'callback_query'],
     })

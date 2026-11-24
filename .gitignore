@@ -39,3 +39,7 @@ shaders_task/
 
 # Временные файлы деплоя (tools/deploy.mjs)
 .deploy-tmp/
+
+# Cloudflare Worker (tools/tg-proxy)
+.wrangler/
+.dev.vars
