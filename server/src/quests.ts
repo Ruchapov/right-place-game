@@ -31,8 +31,17 @@
 /** С какого уровня у героя есть набор заданий. До него набора нет вовсе. */
 export const QUEST_UNLOCK_LEVEL = 5
 
-/** Сколько разных заданий в наборе. */
-export const QUEST_SET_SIZE = 3
+/**
+ * Сколько разных заданий в наборе: 3, с «Печатью Колокола» (docs/premium.md) — 5.
+ * Размер набора решается при его броске; набор, брошенный с премиумом, доживает
+ * свой таймер и после конца премиума, а без премиума новый снова из трёх.
+ */
+export const QUEST_SET_SIZE_BASE = 3
+export const QUEST_SET_SIZE_PREMIUM = 5
+export const QUEST_SET_SIZES: readonly number[] = [QUEST_SET_SIZE_BASE, QUEST_SET_SIZE_PREMIUM]
+export function questSetSize(premium: boolean): number {
+  return premium ? QUEST_SET_SIZE_PREMIUM : QUEST_SET_SIZE_BASE
+}
 
 /**
  * Сколько живёт набор: 8 часов от того, как взято ПЕРВОЕ задание набора. Пока ни

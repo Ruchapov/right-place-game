@@ -4,11 +4,13 @@ import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { PrismaClient, Prisma, type Character } from '@prisma/client'
 import { regenerateEnergy, refundEnergy, applyStatGrowth, applySkillUsesGrowth, calculateLevel, itemSellPrice, TROPHY_GOLD_RATE, type SkillLevelUp } from '../game.js'
-import { rollRunEvents, rollRunPatrols, rollRunBreakables, clientRunEvents, pickStarbloomPoint, parseOptInEventKinds, KNOWN_MAP_FILES, pickRunMapFile, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
+import { rollRunEvents, rollRunPatrols, rollRunBreakables, clientRunEvents, pickStarbloomPoint, parseOptInEventKinds, KNOWN_MAP_FILES, pickRunMapFile, BOSS_SPAWN_CHANCE, SMUGGLER_MULT, SMUGGLER_STEAL_FRAC, SMUGGLER_STEAL_CHANCE, type RunEvent, type RunPatrol } from '../runEvents.js'
 import type { RunBreakable } from '../breakables.js'
-import { POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
+import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, MAX_POTIONS_PER_PURCHASE, potionTierByNumber, parsePurchaseCount, emptyPotionStock } from '../potions.js'
 import { guildBuffPctAt, ELITE_TROPHIES_PER_ELITE_EVENT } from '../guild.js'
 import { BAG_CAPACITY, CONSUMABLES, bagCapacity, bagCellPrice, bagCellsOf, bagFits, bagFreeCells, MAX_CONSUMABLES_PER_PURCHASE, RUN_CONSUMABLE_SLOTS, MAX_EQUIPPED_SKILLS, consumableById, runSlotConsumableById, consumableAttackBonus, consumableSkillBook, consumableSellPrice, parseConsumableCount, parseSkillBookId, parseSkillBookSkillId, bookBySkillId, type Consumable, type ConsumableId, type SkillBookId, type SkillBookSkillId } from '../consumables.js'
+import { heroBagCapacity, runPremium, statGrowthInputs } from '../premiumState.js'
+import { isPremium, premiumLuck, premiumTrophyBonus, premiumGiftTier, premiumLeftMs, PREMIUM_PRICE_RP, PREMIUM_MS, PREMIUM_GIFT_POTIONS, PREMIUM_BOSS_SPAWN_CHANCE } from '../premium.js'
 import { UPGRADES, upgradeBonus, upgradePrice, parseUpgradeKind, type UpgradeKind } from '../upgrades.js'
 import { hunterStatPrice, parseHunterStat, type HunterStat } from '../hunter.js'
 import { SCROLLS_PER_BOOK, SCROLL_SELL_PRICE, parseScrollId, scrollById, type ScrollId } from '../scrolls.js'
@@ -936,7 +938,7 @@ async function applyDrops(
     switch (drop.category) {
       case 'equipment': {
         const view: RunDrop = { category: 'equipment', nameRu: drop.nameRu, slot: drop.slot, tier: drop.tier }
-        if (!bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+        if (!bagFits(cellsUsed, 1, heroBagCapacity(character))) {
           lost.push(view)
           continue
         }
@@ -951,7 +953,7 @@ async function applyDrops(
         // ложилась бейджем «×2» в ту же). Занимает ли — решает каталог; книги
         // нет в каталоге — считаем, что занимает (осторожная сторона).
         const needsCell = consumableById(drop.id)?.takesCell ?? true
-        if (needsCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+        if (needsCell && !bagFits(cellsUsed, 1, heroBagCapacity(character))) {
           lost.push(view)
           continue
         }
@@ -987,7 +989,7 @@ async function applyDrops(
         }
         const view: RunDrop = { category: drop.category }
         const needsCell = spec.takesCell
-        if (needsCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+        if (needsCell && !bagFits(cellsUsed, 1, heroBagCapacity(character))) {
           lost.push(view)
           continue
         }
@@ -1008,7 +1010,7 @@ async function applyDrops(
         const pieces = isRaw && prospector ? RING_PROSPECTOR_MULT : 1
         for (let i = 0; i < pieces; i++) {
           const view: RunDrop = { category: 'crafter', id: spec.id }
-          if (spec.takesCell && !bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+          if (spec.takesCell && !bagFits(cellsUsed, 1, heroBagCapacity(character))) {
             lost.push(view)
             continue
           }
@@ -1028,7 +1030,7 @@ async function applyDrops(
       case 'boss_heart': {
         // Сердце босса (21.11.2026): своя ячейка, как Печать; не влезло — пропало.
         const view: RunDrop = { category: 'boss_heart' }
-        if (!bagFits(cellsUsed, 1, bagCapacity(character.bagBonusCells))) {
+        if (!bagFits(cellsUsed, 1, heroBagCapacity(character))) {
           lost.push(view)
           continue
         }
@@ -1268,6 +1270,11 @@ export type RunResultSummary = {
   completed?: boolean
   trophiesEarned: number
   trophiesLost: number
+  /**
+   * Сколько из trophiesEarned добавила «Печать Колокола» (25.11.2026,
+   * docs/premium.md); 0 — без печати или смерть. ⚠️ КОПИЯ — в src/api.ts.
+   */
+  premiumTrophies?: number
   /**
    * Элитные трофеи, полученные этим забегом (30.10.2026): +1 за событие с
    * элитным врагом; смерть — 0. Рядом в кошельке — eliteTrophies, запас после.
@@ -1509,12 +1516,15 @@ export async function runRoutes(server: FastifyInstance) {
     const potionSips = Math.min(MAX_SIPS_PER_RUN + gear.extraSips, potionStock.reduce((sum, n) => sum + n, 0))
     // Удача = своя + удача надетого амулета (29.10.2026: до этого амулет удачи
     // только показывал число в карточке, а добыча читала одну колонку героя).
-    const luck = character.luck + equippedItems.reduce((sum, inv) => sum + (inv.item.luck ?? 0), 0)
+    // «Печать Колокола» (docs/premium.md): снимок на старте — currentRun.premium;
+    // +5 удачи (в колонку не пишется) и босс 60% вместо 30%.
+    const premiumAtStart = isPremium(character, Date.now())
+    const luck = premiumLuck(character.luck + equippedItems.reduce((sum, inv) => sum + (inv.item.luck ?? 0), 0), premiumAtStart)
 
     // level больше не колонка в БД — вычисляется на месте из статов+бонуса
     // (см. game.ts calculateLevel), никогда не читается напрямую.
     const characterLevel = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-    const rolledEvents = rollRunEvents(mapFile, characterLevel, optInKinds)
+    const rolledEvents = rollRunEvents(mapFile, characterLevel, optInKinds, premiumAtStart ? PREMIUM_BOSS_SPAWN_CHANCE : BOSS_SPAWN_CHANCE)
     const events = await attachEventDrops(
       rolledEvents,
       characterLevel,
@@ -1594,7 +1604,7 @@ export async function runRoutes(server: FastifyInstance) {
     const activeRun: ActiveExploreRun = {
       mode: 'explore', mapFile, events, hp: maxHp, maxHp, potions: potionStock, sips: potionSips,
       confirmed: false, spentEnergy, runId, startedAt: Date.now(), heroClass: runHeroClass, healSkill,
-      gear: runGear, starbloom, patrols, breakables, guildBuffs, skins: runSkins,
+      gear: runGear, starbloom, patrols, breakables, guildBuffs, skins: runSkins, premium: premiumAtStart,
       ...(takenIds.length > 0 ? { consumablesUsed: takenIds } : {}),
     }
 
@@ -2482,7 +2492,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (!character) return 'no-character'
 
       const bookTakesCell = consumableById(bookId)?.takesCell ?? true
-      if (bookTakesCell && !bagFits(await bagCellsUsed(tx, character.id, consumableStockOf(character), classItemStockOf(character)), 1, bagCapacity(character.bagBonusCells))) return 'bag-full'
+      if (bookTakesCell && !bagFits(await bagCellsUsed(tx, character.id, consumableStockOf(character), classItemStockOf(character)), 1, heroBagCapacity(character))) return 'bag-full'
 
       // Списание страниц и прибавка книги — в ОДНОМ update, вместе с фильтром
       // «страниц хватает».
@@ -2895,8 +2905,8 @@ export async function runRoutes(server: FastifyInstance) {
         if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
         if (spec.takesCell) {
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh))
-          if (!bagFits(used, count, bagCapacity(fresh.bagBonusCells))) {
-            throw new RouteRejection(400, { error: 'Bag is full', capacity: bagCapacity(fresh.bagBonusCells), used, free: bagFreeCells(used, bagCapacity(fresh.bagBonusCells)), need: count })
+          if (!bagFits(used, count, heroBagCapacity(fresh))) {
+            throw new RouteRejection(400, { error: 'Bag is full', capacity: heroBagCapacity(fresh), used, free: bagFreeCells(used, heroBagCapacity(fresh)), need: count })
           }
         }
         const written = await db.character.updateMany({
@@ -3096,6 +3106,9 @@ export async function runRoutes(server: FastifyInstance) {
       bagBonusCells: character.bagBonusCells,
       // Ячейки за золото (21.11.2026): от счётчика — цена следующей.
       bagCellsBought: character.bagCellsBought,
+      // «Печать Колокола» (docs/premium.md): срок и остаток по часам сервера.
+      premiumUntil: character.premiumUntil,
+      premiumLeftMs: premiumLeftMs(character, Date.now()),
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не
@@ -3256,7 +3269,7 @@ export async function runRoutes(server: FastifyInstance) {
         let critLost = false
         if (crit) {
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
-          if (bagFits(used, SMELT_CRIT_INGOTS - 1, bagCapacity(fresh.bagBonusCells))) ingots = SMELT_CRIT_INGOTS
+          if (bagFits(used, SMELT_CRIT_INGOTS - 1, heroBagCapacity(fresh))) ingots = SMELT_CRIT_INGOTS
           else critLost = true
         }
         const written = await db.character.updateMany({
@@ -3384,7 +3397,7 @@ export async function runRoutes(server: FastifyInstance) {
         } else {
           if (prev === '') throw new RouteRejection(400, { error: 'Slot is empty' })
           const used = await bagCellsUsed(db, fresh.id, consumableStockOf(fresh), stock)
-          if (!bagFits(used, 1, bagCapacity(fresh.bagBonusCells))) throw new RouteRejection(400, { error: 'Bag is full' })
+          if (!bagFits(used, 1, heroBagCapacity(fresh))) throw new RouteRejection(400, { error: 'Bag is full' })
           data = { ...classItemStockIncrement(prev, 1) }
         }
         const next = slots.map((s, i) => (i === slotIndex ? (ringId ?? '') : s))
@@ -3625,6 +3638,76 @@ export async function runRoutes(server: FastifyInstance) {
     })
   })
 
+  // «ПЕЧАТЬ КОЛОКОЛА» — премиум за RP (25.11.2026, docs/premium.md). 500 RP на
+  // 30 дней, без автопродления; купить можно, только пока печать НЕ активна.
+  // Подарок — 100 зелий самого сильного тира, открытого уровню героя, прибавкой
+  // к запасу. Всё — одной условной записью (как создание гильдии): RP >= цены И
+  // срок пуст или прошёл. Посреди вылазки покупка разрешена: зелья финиш и вход
+  // пишут разницей, а бонусы забега читают runPremium. requestId — ключ
+  // идемпотентности (applyOnce): повтор потерянного ответа второй раз не спишет.
+  server.post<{ Body: { requestId?: unknown } }>('/character/buy-premium', async (request, reply) => {
+    const userId = getUserId(request)
+    if (userId === null) return reply.status(401).send({ error: 'Invalid or missing token' })
+
+    const requestId = readOptionalRequestId(request.body?.requestId)
+    if (requestId === 'invalid') return reply.status(400).send({ error: 'Invalid requestId' })
+
+    const character = await prisma.character.findUnique({ where: { userId } })
+    if (!character) return reply.status(404).send({ error: 'Character not found' })
+
+    let applied: AppliedOnce<{ tier: number }>
+    try {
+      applied = await applyOnce(character.id, requestId, 'buy-premium', request.log, async (db) => {
+        await lockCharacterRow(db, userId)
+        const fresh = await db.character.findUnique({ where: { userId } })
+        if (!fresh) throw new RouteRejection(404, { error: 'Character not found' })
+        const now = new Date()
+        if (isPremium(fresh, now.getTime())) {
+          throw new RouteRejection(400, { error: 'Premium active', premiumLeftMs: premiumLeftMs(fresh, now.getTime()) })
+        }
+        if (fresh.rp < PREMIUM_PRICE_RP) throw new RouteRejection(400, { error: 'Not enough RP', need: PREMIUM_PRICE_RP, rp: fresh.rp })
+        const level = calculateLevel(fresh.strength, fresh.agility, fresh.endurance, fresh.bonusLevels)
+        const tier = premiumGiftTier(level, POTION_TIERS.map((t) => t.levelRequired))
+        const written = await db.character.updateMany({
+          where: {
+            userId,
+            rp: { gte: PREMIUM_PRICE_RP },
+            OR: [{ premiumUntil: null }, { premiumUntil: { lt: now } }],
+          },
+          data: {
+            rp: { decrement: PREMIUM_PRICE_RP },
+            premiumUntil: new Date(now.getTime() + PREMIUM_MS),
+            premiumNoticeStage: 0,
+            [POTION_COLUMNS[tier]]: { increment: PREMIUM_GIFT_POTIONS },
+          },
+        })
+        if (written.count === 0) throw new RouteRejection(409, { error: 'State changed, retry' })
+        return { tier }
+      })
+    } catch (e) {
+      if (e instanceof RouteRejection) return reply.status(e.status).send(e.body)
+      throw e
+    }
+
+    const updated = await prisma.character.findUnique({ where: { userId } })
+    if (!updated) {
+      request.log.error({ userId }, 'buy-premium: character vanished between write and read-back')
+      return reply.status(500).send({ error: 'Purchase applied but state could not be read' })
+    }
+    // Повтор (replayed) тира не знает — считаем его тем же правилом от уровня сейчас.
+    const giftTier = applied.replayed
+      ? premiumGiftTier(calculateLevel(updated.strength, updated.agility, updated.endurance, updated.bonusLevels), POTION_TIERS.map((t) => t.levelRequired))
+      : applied.value.tier
+    return reply.send({
+      rp: updated.rp,
+      premiumUntil: updated.premiumUntil,
+      premiumLeftMs: premiumLeftMs(updated, Date.now()),
+      potions: potionStockOf(updated),
+      gift: { tier: giftTier + 1, count: PREMIUM_GIFT_POTIONS },
+      ...(applied.replayed ? { replayed: true } : {}),
+    })
+  })
+
   // ЯЧЕЙКИ СУМКИ ЗА ЗОЛОТО (21.11.2026, docs/shop.md, «ЯЧЕЙКИ СУМКИ»): +1
   // ячейка у Торговца. Цена — bagCellPrice(bagCellsBought) из общего каталога
   // consumables.ts (1000 × 1.3^куплено), потолка нет. Запись одна и условная:
@@ -3836,7 +3919,7 @@ export async function runRoutes(server: FastifyInstance) {
       if (inventoryItem.equipped) {
         const fresh = await tx.character.findUnique({ where: { userId } })
         if (!fresh) return { kind: 'reject', status: 404, error: 'Character not found' }
-        if (!bagFits(await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)), 1, bagCapacity(fresh.bagBonusCells))) {
+        if (!bagFits(await bagCellsUsed(tx, fresh.id, consumableStockOf(fresh), classItemStockOf(fresh)), 1, heroBagCapacity(fresh))) {
           return { kind: 'reject', status: 400, error: 'Сумка полна — освободи ячейку.' }
         }
       }
@@ -3980,6 +4063,13 @@ export async function settleExploreRun(
     // само по себе доказывает, что босс в ЭТОМ забеге был (currentRun —
     // серверные данные), а не то, что клиент придумал.
     const bossClosed = closedEvents.some((i) => run.events[i].kind === 'boss')
+
+    // «Печать Колокола» (25.11.2026, docs/premium.md): +25% к заработанному в
+    // ЖИВОЙ вылазке, вниз. Смерть, как и раньше, жжёт весь банк — прибавки нет.
+    // Кража у Контрабандиста (заработано меньше нуля) — тоже без прибавки.
+    const premiumNow = runPremium(run, character, Date.now())
+    const premiumTrophies = died ? 0 : premiumTrophyBonus(total - bank, premiumNow)
+    total += premiumTrophies
 
     const newTrophies = total
     // Насколько банк изменился за забег. ⚠️ МОЖЕТ БЫТЬ ОТРИЦАТЕЛЬНЫМ и нулём не
@@ -4137,7 +4227,7 @@ export async function settleExploreRun(
     const runRings = runGearRead.effects.rings
     const storedDrops = storedEventDrops(run, closedEvents, log)
     const eventDrops = storedDrops ?? await (async () => {
-      const intents = rollRunDrops(run.events, closedEvents, characterLevel, character.luck, { skillSearch: runRings.includes('ring_skill_search') })
+      const intents = rollRunDrops(run.events, closedEvents, characterLevel, premiumLuck(character.luck, premiumNow), { skillSearch: runRings.includes('ring_skill_search') })
       const resolved: EventDrop[] = []
       for (const intent of intents) {
         const drop = await resolveDropIntent(intent, characterLevel, log)
@@ -4158,10 +4248,12 @@ export async function settleExploreRun(
     // Вместимость (applyDrops) и склад зелий считаются ВНУТРИ транзакции ниже,
     // под блокировкой строки персонажа, — см. там.
 
+    // ×2 с «Печатью Колокола» — после потолков, общей функцией со входом.
+    const growthIn = statGrowthInputs(capped.progress, premiumNow)
     const growth = applyStatGrowth(
-      character.strength, character.strengthProgress, capped.progress.attackDamageDealt,
-      character.endurance, character.enduranceProgress, capped.progress.damageTaken,
-      character.agility, character.agilityProgress, capped.progress.skillDamageDealt + capped.progress.healedAmount,
+      character.strength, character.strengthProgress, growthIn.attack,
+      character.endurance, character.enduranceProgress, growthIn.taken,
+      character.agility, character.agilityProgress, growthIn.skill,
       run.maxHp,
       run.hp,
       newBonusLevels,
@@ -4292,7 +4384,7 @@ export async function settleExploreRun(
       if (questRead.kind === 'malformed') {
         log.error({ userId, questState: fresh.questState }, 'finish-explore: corrupt questState — quests skipped')
       } else {
-        const settled = settleQuestState(questRead.kind === 'state' ? questRead.state : null, growth.level, fresh.equippedSkills, finishedAt)
+        const settled = settleQuestState(questRead.kind === 'state' ? questRead.state : null, growth.level, fresh.equippedSkills, finishedAt, isPremium(fresh, finishedAt))
         questState = settled.state
         questChanged = settled.changed
         if (questState !== null && questFacts !== null) {
@@ -4462,6 +4554,7 @@ export async function settleExploreRun(
       died,
       trophiesEarned: earned,
       trophiesLost,
+      premiumTrophies,
       eliteTrophiesEarned,
       eventsClosed: closedEvents.length,
       eventsTotal: run.events.length,

@@ -14,6 +14,7 @@ import { calculateLevel } from '../game.js'
 import { QUEST_UNLOCK_LEVEL, parseQuestId } from '../quests.js'
 import { readQuestState, settleQuestState, takeQuest, replaceQuest, questView, type QuestState, type QuestRefusal } from '../questState.js'
 import { getUserId, questStateFilter } from './run.js'
+import { isPremium } from '../premium.js'
 
 const prisma = new PrismaClient()
 
@@ -55,7 +56,7 @@ async function loadQuests(request: FastifyRequest, reply: FastifyReply, userId: 
     return null
   }
   const level = calculateLevel(character.strength, character.agility, character.endurance, character.bonusLevels)
-  const settled = settleQuestState(read.kind === 'state' ? read.state : null, level, character.equippedSkills, nowMs)
+  const settled = settleQuestState(read.kind === 'state' ? read.state : null, level, character.equippedSkills, nowMs, isPremium(character, nowMs))
   return { character, level, settled }
 }
 

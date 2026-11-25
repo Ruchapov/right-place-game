@@ -19,6 +19,7 @@
     src/runes.ts        → server/src/runes.ts
     src/referral.ts     → server/src/referral.ts
     src/skins.ts        → server/src/skins.ts
+    src/premium.ts      → server/src/premium.ts
 
 Общего пакета в проекте нет (tsconfig.app.json включает только "src", у
 сервера rootDir "./src"), поэтому каталоги живут байт-в-байт копиями.
@@ -68,6 +69,7 @@ PAIRS = [
     ("каталог рун", Path("src/runes.ts"), Path("server/src/runes.ts")),
     ("приглашения друзей", Path("src/referral.ts"), Path("server/src/referral.ts")),
     ("каталог Портного (облики, плащи, клеймо)", Path("src/skins.ts"), Path("server/src/skins.ts")),
+    ("премиум «Печать Колокола»", Path("src/premium.ts"), Path("server/src/premium.ts")),
 ]
 
 

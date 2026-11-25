@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent, type RefObject } from 'react'
+import { PremiumBadge } from './PremiumBadge'
 import { QUEST_UNLOCK_LEVEL, questById, type QuestId } from '../quests'
 import type { QuestReward, QuestView } from '../api'
 import { C } from './theme'
@@ -188,6 +189,36 @@ function Note({ note, index, replaceAvailable, interactive, onTake, onReplace }:
   )
 }
 
+/**
+ * Закрытый листок «Только с премиумом» (25.11.2026, docs/premium.md): без
+ * «Печати Колокола» в наборе три задания, и на доске под ними — два таких
+ * листка. Та же бумага и гвоздь, но потемневшая; на ней печать-колокол.
+ * Нажатие (только на открытой доске) открывает окно печати.
+ */
+function LockedNote({ index, interactive, onTap }: { index: number; interactive: boolean; onTap?: () => void }) {
+  const tilt = NOTE_TILT_DEG[(index + 1) % NOTE_TILT_DEG.length]
+  const tappable = interactive && onTap !== undefined
+  return (
+    <div data-quest-locked="" onClick={tappable ? onTap : undefined} style={{ position: 'relative', cursor: tappable ? 'pointer' : 'default' }}>
+      <div style={{ position: 'relative', boxSizing: 'border-box', padding: '14px 23px 16px 25px', minHeight: 74, display: 'flex', alignItems: 'center' }}>
+        {/* Бумага темнее обычной — фильтром на ОДНОЙ подложке: колокол поверх
+            неё остаётся золотым. */}
+        <div aria-hidden style={{
+          position: 'absolute', inset: 0, boxSizing: 'border-box', borderStyle: 'solid', borderWidth: 1, borderColor: 'transparent',
+          borderImage: `url(${asset('quests/quest_note.webp')}) 60 fill / 12px stretch`,
+          filter: 'brightness(0.5) sepia(0.45)',
+        }} />
+        <div style={{ position: 'relative', transform: `rotate(${tilt}deg)`, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <PremiumBadge size={34} />
+          <span style={{ fontFamily: FONT_INK, fontStyle: 'italic', fontWeight: 700, fontSize: 16, color: '#E9DCC0', textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}>Только с премиумом</span>
+        </div>
+      </div>
+      <img src={asset('quests/quest_nail.webp')} alt="" draggable={false}
+        style={{ position: 'absolute', width: NAIL_W, height: NAIL_H, left: `calc(82% - ${NAIL_W / 2}px)`, top: -NAIL_H * 0.3, pointerEvents: 'none' }} />
+    </div>
+  )
+}
+
 export type QuestBoardProps = {
   /** null — вида ещё нет (не загружен или не загрузился, см. status). */
   view: QuestView | null
@@ -203,6 +234,10 @@ export type QuestBoardProps = {
   onReplace: (id: QuestId) => void
   /** Листки в два столбца — только у доски набок (QuestBoardSideFit). */
   columns?: 1 | 2
+  /** Сколько закрытых листков «Только с премиумом» под заданиями (0 — нет). */
+  premiumLocked?: number
+  /** Нажатие по закрытому листку — открыть окно «Печати Колокола». */
+  onPremiumTap?: () => void
 }
 
 /**
@@ -210,7 +245,7 @@ export type QuestBoardProps = {
  * «Задания» и «новые через Ч:ММ», под ними листки. Ширину задаёт родитель,
  * высота — по содержимому.
  */
-export function QuestBoard({ view, status, level, countdown, interactive, onTake, onReplace, columns = 1 }: QuestBoardProps) {
+export function QuestBoard({ view, status, level, countdown, interactive, onTake, onReplace, columns = 1, premiumLocked = 0, onPremiumTap }: QuestBoardProps) {
   const unlockLevel = view?.unlockLevel ?? QUEST_UNLOCK_LEVEL
   const locked = view !== null ? !view.unlocked : level !== null && level < unlockLevel
   const notes = view !== null && view.unlocked ? boardNotes(view) : []
@@ -271,6 +306,9 @@ export function QuestBoard({ view, status, level, countdown, interactive, onTake
               onTake={onTake}
               onReplace={onReplace}
             />
+          ))}
+          {Array.from({ length: premiumLocked }, (_, i) => (
+            <LockedNote key={`locked-${i}`} index={notes.length + i} interactive={interactive} onTap={onPremiumTap} />
           ))}
         </div>
       )}

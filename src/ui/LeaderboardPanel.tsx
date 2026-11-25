@@ -7,6 +7,7 @@
 // (sticky — видно при прокрутке; в вертикали — над нижней панелью меню).
 // Вне Telegram (token null) — пример рейтинга с пометкой: так вёрстку видно в
 // браузере без сервера.
+import { PremiumBadge } from './PremiumBadge'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { C, FONT_DISPLAY } from './theme'
 import { TEXT_FONT, darkBtn } from './guild/style'
@@ -57,6 +58,7 @@ function devView(board: LeaderboardBoard): LeaderboardView {
     name: guild ? ['Стражи Пепла', 'Костяной Венец', 'Ночной Дозор', 'Сыны Колокола'][i % 4] : TEMP_DEV_NAMES[i % TEMP_DEV_NAMES.length],
     guildTag: guild || i % 3 !== 2 ? ['ПЕП', 'КВН', 'НД', 'СК'][i % 4] : null,
     emblem: guild || i % 3 !== 2 ? { symbol: i % 6, frame: i % 3, bg: i % 4, color: i % 5 } : null,
+    isPremium: !guild && i % 4 === 1,
     value: board === 'hunters' ? 2400 - i * 151 : board === 'bosses' ? 41 - i * 3 : guild ? 9 - Math.floor(i / 2) : 48 - i * 2,
     isMe: i === 6,
     members: guild ? 24 - i : null,
@@ -105,7 +107,7 @@ function PodiumSlot({ row, place, board }: { row: LeaderboardRow | undefined; pl
       <div style={{
         maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         fontSize: place === 1 ? 14 : 13, fontWeight: 600, color: row?.isMe ? C.glowCore : C.textMain,
-      }}>{row ? row.name : '—'}</div>
+      }}>{row ? row.name : '—'}{row?.isPremium && <> <PremiumBadge size={place === 1 ? 15 : 13} /></>}</div>
       {row && <TagLine tag={row.guildTag} />}
       {row && <div style={{ fontFamily: FONT_DISPLAY, fontSize: place === 1 ? 15 : 13, color: m.fill, whiteSpace: 'nowrap' }}>{valueLabel(board, row.value)}</div>}
       {row && guild && row.members !== null && <div style={{ fontSize: 10.5, color: C.textDim }}>{membersLabel(row.members)}</div>}
@@ -135,6 +137,7 @@ function ListRow({ row, board }: { row: LeaderboardRow; board: LeaderboardBoard 
       <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, color: row.isMe ? C.glowCore : C.textMain }}>{row.name}</span>
+          {row.isPremium && <PremiumBadge size={14} />}
           {!guild && <TagLine tag={row.guildTag} />}
         </div>
         {/* У гильдии тег — во второй строке, рядом с участниками: так название не режется. */}

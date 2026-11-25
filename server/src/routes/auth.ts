@@ -27,6 +27,8 @@ import { skinStateOf } from '../skinState.js'
 import { settleExploreRun, storeFinishResult, readRunCompletion, type RunResultSummary } from './run.js'
 import type { FastifyBaseLogger } from 'fastify'
 import { readQuestState } from '../questState.js'
+import { runPremium, statGrowthInputs } from '../premiumState.js'
+import { premiumLeftMs } from '../premium.js'
 
 const prisma = new PrismaClient()
 
@@ -353,10 +355,12 @@ export async function authRoutes(server: FastifyInstance) {
         )
       }
       const cappedProgress = clampRunProgress(progressToApply, run, levelBefore)
+      // ×2 с «Печатью Колокола» — той же функцией, что финиш, после потолков.
+      const growthIn = statGrowthInputs(cappedProgress.progress, runPremium(run, char, Date.now()))
       const growth = applyStatGrowth(
-        char.strength, char.strengthProgress, cappedProgress.progress.attackDamageDealt,
-        char.endurance, char.enduranceProgress, cappedProgress.progress.damageTaken,
-        char.agility, char.agilityProgress, cappedProgress.progress.skillDamageDealt + cappedProgress.progress.healedAmount,
+        char.strength, char.strengthProgress, growthIn.attack,
+        char.endurance, char.enduranceProgress, growthIn.taken,
+        char.agility, char.agilityProgress, growthIn.skill,
         run.maxHp,
         run.hp,
         char.bonusLevels,
@@ -580,6 +584,10 @@ export async function authRoutes(server: FastifyInstance) {
         // начинал ждать целую минуту — и показывал 99/100 там, где на сервере
         // было 100. См. energyForClient в game.ts.
         energyAccruedSec: energyNow.accruedSec,
+        // «Печать Колокола» (docs/premium.md): premiumUntil (ISO) уезжает в
+        // ...charFields; premiumLeftMs — сколько осталось по часам СЕРВЕРА
+        // (0 — не активна): клиент считает таймер от него, а не от часов телефона.
+        premiumLeftMs: premiumLeftMs(char, Date.now()),
         equippedSkills: char.equippedSkills,
         potions: potionStockOf(char),
         // Запас расходников — та же форма, что в GET /character/profile

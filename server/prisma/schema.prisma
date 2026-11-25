@@ -285,6 +285,13 @@ model Character {
   bossHearts          Int      @default(0)
   bagCellsBought      Int      @default(0)
   titleKey            String?
+  // «Печать Колокола» — премиум за RP (25.11.2026, docs/premium.md, миграция
+  // 20261125120000_premium_add). premiumUntil — до какого момента действует
+  // (NULL — не покупал); активен ли — только isPremium (premium.ts).
+  // premiumNoticeStage — какие напоминания бота уже ушли за ЭТОТ срок: 0 —
+  // ничего, 1 — «за 3 дня», 2 — «за день», 3 — «угасла». Покупка ставит 0.
+  premiumUntil        DateTime?
+  premiumNoticeStage  Int      @default(0)
   achievements        Achievement[]
   botNotifications    BotNotification[]
   currentRun         Json?    // активный забег: { rooms, index }; null = забега нет

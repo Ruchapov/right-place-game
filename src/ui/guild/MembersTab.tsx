@@ -1,5 +1,6 @@
 // Вкладка «Состав» (01.11.2026, mock/Members.html): заявки карточкой сверху,
 // список участников, меню действий по тапу на строку, настройки и выход внизу.
+import { PremiumBadge } from '../PremiumBadge'
 import { useState, type CSSProperties } from 'react'
 import { C, FONT_DISPLAY } from '../theme'
 import { GUILD_MAX_DEPUTIES, guildMemberCap, type GuildRole } from '../../guild'
@@ -80,6 +81,7 @@ export function MembersTab({ me, pending, run, now, onSettings, overlayPad, over
                   <span style={{ fontSize:14, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>
                     {m.name}{isSelf ? ' · вы' : ''}
                   </span>
+                  {m.isPremium && <PremiumBadge size={15} />}
                   {r === 'leader' && (
                     <span style={{ display:'flex', alignItems:'center', gap:3, height:20, padding:'0 7px', borderRadius:10, background:G.leaderBg, color:C.glowCore, fontSize:11, fontWeight:600 }}>
                       <CrownIcon color={C.glowCore} />Глава

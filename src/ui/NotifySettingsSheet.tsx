@@ -20,6 +20,7 @@ const ROWS: Record<NotifySettingKey, { title: string; hint: string }> = {
   friends:  { title: 'Друзья',         hint: 'Друг пришёл по ссылке или дорос до награды' },
   guild:    { title: 'Гильдия',        hint: 'Заявки в гильдию и ответы на твои' },
   comeback: { title: 'Убежище ждёт',   hint: 'Если долго не заглядываешь' },
+  premium:  { title: 'Печать Колокола', hint: 'За 3 дня, за день и когда угасла' },
 }
 
 const CSS = `

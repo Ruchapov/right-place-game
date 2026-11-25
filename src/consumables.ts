@@ -410,13 +410,18 @@ export const BAG_CAPACITY = 30
 
 /**
  * Вместимость сумки КОНКРЕТНОГО героя (20.11.2026, достижения): стартовые
- * BAG_CAPACITY плюс ячейки, подаренные достижениями (Character.bagBonusCells).
+ * BAG_CAPACITY плюс ячейки, подаренные достижениями (Character.bagBonusCells),
+ * плюс extraCells — ячейки, которые есть, пока что-то действует: с 25.11.2026
+ * «Печать Колокола» (premiumBagCells, premium.ts; docs/premium.md). Второй
+ * параметр обязателен НАМЕРЕННО: место, забывшее премиум, не скомпилируется.
+ * Кончился премиум — лишнее не отнимается, новое просто не кладётся (bagFits).
  * Ею — и только ею — кормятся bagFits / bagFreeCells на сервере и на клиенте:
  * голое BAG_CAPACITY в проверке молча отняло бы у героя подаренные ячейки.
  * Мусор (не целое, отрицательное) — без прибавки.
  */
-export function bagCapacity(bonusCells: number): number {
-  return BAG_CAPACITY + (Number.isInteger(bonusCells) && bonusCells > 0 ? bonusCells : 0)
+export function bagCapacity(bonusCells: number, extraCells: number): number {
+  const ok = (n: number) => (Number.isInteger(n) && n > 0 ? n : 0)
+  return BAG_CAPACITY + ok(bonusCells) + ok(extraCells)
 }
 
 /**

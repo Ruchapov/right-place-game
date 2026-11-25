@@ -11,11 +11,11 @@ import { botArt, playButton, type Keyboard } from './telegram.js'
 
 const prisma = new PrismaClient()
 
-export const NOTIFY_KINDS = ['energy', 'quests', 'friend_joined', 'friend_reward', 'guild_request', 'guild_accepted', 'guild_declined', 'comeback'] as const
+export const NOTIFY_KINDS = ['energy', 'quests', 'friend_joined', 'friend_reward', 'guild_request', 'guild_accepted', 'guild_declined', 'comeback', 'premium_3d', 'premium_1d', 'premium_end'] as const
 export type NotifyKind = typeof NOTIFY_KINDS[number]
 
-/** Пять переключателей игрока; NULL в базе — все включены. */
-export const NOTIFY_SETTING_KEYS = ['energy', 'quests', 'friends', 'guild', 'comeback'] as const
+/** Шесть переключателей игрока (premium — с 25.11.2026); NULL в базе — все включены. */
+export const NOTIFY_SETTING_KEYS = ['energy', 'quests', 'friends', 'guild', 'comeback', 'premium'] as const
 export type NotifySettingKey = typeof NOTIFY_SETTING_KEYS[number]
 export type NotifySettings = Record<NotifySettingKey, boolean>
 
@@ -25,6 +25,7 @@ export const NOTIFY_SETTING_LABELS: Record<NotifySettingKey, string> = {
   friends: 'Друзья',
   guild: 'Гильдия',
   comeback: 'Убежище ждёт',
+  premium: 'Печать Колокола',
 }
 
 export const SETTING_OF_KIND: Record<NotifyKind, NotifySettingKey> = {
@@ -36,6 +37,9 @@ export const SETTING_OF_KIND: Record<NotifyKind, NotifySettingKey> = {
   guild_accepted: 'guild',
   guild_declined: 'guild',
   comeback: 'comeback',
+  premium_3d: 'premium',
+  premium_1d: 'premium',
+  premium_end: 'premium',
 }
 
 export function parseNotifyKind(raw: unknown): NotifyKind | null {
@@ -167,5 +171,12 @@ export function renderNotification(kind: string, payload: unknown): { photo: str
       const caption = stage === 2 ? '🔔 Последний звон. Дальше — тишина.' : '🔔 Костёр в Убежище почти погас. Твари в руинах уже решили, что ты сдался.'
       return { photo: botArt('comeback'), caption, keyboard }
     }
+    // «Печать Колокола» (25.11.2026, docs/premium.md): за 3 дня, за день, угасла.
+    case 'premium_3d':
+      return { photo: botArt('comeback'), caption: '🔔 Печать Колокола угаснет через 3 дня. Успей забрать своё — трофеи, задания, удачу.', keyboard }
+    case 'premium_1d':
+      return { photo: botArt('comeback'), caption: '🔔 Последние сутки Печати Колокола. Завтра Убежище снова станет обычным.', keyboard }
+    case 'premium_end':
+      return { photo: botArt('comeback'), caption: '🔕 Печать Колокола угасла. Вернуть её можно в Убежище.', keyboard }
   }
 }

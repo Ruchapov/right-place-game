@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { PremiumBadge } from './ui/PremiumBadge'
+import { PremiumSheet, PremiumGiftNotice } from './ui/PremiumSheet'
+import { isPremium, premiumLeftMs, premiumBagCells, premiumLuck, premiumGiftTier, PREMIUM_LUCK, PREMIUM_PRICE_RP, premiumLeftLine } from './premium'
+import { QUEST_SET_SIZE_PREMIUM } from './quests'
+import { buyPremium, readPremiumUntilMs } from './api'
 import { getAudioSettings, setAudioSettings, subscribeAudioSettings } from './audio/sound'
 import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@telegram-apps/sdk'
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
@@ -172,7 +177,11 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   bagBonusCells: number | null
   // Ячейки, купленные у Торговца (21.11.2026): от них цена следующей
   // (bagCellPrice). null — сервер не назвал: плитка покупки гаснет.
-  bagCellsBought: number | null }
+  bagCellsBought: number | null
+  // «Печать Колокола» (25.11.2026, docs/premium.md): момент конца по часам
+  // телефона (readPremiumUntilMs), 0 — не активна, null — сервер не назвал.
+  // Активна ли — ТОЛЬКО isPremium (premium.ts) от этого числа.
+  premiumUntilMs: number | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -550,6 +559,11 @@ const TEMP_DEV_ACHIEVEMENTS: AchievementView[] = [
   { key: 'first_steps_1', title: 'Первый шаг за порог', phrase: 'Тьма выпустила тебя обратно. Возьми — пригодится в следующий раз.', reward: 'Книга огня, Книга исцеления', icon: 'book_fire.png', earnedAt: '2026-11-19T10:00:00.000Z', rewardPending: false },
   { key: 'kills_1000', title: 'Жнец', phrase: 'Тысяча. Ты сбился со счёта — тьма считает за тебя.', reward: '+1 сила', icon: 'icon_strength.png', earnedAt: '2026-11-18T10:00:00.000Z', rewardPending: false },
 ]
+
+// TEMP: «Печать Колокола» офлайн-заглушки DevTester (docs/premium.md): сколько
+// мс осталось; 0 — печати нет (видны закрытые листки и кнопка «Принять печать»).
+// В Telegram срок приходит со входом (premiumLeftMs). Убрать вместе с заглушкой.
+const TEMP_DEV_PREMIUM_LEFT_MS = 0
 
 const TEMP_DEV_HERO_STATS: HeroStatsView = {
   runsTotal: 47, runsCompleted: 31, runsDied: 16, killsTotal: 1234, killsElite: 9, bossesKilled: 6,
@@ -1111,6 +1125,11 @@ export default function App() {
   const [classCelebration, setClassCelebration] = useState<{ id: HeroClassId; tier: HeroClassTier } | null>(null)
   // Окно «Сила +1» после сердца босса (23.11.2026) — было/стало из ответа сервера.
   const [heartResult, setHeartResult] = useState<BossHeartResult | null>(null)
+  // «Печать Колокола» (docs/premium.md): окно, запрос и окно подарка.
+  const [premiumOpen, setPremiumOpen] = useState(false)
+  const [premiumBusy, setPremiumBusy] = useState(false)
+  const [premiumError, setPremiumError] = useState<string | null>(null)
+  const [premiumGift, setPremiumGift] = useState<{ tier: number; count: number } | null>(null)
   // --- Гнёзда подготовки на вкладке «Исследовать» ---
   // Длина фиксирована каталогом (RUN_CONSUMABLE_SLOTS), null — гнездо пусто.
   // Один и тот же id в двух гнёздах запрещён: сервер отвергает повторы
@@ -1365,7 +1384,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, bagCellsBought: 0})
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, bagCellsBought: 0, premiumUntilMs: TEMP_DEV_PREMIUM_LEFT_MS > 0 ? Date.now() + TEMP_DEV_PREMIUM_LEFT_MS : 0})
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1416,7 +1435,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), bagCellsBought: readCurrencyCount(data.character.bagCellsBought) ?? null })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), bagCellsBought: readCurrencyCount(data.character.bagCellsBought) ?? null, premiumUntilMs: readPremiumUntilMs(data.character.premiumLeftMs) })
     setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
@@ -1533,7 +1552,13 @@ export default function App() {
   // «Сумка полна» в карточке не утверждается.
   // Вместимость — своя у героя (20.11.2026): BAG_CAPACITY + подаренные
   // достижениями ячейки. Неизвестны ячейки — неизвестна и вместимость.
-  const bagCap = player?.bagBonusCells == null ? null : bagCapacity(player.bagBonusCells)
+  // «Печать Колокола» (docs/premium.md): активна ли — только isPremium. now
+  // тикает раз в секунду (энергия), этого хватает и таймеру печати.
+  const premiumActive = player !== null && player.premiumUntilMs !== null && isPremium({ premiumUntil: player.premiumUntilMs }, now)
+  const premiumLeft = player !== null && player.premiumUntilMs !== null ? premiumLeftMs({ premiumUntil: player.premiumUntilMs }, now) : 0
+  // +10 ячеек, пока печать активна (premiumBagCells); кончилась — лишнее не
+  // отнимается, сумка просто переполнена (bagFits не пустит новое).
+  const bagCap = player?.bagBonusCells == null || player.premiumUntilMs === null ? null : bagCapacity(player.bagBonusCells, premiumBagCells(premiumActive))
   const bagKnown = inventoryStatus === 'ready' && bagStacks !== null && bagCap !== null
   const bagCapN = bagCap ?? BAG_CAPACITY
   // Нет места даже под одну штуку. У героев, накопивших стопки до нового правила,
@@ -1859,6 +1884,10 @@ export default function App() {
     status: questsStatus,
     level: player?.level ?? null,
     countdown: questCountdown,
+    // «Печать Колокола»: без неё под тремя заданиями — два закрытых листка.
+    premiumLocked: questBoard !== null && questBoard.view.unlocked && !premiumActive && player?.premiumUntilMs !== null
+      ? Math.max(0, QUEST_SET_SIZE_PREMIUM - questBoard.view.set.length) : 0,
+    onPremiumTap: () => { setQuestBoardOpen(false); setPremiumOpen(true) },
   }
   // Активное задание (взятое или переходящее) — о нём предупреждает вопрос
   // «Взять …?»: оно пропадёт вместе с прогрессом.
@@ -2397,6 +2426,46 @@ export default function App() {
   }
 
   // Ячейка сумки у Торговца (21.11.2026, docs/shop.md, «ЯЧЕЙКИ СУМКИ»).
+  async function handleBuyPremium() {
+    const token = localStorage.getItem('jwt')
+    if (!token || !player) {
+      setPremiumError('Печать принимают только в Telegram — здесь сервера нет.')
+      return
+    }
+    if (premiumBusy) return
+    setPremiumBusy(true)
+    setPremiumError(null)
+    try {
+      const r = await buyPremium(token)
+      if (r.rp === null || r.premiumUntilMs === null || r.potions === null) {
+        console.error('buy-premium: сервер не назвал итог', r)
+        await handleRefreshBalance()
+        return
+      }
+      const { rp, premiumUntilMs, potions } = r
+      setPlayer(prev => prev ? { ...prev, rp, premiumUntilMs, potions } : prev)
+      setPremiumOpen(false)
+      if (r.gift !== null) setPremiumGift(r.gift)
+      // Набор заданий дополняется до пяти при ближайшем GET — перечитать доску.
+      void loadQuests()
+    } catch (e) {
+      console.error('buy-premium failed', e)
+      const refusal = e instanceof RequestError ? e.serverError : null
+      if (refusal === 'Not enough RP' || refusal === 'Premium active' || refusal === 'State changed, retry') {
+        await handleRefreshBalance()
+        setPremiumError(refusal === 'Not enough RP' ? 'Не хватает RP.' : refusal === 'Premium active' ? 'Печать уже с тобой.' : 'Что-то изменилось — показано актуальное.')
+        return
+      }
+      if (e instanceof RequestError && e.retryable) {
+        setPremiumError('Ответ не пришёл. Нажми ещё раз — второй раз не спишется.')
+        return
+      }
+      setPremiumError('Колокол молчит — попробуй позже.')
+    } finally {
+      setPremiumBusy(false)
+    }
+  }
+
   async function handleBuyBagCell() {
     const token = localStorage.getItem('jwt')
     if (!token || !player) {
@@ -3014,6 +3083,7 @@ export default function App() {
         // Достижения (20.11.2026): ячейки меняет «Забрать».
         bagBonusCells: profile.bagBonusCells,
         bagCellsBought: profile.bagCellsBought,
+        premiumUntilMs: profile.premiumUntilMs,
         // Портной (14.11.2026): потерянный ответ покупки или нашивки снимается этой
         // сверкой. null перезаписывает намеренно — «сервер не назвал».
         skins: profile.skins,
@@ -3394,7 +3464,7 @@ export default function App() {
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown && p.luck !== null ? p.luck + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0) : '—', label:'Удача' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown && p.luck !== null ? (premiumActive ? `${premiumLuck(p.luck, true) + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0)} (+${PREMIUM_LUCK})` : p.luck + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0)) : '—', label:'Удача' },
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
 
@@ -3496,8 +3566,9 @@ export default function App() {
                   </div>
                 </div>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>
-                    {p.firstName}
+                  <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain, display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.firstName}</span>
+                    {premiumActive && <PremiumBadge size={18} />}
                   </div>
                   {/* Строка класса (20.10.2026): просто текст, без тапа —
                       docs/classes.md, «Строка класса на «Персонаже»». Уровень —
@@ -4236,6 +4307,31 @@ export default function App() {
                 })}
               </div>
               </div>
+
+              {/* «Печать Колокола» (25.11.2026, docs/premium.md): вход в окно
+                  премиума — над витриной любого жителя, заметной золотой
+                  плашкой с колоколом. Активна — срок вместо цены. */}
+              <button type="button" data-premium-entry="" onClick={() => { setPremiumError(null); setPremiumOpen(true) }} style={{
+                boxSizing:'border-box', width:'calc(100% - 16px)', margin:'0 8px 14px', minHeight:58,
+                display:'flex', alignItems:'center', gap:12, padding:'8px 12px', borderRadius:12, cursor:'pointer', textAlign:'left',
+                border:`1px solid ${premiumActive ? C.glowCore : C.glowEdge}`,
+                background:'linear-gradient(100deg, rgba(92,66,24,0.85), rgba(34,26,36,0.95) 70%)',
+                boxShadow: premiumActive ? '0 0 16px rgba(245,188,91,0.35), inset 0 0 14px rgba(245,188,91,0.2)' : 'inset 0 0 14px rgba(209,151,68,0.18)',
+                color:C.textMain,
+              }}>
+                <PremiumBadge size={36} />
+                <span style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:2 }}>
+                  <span style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.glowCore }}>Печать Колокола</span>
+                  <span style={{ fontSize:11.5, color:C.bone, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {premiumActive ? `С тобой ещё ${premiumLeftLine(premiumLeft)}` : 'Трофеи, задания, удача и подарок'}
+                  </span>
+                </span>
+                {!premiumActive && (
+                  <span style={{ flex:'none', display:'flex', alignItems:'center', gap:4, fontFamily:FONT_DISPLAY, fontSize:14, color:C.glowCore }}>
+                    {PREMIUM_PRICE_RP}<img src={`${import.meta.env.BASE_URL}assets/icons/icon_rp.png`} alt="RP" width={16} height={16} style={{ display:'block' }} />
+                  </span>
+                )}
+              </button>
 
               {/* Отшельник: сверху блок «Классы», под ним книги, как были
                   (docs/classes.md). Тап по плитке — карточка класса; она
@@ -6652,6 +6748,20 @@ export default function App() {
           о прошлом забеге (см. HeroClassCelebration). */}
       {classCelebration !== null && (
         <HeroClassCelebration state={classCelebration} onClose={() => setClassCelebration(null)} />
+      )}
+      {premiumOpen && player !== null && (
+        <PremiumSheet
+          leftMs={premiumLeft}
+          rp={player.rp}
+          giftTier={premiumGiftTier(player.level, POTION_TIERS.map((t) => t.levelRequired))}
+          busy={premiumBusy}
+          error={premiumError}
+          onBuy={() => { void handleBuyPremium() }}
+          onClose={() => { setPremiumOpen(false); setPremiumError(null) }}
+        />
+      )}
+      {premiumGift !== null && (
+        <PremiumGiftNotice tier={premiumGift.tier} count={premiumGift.count} onClose={() => setPremiumGift(null)} />
       )}
       {heartResult !== null && (
         <BossHeartNotice result={heartResult} onClose={() => {

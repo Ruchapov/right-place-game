@@ -458,9 +458,11 @@ function buildEventCandidates(slots: SlotsFile, optIn: readonly OptInEventKind[]
 //      сам по себе при непрошедшем броске)
 // До 10.11.2026 первой шла гарантия Контрабандиста на map_D_OPEN; у новой D
 // тайника и Контрабандиста нет, а на E (three-halls) он — обычный кандидат пула.
-function pickChosenEvents(eventPool: EventCandidate[]): EventCandidate[] {
+// bossChance — BOSS_SPAWN_CHANCE, с «Печатью Колокола» — PREMIUM_BOSS_SPAWN_CHANCE
+// (premium.ts; решает вызывающий — routes/run.ts, по isPremium).
+function pickChosenEvents(eventPool: EventCandidate[], bossChance: number): EventCandidate[] {
   const bossIndex = eventPool.findIndex((ev) => ev.kind === 'boss')
-  const bossWillSpawn = bossIndex !== -1 && Math.random() < BOSS_SPAWN_CHANCE
+  const bossWillSpawn = bossIndex !== -1 && Math.random() < bossChance
 
   if (bossWillSpawn) {
     const bossCandidate = eventPool[bossIndex]
@@ -587,10 +589,10 @@ function placeRunner(slots: SlotsFile, pool: EventCandidate[], chosen: EventCand
  * optIn — виды из OPT_IN_EVENT_KINDS, которые клиент назвал в `eventKinds`
  * (11.11.2026): только они попадают в пул.
  */
-export function rollRunEvents(mapFile: string, characterLevel: number, optIn: readonly OptInEventKind[] = []): RunEvent[] {
+export function rollRunEvents(mapFile: string, characterLevel: number, optIn: readonly OptInEventKind[] = [], bossChance: number = BOSS_SPAWN_CHANCE): RunEvent[] {
   const slots = readSlots(mapFile)
   const eventPool = buildEventCandidates(slots, optIn)
-  const picked = placeFlame(slots, eventPool, pickChosenEvents(eventPool))
+  const picked = placeFlame(slots, eventPool, pickChosenEvents(eventPool, bossChance))
   const chosenEvents = placeRunner(slots, eventPool, scatterEnemyGroups(slots, picked))
 
   return chosenEvents.map((ev) => {

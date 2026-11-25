@@ -26,7 +26,8 @@ const EXPIRE_MS = 48 * 3600_000
 /**
  * Не больше 2 «фоновых» звонов игроку за 24 часа (решение Андрея 13.11.2026):
  * полная энергия, новые задания, «вернись». Гильдия и друзья — ответ на действие
- * другого игрока, в лимит не идут и его не тратят.
+ * другого игрока, в лимит не идут и его не тратят. Напоминания «Печати
+ * Колокола» (premium_*) — тоже вне лимита: о купленном за RP молчать нельзя.
  */
 const LIMITED_KINDS: readonly string[] = ['energy', 'quests', 'comeback']
 const MAX_LIMITED_PER_DAY = 2
@@ -39,6 +40,7 @@ const SCAN_LIMIT = 5000
 const SETTING_OF: Record<string, NotifySettingKey> = {
   energy: 'energy', quests: 'quests', friend_joined: 'friends', friend_reward: 'friends',
   guild_request: 'guild', guild_accepted: 'guild', guild_declined: 'guild', comeback: 'comeback',
+  premium_3d: 'premium', premium_1d: 'premium', premium_end: 'premium',
 }
 
 const reachable = { botAllowed: true, botBlocked: false } as const
@@ -99,6 +101,42 @@ async function scanComeback(now: Date): Promise<number> {
       const marked = await prisma.character.updateMany({ where: { id: c.id, comebackStage: stage - 1 }, data: { comebackStage: stage } })
       if (marked.count > 0 && await queueNotification(c.id, 'comeback', { stage })) queued++
     }
+  }
+  return queued
+}
+
+/**
+ * «Печать Колокола» (25.11.2026, docs/premium.md): за 3 дня, за 1 день и в
+ * момент конца — каждое ровно один раз за срок. premiumNoticeStage — сколько
+ * уже ушло (покупка ставит 0); отметка — условной записью по прежней ступени,
+ * как у «вернись», поэтому два вызова разом второй звон не поставят. Опоздали
+ * (сервер лежал) — ставится только самая поздняя из наступивших ступеней, а
+ * пропущенные отмечаются: «за 3 дня» после конца звонить бессмысленно.
+ * Выключено в настройках или боту писать нельзя — queueNotification не
+ * поставит, но ступень всё равно отмечена: ровно один раз, а не «пока не включит».
+ */
+const PREMIUM_STAGES: readonly { stage: number; beforeMs: number; kind: 'premium_3d' | 'premium_1d' | 'premium_end' }[] = [
+  { stage: 1, beforeMs: 3 * DAY_MS, kind: 'premium_3d' },
+  { stage: 2, beforeMs: DAY_MS, kind: 'premium_1d' },
+  { stage: 3, beforeMs: 0, kind: 'premium_end' },
+]
+
+async function scanPremium(now: Date): Promise<number> {
+  const rows = await prisma.character.findMany({
+    where: { premiumUntil: { not: null, lte: new Date(now.getTime() + 3 * DAY_MS) }, premiumNoticeStage: { lt: 3 } },
+    select: { id: true, premiumUntil: true, premiumNoticeStage: true },
+    take: SCAN_LIMIT,
+  })
+  let queued = 0
+  for (const c of rows) {
+    const left = c.premiumUntil!.getTime() - now.getTime()
+    const due = PREMIUM_STAGES.filter((s) => left <= s.beforeMs).at(-1)
+    if (!due || due.stage <= c.premiumNoticeStage) continue
+    const marked = await prisma.character.updateMany({
+      where: { id: c.id, premiumNoticeStage: c.premiumNoticeStage, premiumUntil: c.premiumUntil },
+      data: { premiumNoticeStage: due.stage },
+    })
+    if (marked.count > 0 && await queueNotification(c.id, due.kind)) queued++
   }
   return queued
 }
@@ -195,8 +233,9 @@ export async function cronRoutes(server: FastifyInstance) {
       const energy = await scanEnergy(now)
       const quests = await scanQuests(now)
       const comeback = await scanComeback(now)
+      const premium = await scanPremium(now)
       const queue = await sendQueue(new Date(), request.log)
-      return reply.send({ queued: { energy, quests, comeback }, queue, ms: Date.now() - started })
+      return reply.send({ queued: { energy, quests, comeback, premium }, queue, ms: Date.now() - started })
     } catch (e) {
       request.log.error({ err: e }, 'cron: tick failed')
       return reply.status(500).send({ error: 'Tick failed' })

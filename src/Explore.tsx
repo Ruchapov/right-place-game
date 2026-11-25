@@ -912,6 +912,11 @@ function ResultsScreen({
 
           {/* 3. Плита с трофеями (общая с окном о прошлом забеге). */}
           <TrophyPlate lossView={trophyLossView} count={trophyCount} color={result.died ? Theme.danger : Theme.glowCore} />
+          {!result.died && (result.premiumTrophies ?? 0) > 0 && (
+            <div data-premium-trophies="" style={{ fontSize: 12, color: Theme.glowCore, textAlign: 'center' }}>
+              из них +{result.premiumTrophies} — Печать Колокола
+            </div>
+          )}
 
           {/* Числа выше — клиентская оценка, пока на экране нет ответа сервера
               (всё, кроме 'saved'). Пометка отдельной строкой ПОД плитой, а не

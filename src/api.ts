@@ -220,6 +220,10 @@ export type LoginResponse = {
     bagBonusCells?: unknown
     // Ячейки, купленные у Торговца (21.11.2026), — readCurrencyCount.
     bagCellsBought?: unknown
+    // «Печать Колокола» (25.11.2026, docs/premium.md): срок (ISO) и сколько
+    // осталось по часам сервера. Разбирать ТОЛЬКО через readPremiumUntilMs.
+    premiumUntil?: unknown
+    premiumLeftMs?: unknown
     // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
     // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
     ringSlots?: unknown
@@ -890,6 +894,8 @@ export type RunResultSummary = {
    */
   eliteTrophies?: number | null
   eliteTrophiesEarned?: number | null
+  /** Сколько трофеев добавила «Печать Колокола» (docs/premium.md); нет поля — 0. */
+  premiumTrophies?: number | null
   /** Нашивки и клейма после забега (Портной, 14.11.2026); нет поля — старый сервер. */
   tailorItems?: { patch: number; brand: number } | null
   /**
@@ -1183,6 +1189,7 @@ async function finishRunExploreRaw(
           rp: readCurrencyCount(data.rp),
           eliteTrophies: readCurrencyCount(data.eliteTrophies),
           eliteTrophiesEarned: readCurrencyCount(data.eliteTrophiesEarned),
+          premiumTrophies: readCurrencyCount(data.premiumTrophies),
           tailorItems: readTailorItems(data.tailorItems),
           questCompleted: readQuestCompleted(data.questCompleted),
           quests: readQuestView(data.quests),
@@ -1719,6 +1726,8 @@ export type ProfileResult = {
   bagBonusCells: number | null
   /** Ячейки, купленные у Торговца (21.11.2026); null — сервер не назвал. */
   bagCellsBought: number | null
+  /** «Печать Колокола»: момент конца по часам ТЕЛЕФОНА (0 — не активна); null — не названо. */
+  premiumUntilMs: number | null
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1775,6 +1784,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     stats?: unknown
     bagBonusCells?: unknown
     bagCellsBought?: unknown
+    premiumLeftMs?: unknown
     luck?: unknown
     skins?: unknown
     appliedRequestIds?: unknown
@@ -1833,7 +1843,46 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     stats: readHeroStats(raw.stats),
     bagBonusCells: readCurrencyCount(raw.bagBonusCells),
     bagCellsBought: readCurrencyCount(raw.bagCellsBought),
+    premiumUntilMs: readPremiumUntilMs(raw.premiumLeftMs),
   }
+}
+
+/**
+ * «Печать Колокола» (25.11.2026, docs/premium.md): из premiumLeftMs ответа —
+ * момент конца по часам телефона (Date.now() + остаток), 0 — не активна. Остаток
+ * считает сервер своими часами: часы телефона с ними не сверены, и premiumUntil
+ * напрямую дал бы неверный таймер. null — поля нет (старый сервер) или мусор.
+ * Активна ли — только isPremium (premium.ts) от этого числа.
+ */
+export function readPremiumUntilMs(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return null
+  return raw > 0 ? Date.now() + raw : 0
+}
+
+export type BuyPremiumResult = {
+  rp: number | null
+  premiumUntilMs: number | null
+  potions: number[] | null
+  /** Подарок: тир (1..5) и сколько зелий. */
+  gift: { tier: number; count: number } | null
+  replayed: boolean
+}
+
+/** «Принять печать» (POST /character/buy-premium), с ключом идемпотентности. */
+export async function buyPremium(token: string): Promise<BuyPremiumResult> {
+  const raw = await keyedPurchase('premium', (requestId) => requestJson<Record<string, unknown>>(
+    `${SERVER_URL}/character/buy-premium`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId }),
+    },
+    SHOP_TIMEOUT_MS,
+  ))
+  const g = raw.gift as Record<string, unknown> | undefined
+  const gift = g && Number.isInteger(g.tier) && Number.isInteger(g.count) ? { tier: g.tier as number, count: g.count as number } : null
+  const potions = Array.isArray(raw.potions) && raw.potions.length === 5 && raw.potions.every((n) => Number.isInteger(n) && n >= 0) ? raw.potions as number[] : null
+  return { rp: readCurrencyCount(raw.rp), premiumUntilMs: readPremiumUntilMs(raw.premiumLeftMs), potions, gift, replayed: raw.replayed === true }
 }
 
 // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
@@ -3212,7 +3261,7 @@ export type GuildWallet = {
   classItems: Record<ClassItemId, number> | null
 }
 
-export type GuildMemberView = { characterId: number; name: string; role: string; level: number; lastSeenAt: number | null; joinedAt: number }
+export type GuildMemberView = { characterId: number; name: string; role: string; level: number; lastSeenAt: number | null; joinedAt: number; /** Знак Колокола (docs/premium.md). */ isPremium: boolean }
 export type GuildStorageRow = { kind: string; ref: string; count: number; item?: { nameRu: string; slot: string; tier: number } }
 export type GuildRequestView = { characterId: number; name: string; level: number; createdAt: number }
 export type GuildBuff = { pct: number; untilMs: number | null }
@@ -3328,6 +3377,7 @@ export function readGuildMe(raw: unknown): GuildMe | null {
       level: num(m.level) ?? 1,
       lastSeenAt: num(m.lastSeenAt),
       joinedAt: num(m.joinedAt) ?? 0,
+      isPremium: m.isPremium === true,
     })) : [],
     storage: Array.isArray(raw.storage) ? raw.storage.filter(isObj).map((r) => ({
       kind: typeof r.kind === 'string' ? r.kind : '',
@@ -3411,7 +3461,7 @@ export async function guildAction(token: string, path: string, body: Record<stri
   return out
 }
 
-export type GuildChatMessage = { id: number; text: string; system: boolean; author: string | null; mine: boolean; createdAt: number }
+export type GuildChatMessage = { id: number; text: string; system: boolean; author: string | null; /** Знак Колокола у автора. */ authorPremium: boolean; mine: boolean; createdAt: number }
 
 export async function fetchGuildChat(token: string, after: number): Promise<{ tag: string; messages: GuildChatMessage[] }> {
   const raw = await requestJson<{ tag?: unknown; messages?: unknown }>(`${SERVER_URL}/guild/chat?after=${after}`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
@@ -3421,6 +3471,7 @@ export async function fetchGuildChat(token: string, after: number): Promise<{ ta
         text: typeof m.text === 'string' ? m.text : '',
         system: m.system === true,
         author: typeof m.author === 'string' ? m.author : null,
+        authorPremium: m.authorPremium === true,
         mine: m.mine === true,
         createdAt: num(m.createdAt) ?? 0,
       })).filter((m) => m.id > 0)
@@ -3522,7 +3573,7 @@ export async function claimFriends(token: string, friendId: number | null): Prom
 const BOT_TIMEOUT_MS = 8000
 
 /** Пять переключателей Колокола — порядок показа. Ключи — как на сервере (bot/notify.ts). */
-export const NOTIFY_SETTING_KEYS = ['energy', 'quests', 'friends', 'guild', 'comeback'] as const
+export const NOTIFY_SETTING_KEYS = ['energy', 'quests', 'friends', 'guild', 'comeback', 'premium'] as const
 export type NotifySettingKey = typeof NOTIFY_SETTING_KEYS[number]
 export type NotifySettingsView = { botAllowed: boolean; botBlocked: boolean; settings: Record<NotifySettingKey, boolean> }
 
@@ -3598,6 +3649,8 @@ export type LeaderboardRow = {
   emblem: GuildEmblemView | null
   value: number
   isMe: boolean
+  /** Знак Колокола у имени (у строк героев). */
+  isPremium: boolean
   /** Только у доски гильдий: число участников. */
   members: number | null
 }
@@ -3637,7 +3690,7 @@ export function readLeaderboard(raw: unknown, board: LeaderboardBoard): Leaderbo
     if (place === null || value === null || emblem === undefined || typeof x.name !== 'string' || typeof x.isMe !== 'boolean') return null
     if (x.guildTag !== null && typeof x.guildTag !== 'string') return null
     if (board === 'guilds' && members === null) return null
-    rows.push({ place, name: x.name, guildTag: x.guildTag as string | null, emblem, value, isMe: x.isMe, members })
+    rows.push({ place, name: x.name, guildTag: x.guildTag as string | null, emblem, value, isMe: x.isMe, isPremium: x.isPremium === true, members })
   }
   let me: LeaderboardView['me'] = null
   if (o.me !== null) {

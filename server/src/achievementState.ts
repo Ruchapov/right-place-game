@@ -12,6 +12,7 @@
 // целиком ждёт «Забрать» (claimAchievementReward, POST /achievements/claim).
 import type { Character, Prisma } from '@prisma/client'
 import { bagCapacity, bagFits } from './consumables.js'
+import { isPremium, premiumBagCells } from './premium.js'
 import { calculateLevel } from './game.js'
 import { classItemStockOf, consumableStockOf } from './runState.js'
 import { bagCellsUsed, consumableStockIncrement } from './routes/run.js'
@@ -85,7 +86,7 @@ export async function grantRunAchievements(
   if (!ch) return []
   // Ячейки, подаренные этим же заходом, считаются сразу: «+1 ячейка» и книги в
   // одной вылазке — книги уже в новую вместимость.
-  const capacity = bagCapacity(ch.bagBonusCells + fresh.reduce((s, a) => s + (a.reward.bagCells ?? 0), 0))
+  const capacity = bagCapacity(ch.bagBonusCells + fresh.reduce((s, a) => s + (a.reward.bagCells ?? 0), 0), premiumBagCells(isPremium(ch, Date.now())))
   let used = fresh.some((a) => rewardCells(a.reward) > 0)
     ? await bagCellsUsed(tx, characterId, consumableStockOf(ch), classItemStockOf(ch))
     : 0
@@ -138,7 +139,7 @@ export async function claimAchievementReward(
   if (!row) return { kind: 'reject', status: 404, body: { error: 'Achievement not earned' } }
   if (!row.rewardPending) return { kind: 'ok', replayed: true }
   const need = rewardCells(spec.reward)
-  const capacity = bagCapacity(ch.bagBonusCells + (spec.reward.bagCells ?? 0))
+  const capacity = bagCapacity(ch.bagBonusCells + (spec.reward.bagCells ?? 0), premiumBagCells(isPremium(ch, Date.now())))
   if (need > 0) {
     const used = await bagCellsUsed(tx, ch.id, consumableStockOf(ch), classItemStockOf(ch))
     if (!bagFits(used, need, capacity)) {

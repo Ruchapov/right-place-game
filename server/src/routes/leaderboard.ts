@@ -19,6 +19,7 @@
 // Кэш — только топ-50, по 60 с на доску, в памяти процесса; isMe и me считаются
 // на каждый запрос. Имя героя — User.firstName, не длиннее 16 знаков; username
 // Telegram не отдаётся.
+import { isPremium } from '../premium.js'
 import type { FastifyInstance } from 'fastify'
 import { Prisma, PrismaClient } from '@prisma/client'
 import { getUserId } from './run.js'
@@ -36,7 +37,9 @@ const NAME_MAX = 16
 type Emblem = { symbol: number; frame: number; bg: number; color: number }
 type Row = { place: number; name: string; guildTag: string | null; emblem: Emblem | null; value: number; members?: number }
 /** Строка кэша: строка ответа + чей это id (героя или гильдии) — для isMe. */
-type CachedRow = { row: Row; ownerId: number }
+// premiumUntil — у строк героев: знак Колокола (isPremium) считается на КАЖДЫЙ
+// ответ, а не в кэше — печать, угасшая за 60 с кэша, пропадёт сразу.
+type CachedRow = { row: Row; ownerId: number; premiumUntil?: Date | null }
 
 const cache = new Map<LeaderboardBoard, { at: number; rows: CachedRow[] }>()
 
@@ -61,12 +64,14 @@ type HeroSqlRow = {
   emblemFrame: number | null
   emblemBg: number | null
   emblemColor: number | null
+  premiumUntil: Date | null
 }
 
 function heroRow(r: HeroSqlRow, place: number): CachedRow {
   const inGuild = r.tag !== null && r.emblemSymbol !== null && r.emblemFrame !== null && r.emblemBg !== null && r.emblemColor !== null
   return {
     ownerId: r.id,
+    premiumUntil: r.premiumUntil,
     row: {
       place,
       name: shortName(r.firstName),
@@ -91,7 +96,7 @@ async function loadTop(board: LeaderboardBoard): Promise<CachedRow[]> {
   if (board === 'level' || board === 'newbies') {
     const where = board === 'newbies' ? Prisma.sql`WHERE c."createdAt" >= ${newbieCutoff()}` : Prisma.empty
     const rows = await prisma.$queryRaw<HeroSqlRow[]>`
-      SELECT c.id, c.level AS value, u."firstName", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
+      SELECT c.id, c.level AS value, u."firstName", c."premiumUntil", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
       FROM "Character" c ${HERO_GUILD_JOIN}
       ${where}
       ORDER BY c.level DESC, (c.strength + c.agility + c.endurance) DESC, c.id ASC
@@ -101,7 +106,7 @@ async function loadTop(board: LeaderboardBoard): Promise<CachedRow[]> {
   if (board === 'hunters' || board === 'bosses') {
     const col = statColumn(board)
     const rows = await prisma.$queryRaw<HeroSqlRow[]>`
-      SELECT c.id, ${col} AS value, u."firstName", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
+      SELECT c.id, ${col} AS value, u."firstName", c."premiumUntil", g.tag, g."emblemSymbol", g."emblemFrame", g."emblemBg", g."emblemColor"
       FROM "HeroStats" h JOIN "Character" c ON c.id = h."characterId" ${HERO_GUILD_JOIN}
       WHERE ${col} > 0
       ORDER BY ${col} DESC, c.id ASC
@@ -204,7 +209,7 @@ export async function leaderboardRoutes(server: FastifyInstance) {
     const myId = board === 'guilds' ? me.guildId : me.characterId
     return reply.send({
       board,
-      rows: top.map(({ row, ownerId }) => ({ ...row, isMe: ownerId === myId })),
+      rows: top.map(({ row, ownerId, premiumUntil }) => ({ ...row, isMe: ownerId === myId, ...(premiumUntil !== undefined ? { isPremium: isPremium({ premiumUntil }, Date.now()) } : {}) })),
       me: await myPlace(board, me),
     })
   })

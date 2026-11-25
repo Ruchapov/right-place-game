@@ -6,8 +6,11 @@
 // рядом разъехался бы с первым молча.
 //
 // Правила (docs/daily-quests.md):
-//   • до QUEST_UNLOCK_LEVEL набора нет; с него — набор из QUEST_SET_SIZE разных
-//     заданий, случайно из доступных по надетым навыкам на момент броска;
+//   • до QUEST_UNLOCK_LEVEL набора нет; с него — набор из questSetSize разных
+//     заданий (3, с «Печатью Колокола» — 5, docs/premium.md), случайно из
+//     доступных по надетым навыкам на момент броска. Размер набора — длина
+//     set: набор, брошенный с печатью, доживает свой таймер пятью и без неё;
+//     купил печать при наборе из трёх — он сразу дополняется до пяти;
 //   • активно одно задание; взять можно любое невзятое из набора; взял другое,
 //     пока есть активное, — активное пропадает вместе с прогрессом;
 //   • шаг = сколько заданий набора уже вынуто (выполнено или пропало); на каждом
@@ -18,7 +21,8 @@
 //     пропадают, недоделанное активное остаётся активным («переходящее»).
 import {
   QUESTS,
-  QUEST_SET_SIZE,
+  QUEST_SET_SIZES,
+  questSetSize,
   QUEST_SET_MS,
   QUEST_UNLOCK_LEVEL,
   QUEST_FAST_RUN_MS,
@@ -59,7 +63,7 @@ export type QuestActive = { id: QuestId; progress: number; carried: boolean }
 
 /**
  * Всё состояние заданий героя — то, что лежит в Character.questState.
- *   set            — задания набора по местам, ровно QUEST_SET_SIZE, без повторов;
+ *   set            — задания набора по местам, 3 или 5 (QUEST_SET_SIZES), без повторов;
  *   setStartedAt   — когда взято первое задание набора (мс, часы сервера); null —
  *                    ни одно не взято, таймер не идёт;
  *   replacedAtStep — на каком шаге потрачена замена; null — в этом наборе не
@@ -102,7 +106,7 @@ export function parseQuestState(raw: unknown): QuestState | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
   const record = raw as Record<string, unknown>
 
-  if (!Array.isArray(record.set) || record.set.length !== QUEST_SET_SIZE) return null
+  if (!Array.isArray(record.set) || !QUEST_SET_SIZES.includes(record.set.length)) return null
   const set: QuestSlot[] = []
   for (const item of record.set) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null
@@ -117,7 +121,7 @@ export function parseQuestState(raw: unknown): QuestState | null {
   if (setStartedAt !== null && !isPositiveInt(setStartedAt)) return null
 
   const replacedAtStep = record.replacedAtStep
-  if (replacedAtStep !== null && !(typeof replacedAtStep === 'number' && Number.isInteger(replacedAtStep) && replacedAtStep >= 0 && replacedAtStep < QUEST_SET_SIZE)) return null
+  if (replacedAtStep !== null && !(typeof replacedAtStep === 'number' && Number.isInteger(replacedAtStep) && replacedAtStep >= 0 && replacedAtStep < record.set.length)) return null
 
   const active = parseQuestActive(record.active)
   if (active === undefined) return null
@@ -189,23 +193,23 @@ function candidateIds(equippedSkills: readonly string[], exclude: readonly Quest
 }
 
 /**
- * Новый набор: QUEST_SET_SIZE разных заданий из доступных, кроме `exclude`
+ * Новый набор: size разных заданий из доступных, кроме `exclude`
  * (переходящего — иначе взять его же из нового набора значило бы потерять его).
  * Нехватка кандидатов недостижима (сверка каталога ниже), поэтому громко.
  */
-function rollQuestSet(equippedSkills: readonly string[], exclude: readonly QuestId[], rng: Rng): QuestSlot[] {
-  const ids = pickRandom(candidateIds(equippedSkills, exclude), QUEST_SET_SIZE, rng)
-  if (ids.length < QUEST_SET_SIZE) {
-    throw new Error(`questState: на набор не хватило заданий (${ids.length} из ${QUEST_SET_SIZE})`)
+function rollQuestSet(size: number, equippedSkills: readonly string[], exclude: readonly QuestId[], rng: Rng): QuestSlot[] {
+  const ids = pickRandom(candidateIds(equippedSkills, exclude), size, rng)
+  if (ids.length < size) {
+    throw new Error(`questState: на набор не хватило заданий (${ids.length} из ${size})`)
   }
   return ids.map((id) => ({ id, status: 'open' }))
 }
 
-// Набор и замена исключают до QUEST_SET_SIZE + 1 заданий (набор целиком и
+// Набор и замена исключают до questSetSize(true) + 1 заданий (набор целиком и
 // переходящее), и хотя бы одно должно остаться при любом снаряжении — то есть
 // среди заданий без требований. Громко и при старте, а не броском посреди
 // запроса: каталог правят руками.
-if (QUESTS.filter((q) => q.requirement === 'none').length < QUEST_SET_SIZE + 2) {
+if (QUESTS.filter((q) => q.requirement === 'none').length < questSetSize(true) + 2) {
   throw new Error('questState: в каталоге мало заданий без требований — набор или замена могут не собраться')
 }
 
@@ -216,31 +220,38 @@ if (QUESTS.filter((q) => q.requirement === 'none').length < QUEST_SET_SIZE + 2) 
  *   • набора нет, а уровень уже не ниже порога — первый набор;
  *   • таймер набора истёк — новый набор; невзятые пропадают вместе со старым,
  *     недоделанное активное становится переходящим со своим прогрессом.
+ *   • премиум активен, а в наборе меньше пяти — набор дополняется новыми
+ *     открытыми заданиями до пяти (шаг, замена и таймер — прежние).
  * changed — состояние другое, его надо записать. Уровень — серверный
  * (calculateLevel), навыки — надетые сейчас: требования проверяются в момент
- * броска.
+ * броска. premium — isPremium героя сейчас (premium.ts).
  */
 export function settleQuestState(
   current: QuestState | null,
   level: number,
   equippedSkills: readonly string[],
   nowMs: number,
+  premium: boolean,
   rng: Rng = Math.random,
 ): { state: QuestState | null; changed: boolean } {
+  const size = questSetSize(premium)
   if (current === null) {
     if (level < QUEST_UNLOCK_LEVEL) return { state: null, changed: false }
     return {
-      state: { set: rollQuestSet(equippedSkills, [], rng), setStartedAt: null, replacedAtStep: null, active: null },
+      state: { set: rollQuestSet(size, equippedSkills, [], rng), setStartedAt: null, replacedAtStep: null, active: null },
       changed: true,
     }
   }
   if (current.setStartedAt === null || nowMs - current.setStartedAt < QUEST_SET_MS) {
-    return { state: current, changed: false }
+    if (current.set.length >= size) return { state: current, changed: false }
+    const exclude = [...current.set.map((s) => s.id), ...(current.active ? [current.active.id] : [])]
+    const extra = rollQuestSet(size - current.set.length, equippedSkills, exclude, rng)
+    return { state: { ...current, set: [...current.set, ...extra] }, changed: true }
   }
   const carried = current.active === null ? null : { ...current.active, carried: true }
   return {
     state: {
-      set: rollQuestSet(equippedSkills, carried === null ? [] : [carried.id], rng),
+      set: rollQuestSet(size, equippedSkills, carried === null ? [] : [carried.id], rng),
       setStartedAt: null,
       replacedAtStep: null,
       active: carried,
