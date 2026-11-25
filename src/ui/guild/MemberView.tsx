@@ -1,16 +1,16 @@
 // Экран гильдии для участника (01.11.2026, макеты guild_redesign): вкладки
-// Зал · Чат · Состав · Склад своей панелью внизу, плашка сообщений сверху,
-// окна казны, приглашения и настроек.
+// Зал · Чат · Состав · Склад, плашка сообщений, окна казны, приглашения и настроек.
 //
-// Высота экрана — ровно до низа области прокрутки меню (App.tsx): свою панель
-// вкладок он держит внизу, а прокручивается внутри вкладки. Высота пишется в
-// стиль узла из замера, без состояния React.
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+// 23.11.2026 (жалоба Андрея «гильдия выглядит отдельным окном»): ни своей рамки,
+// ни своего фона, ни своей нижней панели вкладок, ни прокрутки внутри — обычная
+// часть вкладки «Сообщество», как «Друзья» и «Рейтинг»: вкладки — тем же рядом
+// «чипсов» сверху (tabChip), прокручивается меню целиком.
+import { useState, type CSSProperties } from 'react'
 import { C, FONT_DISPLAY } from '../theme'
 import { guildInviteUrl, parseGuildJoinMode, type GuildBuilding, type GuildJoinMode } from '../../guild'
 import type { GuildActionResult, GuildMemberState, InventoryItem } from '../../api'
 import { fmt } from '../guildText'
-import { CountBadge, JoinModePicker, NavIcon, Notice, Overlay } from './common'
+import { CountBadge, JoinModePicker, Notice, Overlay } from './common'
 import { HallTab } from './HallTab'
 import { BuildingSheet } from './BuildingSheet'
 import { MembersTab } from './MembersTab'
@@ -18,22 +18,12 @@ import { ChatTab } from './ChatTab'
 import { StorageTab } from './StorageTab'
 import { useGuildChat } from './useGuildChat'
 import { isOnline } from './buildingTexts'
-import { G, GUILD_CONTENT_MAX_W, PAGE_BG, TEXT_FONT, capsLabel, darkBtn, goldBtn, textInput } from './style'
+import { G, GUILD_CONTENT_MAX_W, TEXT_FONT, capsLabel, darkBtn, goldBtn, tabChip, textInput } from './style'
 
 type Tab = 'hall' | 'chat' | 'members' | 'storage'
 type Run = (path: string, body: Record<string, unknown>, signature: string, after?: (r: GuildActionResult) => void) => Promise<void>
 
 const TABS: [Tab, string][] = [['hall', 'Зал'], ['chat', 'Чат'], ['members', 'Состав'], ['storage', 'Склад']]
-/** Ниже этого экран не сжимается — тогда прокручивается меню целиком. */
-const MIN_HEIGHT = 280
-
-function scrollParent(el: HTMLElement): HTMLElement | null {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    const o = getComputedStyle(p).overflowY
-    if (o === 'auto' || o === 'scroll') return p
-  }
-  return null
-}
 
 export function MemberView(props: {
   token: string; me: GuildMemberState; pending: boolean; run: Run; now: number
@@ -49,28 +39,6 @@ export function MemberView(props: {
   const [inviting, setInviting] = useState(false)
   const [settings, setSettings] = useState(false)
   const chat = useGuildChat(props.token, tab === 'chat')
-  const rootRef = useRef<HTMLDivElement | null>(null)
-
-  // Высота до низа области прокрутки меню; пересчёт на каждый рендер (над
-  // экраном может появиться или пропасть плашка приглашения) и на поворот.
-  const fit = () => {
-    const el = rootRef.current
-    if (!el) return
-    const scroller = scrollParent(el)
-    if (!scroller) { el.style.height = `${Math.max(MIN_HEIGHT, window.innerHeight - el.getBoundingClientRect().top)}px`; return }
-    const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
-    const avail = scroller.clientHeight - parseFloat(getComputedStyle(scroller).paddingBottom) - top
-    el.style.height = `${Math.max(MIN_HEIGHT, Math.floor(avail))}px`
-  }
-  useLayoutEffect(fit)
-  useEffect(() => {
-    const el = rootRef.current
-    const scroller = el ? scrollParent(el) : null
-    const ro = new ResizeObserver(() => fit())
-    if (scroller) ro.observe(scroller)
-    window.addEventListener('resize', fit)
-    return () => { ro.disconnect(); window.removeEventListener('resize', fit) }
-  }, [])
 
   const selectTab = (t: Tab) => {
     setTab(t)
@@ -83,12 +51,25 @@ export function MemberView(props: {
   const badge = (t: Tab) => (t === 'chat' ? chat.unread : t === 'members' && canReview ? me.requests.length : 0)
 
   return (
-    <div ref={rootRef} data-guild-member="" style={{
-      // Чуть шире колонки меню: заходит в её поля (12 px), но не за край.
-      ...PAGE_BG, display:'flex', flexDirection:'column', minHeight:MIN_HEIGHT, borderRadius:14, overflow:'hidden', margin:'0 -12px',
-      border:`1px solid ${C.stoneDark}`, fontFamily:TEXT_FONT, color:C.textMain, textAlign:'left',
+    <div data-guild-member="" style={{
+      // Те же поля, что у «Рейтинга» (LeaderboardPanel): часть страницы, не окно.
+      margin:'0 8px', minWidth:0, fontFamily:TEXT_FONT, color:C.textMain, textAlign:'left',
     }}>
-      <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', width:'100%', maxWidth:GUILD_CONTENT_MAX_W, margin:'0 auto' }}>
+      <div style={{ width:'100%', maxWidth:GUILD_CONTENT_MAX_W, margin:'0 auto' }}>
+        {/* Вкладки гильдии — тем же рядом, что «Гильдия · Друзья · Канал · Рейтинг» над ним. */}
+        <div data-guild-tabs="" role="tablist" style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0, 1fr))', gap:6, marginBottom:10 }}>
+          {TABS.map(([id, label]) => {
+            const active = tab === id
+            const n = badge(id)
+            return (
+              <button key={id} type="button" role="tab" aria-selected={active} aria-current={active ? 'page' : undefined}
+                onClick={() => selectTab(id)} style={{ ...tabChip(active), position:'relative', padding:'0 4px', minWidth:0, overflow:'visible' }}>
+                {n > 0 && <CountBadge n={n} style={{ top:-6, right:-4 }} />}
+                <span style={{ display:'block', overflow:'hidden', textOverflow:'ellipsis' }}>{label}</span>
+              </button>
+            )
+          })}
+        </div>
         <Notice error={props.error} note={props.note} onClose={props.clearMessages} />
         {tab === 'hall' && (
           <HallTab me={me} now={now} onOpenBuilding={(b) => { props.clearMessages(); setSheet(b) }}
@@ -104,26 +85,6 @@ export function MemberView(props: {
             overlayPad={props.overlayPad} overlayCard={props.overlayCard} />
         )}
       </div>
-
-      <nav data-guild-tabs="" style={{ flexShrink:0, height:64, borderTop:`1px solid ${C.stoneDark}`, background:C.outline }}>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0, 1fr))', height:'100%', maxWidth:GUILD_CONTENT_MAX_W, margin:'0 auto' }}>
-          {TABS.map(([id, label]) => {
-            const active = tab === id
-            const color = active ? C.glowCore : G.textSoft
-            const n = badge(id)
-            return (
-              <button key={id} onClick={() => selectTab(id)} aria-current={active ? 'page' : undefined} style={{
-                position:'relative', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3,
-                background:'none', border:'none', borderTop:`2px solid ${active ? C.glowCore : 'transparent'}`, color,
-                fontFamily:FONT_DISPLAY, fontSize:11, fontWeight:700, cursor:'pointer', minWidth:0,
-              }}>
-                {n > 0 && <CountBadge n={n} style={{ top:8, left:'54%' }} />}
-                <NavIcon kind={id} color={color} />{label}
-              </button>
-            )
-          })}
-        </div>
-      </nav>
 
       {sheet !== null && (
         <BuildingSheet building={sheet} me={me} now={now} pending={pending} run={run} setNote={props.setNote}

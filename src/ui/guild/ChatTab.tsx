@@ -64,7 +64,6 @@ export function ChatTab({ chat, members, online }: { chat: GuildChat; members: G
         <div style={{ maxWidth:'72%', padding:'8px 11px', borderRadius:'14px 14px 14px 4px', background:C.nicheDeep, border:`1px solid ${C.niche}`, wordBreak:'break-word' }}>
           <div style={{ fontSize:11, color:C.bone, fontWeight:600, marginBottom:2 }}>
             {m.author ?? '?'}
-            {m.authorTitle !== null && <span style={{ fontWeight:400, fontStyle:'italic', color:C.textDim }}> · {m.authorTitle}</span>}
           </div>
           <div style={{ fontSize:14, lineHeight:1.4 }}>{m.text}</div>
         </div>
@@ -73,12 +72,13 @@ export function ChatTab({ chat, members, online }: { chat: GuildChat; members: G
   }
 
   return (
-    <div data-guild-chat="" style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column' }}>
+    <div data-guild-chat="" style={{ display:'flex', flexDirection:'column', background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10, overflow:'hidden' }}>
       <div style={tabHead}>
         <div style={tabTitle}>Чат гильдии</div>
         <div style={tabSub}>{online} в сети</div>
       </div>
-      <div ref={listRef} style={{ flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch', padding:'12px 14px', display:'flex', flexDirection:'column', gap:10 }}>
+      {/* Лента — своей высоты (чат читается снизу), страница при этом не окно. */}
+      <div ref={listRef} style={{ height:'max(220px, min(52vh, 460px))', overflowY:'auto', WebkitOverflowScrolling:'touch', padding:'12px 14px', display:'flex', flexDirection:'column', gap:10 }}>
         {/* Прижать короткую ленту к низу, длинную — прокручивать. */}
         <div style={{ flex:'1 0 auto' }} />
         {chat.messages.length === 0 && <div style={{ color:G.textSoft, fontSize:13, textAlign:'center' }}>Пока тихо.</div>}

@@ -35,7 +35,7 @@ export function MembersTab({ me, pending, run, now, onSettings, overlayPad, over
   const menuMember = me.members.find((m) => m.characterId === menuFor) ?? null
 
   return (
-    <div data-guild-members="" style={{ flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch' }}>
+    <div data-guild-members="">
       <div style={tabHead}>
         <div style={tabTitle}>Состав</div>
         <div style={tabSub}>{me.members.length} из {cap} мест · {online} в сети</div>
@@ -80,9 +80,6 @@ export function MembersTab({ me, pending, run, now, onSettings, overlayPad, over
                   <span style={{ fontSize:14, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>
                     {m.name}{isSelf ? ' · вы' : ''}
                   </span>
-                  {m.title !== null && (
-                    <span style={{ fontSize:11, fontStyle:'italic', color:C.bone, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>{m.title}</span>
-                  )}
                   {r === 'leader' && (
                     <span style={{ display:'flex', alignItems:'center', gap:3, height:20, padding:'0 7px', borderRadius:10, background:G.leaderBg, color:C.glowCore, fontSize:11, fontWeight:600 }}>
                       <CrownIcon color={C.glowCore} />Глава

@@ -13,11 +13,11 @@ import { G, GUILD_CONTENT_MAX_W, TEXT_FONT, darkBtn, goldBtn } from './style'
 export function Overlay({ onClose, pad, card, children }: { onClose: () => void; pad: CSSProperties; card: CSSProperties; children: ReactNode }) {
   return createPortal(
     <div onClick={onClose} style={{
-      position:'fixed', inset:0, zIndex:1500, background:'rgba(10,8,12,.72)', display:'flex', alignItems:'center', justifyContent:'center',
+      position:'fixed', inset:0, zIndex:1500, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center',
       fontFamily:TEXT_FONT, color:C.textMain, textAlign:'left', ...pad,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background:G.sheet, border:`1px solid ${C.stoneDark}`, borderRadius:16, boxShadow:'0 10px 30px rgba(0,0,0,.6)',
+        background:C.appBg, border:`1px solid ${C.stoneDark}`, borderRadius:14, boxShadow:'0 10px 30px rgba(0,0,0,.6)',
         width:'min(340px, 92vw)', maxHeight:'86vh', overflowY:'auto', padding:'16px 16px', boxSizing:'border-box', ...card,
       }}>
         {children}
@@ -37,7 +37,7 @@ export function BottomSheet({ onClose, children }: { onClose: () => void; childr
   const scrollRef = useRef<HTMLDivElement | null>(null)
   return createPortal(
     <div onClick={onClose} style={{
-      position:'fixed', inset:0, zIndex:1500, background:'rgba(10,8,12,.72)', display:'flex', alignItems:'flex-end', justifyContent:'center',
+      position:'fixed', inset:0, zIndex:1500, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'flex-end', justifyContent:'center',
       paddingTop:'calc(8px + var(--rp-safe-top, 0px))', paddingLeft:'var(--rp-safe-left, 0px)', paddingRight:'var(--rp-safe-right, 0px)',
       boxSizing:'border-box', fontFamily:TEXT_FONT, color:C.textMain, textAlign:'left',
     }}>
@@ -47,7 +47,7 @@ export function BottomSheet({ onClose, children }: { onClose: () => void; childr
         onTouchEnd={() => { const d = drag; startRef.current = null; setDrag(0); if (d > 90) onClose() }}
         style={{
           position:'relative', width:'100%', maxWidth:GUILD_CONTENT_MAX_W, maxHeight:'100%', overflowY:'auto', boxSizing:'border-box',
-          borderRadius:'22px 22px 0 0', background:G.sheet, borderTop:`1px solid ${C.glowMid}`, boxShadow:'0 -10px 30px rgba(0,0,0,.6)',
+          borderRadius:'14px 14px 0 0', background:C.appBg, border:`1px solid ${C.stoneDark}`, borderBottom:'none', boxShadow:'0 -10px 30px rgba(0,0,0,.6)',
           padding:'14px 18px calc(22px + var(--rp-safe-bottom, 0px))', display:'flex', flexDirection:'column', gap:14,
           transform: drag > 0 ? `translateY(${drag}px)` : undefined, transition: drag > 0 ? undefined : 'transform .15s',
         }}>
@@ -167,15 +167,6 @@ export function StarIcon({ color, size = 12 }: IconProps) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill={color} aria-hidden="true"><path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z" /></svg>
 }
 
-export function NavIcon({ kind, color }: { kind: 'hall' | 'chat' | 'members' | 'storage'; color: string }) {
-  const p = { width:22, height:22, viewBox:'0 0 24 24', fill:'none', stroke:color, strokeWidth:1.8, 'aria-hidden':true } as const
-  switch (kind) {
-    case 'hall': return <svg {...p}><path d="M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6" /></svg>
-    case 'chat': return <svg {...p}><path d="M4 5h16v11H9l-5 4z" /></svg>
-    case 'members': return <svg {...p}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6" /><circle cx="17" cy="9" r="2.6" /><path d="M17 14c2.8 0 4.5 2 4.5 5" /></svg>
-    case 'storage': return <svg {...p}><path d="M3 8l9-4 9 4v12H3z" /><path d="M3 8h18M9 12h6" /></svg>
-  }
-}
 
 /** Красный кружок с числом (новые сообщения, заявки). */
 export function CountBadge({ n, style }: { n: number; style?: CSSProperties }) {

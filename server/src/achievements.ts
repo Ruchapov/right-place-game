@@ -189,12 +189,6 @@ export function achievementByKey(key: string): AchievementSpec | null {
   return BY_KEY.get(key) ?? null
 }
 
-/** Название титула по ключу; неизвестный или null — без титула. */
-export function achievementTitle(key: string | null | undefined): string | null {
-  if (typeof key !== 'string') return null
-  return BY_KEY.get(key)?.title ?? null
-}
-
 /** Сколько ячеек сумки займёт награда (предметы с takesCell — все такие). */
 export function rewardCells(reward: AchievementReward): number {
   return (reward.items ?? []).reduce((sum, it) => sum + it.count, 0)

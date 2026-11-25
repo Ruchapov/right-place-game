@@ -62,7 +62,6 @@ import {
   type GuildBuilding,
   type GuildStorageKind,
 } from '../guild.js'
-import { achievementTitle } from '../achievements.js'
 import { CONSUMABLES, SKILL_BOOK_IDS, bagCapacity, bagFits, consumableById, type ConsumableId } from '../consumables.js'
 import { CLASS_ITEMS, classItemById, parseClassItemId } from '../classItems.js'
 import { scrollById } from '../scrolls.js'
@@ -328,7 +327,7 @@ async function buildMeView(db: Db, characterId: number, now: number) {
     orderBy: { joinedAt: 'asc' },
     select: {
       characterId: true, role: true, joinedAt: true,
-      character: { select: { strength: true, agility: true, endurance: true, bonusLevels: true, lastSeenAt: true, titleKey: true, user: { select: { firstName: true } } } },
+      character: { select: { strength: true, agility: true, endurance: true, bonusLevels: true, lastSeenAt: true, user: { select: { firstName: true } } } },
     },
   })
   const storageRows = await db.guildStorage.findMany({ where: { guildId: g.id }, orderBy: { id: 'asc' } })
@@ -364,8 +363,6 @@ async function buildMeView(db: Db, characterId: number, now: number) {
     members: members.map((m) => ({
       characterId: m.characterId,
       name: m.character.user.firstName,
-      // Титул (20.11.2026, достижения); нет — null.
-      title: achievementTitle(m.character.titleKey),
       role: m.role,
       level: calculateLevel(m.character.strength, m.character.agility, m.character.endurance, m.character.bonusLevels),
       lastSeenAt: m.character.lastSeenAt?.getTime() ?? null,
@@ -1001,8 +998,8 @@ export async function guildRoutes(server: FastifyInstance) {
     const afterRaw = Number(request.query.after ?? 0)
     const after = Number.isInteger(afterRaw) && afterRaw > 0 ? afterRaw : 0
     const rows = after === 0
-      ? (await prisma.guildMessage.findMany({ where: { guildId: m.guildId }, orderBy: { id: 'desc' }, take: 50, include: { character: { select: { titleKey: true, user: { select: { firstName: true } } } } } })).reverse()
-      : await prisma.guildMessage.findMany({ where: { guildId: m.guildId, id: { gt: after } }, orderBy: { id: 'asc' }, take: 100, include: { character: { select: { titleKey: true, user: { select: { firstName: true } } } } } })
+      ? (await prisma.guildMessage.findMany({ where: { guildId: m.guildId }, orderBy: { id: 'desc' }, take: 50, include: { character: { select: { user: { select: { firstName: true } } } } } })).reverse()
+      : await prisma.guildMessage.findMany({ where: { guildId: m.guildId, id: { gt: after } }, orderBy: { id: 'asc' }, take: 100, include: { character: { select: { user: { select: { firstName: true } } } } } })
     return reply.send({
       tag: m.guild.tag,
       messages: rows.map((r) => ({
@@ -1010,7 +1007,6 @@ export async function guildRoutes(server: FastifyInstance) {
         text: r.text,
         system: r.characterId === null,
         author: r.character?.user.firstName ?? null,
-        authorTitle: achievementTitle(r.character?.titleKey),
         mine: r.characterId === character.id,
         createdAt: r.createdAt.getTime(),
       })),

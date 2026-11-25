@@ -32,17 +32,20 @@ export const G = {
   shade: 'rgba(21,18,24,.85)',
 }
 
-export const HALL_BG: CSSProperties = {
-  backgroundImage: `linear-gradient(180deg,rgba(23,20,28,.35) 0%,rgba(23,20,28,.75) 60%,${C.appBg} 100%),url(${ASSET('refuge_bg.jpg')})`,
-  backgroundSize: 'cover',
-  backgroundPosition: 'center 30%',
-}
 
-export const PAGE_BG: CSSProperties = {
-  backgroundColor: C.appBg,
-  backgroundImage: `url(${ASSET('meta_bg.jpg')})`,
-  backgroundSize: 'cover',
-  backgroundPosition: 'center',
+
+/**
+ * Вкладка-«чипса» (23.11.2026): ровно та, что у «Сообщества» (App.tsx) и досок
+ * «Рейтинга» (LeaderboardPanel) — гильдия больше не рисует своих вкладок.
+ */
+export function tabChip(active: boolean): CSSProperties {
+  return {
+    minHeight: 44, padding: '0 14px', borderRadius: 8, cursor: 'pointer', boxSizing: 'border-box',
+    fontFamily: FONT_DISPLAY, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    border: `1px solid ${active ? C.glowEdge : C.stoneDark}`,
+    background: active ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
+    color: active ? C.glowCore : C.textMain,
+  }
 }
 
 /** Золотая кнопка действия. */

@@ -34,6 +34,12 @@
      уменьшенные JPG в docs/audits/traps-2026-11-13-fix/ — зум на каждую
      ловушку: слева нетронутый слой, справа очищенный со спрайтом ловушки.
 
+23.11.2026 — ещё два шага (жалоба Андрея «летают декорации»): после зон стираются
+ВИСЯЩИЕ куски декора — ни одного пикселя ближе 2 px к опоре (find_floating_decor.py,
+floating_labels); живое пламя снимается, если под фитилём в очищенном слое нет
+свечи (её стёрла чистка у сундука или бочки). Список и кадры —
+docs/audits/fixes-2026-11-23/decor/.
+
 17.11.2026 — зоны ещё и у сундуков и бочек/кувшинов (точки пулов `reward` и
 `breakables`, trap_rules.object_rects — прямоугольники спрайтов в пикселях, а
 не клетки): декор, который лежит за сундуком или пересекается с бочкой,
@@ -55,6 +61,7 @@ from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import trap_rules as R  # noqa: E402
+from find_floating_decor import floating_labels  # noqa: E402
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -133,12 +140,20 @@ def clean_map(letter, state, previews):
     whole = hit.tolist()
     removed = np.isin(labels, whole)
     rgba[removed] = 0
+    # Висящие куски (23.11.2026) — по уже очищенному слою: обрывки, оставшиеся
+    # без опоры, и то, что висело в арте с самого начала.
+    flabels, floating = floating_labels(rgba, grid, letter)
+    fmask = np.isin(flabels, [f[0] for f in floating]) if floating else np.zeros(removed.shape, bool)
+    rgba[fmask] = 0
+    removed |= fmask
 
     # Живой декор.
     cleared = {'flames': [], 'sway': [], 'chains': []}
     for f in R.flame_points(txt):
         fx, fy, fw, fh = f
-        if rect_hits(zone, *R.flame_rect(f)) or rect_hits(removed, fx - fw, fy, 2 * fw, 10):
+        x, y = int(round(fx)), int(round(fy))
+        no_candle = not (rgba[y:y + 14, max(0, x - 3):x + 4, 3] > 60).any()
+        if rect_hits(zone, *R.flame_rect(f)) or rect_hits(removed, fx - fw, fy, 2 * fw, 10) or no_candle:
             cleared['flames'].append([fx, fy])
     for (x, y, w, h) in R.sway_items(txt):
         if rect_hits(zone, x, y, w, h):
@@ -168,7 +183,8 @@ def clean_map(letter, state, previews):
 
     if previews:
         make_previews(letter, txt, grid, traps, pristine, rgba, objects)
-    return {'letter': letter, 'items': len(whole), 'px': int(removed.sum()), 'big': big, 'cleared': cleared, 'sizes': sizes}
+    return {'letter': letter, 'items': len(whole), 'px': int(removed.sum()), 'big': big, 'cleared': cleared, 'sizes': sizes,
+            'floating': [f[1:5] for f in floating]}
 
 
 def make_previews(letter, txt, grid, traps, pristine, cleaned, objects=()):
@@ -281,6 +297,8 @@ def main():
         r = clean_map(letter, state, previews)
         results.append(r)
         STATE.write_text(json.dumps(state, indent=1), encoding='utf-8')
+        for f in r['floating']:
+            print(f'   висящий кусок стёрт: px {f}')
         print(f"== {letter}: стёрто предметов {r['items']} ({r['px']} px); живой декор: пламя {len(r['cleared']['flames'])}, "
               f"стебли {len(r['cleared']['sway'])}, цепи {len(r['cleared']['chains'])}")
         for b in r['big']:

@@ -85,6 +85,11 @@ export type FireSpec = {
   dirY?: number
   targetX?: number
   targetY?: number
+  /**
+   * Дуга в точку на ПОЛУ (ком жука, 23.11.2026): targetY — верх клетки пола,
+   * низ кома касается его ровно в targetX. Без поля — в точку (центр снаряда).
+   */
+  landOnFloor?: boolean
 }
 
 export function createNcProjectileSystem(deps: NcProjectileDeps) {
@@ -99,11 +104,18 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
     let vy: number
     let gravity = 0
     let maxTravel: number
+    const w = spec.texture.width * s
+    const h = spec.texture.height * s
+    // Бокс попадания — чуть меньше картинки: край снаряда не бьёт.
+    const hw = Math.max(8, w * 0.35)
+    const hh = Math.max(6, h * 0.35)
     if (spec.kind === 'clod' || spec.kind === 'mud') {
       // Дуга в точку, где герой стоял в момент броска: время полёта — от
-      // дистанции (в пределах), скорости — из него.
+      // дистанции (в пределах), скорости — из него. Курс в полёте не меняется.
+      // landOnFloor — в точку на полу: центр кома целится на hh выше пола, тогда
+      // низ бокса касается пола (и падение срабатывает) ровно над targetX.
       const dx = (spec.targetX ?? spec.x) - spec.x
-      const dy = (spec.targetY ?? spec.y) - spec.y
+      const dy = (spec.targetY ?? spec.y) - (spec.landOnFloor ? hh : 0) - spec.y
       const t = Math.min(N.ARC_MAX_T, Math.max(N.ARC_MIN_T, Math.abs(dx) / N.ARC_SPEED_X))
       gravity = N.ARC_GRAVITY
       vx = dx / t
@@ -123,8 +135,6 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
     sprite.x = spec.x
     sprite.y = spec.y
     deps.worldContainer.addChild(sprite)
-    const w = spec.texture.width * s
-    const h = spec.texture.height * s
     shots.push({
       kind: spec.kind,
       sprite,
@@ -135,9 +145,8 @@ export function createNcProjectileSystem(deps: NcProjectileDeps) {
       maxTravel,
       damage: spec.damage,
       owner: spec.owner,
-      // Бокс попадания — чуть меньше картинки: край снаряда не бьёт.
-      hw: Math.max(8, w * 0.35),
-      hh: Math.max(6, h * 0.35),
+      hw,
+      hh,
     })
   }
 

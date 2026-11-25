@@ -41,7 +41,7 @@ export function StorageTab({ me, pending, run, inventory, onInventoryChanged, ov
   const used = me.guild.storageUsed
   const cap = me.guild.storageCap
   return (
-    <div data-guild-storage="" style={{ flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch' }}>
+    <div data-guild-storage="">
       <div style={{ ...tabHead, display:'flex', alignItems:'center', gap:10 }}>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={tabTitle}>Склад</div>

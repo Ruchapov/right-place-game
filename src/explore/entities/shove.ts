@@ -29,6 +29,13 @@ type Shove = {
   kind: ShoveKind
   wallDone: boolean
   chain: Set<Enemy>
+  /**
+   * Таран (23.11.2026): передний край героя, пока идёт рывок, иначе null. Пока
+   * он есть, враг летит не короче него — несомый всегда ВПЕРЕДИ героя, даже
+   * когда положенные RAM_CARRY_PX кончились раньше рывка (вплотную так и было:
+   * толчок кончался, герой доезжал рывок и въезжал во врага).
+   */
+  keepAhead?: () => number | null
 }
 
 export type ShoveDeps = {
@@ -58,7 +65,7 @@ export function createShoveSystem(deps: ShoveDeps) {
    * Толкнуть врага. distPx — полный путь; heavyLimitPx — сколько можно Звонарю и
    * Привратнику (0 — не двигать). Возвращает, сдвинется ли он вообще.
    */
-  function shove(e: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: ShoveKind, heavyLimitPx: number, chain?: Set<Enemy>): boolean {
+  function shove(e: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: ShoveKind, heavyLimitPx: number, chain?: Set<Enemy>, keepAhead?: () => number | null): boolean {
     if (e.dead || (e.runner && kind === 'tk')) return false
     let dist = distPx
     if (isHeavy(e)) {
@@ -70,7 +77,7 @@ export function createShoveSystem(deps: ShoveDeps) {
     if (prev) active.splice(active.indexOf(prev), 1)
     const set = chain ?? new Set<Enemy>()
     set.add(e)
-    active.push({ enemy: e, dir, leftPx: dist, speed, damage, kind, wallDone: false, chain: set })
+    active.push({ enemy: e, dir, leftPx: dist, speed, damage, kind, wallDone: false, chain: set, keepAhead })
     e.trapExposedMs = Math.max(e.trapExposedMs ?? 0, C.SHOVE_EXPOSED_MS)
     e.hurtTimer = Math.max(e.hurtTimer, 120)
     // Он летит — отдача меча его больше не ведёт.
@@ -101,7 +108,20 @@ export function createShoveSystem(deps: ShoveDeps) {
       if (!active.includes(s)) continue
       const e = s.enemy
       if (e.dead) { drop(s); continue }
-      const step = Math.min(s.leftPx, s.speed * deltaMS / 1000)
+      // Таран: пока герой в рывке, враг летит дальше своей скоростью (она выше
+      // скорости рывка) и не отстаёт от переднего края героя, даже когда
+      // положенный путь кончился. Встал (стена, другой враг) — герой упирается
+      // в него сам (Explore.tsx, ramBlockBox).
+      const front = s.keepAhead ? s.keepAhead() : null
+      let step = front !== null ? s.speed * deltaMS / 1000 : Math.min(s.leftPx, s.speed * deltaMS / 1000)
+      if (front !== null) {
+        const need = s.dir > 0 ? front - e.x : e.x + e.width - front
+        if (need > step) step = need
+      }
+      if (step <= 0) {
+        if (s.leftPx <= 0 && front === null) drop(s)
+        continue
+      }
       const nextX = e.x + s.dir * step
       const lead = s.dir > 0 ? nextX + e.width - 1e-3 : nextX
       if (wallAhead(e, lead)) {
@@ -115,7 +135,7 @@ export function createShoveSystem(deps: ShoveDeps) {
         continue
       }
       e.x = nextX
-      s.leftPx -= step
+      s.leftPx = Math.max(0, s.leftPx - step)
       e.hurtTimer = Math.max(e.hurtTimer, 60)
       e.trapExposedMs = Math.max(e.trapExposedMs ?? 0, C.SHOVE_EXPOSED_MS)
       // Цепочка: врезался в живого врага, ещё не задетого этим толчком.
@@ -133,7 +153,7 @@ export function createShoveSystem(deps: ShoveDeps) {
         s.chain.add(o)
         hitOther = true
       }
-      if (hitOther || s.leftPx <= 0) drop(s)
+      if (hitOther || (s.leftPx <= 0 && front === null)) drop(s)
     }
   }
 

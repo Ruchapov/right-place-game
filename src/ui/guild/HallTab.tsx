@@ -9,7 +9,7 @@ import { ChevronIcon, InviteIcon, LockIcon, PeopleIcon } from './common'
 import { BUILDING_ICON, BUILDING_NAME, fmtLeft } from './buildingTexts'
 import { PRAYERS, PRAYER_ICON, PRAYER_LABEL, cauldronAction, libraryAction, prayerState } from './hallState'
 import { fmt } from '../guildText'
-import { G, GUILD_ART, HALL_BG, ICON, darkBtn, goldBtn } from './style'
+import { G, GUILD_ART, ICON, darkBtn, goldBtn } from './style'
 
 const chip: CSSProperties = {
   display:'flex', alignItems:'center', gap:6, height:30, padding:'0 10px', borderRadius:15,
@@ -101,9 +101,9 @@ export function HallTab({ me, now, onOpenBuilding, onDonate, onInvite }: {
   }
 
   return (
-    <div data-guild-hall="" style={{ flex:1, minHeight:0, overflowY:'auto', WebkitOverflowScrolling:'touch' }}>
-      {/* Баннер */}
-      <div data-guild-head="" style={{ ...HALL_BG, padding:'22px 18px 16px', display:'flex', flexDirection:'column', alignItems:'center', gap:8, borderBottom:`1px solid ${C.stoneDark}` }}>
+    <div data-guild-hall="">
+      {/* Баннер — на общем фоне меню, как заголовок «Друзей» (23.11.2026). */}
+      <div data-guild-head="" style={{ padding:'8px 6px 14px', display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
         <div style={{ position:'relative', width:112, height:112 }}>
           <GuildEmblem emblem={g.emblem} tag={g.tag} size={112} />
           <div style={{
@@ -128,7 +128,7 @@ export function HallTab({ me, now, onOpenBuilding, onDonate, onInvite }: {
       </div>
 
       {/* Благословения */}
-      <div data-guild-blessings="" style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 18px', background:'rgba(21,18,24,.7)', borderBottom:`1px solid ${C.niche}`, flexWrap:'wrap' }}>
+      <div data-guild-blessings="" style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:C.nicheDeep, border:`1px solid ${C.stoneDark}`, borderRadius:10, boxShadow:'inset 0 2px 6px rgba(0,0,0,.5)', flexWrap:'wrap' }}>
         <span style={{ fontSize:11, color:G.textSoft, textTransform:'uppercase', letterSpacing:1.5 }}>Благословения</span>
         {PRAYERS.map((p) => {
           const s = prayerState(me, p, now)
@@ -142,7 +142,7 @@ export function HallTab({ me, now, onOpenBuilding, onDonate, onInvite }: {
       </div>
 
       {/* Здания */}
-      <div style={{ padding:'14px 14px 16px', display:'flex', flexDirection:'column', gap:10 }}>
+      <div style={{ padding:'14px 0 16px', display:'flex', flexDirection:'column', gap:10 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <div style={{ flex:1, height:1, background:`linear-gradient(90deg,transparent,${C.glowEdge})` }} />
           <div style={{ fontFamily:FONT_DISPLAY, fontWeight:700, fontSize:13, color:C.bone, letterSpacing:2 }}>ЗАЛ ГИЛЬДИИ</div>

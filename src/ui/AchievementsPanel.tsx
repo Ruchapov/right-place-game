@@ -67,14 +67,12 @@ export type AchievementsPanelProps = {
   /** null — список ещё не загружен или не загрузился (status). */
   list: AchievementView[] | null
   status: 'loading' | 'ready' | 'error' | 'offline'
-  titleKey: string | null
   unseen: ReadonlySet<string>
   /** Какое действие сейчас идёт (key) — кнопки этой карточки гаснут. */
   pendingKey: string | null
   /** Отказ последнего действия: key карточки и текст. */
   error: { key: string; text: string } | null
   onClaim: (key: string) => void
-  onTitle: (key: string | null) => void
   onLearn: (key: string) => void
   onRetry: () => void
 }
@@ -118,7 +116,9 @@ export function AchievementsPanel(p: AchievementsPanelProps) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {p.list.map((a) => {
           const busy = p.pendingKey !== null
-          const isTitle = p.titleKey === a.key
+          // Титулы убраны 23.11.2026 (решение Андрея): у карточки только «Забрать»
+          // и «Выучить», и то не у всех — ряд кнопок рисуется, если есть что.
+          const learn = isLearnAchievement(a.key) && !a.rewardPending
           const err = p.error?.key === a.key ? p.error.text : null
           return (
             <div key={a.key} data-achievement={a.key} style={{ ...card, border: `1px solid ${a.rewardPending || p.unseen.has(a.key) ? C.glowEdge : C.stoneDark}` }}>
@@ -132,7 +132,7 @@ export function AchievementsPanel(p: AchievementsPanelProps) {
                   <div style={{ fontSize: 12, color: C.bone, fontStyle: 'italic', lineHeight: 1.45, marginTop: 4 }}>{a.phrase}</div>
                   <div style={{ fontSize: 12, color: C.glowCore, marginTop: 6 }}>{a.reward}</div>
                   <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
-                    {formatDate(a.earnedAt)}{isTitle ? ' · твой титул' : ''}
+                    {formatDate(a.earnedAt)}
                   </div>
                 </div>
               </div>
@@ -140,17 +140,16 @@ export function AchievementsPanel(p: AchievementsPanelProps) {
                 <div style={{ fontSize: 12, color: C.textDim, marginTop: 8 }}>Сумка полна — награда ждёт во вкладке Достижения</div>
               )}
               {err !== null && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{err}</div>}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                {a.rewardPending && (
-                  <button type="button" disabled={busy} onClick={() => p.onClaim(a.key)} style={{ ...smallBtn(true), opacity: busy ? 0.55 : 1 }}>Забрать</button>
-                )}
-                {isLearnAchievement(a.key) && !a.rewardPending && (
-                  <button type="button" disabled={busy} onClick={() => p.onLearn(a.key)} style={{ ...smallBtn(true), opacity: busy ? 0.55 : 1 }}>Выучить</button>
-                )}
-                <button type="button" disabled={busy} onClick={() => p.onTitle(isTitle ? null : a.key)} style={{ ...smallBtn(false), opacity: busy ? 0.55 : 1 }}>
-                  {isTitle ? 'Снять титул' : 'Сделать титулом'}
-                </button>
-              </div>
+              {(a.rewardPending || learn) && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                  {a.rewardPending && (
+                    <button type="button" disabled={busy} onClick={() => p.onClaim(a.key)} style={{ ...smallBtn(true), opacity: busy ? 0.55 : 1 }}>Забрать</button>
+                  )}
+                  {learn && (
+                    <button type="button" disabled={busy} onClick={() => p.onLearn(a.key)} style={{ ...smallBtn(true), opacity: busy ? 0.55 : 1 }}>Выучить</button>
+                  )}
+                </div>
+              )}
             </div>
           )
         })}

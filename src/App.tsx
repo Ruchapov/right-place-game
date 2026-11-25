@@ -4,7 +4,7 @@ import { retrieveRawInitData, retrieveLaunchParams, openTelegramLink } from '@te
 // Приглашения друзей (12.11.2026): общий каталог с сервером (src/referral.ts ↔ server/src/referral.ts).
 import { REFERRAL_GOLD, REFERRAL_LEVEL, REFERRAL_RP } from './referral'
 import { C, FONT_DISPLAY } from './ui/theme'
-import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, eatBossHeart, buyBagCell, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, readTitleKey, readAchievementList, fetchAchievements, claimAchievement, setAchievementTitle, type AchievementView, type AchievementsState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
+import { loginWithTelegram, buyPotion, buyConsumable, buyUpgrade, buyHunterStat, eatBossHeart, buyBagCell, sellItem, fetchProfile, isServerAsleepError, exchangeTrophies, readTrophyGoldRate, readConsumables, readScrolls, readClassItems, readSkillLevels, readSkillUses, readEquippedSkills, readUpgrades, readEnergyAccruedSec, fetchInventory, equipItem, equipBook, forgetSkill, upgradeSkill, sellBook, assembleBook, sellScroll, sellClassItem, chooseClass, ascendClass, renounceClass, readHeroClass, readClassRefusalLines, readCurrencyCount, fetchQuests, takeQuest, replaceQuest, readRingSlots, readRunes, readSkinState, readHeroStats, readAchievementList, fetchAchievements, claimAchievement, type AchievementView, type AchievementsState, finishInFlightCount, subscribeFinishInFlight, applyRune, smeltRaw, forgeOtherItem, setRingSlot, fetchGuildMe, fetchFriends, claimFriends, readReferralReward, readChannelRewardClaimed, RequestError, type FriendsView, type ReferralReward, type GuildMe, type GuildWallet, type ClassStateResult, type LoginResponse, type InventoryItem, type QuestView, type QuestsResult, type RunResultSummary, type SkillStateResult, type RuneState, type HeroStatsView } from './api'
 // Ежедневные задания (26.10.2026): каталог — общая пара с сервером
 // (src/quests.ts ↔ server/src/quests.ts), доска — src/ui/QuestBoard.tsx.
 import { QUESTS, questById, questReward, type QuestId } from './quests'
@@ -63,6 +63,7 @@ import { INTRO_CARDS, INTRO_ID, ITEM_TIPS, hasSeen, loadTutorial, markSeen, last
 import SkillLevelNote from './ui/SkillLevelNote'
 import { BagCellBadge } from './ui/BagCellBadge'
 import { HeroClassLine, HeroClassTiles, HeroClassCard, HeroClassCelebration, type ClassActionKind } from './ui/HeroClassViews'
+import { BossHeartNotice, type BossHeartResult } from './ui/BossHeartNotice'
 import { useMediaQuery } from './ui/useMediaQuery'
 // Только число: «низкий горизонтальный экран» — одно условие на меню, боевые
 // кнопки и камеру забега (см. комментарий у константы).
@@ -171,8 +172,7 @@ type PlayerData = { id: number; firstName: string; level: number; gold: number; 
   bagBonusCells: number | null
   // Ячейки, купленные у Торговца (21.11.2026): от них цена следующей
   // (bagCellPrice). null — сервер не назвал: плитка покупки гаснет.
-  bagCellsBought: number | null
-  titleKey: string | null }
+  bagCellsBought: number | null }
 
 // Шесть слотов с русскими подписями — ОДИН список на весь файл. Прежний
 // SLOT_LABELS (та же карта слот→подпись, только объектом) удалён как дубль:
@@ -945,9 +945,10 @@ export default function App() {
   // пунктом "Всё" в выпадающем списке и тапом по "Инвентарь" в навбаре — иначе
   // фильтр залипал бы до перезапуска приложения.
   const [slotFilter, setSlotFilter] = useState<string | null>(null)
-  // Раскрыт ли выпадающий список фильтра. Чисто вёрсточный флаг: что выбрано,
-  // хранит ТОЛЬКО slotFilter, второго источника правды здесь нет.
-  const [slotFilterOpen, setSlotFilterOpen] = useState(false)
+  // «Снаряжение» (23.11.2026, решение Андрея): тап по пустому гнезду на
+  // «Персонаже» открывает ВСЕ предметы — этого слота первыми и с подсветкой, —
+  // а фильтр не включает. null — подсветки нет.
+  const [slotHighlight, setSlotHighlight] = useState<string | null>(null)
   // Вкладка называется «Убежище» (14.10.2026; id вкладки и имена переменных
   // остались историческими — 'shop', shopTab, shopSelected), и внутри неё три
   // жителя вместо прежних разделов: Торговец — расходники и обмен трофеев,
@@ -1108,6 +1109,8 @@ export default function App() {
   // Окно торжества «Ты стал …» — класс и ступень ИЗ ОТВЕТА сервера, то есть то,
   // что записано, а не то, что просили. null — окна нет.
   const [classCelebration, setClassCelebration] = useState<{ id: HeroClassId; tier: HeroClassTier } | null>(null)
+  // Окно «Сила +1» после сердца босса (23.11.2026) — было/стало из ответа сервера.
+  const [heartResult, setHeartResult] = useState<BossHeartResult | null>(null)
   // --- Гнёзда подготовки на вкладке «Исследовать» ---
   // Длина фиксирована каталогом (RUN_CONSUMABLE_SLOTS), null — гнездо пусто.
   // Один и тот же id в двух гнёздах запрещён: сервер отвергает повторы
@@ -1362,7 +1365,7 @@ export default function App() {
       // ['heal', 'dash']» больше не значит ничего — навык бывает только от
       // книги, и у настоящего нового игрока набор пустой (CLAUDE.md, «УБРАТЬ
       // ПЕРЕД РЕЛИЗОМ»).
-      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, bagCellsBought: 0, titleKey: 'kills_1000' })
+      setPlayer({ id: 0, firstName: 'DevTester', level: 5, gold: 500, strength: 20, endurance: 15, agility: 10, trophies: 50, equippedSkills: ['iceball', 'fireball'], skillLevels: devSkillLevels(), skillUses: devSkillUses(), upgrades: TEMP_DEV_UPGRADES, potions: [3, 1, 0, 0, 0], consumables: devConsumableStock(), scrolls: devScrollStock(), classItems: TEMP_DEV_CLASS_ITEM_STOCK, heroClass: TEMP_DEV_HERO_CLASS, hunterBadges: 12, rp: 3, eliteTrophies: 2, ringSlots: ['ring_ash', ''], runes: TEMP_DEV_RUNES, luck: 0, skins: TEMP_DEV_SKINS, stats: TEMP_DEV_HERO_STATS, bagBonusCells: 0, bagCellsBought: 0})
       // TEMP_DEV_TROPHY_GOLD_RATE: ТЕСТОВОЕ значение курса обмена, только для
       // офлайн-заглушки. Взято НЕ с сервера — оно существует ровно для того,
       // чтобы карточку «Обмен трофеев» можно было верстать и проверять в браузере
@@ -1413,7 +1416,7 @@ export default function App() {
     // equippedSkills — через readEquippedSkills, а НЕ `?? []`: пустой список это
     // штатное «книг нет», а прежний фолбэк делал его же из «сервер не ответил».
     // skillLevels — через readSkillLevels по той же причине (null ≠ уровень 1).
-    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), bagCellsBought: readCurrencyCount(data.character.bagCellsBought), titleKey: readTitleKey(data.character.titleKey) ?? null })
+    setPlayer({ id: data.user.id, firstName: data.user.firstName, level: data.character.level, gold: data.character.gold, strength: data.character.strength, endurance: data.character.endurance, agility: data.character.agility ?? 0, trophies: data.character.trophies, equippedSkills: readEquippedSkills(data.character.equippedSkills), skillLevels: readSkillLevels(data.character.skillLevels), skillUses: readSkillUses(data.character.skillUses), upgrades: readUpgrades(data.character.upgrades), potions: data.character.potions, consumables: readConsumables(data.character.consumables), scrolls: readScrolls(data.character.scrolls), classItems: readClassItems(data.character.classItems), heroClass: readHeroClass(data.character.heroClass), hunterBadges: readCurrencyCount(data.character.hunterBadges), rp: readCurrencyCount(data.character.rp), eliteTrophies: readCurrencyCount(data.character.eliteTrophies), ringSlots: readRingSlots(data.character.ringSlots), runes: readRunes(data.character.runes), luck: readCurrencyCount(data.character.luck), skins: readSkinState(data.character.skins), stats: readHeroStats(data.character.stats), bagBonusCells: readCurrencyCount(data.character.bagBonusCells), bagCellsBought: readCurrencyCount(data.character.bagCellsBought) ?? null })
     setChannelClaimed(readChannelRewardClaimed((data.character as { channelRewardClaimed?: unknown }).channelRewardClaimed))
     setEnergyBase(data.character.energy)
     // Отсчёт начинается НЕ с нуля, а со сдвигом назад на уже натикавший остаток
@@ -2092,7 +2095,6 @@ export default function App() {
     setAchStatus('ready')
     setPlayer((prev) => prev ? {
       ...prev,
-      titleKey: s.titleKey,
       bagBonusCells: s.bagBonusCells,
       ...(s.consumables !== null ? { consumables: s.consumables } : {}),
       ...(s.runes !== null ? { runes: s.runes } : {}),
@@ -2152,22 +2154,6 @@ export default function App() {
     }
   }
 
-  async function handleAchievementTitle(key: string | null) {
-    const token = localStorage.getItem('jwt')
-    const at = key ?? player?.titleKey ?? ''
-    if (!token || achPendingKey !== null) return
-    setAchPendingKey(at)
-    setAchError(null)
-    try {
-      applyAchievementsState(await setAchievementTitle(token, key))
-    } catch (e) {
-      console.error('Achievements: титул не сменился', e)
-      setAchError({ key: at, text: 'Титул не сменился — попробуй ещё раз.' })
-    } finally {
-      setAchPendingKey(null)
-    }
-  }
-
   // После входа (и смены сессии) — список полученных.
   useEffect(() => {
     if (!playerLoaded) return
@@ -2197,9 +2183,6 @@ export default function App() {
       document.querySelector('[data-hero-skills]')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }, 60)
   }
-
-  // Титул под именем: название — из списка полученных (каталога на клиенте нет).
-  const heroTitle = player?.titleKey ? achList?.find((a) => a.key === player.titleKey)?.title ?? null : null
 
   // Отсчёт нового набора дошёл до нуля (questCountdownOver выше) — набор уже
   // ждёт на сервере: перечитать ОДИН раз на полученный вид (новый вид приходит
@@ -2382,7 +2365,12 @@ export default function App() {
         return true
       }
       const { stats, classItems } = r
+      // Было — с экрана до запроса; при повторе потерянного ответа (replayed)
+      // сервер ничего нового не дал — тогда «было» на единицу меньше «стало».
+      const from = r.replayed ? stats[stat] - 1 : player[stat]
+      const levelFrom = r.replayed ? stats.level : player.level
       setPlayer(prev => prev ? { ...prev, ...stats, classItems } : prev)
+      setHeartResult({ stat, from, to: stats[stat], levelFrom, levelTo: stats.level })
       return true
     } catch (e) {
       console.error('use-boss-heart failed', e)
@@ -3023,10 +3011,9 @@ export default function App() {
         runes: profile.runes,
         luck: profile.luck,
         stats: profile.stats,
-        // Достижения (20.11.2026): ячейки и титул меняют «Забрать» и выбор титула.
+        // Достижения (20.11.2026): ячейки меняет «Забрать».
         bagBonusCells: profile.bagBonusCells,
         bagCellsBought: profile.bagCellsBought,
-        ...(profile.titleKey !== undefined ? { titleKey: profile.titleKey } : {}),
         // Портной (14.11.2026): потерянный ответ покупки или нашивки снимается этой
         // сверкой. null перезаписывает намеренно — «сервер не назвал».
         skins: profile.skins,
@@ -3440,12 +3427,10 @@ export default function App() {
                     <AchievementsPanel
                       list={achList}
                       status={achStatusShown}
-                      titleKey={p.titleKey}
                       unseen={achHighlight}
                       pendingKey={achPendingKey}
                       error={achError}
                       onClaim={(key) => { void handleAchievementClaim(key) }}
-                      onTitle={(key) => { void handleAchievementTitle(key) }}
                       onLearn={() => startLearnSkills()}
                       onRetry={() => { setAchStatus('loading'); void loadAchievements() }}
                     />
@@ -3514,10 +3499,6 @@ export default function App() {
                   <div style={{ fontFamily:FONT_DISPLAY, fontSize:16, color:C.textMain }}>
                     {p.firstName}
                   </div>
-                  {/* Титул (20.11.2026, достижения): выбран во вкладке «Достижения». */}
-                  {heroTitle !== null && (
-                    <div data-hero-title="" style={{ fontSize:11, fontStyle:'italic', color:C.bone, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{heroTitle}</div>
-                  )}
                   {/* Строка класса (20.10.2026): просто текст, без тапа —
                       docs/classes.md, «Строка класса на «Персонаже»». Уровень —
                       тот же, что на плашке справа (с сервера). */}
@@ -3589,7 +3570,7 @@ export default function App() {
                             setSellConfirm(null)
                             return
                           }
-                          setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(slot)
+                          setActiveTab('gear'); setGearTab('equipment'); setSlotFilter(null); setSlotHighlight(slot)
                         }}
                         style={{
                           width:'100%', aspectRatio:'1', boxSizing:'border-box',
@@ -4707,6 +4688,8 @@ export default function App() {
                *  своя вещь, своя ячейка). */
               qty: number | null
               equipped: boolean
+              /** Предмет слота, с гнезда которого пришли (slotHighlight). */
+              lit?: boolean
               group: number
               rank: number
               open: { kind: 'item'; inventoryItemId: string } | { kind: 'potion'; potionId: string } | { kind: 'consumable'; consumableId: ConsumableId } | { kind: 'scroll'; scrollId: ScrollId } | { kind: 'classItem'; classItemId: ClassItemId }
@@ -4749,13 +4732,15 @@ export default function App() {
                 alt: inv.item.nameRu,
                 qty: null,
                 equipped: inv.equipped,
-                group: SLOT_ORDER.indexOf(inv.item.slot),
+                lit: slotHighlight !== null && inv.item.slot === slotHighlight,
+                // Слот гнезда, с которого пришли, — первым (−1 раньше любого слота).
+                group: slotHighlight !== null && inv.item.slot === slotHighlight ? -1 : SLOT_ORDER.indexOf(inv.item.slot),
                 rank: -inv.item.tier,
                 open: { kind: 'item' as const, inventoryItemId: inv.inventoryItemId },
               }))
               .sort((a, b) => a.group - b.group || a.rank - b.rank)
-            // Фильтр по слоту (кнопки над сеткой, либо тап по гнезду на
-            // "Персонаже") — операция над уже полученным массивом, запрос к
+            // Фильтр по слоту (ряд кнопок над сеткой; с 23.11.2026 — ТОЛЬКО им:
+            // гнездо на «Персонаже» фильтр не включает) — операция над уже полученным массивом, запрос к
             // серверу для неё не нужен. Фильтруем ИСХОДНЫЕ строки, а не
             // готовые ячейки: у ячейки слота нет, и добавлять его туда значит
             // тащить специфику экипировки в общий тип.
@@ -5029,83 +5014,31 @@ export default function App() {
               </div>
               </div>
 
-              {/* Фильтр по слоту — только в "Экипировке": расходники ни в один
-                  слот не надеваются, фильтровать их нечем.
-                  Выпадающий список, а не ряд кнопок: семь кнопок на 360px
-                  вставали только сеткой 4+3 (~94px), и вместе с подвкладками
-                  это три ряда управления до первой ячейки — около трети экрана.
-                  Здесь одна строка 44px (минимум тап-зоны). Цена — выбор слота
-                  в два тапа вместо одного, и варианты не видны без раскрытия.
-                  Раскрытый список лежит ПОВЕРХ сетки (absolute), не раздвигает
-                  её. Под ним прозрачная подложка на весь экран: тап мимо списка
-                  попадает в неё и закрывает. Навбар подложкой не накрыть — он
-                  вне прокручиваемого контейнера, а у того из-за mask свой
-                  stacking context, — поэтому список закрывает и onClick
-                  навбара, иначе при возврате на вкладку он был бы раскрыт.
-                  Рамка кнопки подсвечена, пока выбран конкретный слот: сетка
-                  урезана, и это видно без раскрытия (роль прежней плашки
-                  "Только: ...").
-                  Пункт "Всё" — он же сброс фильтра. */}
-              {gearTab === 'equipment' && (() => {
-                const options: { slot: string | null; label: string }[] = [{ slot: null, label: 'Всё' }, ...HERO_SLOTS]
-                // slotFilter ставится только из HERO_SLOTS, так что промах здесь —
-                // баг. Называем его вслух, а не рисуем "Всё" над урезанной сеткой.
-                const currentLabel = options.find((o) => o.slot === slotFilter)?.label ?? `Неизвестный слот "${slotFilter}"`
-                return (
-                  <>
-                    {slotFilterOpen && (
-                      <div onClick={() => setSlotFilterOpen(false)}
-                        style={{ position:'fixed', top:0, left:0, right:0, bottom:0, zIndex:1 }} />
-                    )}
-                    {/* zIndex:2 — выше подложки: тап по самой кнопке сворачивает
-                        список, а не проваливается в подложку. */}
-                    <div style={{ position:'relative', zIndex:2, marginBottom:10, padding:'0 8px' }}>
-                      <div onClick={() => setSlotFilterOpen((open) => !open)}
+              {/* Фильтр по слоту (23.11.2026, решение Андрея: «сначала все предметы,
+                  потом фильтр»): ряд кнопок тем же видом, что подвкладки сумки и
+                  «Рейтинга»; «Все» — первой, любой выбор и возврат к полному списку
+                  — одно нажатие. Выбор фильтра снимает подсветку пришедших с гнезда. */}
+              {gearTab === 'equipment' && (
+                <div data-slot-filter="" role="tablist" className="rp-slot-chips" style={{ display:'flex', gap:6, overflowX:'auto', padding:'0 8px 2px', marginBottom:10 }}>
+                  <style>{'.rp-slot-chips { scrollbar-width: none; } .rp-slot-chips::-webkit-scrollbar { display: none; }'}</style>
+                  {([{ slot: null, label: 'Все' }, ...HERO_SLOTS] as { slot: string | null; label: string }[]).map((o) => {
+                    const active = slotFilter === o.slot
+                    return (
+                      <button key={o.slot ?? 'all'} type="button" role="tab" aria-selected={active}
+                        onClick={() => { setSlotFilter(o.slot); setSlotHighlight(null) }}
                         style={{
-                          boxSizing:'border-box', height:44,
-                          display:'flex', alignItems:'center', justifyContent:'space-between', gap:8,
-                          background:C.nicheDeep, borderRadius:6, padding:'0 12px',
-                          fontSize:11, whiteSpace:'nowrap', cursor:'pointer',
-                          border:`1px solid ${slotFilter !== null || slotFilterOpen ? C.glowEdge : C.stoneDark}`,
-                          color: slotFilter !== null ? C.glowCore : C.textDim,
+                          flex:'none', minHeight:44, padding:'0 14px', borderRadius:8, cursor:'pointer',
+                          fontFamily:FONT_DISPLAY, fontSize:13, whiteSpace:'nowrap',
+                          border:`1px solid ${active ? C.glowEdge : C.stoneDark}`,
+                          background: active ? 'linear-gradient(180deg, #4a3a22, #2e2416)' : C.niche,
+                          color: active ? C.glowCore : C.textMain,
                         }}>
-                        <span>{currentLabel}</span>
-                        <span style={{ fontSize:9 }}>{slotFilterOpen ? '▲' : '▼'}</span>
-                      </div>
-                      {slotFilterOpen && (
-                        <div style={{
-                          position:'absolute', top:'calc(100% + 4px)', left:8, right:8,
-                          boxSizing:'border-box', overflow:'hidden',
-                          background:C.appBg, border:`1px solid ${C.stoneDark}`, borderRadius:8,
-                          boxShadow:'0 6px 18px rgba(0,0,0,0.6)',
-                        }}>
-                          {options.map((o) => {
-                            const active = slotFilter === o.slot
-                            return (
-                              <div key={o.slot ?? 'all'}
-                                onClick={() => { setSlotFilter(o.slot); setSlotFilterOpen(false) }}
-                                style={{
-                                  boxSizing:'border-box', height:44,
-                                  display:'flex', alignItems:'center', justifyContent:'space-between',
-                                  padding:'0 12px', fontSize:12, cursor:'pointer',
-                                  // Активный пункт — не только цветом: фон, полоса
-                                  // слева и галочка (дизайн-система: не полагаться
-                                  // на один цвет).
-                                  background: active ? C.nicheDeep : 'transparent',
-                                  borderLeft:`3px solid ${active ? C.glowEdge : 'transparent'}`,
-                                  color: active ? C.glowCore : C.textMain,
-                                }}>
-                                <span>{o.label}</span>
-                                {active && <span>✓</span>}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )
-              })()}
+                        {o.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
 
               {/* Состояние загрузки предметов — ПЛАШКОЙ над сеткой и ТОЛЬКО в
                   "Экипировке": это неизвестность про inventory, а расходники
@@ -5192,9 +5125,9 @@ export default function App() {
                         // расходников и книг equipped всегда false. Правило
                         // оставлено как есть — оно верно по построению, а не
                         // случайно: уберут фильтр — подсветка снова заработает.
-                        border:`1px solid ${cell.equipped ? C.glowEdge : C.stoneDark}`,
+                        border:`1px solid ${cell.equipped || cell.lit ? C.glowEdge : C.stoneDark}`,
                         borderRadius:8,
-                        boxShadow: cell.equipped
+                        boxShadow: cell.equipped || cell.lit
                           ? 'inset 0 0 12px rgba(209,151,68,0.35), inset 0 2px 5px rgba(0,0,0,0.5)'
                           : 'inset 0 2px 5px rgba(0,0,0,0.5)',
                         cursor:'pointer',
@@ -5939,14 +5872,11 @@ export default function App() {
               // состояние: подвкладка "Экипировка", фильтр снят. Иначе слот,
               // выбранный когда-то тапом по гнезду на "Персонаже", залипал бы,
               // и игрок видел бы часть сумки, не понимая почему. Второй способ
-              // снять фильтр — пункт "Всё" в выпадающем списке.
-              // setSlotFilterOpen(false) — на ЛЮБОЙ вкладке: навбар подложка
-              // списка не накрывает (см. комментарий у фильтра), и уход с
-              // раскрытым списком оставил бы его раскрытым до возврата.
+              // снять фильтр — кнопка «Все» над сеткой (с 23.11.2026 — ряд кнопок,
+              // выпадающего списка больше нет). Подсветка слота с гнезда — тоже.
               onClick={() => {
                 setActiveTab(tab.id)
-                setSlotFilterOpen(false)
-                if (tab.id === 'gear') { setGearTab('equipment'); setSlotFilter(null) }
+                if (tab.id === 'gear') { setGearTab('equipment'); setSlotFilter(null); setSlotHighlight(null) }
               }}
               style={{
                 position:'relative',
@@ -6722,6 +6652,13 @@ export default function App() {
           о прошлом забеге (см. HeroClassCelebration). */}
       {classCelebration !== null && (
         <HeroClassCelebration state={classCelebration} onClose={() => setClassCelebration(null)} />
+      )}
+      {heartResult !== null && (
+        <BossHeartNotice result={heartResult} onClose={() => {
+          setHeartResult(null)
+          // Последнее сердце съедено — карточка с серыми кнопками больше не нужна.
+          if ((player?.classItems?.boss_heart ?? 0) < 1) setGearSelectedItem(null)
+        }} />
       )}
 
       {/* Окно о прошлом забеге, закрытом сервером на входе. ПОСЛЕДНИМ в

@@ -55,7 +55,6 @@ function devView(board: LeaderboardBoard): LeaderboardView {
   const rows: LeaderboardRow[] = Array.from({ length: 14 }, (_, i) => ({
     place: i + 1,
     name: guild ? ['Стражи Пепла', 'Костяной Венец', 'Ночной Дозор', 'Сыны Колокола'][i % 4] : TEMP_DEV_NAMES[i % TEMP_DEV_NAMES.length],
-    title: !guild && i % 4 === 1 ? 'Жнец' : null,
     guildTag: guild || i % 3 !== 2 ? ['ПЕП', 'КВН', 'НД', 'СК'][i % 4] : null,
     emblem: guild || i % 3 !== 2 ? { symbol: i % 6, frame: i % 3, bg: i % 4, color: i % 5 } : null,
     value: board === 'hunters' ? 2400 - i * 151 : board === 'bosses' ? 41 - i * 3 : guild ? 9 - Math.floor(i / 2) : 48 - i * 2,
@@ -107,7 +106,6 @@ function PodiumSlot({ row, place, board }: { row: LeaderboardRow | undefined; pl
         maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         fontSize: place === 1 ? 14 : 13, fontWeight: 600, color: row?.isMe ? C.glowCore : C.textMain,
       }}>{row ? row.name : '—'}</div>
-      {row && !guild && row.title !== null && <TitleLine title={row.title} />}
       {row && <TagLine tag={row.guildTag} />}
       {row && <div style={{ fontFamily: FONT_DISPLAY, fontSize: place === 1 ? 15 : 13, color: m.fill, whiteSpace: 'nowrap' }}>{valueLabel(board, row.value)}</div>}
       {row && guild && row.members !== null && <div style={{ fontSize: 10.5, color: C.textDim }}>{membersLabel(row.members)}</div>}
@@ -121,11 +119,6 @@ function PodiumSlot({ row, place, board }: { row: LeaderboardRow | undefined; pl
       }}>{place === 1 ? 'I' : place === 2 ? 'II' : 'III'}</div>
     </div>
   )
-}
-
-/** Титул героя (20.11.2026, достижения) — курсивом под именем. */
-function TitleLine({ title }: { title: string }) {
-  return <span style={{ fontSize: 10.5, fontStyle: 'italic', color: C.bone, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{title}</span>
 }
 
 function ListRow({ row, board }: { row: LeaderboardRow; board: LeaderboardBoard }) {
@@ -144,7 +137,6 @@ function ListRow({ row, board }: { row: LeaderboardRow; board: LeaderboardBoard 
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, color: row.isMe ? C.glowCore : C.textMain }}>{row.name}</span>
           {!guild && <TagLine tag={row.guildTag} />}
         </div>
-        {!guild && row.title !== null && <TitleLine title={row.title} />}
         {/* У гильдии тег — во второй строке, рядом с участниками: так название не режется. */}
         {guild && row.members !== null && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>

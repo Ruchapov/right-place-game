@@ -215,12 +215,11 @@ export type LoginResponse = {
     runes?: unknown
     // Летопись героя (17.11.2026). Разбирать ТОЛЬКО через readHeroStats.
     stats?: unknown
-    // Достижения (20.11.2026): подаренные ячейки сумки (readCurrencyCount) и
-    // выбранный титул (readTitleKey).
+    // Достижения (20.11.2026): подаренные ячейки сумки (readCurrencyCount).
+    // Титулы убраны 23.11.2026 — поля titleKey в ответах больше нет.
     bagBonusCells?: unknown
     // Ячейки, купленные у Торговца (21.11.2026), — readCurrencyCount.
     bagCellsBought?: unknown
-    titleKey?: unknown
     // Гнёзда колец Дланей иного места (Мастер, 29.10.2026): два элемента, id
     // кольца или ''. Разбирать ТОЛЬКО через readRingSlots.
     ringSlots?: unknown
@@ -1720,8 +1719,6 @@ export type ProfileResult = {
   bagBonusCells: number | null
   /** Ячейки, купленные у Торговца (21.11.2026); null — сервер не назвал. */
   bagCellsBought: number | null
-  /** Титул (20.11.2026); undefined — сервер не назвал, null — без титула. */
-  titleKey: string | null | undefined
 }
 
 // Сверка баланса: золото, трофеи, склад зелий по тирам и курс обмена. ТОЛЬКО
@@ -1778,7 +1775,6 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     stats?: unknown
     bagBonusCells?: unknown
     bagCellsBought?: unknown
-    titleKey?: unknown
     luck?: unknown
     skins?: unknown
     appliedRequestIds?: unknown
@@ -1837,13 +1833,7 @@ export async function fetchProfile(token: string): Promise<ProfileResult> {
     stats: readHeroStats(raw.stats),
     bagBonusCells: readCurrencyCount(raw.bagBonusCells),
     bagCellsBought: readCurrencyCount(raw.bagCellsBought),
-    titleKey: readTitleKey(raw.titleKey),
   }
-}
-
-/** Титул из ответа: строка — ключ, null — без титула, иначе undefined («не назвал»). */
-export function readTitleKey(raw: unknown): string | null | undefined {
-  return raw === null || typeof raw === 'string' ? raw : undefined
 }
 
 // --- Ежедневные задания (26.10.2026, docs/daily-quests.md) ---
@@ -3222,8 +3212,7 @@ export type GuildWallet = {
   classItems: Record<ClassItemId, number> | null
 }
 
-/** title — титул героя (20.11.2026, достижения); null — без титула. */
-export type GuildMemberView = { characterId: number; name: string; title: string | null; role: string; level: number; lastSeenAt: number | null; joinedAt: number }
+export type GuildMemberView = { characterId: number; name: string; role: string; level: number; lastSeenAt: number | null; joinedAt: number }
 export type GuildStorageRow = { kind: string; ref: string; count: number; item?: { nameRu: string; slot: string; tier: number } }
 export type GuildRequestView = { characterId: number; name: string; level: number; createdAt: number }
 export type GuildBuff = { pct: number; untilMs: number | null }
@@ -3335,7 +3324,6 @@ export function readGuildMe(raw: unknown): GuildMe | null {
     members: Array.isArray(raw.members) ? raw.members.filter(isObj).map((m) => ({
       characterId: num(m.characterId) ?? 0,
       name: typeof m.name === 'string' ? m.name : '?',
-      title: typeof m.title === 'string' ? m.title : null,
       role: typeof m.role === 'string' ? m.role : 'member',
       level: num(m.level) ?? 1,
       lastSeenAt: num(m.lastSeenAt),
@@ -3423,7 +3411,7 @@ export async function guildAction(token: string, path: string, body: Record<stri
   return out
 }
 
-export type GuildChatMessage = { id: number; text: string; system: boolean; author: string | null; authorTitle: string | null; mine: boolean; createdAt: number }
+export type GuildChatMessage = { id: number; text: string; system: boolean; author: string | null; mine: boolean; createdAt: number }
 
 export async function fetchGuildChat(token: string, after: number): Promise<{ tag: string; messages: GuildChatMessage[] }> {
   const raw = await requestJson<{ tag?: unknown; messages?: unknown }>(`${SERVER_URL}/guild/chat?after=${after}`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, GUILD_TIMEOUT_MS)
@@ -3433,7 +3421,6 @@ export async function fetchGuildChat(token: string, after: number): Promise<{ ta
         text: typeof m.text === 'string' ? m.text : '',
         system: m.system === true,
         author: typeof m.author === 'string' ? m.author : null,
-        authorTitle: typeof m.authorTitle === 'string' ? m.authorTitle : null,
         mine: m.mine === true,
         createdAt: num(m.createdAt) ?? 0,
       })).filter((m) => m.id > 0)
@@ -3607,8 +3594,6 @@ export type LeaderboardRow = {
   place: number
   /** Герой — имя (до 16 знаков); доска гильдий — название гильдии. */
   name: string
-  /** Титул героя (20.11.2026, достижения); null — без титула или доска гильдий. */
-  title: string | null
   guildTag: string | null
   emblem: GuildEmblemView | null
   value: number
@@ -3652,7 +3637,7 @@ export function readLeaderboard(raw: unknown, board: LeaderboardBoard): Leaderbo
     if (place === null || value === null || emblem === undefined || typeof x.name !== 'string' || typeof x.isMe !== 'boolean') return null
     if (x.guildTag !== null && typeof x.guildTag !== 'string') return null
     if (board === 'guilds' && members === null) return null
-    rows.push({ place, name: x.name, title: typeof x.title === 'string' ? x.title : null, guildTag: x.guildTag as string | null, emblem, value, isMe: x.isMe, members })
+    rows.push({ place, name: x.name, guildTag: x.guildTag as string | null, emblem, value, isMe: x.isMe, members })
   }
   let me: LeaderboardView['me'] = null
   if (o.me !== null) {
@@ -3719,7 +3704,6 @@ export function readAchievementList(raw: unknown): AchievementView[] | null {
 
 export type AchievementsState = {
   achievements: AchievementView[]
-  titleKey: string | null
   bagBonusCells: number
   /** После «Забрать»: склад, руны, статы, нашивки — награда могла тронуть их. */
   consumables: Record<string, number> | null
@@ -3739,13 +3723,12 @@ function readAchievementsState(raw: unknown, url: string): AchievementsState {
   const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const list = readAchievementList(o.achievements)
   const bag = readCount(o.bagBonusCells)
-  if (list === null || bag === null || (o.titleKey !== null && typeof o.titleKey !== 'string')) {
+  if (list === null || bag === null) {
     console.error(`${url}: ответ не того вида`, raw)
     throw new RequestError(`${url}: malformed`, { status: 200, serverError: null, kind: 'http', networkError: null, body: raw })
   }
   return {
     achievements: list,
-    titleKey: o.titleKey as string | null,
     bagBonusCells: bag,
     consumables: readConsumables(o.consumables),
     runes: readRunes(o.runes),
@@ -3759,7 +3742,7 @@ function readAchievementsState(raw: unknown, url: string): AchievementsState {
   }
 }
 
-/** Полученные достижения, титул, подаренные ячейки. Только чтение. */
+/** Полученные достижения и подаренные ячейки. Только чтение. */
 export async function fetchAchievements(token: string): Promise<AchievementsState> {
   const raw = await requestJson<unknown>(`${SERVER_URL}/achievements`, { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } }, ACHIEVEMENTS_TIMEOUT_MS)
   return readAchievementsState(raw, '/achievements')
@@ -3776,10 +3759,3 @@ export async function claimAchievement(token: string, key: string): Promise<Achi
   return readAchievementsState(raw, '/achievements/claim')
 }
 
-/** Выбрать титул (key полученного достижения) или снять его (null). */
-export async function setAchievementTitle(token: string, key: string | null): Promise<AchievementsState> {
-  const raw = await requestJson<unknown>(`${SERVER_URL}/achievements/title`, {
-    method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ key }),
-  }, ACHIEVEMENTS_TIMEOUT_MS)
-  return readAchievementsState(raw, '/achievements/title')
-}

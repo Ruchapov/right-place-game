@@ -6,11 +6,27 @@ import { ncHitDamage } from '../scaling'
 import { createNcEnemySystem } from './ncEnemy'
 import type { NcAssets, NcBehavior, NcEnemyDeps } from './ncEnemy'
 import { playSfx } from '../../audio/sound'
+import { isSolid } from '../collision'
+import type { Grid } from '../types'
+
+/** Верх ближайшей клетки пола под точкой (x, y), не глубже maxTiles клеток; null — нет. */
+function floorUnder(grid: Grid, x: number, y: number, maxTiles: number): number | null {
+  const T = C.TILE_SIZE
+  const start = Math.floor(y / T)
+  for (let r = start; r <= start + maxTiles; r++) {
+    if (isSolid(grid, T, x, r * T + 1) && !isSolid(grid, T, x, r * T + 1 - T)) return r * T
+  }
+  return null
+}
 
 /**
  * НАВОЗНИК (жук, 09.11.2026). Дальше 3 и до 7 клеток — Beetle_Throw: на кадре
  * release дугой летит ком грязи; попадание — урон и замедление героя (Explore,
- * slowHero), падение — бурое пятно на секунду. Ближе 3 клеток — Beetle_Dash: в
+ * slowHero), падение — бурое пятно на секунду.
+ * С 23.11.2026 ком летит в ТОЧКУ: на полу под героем в момент начала замаха
+ * (nc.throwAt), а не туда, где герой на кадре выпуска. Отошёл или подпрыгнул
+ * над точкой — промах, ком падает на старое место (брызги, лужа). Попадание —
+ * только если герой оказался на пути дуги (жалоба Андрея: «шарик летит за мной»). Ближе 3 клеток — Beetle_Dash: в
  * кадрах telegraph стоит (предупреждение), в кадрах thrust код двигает его
  * вперёд на BEETLE_DASH_PX (ease-out), останавливаясь у края и стены; урон —
  * при касании во время thrust, один раз за рывок. Тело в листе
@@ -31,7 +47,14 @@ const behavior: NcBehavior = {
     if (v.gap > N.RANGED_MIN_TILES * T && v.gap <= N.RANGED_MAX_TILES * T) {
       e.facing = v.dx >= 0 ? 1 : -1
       // В полосе броска не подходит: ждёт паузу и бросает снова.
-      if (nc.cooldownMs <= 0) ctx.start(e, 'Throw')
+      if (nc.cooldownMs <= 0) {
+        // Точка броска — под ногами героя СЕЙЧАС, в начале замаха.
+        const pb = ctx.deps.getPlayerCombatBox()
+        const cx = pb.x + pb.w / 2
+        const fy = floorUnder(ctx.deps.grid, cx, pb.y + pb.h - 2, N.MUD_PUDDLE_DROP_TILES)
+        nc.throwAt = fy === null ? null : { x: cx, y: fy }
+        ctx.start(e, 'Throw')
+      }
       return true
     }
     if (nc.cooldownMs > 0) return false
@@ -49,15 +72,20 @@ const behavior: NcBehavior = {
       nc.keyDone = true
       playSfx('beetle_throw', { x: e.x + e.width / 2, y: e.y })
       const p = ctx.spawnPoint(e, THROW)
+      // В точку на полу, выбранную в начале замаха. Её нет (герой висел над
+      // пропастью) — туда, где он стоял по горизонтали, на уровень выпуска.
       const pb = ctx.deps.getPlayerCombatBox()
+      const at = nc.throwAt ?? { x: pb.x + pb.w / 2, y: pb.y + pb.h }
+      nc.throwAt = null
       ctx.deps.projectiles.fire({
         kind: 'mud',
         texture: ctx.assets.extra.mud,
         scale: ctx.scale,
         x: p.x,
         y: p.y,
-        targetX: pb.x + pb.w / 2,
-        targetY: pb.y + pb.h * 0.55,
+        targetX: at.x,
+        targetY: at.y,
+        landOnFloor: true,
         damage: ncHitDamage(N.BEETLE_MUD_DMG_MULT, e.attackDamage),
         owner: e,
       })

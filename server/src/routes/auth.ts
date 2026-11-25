@@ -551,7 +551,8 @@ export async function authRoutes(server: FastifyInstance) {
     // questState (26.10.2026) — тем же приёмом: состояние заданий отдаёт только
     // своя ручка (GET /character/quests), она же лениво бросает новый набор.
     // Сырой JSON здесь был бы и лишним, и без этого броска — устаревшим.
-    const { currentRun: _closedRun, questState: _questState, ...charFields } = char
+    // titleKey — колонка титула достижений; титулы убраны 23.11.2026, наружу не идёт.
+    const { currentRun: _closedRun, questState: _questState, titleKey: _titleKey, ...charFields } = char
     // Испорченный questState вход НЕ роняет — только громкий лог; доска заданий
     // на своей ручке ответит 500 'Corrupt quest state'.
     if (readQuestState(char.questState).kind === 'malformed') {

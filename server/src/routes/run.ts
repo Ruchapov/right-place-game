@@ -3092,11 +3092,10 @@ export async function runRoutes(server: FastifyInstance) {
       luck: character.luck,
       // Летопись героя (17.11.2026, heroStats.ts): нет строки — нули.
       stats: await heroStatsOf(prisma, character.id),
-      // Достижения (20.11.2026): подаренные ячейки сумки и выбранный титул.
+      // Достижения (20.11.2026): подаренные ячейки сумки (титулы убраны 23.11.2026).
       bagBonusCells: character.bagBonusCells,
       // Ячейки за золото (21.11.2026): от счётчика — цена следующей.
       bagCellsBought: character.bagCellsBought,
-      titleKey: character.titleKey,
       // Надетые навыки и их уровни. Появились здесь вместе с ручками книг
       // (29.09.2026): «Обновить баланс» — единственный путь сверить состояние без
       // полного логина, а логин закрывает открытый забег и кнопкой вызываться не

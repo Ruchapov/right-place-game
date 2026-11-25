@@ -3549,7 +3549,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // ?forceEvent=flame|runner (11.11.2026, только заглушка) — это событие
         // первым в тройке. Сервер такого параметра не знает.
         const forcedKind = devUrlParam('forceEvent')
-        const forced = eventPool.find((ev) => (forcedKind === 'flame' || forcedKind === 'runner') && ev.kind === forcedKind)
+        // ?forceEvent= (офлайн-заглушка): flame, runner; с 23.11.2026 ещё obelisk,
+        // chest, smuggler, boss — проверка событий в headless без перебора seed.
+        const FORCEABLE: readonly string[] = ['flame', 'runner', 'obelisk', 'chest', 'smuggler', 'boss']
+        const forced = eventPool.find((ev) => forcedKind !== null && FORCEABLE.includes(forcedKind) && ev.kind === forcedKind)
         if (forced) chosenEvents = [forced, ...chosenEvents.filter((ev) => ev.kind !== forced.kind)].slice(0, C.EVENTS_PER_RUN)
         // Жаровня и чаша — до групп, Беглец — после (как на сервере).
         chosenEvents = devPlaceFlame(slots, eventPool, chosenEvents)
@@ -4197,8 +4200,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // пишет в тот же реф, что уезжает в срезе и финише.
         skillDamage,
         // Таран и Телекинез (13.11.2026): толкание — общая система shove.ts.
-        shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx) =>
-          shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx) ?? false,
+        shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx, keepAhead) =>
+          shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx, undefined, keepAhead) ?? false,
         // С 17.11.2026 Таран несёт всех живых (решение Андрея).
         canCarry: (enemy) => !enemy.dead,
         canShoveBoss: () => canShoveBossRef.current(),
@@ -5111,6 +5114,11 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       obelisksRef.current = []
       obeliskEventActiveRef.current = false
       obeliskTimerRef.current = 0
+      // Событие обелисков кончилось (успехом или провалом таймера) — навсегда в
+      // этом забеге: ни один удар его больше не запускает (23.11.2026). Без этого
+      // после провала незажжённый обелиск считался «первым», и удар заводил
+      // таймер заново с полного времени и доспавнивал ещё три обелиска.
+      let obeliskEventDone = false
       obeliskStruckCountRef.current = 0
       obeliskLastStruckRef.current = null
       obeliskStartPointRef.current = null
@@ -7205,7 +7213,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         if (attackHitboxRef.current) {
           const hb = attackHitboxRef.current
           for (const obelisk of obelisksRef.current) {
-            if (obelisk.struck) continue
+            if (obelisk.struck || obeliskEventDone) continue
             const box = obelisk.hitbox
             const overlap =
               hb.x < box.x + box.width &&
@@ -7421,6 +7429,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           obeliskTimerRef.current -= ticker.deltaMS
           if (obeliskStruckCountRef.current >= C.OBELISK_TOTAL) {
             obeliskEventActiveRef.current = false
+            obeliskEventDone = true
             setObeliskHud(null)
             // Все обелиски (включая стартовый) гаснут обратно в idle — они
             // остаются на карте декорацией и стеной по X, struck НЕ сбрасываем
@@ -7443,7 +7452,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
             }
           } else if (obeliskTimerRef.current <= 0) {
             obeliskEventActiveRef.current = false
+            obeliskEventDone = true
             setObeliskHud(null)
+            // Провал (23.11.2026): все обелиски гаснут и больше не бьются — событие
+            // закрыто навсегда, повторный удар ничего не запускает. Смерть ниже —
+            // как была; отменяет её только отладочный тумблер «Бессмертие».
+            for (const obelisk of obelisksRef.current) {
+              obelisk.struck = true
+              obelisk.burning = false
+              playSpriteAnim(obelisk.sprite, sheetsFor(obeliskSheets, 'обелиск').idle, C.OBELISK_ANIM_SPEED, true)
+            }
             // Провал = смерть героя — ГАРАНТИРОВАННАЯ, броня её не смягчает
             // (см. задачу "обелиск перестал убивать" — раньше шло через
             // takeDamage(hpRef.current), расчёт на "урон == текущий HP"
@@ -7529,6 +7547,13 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           const dashTravelled = (phys.x - dashStartXRef.current) * facingRef.current
           if (dashTravelled > C.DASH_DISTANCE) {
             phys.x = dashStartXRef.current + facingRef.current * C.DASH_DISTANCE
+          }
+          // Таран (23.11.2026): герой не входит в тело врага, которого несёт, —
+          // упёрся тот в стену или в другого врага, герой встаёт у него за спиной.
+          const ram = skills?.ramBlockBox() ?? null
+          if (ram) {
+            if (facingRef.current > 0) phys.x = Math.min(phys.x, ram.x - C.PLAYER_WIDTH)
+            else phys.x = Math.max(phys.x, ram.x + ram.w)
           }
         }
         // Facing на время рывка ЗАМОРОЖЕН: он задаёт и направление движения

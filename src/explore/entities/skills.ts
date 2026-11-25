@@ -298,7 +298,7 @@ export type SkillsDeps = {
    * Толкнуть врага (общая система толкания). heavyLimitPx — сколько можно
    * Звонарю и Привратнику (0 — не двигать). true — враг сдвинется.
    */
-  shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number) => boolean
+  shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number, keepAhead?: () => number | null) => boolean
   /** Можно ли толкать врага Тараном (с 17.11.2026 — всех живых). */
   canCarry: (enemy: Enemy) => boolean
   /**
@@ -421,6 +421,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
   // Таран (13.11.2026): враг, которого несёт ТЕКУЩИЙ рывок, — первый задетый
   // толкаемый. Один на рывок, сбрасывается там же, где dashHitTargets.
   let ramCarried = false
+  // Кого несёт ТЕКУЩИЙ рывок (23.11.2026): Explore.tsx не пускает героя в его
+  // тело (ramBlockBox), shove.ts держит его перед передним краем героя.
+  let ramTarget: Enemy | null = null
   // Телекинез (13.11.2026): кулдаун и летящие волны.
   let tkCdMs = 0
   type TkWave = { sprite: Sprite; t: number; originX: number; centerY: number; dir: 1 | -1; hit: Set<Enemy | Boss>; counted: boolean }
@@ -1235,6 +1238,9 @@ export function createSkillsSystem(deps: SkillsDeps) {
         })()
       : cur
 
+    const dir = deps.facing.current
+    const heroCenter = cur.x + cur.w / 2
+    const heroFront = dir > 0 ? cur.x + cur.w : cur.x
     for (const enemy of deps.enemies.current) {
       // Уже задет ЭТИМ рывком — второй раз урон не идёт. Мёртвый пропускается
       // здесь же, поэтому убитый рывком враг на следующем кадре отсеется сам.
@@ -1245,6 +1251,10 @@ export function createSkillsSystem(deps: SkillsDeps) {
         box.y < enemy.y + enemy.height &&
         box.y + box.h > enemy.y
       if (!overlap) continue
+      // Враг за спиной (центр позади центра героя по направлению рывка) Тараном
+      // не задевается (23.11.2026, решение Андрея): раньше путь за кадр брал и
+      // задний край, и Таран бил стоящего сзади и тащил его вперёд — сквозь героя.
+      if ((enemy.x + enemy.width / 2 - heroCenter) * dir <= 0) continue
       dashHitTargets.add(enemy)
       // Урон — ГОТОВОЕ число забега (deps.skillDamage), как и у тика
       // кровотечения выше. Аккумулятор — skillDamageDealt (растит ловкость),
@@ -1266,7 +1276,20 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // С 17.11.2026 Таран несёт ВСЕХ (Беглеца, Звонаря, Привратника,
       // призванных — на полный RAM_CARRY_PX); босса — ниже, на половину.
       if (!died && !ramCarried && deps.canCarry(enemy)) {
-        ramCarried = deps.shove(enemy, deps.facing.current, C.RAM_CARRY_PX, C.RAM_SHOVE_SPEED, deps.skillDamage.dash, 'ram', C.RAM_CARRY_PX)
+        // Вплотную или внахлёст — сразу к переднему краю героя (23.11.2026): иначе
+        // герой уже внутри тела, упор не работает, и он проскакивает сквозь врага.
+        // Стена мешает встать — враг остаётся, где был.
+        const backEdge = dir > 0 ? enemy.x : enemy.x + enemy.width
+        if ((heroFront - backEdge) * dir > 0) {
+          const nx = dir > 0 ? heroFront : heroFront - enemy.width
+          const lead = dir > 0 ? nx + enemy.width - 1e-3 : nx
+          const T = deps.tileSize
+          const wall = deps.isSolid(deps.grid, T, lead, enemy.y + 1) || deps.isSolid(deps.grid, T, lead, enemy.y + enemy.height / 2) || deps.isSolid(deps.grid, T, lead, enemy.y + enemy.height - 1)
+          if (!wall) enemy.x = nx
+        }
+        ramCarried = deps.shove(enemy, dir, C.RAM_CARRY_PX, C.RAM_SHOVE_SPEED, deps.skillDamage.dash, 'ram', C.RAM_CARRY_PX,
+          () => (deps.dashing.current && ramTarget === enemy ? ramFrontX() : null))
+        if (ramCarried) ramTarget = enemy
       }
     }
 
@@ -1435,8 +1458,25 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // Право засчитать применение принадлежит ОДНОМУ рывку.
     dashUseCounted = false
     ramCarried = false
+    ramTarget = null
     dashPrevBox = null
     return true
+  }
+
+  // Передний край героя по направлению рывка.
+  function ramFrontX(): number {
+    const b = deps.getPlayerCombatBox()
+    return deps.facing.current > 0 ? b.x + b.w : b.x
+  }
+
+  /**
+   * Тело, которое несёт текущий рывок (23.11.2026): Explore.tsx не пускает героя
+   * дальше его ближнего края — несомый, упёршийся в стену или в другого врага,
+   * останавливает героя у себя за спиной. null — рывка нет или никого не несёт.
+   */
+  function ramBlockBox(): { x: number; w: number } | null {
+    if (!deps.dashing.current || !ramTarget || ramTarget.dead) return null
+    return { x: ramTarget.x, w: ramTarget.width }
   }
 
   // Нажатие слота 0/1. Скилл срабатывает, только если лежит ИМЕННО в этом
@@ -1619,7 +1659,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // (герой мог стартовать вплотную к врагу). Владелец состояния рывка —
     // Explore.tsx, отсюда чтение через deps.dashing.
     if (deps.dashing.current) applyDashHits()
-    else dashPrevBox = null
+    else { dashPrevBox = null; ramTarget = null }
     updateBossRam(dt)
     // Запомненное нажатие Тарана — пробуем, пока не истекло.
     if (dashBufferMs > 0) {
@@ -1767,6 +1807,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // живыми (сам набор чистится на старте каждого рывка, см. pressSlot).
     dashHitTargets.clear()
     bossRam = null
+    ramTarget = null
   }
 
   // Удар мечом, который сейчас наносится, начат навыком slash (а не кнопкой
@@ -1778,5 +1819,5 @@ export function createSkillsSystem(deps: SkillsDeps) {
     return slashSwingPending
   }
 
-  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding, isSlashStrike }
+  return { update, dispose, onAttackStrike, onCastSpawnFrame, readCooldown, canAfford, isBleeding, isSlashStrike, ramBlockBox }
 }

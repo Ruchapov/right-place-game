@@ -21,7 +21,6 @@ async function sendAchievements(reply: FastifyReply, userId: number, extra: Reco
   const list = rows.map(achievementView).filter((v): v is AchievementView => v !== null)
   return reply.send({
     achievements: list,
-    titleKey: character.titleKey,
     bagBonusCells: character.bagBonusCells,
     // После «Забрать» — склад, руны, статы и нашивки: награда могла изменить всё.
     consumables: consumableStockOf(character),
@@ -56,21 +55,7 @@ export async function achievementRoutes(server: FastifyInstance) {
     if (!outcome.replayed) request.log.info({ userId, key }, 'achievements: reward claimed')
     return sendAchievements(reply, userId, { replayed: outcome.replayed })
   })
-
-  server.post<{ Body: { key?: unknown } }>('/achievements/title', async (request, reply) => {
-    const userId = getUserId(request)
-    if (userId === null) return reply.status(401).send({ error: 'Unauthorized' })
-    const raw = request.body?.key
-    if (raw !== null && (typeof raw !== 'string' || achievementByKey(raw) === null)) {
-      return reply.status(400).send({ error: 'Unknown achievement' })
-    }
-    const character = await prisma.character.findUnique({ where: { userId }, select: { id: true } })
-    if (!character) return reply.status(404).send({ error: 'Character not found' })
-    if (raw !== null) {
-      const row = await prisma.achievement.findUnique({ where: { characterId_key: { characterId: character.id, key: raw } } })
-      if (!row) return reply.status(400).send({ error: 'Achievement not earned' })
-    }
-    await prisma.character.update({ where: { userId }, data: { titleKey: raw } })
-    return sendAchievements(reply, userId)
-  })
+  // Титулы убраны 23.11.2026 (решение Андрея): ручки POST /achievements/title
+  // больше нет, колонка Character.titleKey в базе осталась, но её никто не
+  // читает и не отдаёт.
 }
