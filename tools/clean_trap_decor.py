@@ -115,18 +115,10 @@ def clean_map(letter, state, previews):
     labels, n, fringe, opaque = R.components(rgba, grid, letter)
 
     traps = R.all_traps(slots)
-    zone = np.zeros((H * T, W * T), bool)
-    for k, t in traps:
-        for cx, cy in R.zone_cells(k, t, grid):
-            if 0 <= cy < H and 0 <= cx < W and grid[cy][cx] not in '#=':
-                zone[cy * T:(cy + 1) * T, cx * T:(cx + 1) * T] = True
-    # Сундуки, бочки и кувшины (17.11.2026) — пиксельные прямоугольники спрайтов.
+    # Зоны ловушек и прямоугольники сундуков, бочек и кувшинов (17.11.2026) — одна
+    # функция с drop_floor_decor.py (R.cleanup_zone, 26.11.2026).
     objects = R.object_rects(slots)
-    for _k, _p, x0, y0, x1, y1 in objects:
-        a, b = max(0, int(x0)), min(W * T, int(np.ceil(x1)))
-        c, d = max(0, int(y0)), min(H * T, int(np.ceil(y1)))
-        zone[c:d, a:b] = True
-    zone &= R.empty_pixels(grid)
+    zone = R.cleanup_zone(grid, slots)
     hit = np.unique(labels[zone & opaque & ~fringe])
     hit = hit[hit > 0]
     # Кромку платформы (R.components: область шире FRINGE_W клеток или выше

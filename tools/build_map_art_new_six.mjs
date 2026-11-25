@@ -62,6 +62,24 @@ const MAPS = {
   Y: { key: 'swamp-yards', theme: 'swamp', pack: PACK_SWAMP },
 }
 
+// Декор на кромку пола (26.11.2026, tools/drop_floor_decor.py; docs/maps.md,
+// «Правки 26.11»): у кладбищенских A и B предметы висели над светлым кантом плиты.
+// Рабочая копия рядом с пакетом (пакет Codex не правится): world-overlay.png с
+// опущенным декором и layout со сдвинутыми свечами. Закреплена sha256 — пересобрал
+// копию — обнови числа здесь. Пакетный world-overlay по-прежнему сверяется с
+// manifest.json (рабочая копия выведена из него).
+const WORK_DECOR_DIR = `${ART}/maps/new-six/decor-floor-2026-11-26`
+const WORK_DECOR = {
+  'burial-quarter': { 'world-overlay.png': 'af885721c60ce8739b58a744aee7c6f7d99d52d4f422e9d14d459aececaa89ea', 'added-layout.json': '0daf926f1c02b0b31a3c48e65b868d2437aa2ed9366bb3605240ad3ff45e7766' },
+  procession: { 'world-overlay.png': '75af44e7e55f371662eb8cc84d766c7bdd57f1975ebe5887c214797ea37ebabf', 'decor-layout.json': 'dcce842721281c1cd1fc3f2c5f64044f7081eabd114f0e42631992cd2eda088c' },
+}
+function workDecor(key, name) {
+  const file = `${WORK_DECOR_DIR}/${key}/${name}`
+  if (!fs.existsSync(file)) fail(`нет рабочей копии декора ${file} (tools/drop_floor_decor.py)`)
+  if (sha(file) !== WORK_DECOR[key][name]) fail(`рабочая копия ${key}/${name} не та, что закреплена в WORK_DECOR`)
+  return file
+}
+
 function fail(msg) { console.error(`\nСТОП: ${msg}`); process.exit(1) }
 const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const manifests = {}
@@ -124,7 +142,12 @@ async function buildMap(letter) {
   const { key, theme, pack = PACK_SIX } = MAPS[letter]
   const file = `map_${letter}_${key}.txt`
   console.log(`\n== ${letter} — ${key} (${file})`)
-  const overlay = pinned(`${key}/world-overlay.png`, pack)
+  const packOverlay = pinned(`${key}/world-overlay.png`, pack)
+  const overlay = WORK_DECOR[key] ? workDecor(key, 'world-overlay.png') : packOverlay
+  if (WORK_DECOR[key]) {
+    for (const name of Object.keys(WORK_DECOR[key])) workDecor(key, name)
+    console.log(`  декор на кромке: рабочая копия ${WORK_DECOR_DIR}/${key}`)
+  }
   const config = JSON.parse(fs.readFileSync(pinned(`${key}/render-config.json`, pack), 'utf8'))
   const packRows = gridRows(fs.readFileSync(pinned(`${key}/${key}.txt`, pack), 'utf8'))
   const rows = gridRows(fs.readFileSync(path.join(REPO, 'public/assets/maps', file), 'utf8'))
@@ -141,7 +164,7 @@ async function buildMap(letter) {
   // Живой огонь (12.11.2026): нарисованное пламя свечей и огонёк в нише колонны
   // стираются со слоя — огонь рисует игра (tools/live_decor_flames.mjs).
   const flames = []
-  for (const e of candlePlacements(pack, key)) {
+  for (const e of candlePlacements(WORK_DECOR[key] ? WORK_DECOR_DIR : pack, key)) {
     for (const f of eraseInLayer(layer, W, H, e, await loadAsset(e.asset))) flames.push({ kind: CANDLE_ASSETS[e.asset].kind, ...f })
   }
   for (const box of NICHES[key] ?? []) {

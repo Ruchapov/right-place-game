@@ -2,7 +2,7 @@
 //
 // Окно — каменная рамка итогов (results_frame.png) 9-slice'ом: углы не тянутся,
 // стороны и середина тянутся, поэтому одна рамка годится и в вертикали, и
-// набок. Внутри — колокол со свечением, заголовок, восемь даров плитками (две
+// набок. Внутри — колокол со свечением, заголовок, семь даров плитками (две
 // колонки, набок — четыре), внизу кнопка или срок. Содержимое прокручивается
 // внутри рамки, кнопка всегда видна.
 //
@@ -29,6 +29,10 @@ const CSS = `
 .rp-prem-frame { animation: rp-prem-rise 420ms cubic-bezier(.2,.9,.3,1.1) both }
 .rp-prem-glow { animation: rp-prem-glow 3.4s ease-in-out infinite }
 .rp-prem-tile { animation: rp-prem-tile 380ms ease-out both }
+/* Даров семь (26.11.2026: «Знак Колокола у имени» убран). Последний — подарок —
+   на две колонки: в вертикали это вся строка (3 ряда по 2 + 1 широкая), набок
+   — 4 + (1 + 1 + 2): одинокой плитки в последнем ряду нет. */
+.rp-prem-gift { grid-column: span 2 }
 .rp-prem-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px }
 .rp-prem-head { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center }
 .rp-prem-btn { transition: transform .08s ease, filter .12s ease }
@@ -56,7 +60,6 @@ function gifts(giftTier: number): Gift[] {
     { title: `Сумка шире на ${PREMIUM_BAG_CELLS} ячеек`, line: 'Унесёшь больше добычи', icon: <Img src={ICON('nav_shop.png')} alt="Сумка" /> },
     { title: 'Боссы попадаются чаще', line: 'Вдвое чаще там, где они живут', icon: <Img src={ICON('event_boss.png')} alt="Босс" /> },
     { title: 'Сила, выносливость и ловкость растут вдвое быстрее', line: 'Каждый удар и рана учат вдвое', icon: <Img src={ICON('icon_strength.png')} alt="Рост" /> },
-    { title: 'Знак Колокола у имени', line: 'В рейтинге, гильдии и чате', icon: <PremiumBadge size={34} /> },
     { title: `В подарок ${PREMIUM_GIFT_POTIONS} зелий твоего уровня`, line: potion ? `${potion.nameRu} — при каждой печати` : 'При каждой печати', icon: potion ? <Img src={ICON(potion.icon)} alt={potion.nameRu} /> : null },
   ]
 }
@@ -108,8 +111,8 @@ export function PremiumSheet({ leftMs, rp, giftTier, busy, error, onBuy, onClose
           </div>
           <div style={{ height: 1, margin: '12px 8px', background: `linear-gradient(90deg, transparent, ${C.glowEdge}, transparent)` }} />
           <div className="rp-prem-grid">
-            {gifts(giftTier).map((g, i) => (
-              <div key={g.title} className="rp-prem-tile" style={{
+            {gifts(giftTier).map((g, i, all) => (
+              <div key={g.title} className={i === all.length - 1 ? 'rp-prem-tile rp-prem-gift' : 'rp-prem-tile'} style={{
                 animationDelay: `${120 + i * 45}ms`,
                 boxSizing: 'border-box', minWidth: 0, display: 'flex', gap: 8, alignItems: 'center', textAlign: 'left',
                 padding: '9px 9px', borderRadius: 10,

@@ -583,5 +583,26 @@ def object_rects(slots):
     return out
 
 
+def cleanup_zone(grid, slots):
+    """Пиксели, где clean_trap_decor.py стирает декор (зоны всех ловушек и
+    прямоугольники сундуков, бочек и кувшинов), — только пустые клетки. Одна
+    функция на чистку и на drop_floor_decor.py (26.11.2026): декор, который
+    чистка сотрёт, на кромку не опускается — иначе его низ уйдёт в клетку пола,
+    куда чистка не заходит, и на плите останутся обрезки."""
+    import numpy as np
+    H, W = len(grid), len(grid[0])
+    zone = np.zeros((H * TS, W * TS), bool)
+    for k, t in all_traps(slots):
+        for cx, cy in zone_cells(k, t, grid):
+            if 0 <= cy < H and 0 <= cx < W and grid[cy][cx] not in '#=':
+                zone[cy * TS:(cy + 1) * TS, cx * TS:(cx + 1) * TS] = True
+    for _k, _p, x0, y0, x1, y1 in object_rects(slots):
+        a, b = max(0, int(x0)), min(W * TS, int(np.ceil(x1)))
+        c, d = max(0, int(y0)), min(H * TS, int(np.ceil(y1)))
+        zone[c:d, a:b] = True
+    zone &= empty_pixels(grid)
+    return zone
+
+
 def counter_rows(traps):
     return Counter(footprint(k, t)[0][1] for k, t in traps)

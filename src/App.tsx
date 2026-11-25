@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { PremiumBadge } from './ui/PremiumBadge'
 import { PremiumSheet, PremiumGiftNotice } from './ui/PremiumSheet'
-import { isPremium, premiumLeftMs, premiumBagCells, premiumLuck, premiumGiftTier, PREMIUM_LUCK, PREMIUM_PRICE_RP, premiumLeftLine } from './premium'
+import { isPremium, premiumLeftMs, premiumBagCells, premiumLuck, premiumGiftTier, PREMIUM_PRICE_RP, premiumLeftLine } from './premium'
 import { QUEST_SET_SIZE_PREMIUM } from './quests'
 import { buyPremium, readPremiumUntilMs } from './api'
 import { getAudioSettings, setAudioSettings, subscribeAudioSettings } from './audio/sound'
@@ -2856,7 +2856,7 @@ export default function App() {
       case 'Tier not unlocked': return 'Это зелье ещё не открыто по уровню.'
       case 'Invalid count': return `Количество должно быть от 1 до ${MAX_POTIONS_PER_PURCHASE}.`
       case 'Unknown potion tier': return 'Неизвестный тир зелья.'
-      case 'Unknown consumable': return 'Неизвестный расходник.'
+      case 'Unknown consumable': return 'Неизвестный припас.'
       case 'Not unlocked': return 'Этот предмет ещё не открыт по уровню.'
       // С 15.10.2026 место в сумке при покупке проверяет и сервер; с 26.10.2026
       // — по штукам, и в отказе он называет, сколько свободно (free).
@@ -2952,7 +2952,7 @@ export default function App() {
     if (shopBalanceUnknown) return
     const spec = consumableById(id)
     if (spec === null) {
-      setShopBuyError('Неизвестный расходник.')
+      setShopBuyError('Неизвестный припас.')
       return
     }
     // Тем же разбором, что у сервера (общий каталог) — чтобы отказ выглядел
@@ -3464,7 +3464,7 @@ export default function App() {
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_hp.png`, value: p.endurance, label:'Выносл.' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_strength.png`, value: p.strength, label:'Сила' },
               { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_agility.png`, value: p.agility, label:'Ловкость' },
-              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown && p.luck !== null ? (premiumActive ? `${premiumLuck(p.luck, true) + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0)} (+${PREMIUM_LUCK})` : p.luck + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0)) : '—', label:'Удача' },
+              { iconSrc: `${import.meta.env.BASE_URL}assets/icons/icon_luck.png`, value: equipStatsKnown && p.luck !== null ? premiumLuck(p.luck, premiumActive) + inventory.filter(i => i.equipped).reduce((sum, i) => sum + (i.item.luck ?? 0), 0) : '—', label:'Удача' },
             ]
             const filledEnergySegments = Math.round(energy / MAX_ENERGY * 10)
 
@@ -4922,9 +4922,9 @@ export default function App() {
                     open: { kind: 'consumable' as const, consumableId: c.id },
                   }, player?.consumables?.[c.id] ?? 0, c.takesCell)),
                 note: player === null
-                  ? 'Профиль не загружен — запас расходников неизвестен.'
+                  ? 'Профиль не загружен — запас припасов неизвестен.'
                   : player.consumables === null
-                    ? 'Сервер не назвал запас расходников.'
+                    ? 'Сервер не назвал запас припасов.'
                     : null,
               },
               // Предметы классов — Осколок души и Печать отречения (18.10.2026).
@@ -5081,7 +5081,7 @@ export default function App() {
                 : { display:'flex', gap:6, overflowX:'auto', marginBottom:10, padding:'0 8px' }}>
                 {([
                   { id: 'equipment' as const, label: 'Экипировка' },
-                  { id: 'consumables' as const, label: 'Расходники' },
+                  { id: 'consumables' as const, label: 'Припасы' },
                   { id: 'books' as const, label: 'Книги' },
                   // Четвёртая подвкладка. Страницы выделены НЕ по вместимости
                   // (ячейку они не тратят вовсе), а по действиям: «Собрать
@@ -5774,7 +5774,7 @@ export default function App() {
                   ...(sideMenu ? { maxHeight:150, overflowY:'auto' } : {}) }}>
                   {stock === null ? (
                     <div style={{ fontSize:11, color:C.textDim, textAlign:'center' }}>
-                      Запас расходников неизвестен — профиль не загружен.
+                      Запас припасов неизвестен — профиль не загружен.
                     </div>
                   ) : available.length === 0 ? (
                     <div style={{ fontSize:11, color:C.textDim, textAlign:'center' }}>

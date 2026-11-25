@@ -9,7 +9,7 @@ export type TrapTint = { gargoyle?: [number, number, number]; stalactite?: [numb
 export const TRAP_SRC_LUM = { gargoyle: 0.389, stalactite: 0.4121, rubble: 0.4244 }
 
 export const TRAP_TINTS: Record<string, TrapTint> = {
-  'map_A_burial-quarter.txt': { stalactite: [115, 108, 87], sawSink: { '47,15': 3 } },
+  'map_A_burial-quarter.txt': { stalactite: [115, 108, 86], sawSink: { '47,15': 3 } },
   'map_B2_swamp.txt': { stalactite: [89, 72, 51] },
   'map_B_procession.txt': { gargoyle: [113, 106, 86], stalactite: [113, 107, 87], sawSink: { '26,37': 0, '50,29': 0 } },
   'map_C2_swamp_boss.txt': { gargoyle: [89, 72, 49], stalactite: [96, 78, 54], sawSink: { '46,10': 0 } },

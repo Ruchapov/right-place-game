@@ -912,11 +912,6 @@ function ResultsScreen({
 
           {/* 3. Плита с трофеями (общая с окном о прошлом забеге). */}
           <TrophyPlate lossView={trophyLossView} count={trophyCount} color={result.died ? Theme.danger : Theme.glowCore} />
-          {!result.died && (result.premiumTrophies ?? 0) > 0 && (
-            <div data-premium-trophies="" style={{ fontSize: 12, color: Theme.glowCore, textAlign: 'center' }}>
-              из них +{result.premiumTrophies} — Печать Колокола
-            </div>
-          )}
 
           {/* Числа выше — клиентская оценка, пока на экране нет ответа сервера
               (всё, кроме 'saved'). Пометка отдельной строкой ПОД плитой, а не
@@ -3273,7 +3268,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // такой сервер на финише всё равно не смог бы.
         const takenFromServer = startExploreResult.consumablesTaken
         if (takenFromServer !== undefined && !Array.isArray(takenFromServer)) {
-          throw new Error('Сервер прислал негодный список расходников (consumablesTaken). Забег не показан.')
+          throw new Error('Сервер прислал негодный список припасов (consumablesTaken). Забег не показан.')
         }
         const charmSpec = (takenFromServer ?? [])
           .map((id) => (typeof id === 'string' ? consumableById(id) : null))
@@ -3327,7 +3322,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           const stock = readConsumables(startExploreResult.consumables)
           if (stock === null) {
             throw new Error(
-              'Сервер списал расходники, но не назвал остаток склада. Забег не показан; он закроется без штрафа, энергия вернётся.',
+              'Сервер списал припасы, но не назвал остаток склада. Забег не показан; он закроется без штрафа, энергия вернётся.',
             )
           }
           onConsumablesSpent?.(stock)
