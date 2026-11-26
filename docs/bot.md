@@ -86,3 +86,42 @@ CREATE TABLE): колонки персонажа `botAllowed`, `botBlocked`, `no
 переключатель `premium` («Печать Колокола») в настройках игры и бота. Каждое —
 ровно один раз за срок: `Character.premiumNoticeStage` (0–3) пишется условной
 записью; покупка ставит 0.
+
+## Описание бота и путь нового игрока (26.11.2026)
+
+Жалоба: человек из канала @rightplace_news не смог зайти в игру — «возможно,
+потому что не писал боту»; и в пустом чате бота нет приветствия.
+
+**Описание для пустого чата.** `registerBotWebhook` (`bot/webhook.ts`) при старте
+сервера ставит теперь, кроме вебхука и команд, `setMyDescription` («Right Place —
+тёмный платформер-рогалик прямо в Telegram. Вылазки, враги и боссы, добыча и
+прокачка героя. Нажми «Начать», чтобы играть.») и `setMyShortDescription`
+(«Тёмный платформер-рогалик в Telegram: вылазки, боссы, добыча.»), тем же `call`
+через воркер. Лог: `bot: setMyDescription ok` / `bot: setMyShortDescription ok`
+или `… failed` с описанием от Telegram.
+
+**Вход нового игрока — две поломки в коде, обе исправлены:**
+1. `parseTelegramUser` (`server/src/auth.ts`) второй раз раскодировал поле `user`,
+   которое `URLSearchParams.get` уже раскодировал: имя с «%» давало `URIError` →
+   400 «Cannot parse user data», игрок не входил вовсе. Теперь — `JSON.parse` как
+   есть, старый путь — запасной.
+2. Гонка первого входа (`routes/auth.ts`): первый запрос нового игрока медленный
+   (создание на холодной базе), клиент по таймауту 20 с шлёт повтор, оба не
+   находят игрока, второй `create` падал на уникальности `telegramId` → 500.
+   Теперь проигравший гонку (`P2002`) перечитывает игрока; лог `login: new player
+   created by a parallel login, re-reading`, прочие ошибки создания —
+   `login: new player create failed`.
+Писал ли человек боту, для входа НЕ важно: Mini App по ссылке
+`t.me/RightPlaceGame_bot/game` даёт подписанный initData и без чата с ботом.
+
+⚠️ Логи сервера сессия 26.11 НЕ видела — SSH на `161.104.30.53` заблокирован
+фильтром разрешений среды. Что снять Андрею (из cmd):
+`ssh root@161.104.30.53 "journalctl -u rightplace --since '2026-11-25' | grep -iE 'auth|login|initData|401|500|card send'"`.
+Ищем: `Invalid initData` (401 — подпись не сошлась: не тот бот или старый токен),
+`Cannot parse user data`, `login: new player create failed`, 500 на `/auth/login`,
+`bot: card send failed` (карточка `/start` не ушла — причина в строке). И в
+BotFather: `/myapps` → бот → Mini App `game` → Edit Web App URL — должен быть
+`https://rightplace-game.ru` (после переезда 24.11). Если там старый адрес
+GitHub Pages — новый игрок открывает СТАРЫЙ фронт, который ходит на
+приостановленный Render, и вход не проходит. У игрока спросить скрин того, что он
+видел (экран ошибки или пустой экран).
