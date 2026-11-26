@@ -33,11 +33,7 @@ import type {
 import {
   isSolid,
   isPlatformBandBlocking,
-  isOverlappingPlatformBand,
   cellFootBlockTop,
-  sweepHeadBlock,
-  isOverlappingAtFrameStart,
-  sweepFootBlock,
 } from './explore/collision'
 import { backdropForMap, slotsFileForMap, isPointXY, readTrapsPerRun, isGargoyleSlot, isStalactiteSlot, isSawSlot, buildEventCandidates, devPlaceFlame, devPlaceRunner, eventCells } from './explore/mapEvents'
 import { POTION_TIERS, POTION_TIER_COUNT, MAX_SIPS_PER_RUN, emptyPotionStock, highestAvailableTier, potionHealAmount } from './potions'
@@ -60,6 +56,7 @@ import { createBossSystem, redrawBossHpBar, bossBox } from './explore/entities/b
 import { BOSS_PERCEPTION } from './explore/perception'
 import { decayStepLift } from './explore/stepClimb'
 import { bakeStoneTint } from './explore/entities/stoneTint'
+import { resolveHeroWalls, heroJumpStart, heroJumpCut, heroGravityAndCollide, type JumpCut } from './explore/heroMove'
 import { TRAP_SRC_LUM, TRAP_TINTS } from './explore/trapTints'
 import { canSeePlayer } from './explore/vision'
 import { createFencerSystem, fencerSwordHit } from './explore/entities/fencer'
@@ -6926,8 +6923,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
 
       // Прыжок от длины нажатия (30.10.2026): ждёт ли текущий прыжок среза и
       // сколько мс прошло от толчка. Переменные setup(), как allEventsClosed.
-      let jumpCutPending = false
-      let jumpAirMs = 0
+      const jumpCut: JumpCut = { pending: false, airMs: 0 }
       // Хитстоп (30.10.2026): сколько мс игре ещё стоять. Не копится — новое
       // попадание только продлевает до HITSTOP_MS, а не прибавляет.
       let hitstopMsLeft = 0
@@ -7582,45 +7578,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // бы в одну сторону, а смотрел в другую.
         if (!heroLocked && !dashingRef.current && dirRef.current !== 0) facingRef.current = dirRef.current > 0 ? 1 : -1
 
-        if (phys.vx > 0) {
-          const px = phys.x + C.PLAYER_WIDTH - 1
-          let hit =
-            isSolid(grid, C.TILE_SIZE, px, phys.y + headOffset + 1) ||
-            isSolid(grid, C.TILE_SIZE, px, phys.y + C.PLAYER_HEIGHT / 2) ||
-            isSolid(grid, C.TILE_SIZE, px, phys.y + C.PLAYER_HEIGHT - 1)
-          if (!hit) {
-            // Сначала: уже внутри полосы (по текущему положению, не по цели)?
-            const stuckInBand = isOverlappingPlatformBand(grid, C.TILE_SIZE, startX, C.PLAYER_WIDTH, phys.y + headOffset, phys.y + C.PLAYER_HEIGHT)
-            if (!stuckInBand) {
-              const band = isPlatformBandBlocking(grid, C.TILE_SIZE, px, phys.y + headOffset, phys.y + C.PLAYER_HEIGHT)
-              if (band) hit = true
-            }
-          }
-          if (hit) {
-            phys.x = Math.floor((phys.x + C.PLAYER_WIDTH) / C.TILE_SIZE) * C.TILE_SIZE - C.PLAYER_WIDTH
-            phys.vx = 0
-          }
-        } else if (phys.vx < 0) {
-          const px = phys.x
-          let hit =
-            isSolid(grid, C.TILE_SIZE, px, phys.y + headOffset + 1) ||
-            isSolid(grid, C.TILE_SIZE, px, phys.y + C.PLAYER_HEIGHT / 2) ||
-            isSolid(grid, C.TILE_SIZE, px, phys.y + C.PLAYER_HEIGHT - 1)
-          if (!hit) {
-            // Сначала: уже внутри полосы (по текущему положению, не по цели)?
-            const stuckInBand = isOverlappingPlatformBand(grid, C.TILE_SIZE, startX, C.PLAYER_WIDTH, phys.y + headOffset, phys.y + C.PLAYER_HEIGHT)
-            if (!stuckInBand) {
-              const band = isPlatformBandBlocking(grid, C.TILE_SIZE, px, phys.y + headOffset, phys.y + C.PLAYER_HEIGHT)
-              if (band) hit = true
-            }
-          }
-          if (hit) {
-            phys.x = (Math.floor(phys.x / C.TILE_SIZE) + 1) * C.TILE_SIZE
-            phys.vx = 0
-          }
-        }
-
-        phys.x = clamp(phys.x, 0, worldWidthPx - C.PLAYER_WIDTH)
+        // Стены и полоса '=' по X — src/explore/heroMove.ts (тот же код, им же
+        // проверяется проходимость карт: tools/hero_engine_check.mjs).
+        resolveHeroWalls(grid, phys, startX, headOffset, worldWidthPx)
 
         // Прыжок: только с тверди (или в койот-окно после схода с края),
         // двойного прыжка нет. Одно нажатие — ровно один прыжок.
@@ -7647,11 +7607,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
           // сработает, как только стойка кончится, если буфер не истечёт.
           !parryingRef.current
         ) {
-          phys.vy = -C.JUMP_VELOCITY
-          phys.onGround = false
-          // Прыжок от длины нажатия (30.10.2026): срез ещё возможен.
-          jumpCutPending = true
-          jumpAirMs = 0
+          heroJumpStart(phys, jumpCut)
           // Оба окна гасим ЗДЕСЬ и только здесь: буфер — чтобы одно нажатие не
           // дало второй прыжок в следующем кадре, койот — чтобы прыжок из
           // койот-окна не оставил это же окно на второй прыжок в воздухе.
@@ -7667,73 +7623,12 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // полутора клеток). Удержание — полный прыжок, как раньше. Прыжок из
         // буфера: кнопку уже отпустили к толчку — он низкий, срез на 110-й мс.
         // Высшая точка или удар головой (vy >= 0) — срез больше не нужен.
-        if (jumpCutPending) {
-          if (phys.vy >= 0) {
-            jumpCutPending = false
-          } else if (!jumpedThisFrame) {
-            jumpAirMs += ticker.deltaMS
-            if (!jumpHeldRef.current && jumpAirMs >= C.JUMP_MIN_HOLD_MS) {
-              phys.vy *= C.JUMP_CUT_MULT
-              jumpCutPending = false
-            }
-          }
-        }
+        // Прыжок от длины нажатия — src/explore/heroMove.ts (heroJumpCut).
+        heroJumpCut(phys, jumpCut, jumpHeldRef.current, ticker.deltaMS, jumpedThisFrame)
 
-        // Вертикальная физика (гравитация + приземление)
+        // Вертикальная физика (гравитация + приземление) — src/explore/heroMove.ts
         const wasOnGround = phys.onGround
-        phys.vy = Math.min(phys.vy + C.GRAVITY * dt, C.MAX_FALL)
-        phys.y += phys.vy * dt
-
-        phys.onGround = false
-        if (phys.vy > 0) {
-          // Приземление сверху: проверяем весь путь ног за кадр, не только
-          // конечную точку — иначе на просевшем кадре можно провалиться
-          // сквозь тонкую полосу '=', не попав в неё ни разу.
-          const prevFootY = startY + C.PLAYER_HEIGHT
-          const footY = phys.y + C.PLAYER_HEIGHT
-          const blockTop = sweepFootBlock(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, prevFootY, footY)
-          if (blockTop !== null) {
-            phys.y = blockTop - C.PLAYER_HEIGHT
-            phys.vy = 0
-            phys.onGround = true
-          }
-        } else if (phys.vy < 0) {
-          // Удар головой снизу вверх: та же защита от туннелирования —
-          // проверяем весь путь [headY, prevHeadY] за кадр. '#' — вся
-          // клетка, '=' — только полоса.
-          // В ПРЫЖКЕ (phys.onGround уже false в этой ветке — vy<0 бывает
-          // только во время взлёта) верх проверки опущен на headOffset=
-          // JUMP_HIT_OFFSET_Y, к макушке прыжковой позы — иначе полный бокс
-          // (128 высотой) торчит головой выше спрайта и упирается в пустоту.
-          // На земле headOffset=0, поведение не меняется (эта ветка на земле
-          // и не выполняется, т.к. vy<0 там не бывает).
-          const headOffset = phys.onGround ? 0 : C.JUMP_HIT_OFFSET_Y
-          const prevHeadY = startY + headOffset // y ДО y += vy*dt (startY захвачен в начале тика)
-          const headY = phys.y + headOffset
-          const pushTo = sweepHeadBlock(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, prevHeadY, headY)
-          if (pushTo !== null) {
-            phys.y = pushTo - headOffset
-            phys.vy = 0
-          } else if (
-            // НИЖНЯЯ граница диапазона намеренно НЕ сдвинута (startY +
-            // PLAYER_HEIGHT, как было) — только верхняя поднята на
-            // headOffset. Если ужать и верх, и низ на headOffset, нижняя
-            // граница проверки уезжает в клетку под ногами игрока и rollback
-            // срабатывает каждый кадр прыжка (замораживал игрока на месте,
-            // уже наступали на эти грабли раньше).
-            isOverlappingAtFrameStart(grid, C.TILE_SIZE, phys.x, C.PLAYER_WIDTH, prevHeadY, startY + C.PLAYER_HEIGHT)
-          ) {
-            // Зашли сбоку под ступень: пересечения границы за кадр не было
-            // (голова уже была внутри полосы на старте кадра), sweep выше
-            // ничего не нашёл. Откатываем движение вверх за этот кадр —
-            // без перепозиционирования по blockBottom, никакого телепорта.
-            // Снап возвращает phys.y ровно туда, где он был ДО этого кадра
-            // (startY) — headOffset тут ни при чём, phys.y всегда верх
-            // ПОЛНОГО бокса, а не сдвинутой головы.
-            phys.y = startY
-            phys.vy = 0
-          }
-        }
+        heroGravityAndCollide(grid, phys, startY, dt)
 
         // Приземление (край перехода "не на земле" -> "на земле" за этот
         // кадр) — запускает land, только если игрок не бежит и не прыгает

@@ -301,7 +301,7 @@ HERO = '--hero' in sys.argv
 def hero_reach(letter):
     """4i — покадровая проходимость героем (tools/hero_reach.mjs). Пусто — ок."""
     import subprocess
-    r = subprocess.run(['node', str(ROOT / 'tools' / 'hero_reach.mjs'), letter], capture_output=True, text=True, encoding='utf-8')
+    r = subprocess.run(['node', str(ROOT / 'tools' / 'hero_reach.mjs'), '--check', letter], capture_output=True, text=True, encoding='utf-8')
     out = (r.stdout or '').strip()
     print('  4i ' + out.replace(chr(10), chr(10) + '     '))
     return '' if r.returncode == 0 else out.split(chr(10), 1)[-1].strip()

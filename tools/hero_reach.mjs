@@ -1,182 +1,58 @@
-// Покадровая проходимость карты ГЕРОЕМ (26.11.2026) — той же физикой, что в
-// Explore.tsx (горизонталь и вертикаль тикера, collision.ts), без упрощений
-// модели прыжка map_tools.py. Read-only.
+// Проходимость карты ГЕРОЕМ НАСТОЯЩИМ КОДОМ ИГРЫ (26.11.2026, переписан в
+// «Правки 26.11 (мосты)»). Read-only.
 //
-//   node tools/hero_reach.mjs [буквы]          отчёт
-//   node tools/hero_reach.mjs Y --json out.json   ещё и рёбра клеток в файл
+//   node tools/hero_reach.mjs [буквы]            отчёт
+//   node tools/hero_reach.mjs --check [буквы]    то же, код 1 при нарушениях
+//   node tools/hero_reach.mjs Y --json out.json  ещё и рёбра клеток в файл
 //
-// Что повторено из игры (60 к/с, dt = 1): vx = ±MOVE_SPEED сразу (разгона нет);
-// стена по X — три точки бокса 54×128 (верх с headOffset 40 в воздухе,
-// середина, ноги) и полоса '=' (верхние 44% клетки) с защитой «уже в полосе»;
-// прыжок −11.5, гравитация 0.31, MAX_FALL 20; срез прыжка ×0.5 не раньше
-// 110 мс от толчка (отпустил кнопку); удар головой sweepHeadBlock и откат
-// «уже внутри на старте кадра»; приземление sweepFootBlock; койот 80 мс.
-// Не повторено: враги, сундуки, обелиски (тела-стены), ступень героя (её у героя
-// нет), рывок.
+// Движение — src/explore/heroMove.ts, ТЕ ЖЕ функции, что зовёт тикер
+// Explore.tsx (стены и полоса '=' по X, толчок и срез прыжка, гравитация,
+// приземление, удар головой), плюс константы из src/explore/constants.ts. Модули
+// грузит vite (ssrLoadModule) — как в игре, без копии формул. Порядок вызовов за
+// кадр — как в тикере: x += vx → resolveHeroWalls → толчок (на земле или в
+// койот-окно) → heroJumpCut → heroGravityAndCollide → койот.
 //
-// Метод: для каждой клетки стояния — поиск в ширину по состояниям героя
-// (x, y, vy, на земле, срез, койот) от стойки в этой клетке, со всеми
-// вводами каждый кадр (влево/стоять/вправо × прыжок/срез). Стоит на земле в
-// другой клетке — ребро. Потом волны туда (от старта) и обратно (к старту).
+// ДВЕ ПРОВЕРКИ:
+//  1. Волна: поиск в ширину по всем вводам (влево/стоять/вправо × прыжок /
+//     держать / отпустить) от каждой клетки стояния — дойти до каждой клетки от
+//     старта и вернуться.
+//  2. ЕСТЕСТВЕННЫЙ ВВОД (её не было — потому 26.11 и пропустили низкий мост на Y):
+//     игрок стоит у края своей площадки в сторону цели (клетка стояния выше на
+//     1–2, dx 1–2), держит прыжок и жмёт к цели, пока не окажется над ней. Если так цель не
+//     берётся (а подобрав середину ступени и момент отпускания — берётся), это
+//     капкан: игрок жмёт как обычно и не поднимается. Волна 1 его не видит — она
+//     ищет ЛЮБОЙ ввод. На Y так было у концов настила: в прыжке верх бокса героя
+//     опущен на JUMP_HIT_OFFSET_Y = 40 px, а полоса '=' — 28 px, и герой со
+//     ступени подлезал под край моста и бился о него головой.
+// Не повторено: враги, сундуки и обелиски (тела-стены — 4g/4h check_map_slots.py),
+// рывок.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const MAPS = path.join(ROOT, 'public', 'assets', 'maps')
-const T = 64
-const PW = 54
-const PH = 128
-const HEAD_OFF = 40
-const BAND = T * 0.44
-const MOVE = 4
-const JV = 11.5
-const G = 0.31
-const MAX_FALL = 20
-const CUT = 0.5
-const MIN_HOLD_F = Math.ceil(110 / (1000 / 60)) // кадров до среза
-const COYOTE_F = Math.floor(80 / (1000 / 60))
-const AIR_MAX_F = 150
-// Отпустить кнопку прыжка — на этих кадрах от толчка (срез ×0.5). Все кадры
-// подряд взрывают перебор, а высоты среза между ними отличаются меньше 8 px.
-const CUT_AT = new Set([7, 9, 12, 15, 19, 24, 30])
+const MAPS = process.env.HERO_MAPS || path.join(ROOT, 'public', 'assets', 'maps') // HERO_MAPS — другая папка (сверить старую сетку)
 
-export function loadGrid(file) {
-  return fs.readFileSync(file, 'utf8').split('\n').map((r) => r.replace(/\r$/, '')).filter((r) => r.length > 0)
+// Капканы «естественного ввода», которые Андрей видел и пока оставил (решение
+// нужно его): полки-лестницы W из двух клеток '==' по диагонали со сдвигом в
+// клетку — та же причина (бокс в прыжке подлезает под полосу). Подъём полки даёт
+// подъём на 3, сдвиг вбок переносит капкан на соседнюю. См. docs/maps.md,
+// «Правки 26.11 (мосты)».
+const ACCEPTED_NATURAL = {
+  W: new Set(['6,9>7,7', '6,23>7,21', '20,16>19,14', '20,30>19,28', '51,19>52,17', '51,33>52,31', '65,12>64,10', '65,26>64,24',
+    '6,9>8,7', '6,23>8,21', '20,16>18,14', '20,30>18,28', '51,19>53,17', '51,33>53,31', '65,12>63,10', '65,26>63,24']),
 }
 
-export function makeWorld(grid) {
-  const H = grid.length
-  const W = grid[0].length
-  const at = (cx, cy) => grid[cy][cx]
-  const isSolid = (px, py) => {
-    const cx = Math.floor(px / T), cy = Math.floor(py / T)
-    if (cy < 0) return false
-    if (cy >= H) return true
-    if (cx < 0 || cx >= W) return true
-    return at(cx, cy) === '#'
-  }
-  const bandBlocking = (px, top, bottom) => {
-    const cx = Math.floor(px / T)
-    if (cx < 0 || cx >= W) return false
-    const a = Math.floor(top / T), b = Math.floor((bottom - 1) / T)
-    for (let cy = a; cy <= b; cy++) {
-      if (cy < 0 || cy >= H || at(cx, cy) !== '=') continue
-      const ct = cy * T
-      if (top < ct + BAND && bottom > ct) return true
-    }
-    return false
-  }
-  const overlapBand = (left, top, bottom) => {
-    const x0 = Math.floor(left / T), x1 = Math.floor((left + PW - 1) / T)
-    const a = Math.floor(top / T), b = Math.floor((bottom - 1) / T)
-    for (let cy = a; cy <= b; cy++) {
-      if (cy < 0 || cy >= H) continue
-      const ct = cy * T
-      if (!(top < ct + BAND && bottom > ct)) continue
-      for (let cx = x0; cx <= x1; cx++) if (cx >= 0 && cx < W && at(cx, cy) === '=') return true
-    }
-    return false
-  }
-  const headBottom = (cx, cy) => {
-    if (cy < 0) return null
-    if (cy >= H || cx < 0 || cx >= W) return cy * T + T
-    const ch = at(cx, cy)
-    if (ch === '#') return cy * T + T
-    if (ch === '=') return cy * T + BAND
-    return null
-  }
-  const footTop = (cx, cy) => {
-    if (cy < 0) return null
-    if (cy >= H || cx < 0 || cx >= W) return cy * T
-    const ch = at(cx, cy)
-    return ch === '#' || ch === '=' ? cy * T : null
-  }
-  const sweepHead = (x, prevHead, head) => {
-    const xs = [x + 1, x + PW / 2, x + PW - 1]
-    let push = null
-    for (let cy = Math.floor(head / T); cy <= Math.floor(prevHead / T); cy++) {
-      for (const px of xs) {
-        const bb = headBottom(Math.floor(px / T), cy)
-        if (bb === null) continue
-        if (prevHead >= bb && head < bb) push = push === null ? bb : Math.max(push, bb)
-      }
-    }
-    return push
-  }
-  const overlapStart = (x, top, bottom) => {
-    const xs = [x + 1, x + PW / 2, x + PW - 1]
-    for (let cy = Math.floor(top / T); cy <= Math.floor((bottom - 1) / T); cy++) {
-      for (const px of xs) {
-        const bb = headBottom(Math.floor(px / T), cy)
-        if (bb === null) continue
-        if (top < bb && bottom > cy * T) return true
-      }
-    }
-    return false
-  }
-  const sweepFoot = (x, prevFoot, foot) => {
-    const xs = [x + 1, x + PW / 2, x + PW - 1]
-    let push = null
-    for (let cy = Math.floor(prevFoot / T); cy <= Math.floor(foot / T); cy++) {
-      for (const px of xs) {
-        const bt = footTop(Math.floor(px / T), cy)
-        if (bt === null) continue
-        if (prevFoot <= bt && foot > bt) push = push === null ? bt : Math.min(push, bt)
-      }
-    }
-    return push
-  }
-  // Один кадр тикера. s: {x, y, vy, g (onGround), cut (срез ещё возможен),
-  // air (кадров от толчка), coy (кадров койота)}. dir ∈ −1/0/1, jump — нажал,
-  // held — держит кнопку прыжка.
-  const step = (s, dir, jump, held) => {
-    const startX = s.x, startY = s.y
-    const headOffset = s.g ? 0 : HEAD_OFF
-    let x = s.x + dir * MOVE
-    let y = s.y, vy = s.vy, g = s.g, cut = s.cut, air = s.air, coy = s.coy
-    if (dir > 0) {
-      const px = x + PW - 1
-      let hit = isSolid(px, y + headOffset + 1) || isSolid(px, y + PH / 2) || isSolid(px, y + PH - 1)
-      if (!hit && !overlapBand(startX, y + headOffset, y + PH) && bandBlocking(px, y + headOffset, y + PH)) hit = true
-      if (hit) x = Math.floor((x + PW) / T) * T - PW
-    } else if (dir < 0) {
-      const px = x
-      let hit = isSolid(px, y + headOffset + 1) || isSolid(px, y + PH / 2) || isSolid(px, y + PH - 1)
-      if (!hit && !overlapBand(startX, y + headOffset, y + PH) && bandBlocking(px, y + headOffset, y + PH)) hit = true
-      if (hit) x = (Math.floor(x / T) + 1) * T
-    }
-    x = Math.min(Math.max(x, 0), grid[0].length * T - PW)
-    coy = Math.max(0, coy - 1)
-    let jumped = false
-    if (jump && (g || coy > 0)) {
-      vy = -JV; g = false; cut = true; air = 0; coy = 0; jumped = true
-    }
-    if (cut) {
-      if (vy >= 0) cut = false
-      else if (!jumped) {
-        air += 1
-        if (!held && air >= MIN_HOLD_F) { vy *= CUT; cut = false }
-      }
-    }
-    const was = g
-    vy = Math.min(vy + G, MAX_FALL)
-    y += vy
-    g = false
-    if (vy > 0) {
-      const bt = sweepFoot(x, startY + PH, y + PH)
-      if (bt !== null) { y = bt - PH; vy = 0; g = true }
-    } else if (vy < 0) {
-      const ho = HEAD_OFF // в этой ветке герой уже не на земле
-      const push = sweepHead(x, startY + ho, y + ho)
-      if (push !== null) { y = push - ho; vy = 0 }
-      else if (overlapStart(x, startY + ho, startY + PH)) { y = startY; vy = 0 }
-    }
-    if (was && !g && !jumped) coy = COYOTE_F
-    if (g) coy = 0
-    return { x, y, vy, g, cut, air: Math.min(air, 40), coy }
-  }
-  return { H, W, step, isSolid }
+async function loadEngine() {
+  const { createServer } = await import('vite')
+  const server = await createServer({ root: ROOT, logLevel: 'error', server: { middlewareMode: true, hmr: false }, appType: 'custom', optimizeDeps: { noDiscovery: true, include: [] } })
+  const move = await server.ssrLoadModule('/src/explore/heroMove.ts')
+  const C = await server.ssrLoadModule('/src/explore/constants.ts')
+  return { server, move, C }
+}
+
+export function loadGrid(file) {
+  return fs.readFileSync(file, 'utf8').split('\n').map((r) => r.replace(/\r$/, '')).filter((r) => r.length > 0).map((r) => r.split(''))
 }
 
 export function standingCells(grid) {
@@ -189,11 +65,36 @@ export function standingCells(grid) {
   return S
 }
 
-const keyOf = (s) => `${s.x}|${Math.round(s.y * 100)}|${Math.round(s.vy * 1000)}|${s.g ? 1 : 0}|${s.cut ? s.air : -1}|${s.coy}`
+function makeStepper(engine, grid) {
+  const { move, C } = engine
+  const T = C.TILE_SIZE
+  const worldW = grid[0].length * T
+  const dMS = 1000 / 60
+  const COY = C.COYOTE_MS
+  // s: {x, y, vx, vy, onGround, pending, airMs, coy}
+  return (s, dir, jump, held) => {
+    const phys = { x: s.x, y: s.y, vx: 0, vy: s.vy, onGround: s.onGround }
+    const cut = { pending: s.pending, airMs: s.airMs }
+    let coy = Math.max(0, s.coy - dMS)
+    const startX = phys.x, startY = phys.y
+    const headOffset = phys.onGround ? 0 : C.JUMP_HIT_OFFSET_Y
+    phys.vx = dir * C.MOVE_SPEED
+    phys.x += phys.vx
+    move.resolveHeroWalls(grid, phys, startX, headOffset, worldW)
+    let jumped = false
+    if (jump && (phys.onGround || coy > 0)) { move.heroJumpStart(phys, cut); coy = 0; jumped = true }
+    move.heroJumpCut(phys, cut, held, dMS, jumped)
+    const was = phys.onGround
+    move.heroGravityAndCollide(grid, phys, startY, 1)
+    if (was && !phys.onGround && !jumped) coy = COY
+    if (phys.onGround) coy = 0
+    return { x: phys.x, y: phys.y, vy: phys.vy, onGround: phys.onGround, pending: cut.pending, airMs: Math.min(cut.airMs, 400), coy }
+  }
+}
 
-// Клетка, в которой герой стоит: под серединой; середина над пустотой — та
-// клетка бокса, что держит.
-function cellOf(s, S) {
+const keyOf = (s) => `${s.x}|${Math.round(s.y * 100)}|${Math.round(s.vy * 1000)}|${s.onGround ? 1 : 0}|${s.pending ? Math.round(s.airMs) : -1}|${Math.round(s.coy)}`
+
+function cellOf(s, S, T, PW, PH) {
   const cy = Math.round((s.y + PH) / T) - 1
   const c = Math.floor((s.x + PW / 2) / T)
   if (S.has(c + ',' + cy)) return c + ',' + cy
@@ -201,93 +102,160 @@ function cellOf(s, S) {
   return null
 }
 
-export function cellEdges(grid) {
-  const world = makeWorld(grid)
+// Отпустить кнопку прыжка — на этих кадрах от толчка (все подряд взрывают перебор).
+const CUT_AT_MS = [117, 150, 200, 250, 317, 400, 500]
+
+function standPositions(step, k, S, C, grid) {
+  const T = C.TILE_SIZE, PW = C.PLAYER_WIDTH, PH = C.PLAYER_HEIGHT
+  const [cx, cy] = k.split(',').map(Number)
+  const y0 = (cy + 1) * T - PH
+  const out = []
+  for (let x = cx * T - PW + 2; x <= cx * T + T - 2; x += 2) {
+    const s = { x, y: y0, vy: 0, onGround: true, pending: false, airMs: 0, coy: 0 }
+    const t = step(s, 0, false, true)
+    if (!t.onGround || t.x !== x || Math.abs(t.y - y0) > 0.01) continue
+    if (cellOf(t, S, T, PW, PH) !== k) continue
+    // В стойке бокс героя не задевает '#' и полосу '=' (верхние 44% клетки):
+    // иначе телепорт ставит героя телом в полосу у края моста, куда пешком не
+    // зайти (на земле полоса бьёт с макушки).
+    let inside = false
+    for (let c = Math.floor(x / T); c <= Math.floor((x + PW - 1) / T) && !inside; c++) {
+      for (let r = Math.floor(y0 / T); r <= Math.floor((y0 + PH - 1) / T); r++) {
+        const ch = grid[r]?.[c]
+        if (ch === '#' || (ch === '=' && y0 < r * T + T * 0.44)) { inside = true; break }
+      }
+    }
+    if (inside) continue
+    out.push(t)
+  }
+  return out
+}
+
+function cellEdges(engine, grid) {
+  const { C } = engine
+  const T = C.TILE_SIZE, PW = C.PLAYER_WIDTH, PH = C.PLAYER_HEIGHT
+  const step = makeStepper(engine, grid)
   const S = standingCells(grid)
   const edges = new Map()
+  const dMS = 1000 / 60
   for (const k of S) {
-    const [cx, cy] = k.split(',').map(Number)
     const out = new Set()
     const seen = new Set()
     const q = []
-    const y0 = (cy + 1) * T - PH
-    for (let x = cx * T - PW + 2; x <= cx * T + T - 2; x += 2) {
-      let s = { x, y: y0, vy: 0, g: true, cut: false, air: 0, coy: 0 }
-      // Стоит ли тут вообще: кадр без ввода — на земле и на месте.
-      const t = world.step(s, 0, false, false)
-      if (!t.g || t.x !== x || Math.abs(t.y - y0) > 0.01) continue
-      if (cellOf(t, S) !== k) continue
-      const kk = keyOf(t)
-      if (!seen.has(kk)) { seen.add(kk); q.push([t, 0]) }
-    }
+    for (const t of standPositions(step, k, S, C, grid)) { const kk = keyOf(t); if (!seen.has(kk)) { seen.add(kk); q.push([t, 0]) } }
     for (let i = 0; i < q.length; i++) {
       const [s, f] = q[i]
-      if (f > AIR_MAX_F) continue
+      if (f > 150) continue
       const opts = []
       for (const dir of [-1, 0, 1]) {
-        if (s.g || s.coy > 0) opts.push([dir, true, true])
+        if (s.onGround || s.coy > 0) opts.push([dir, true, true])
         opts.push([dir, false, true])
-        if (s.cut && CUT_AT.has(s.air + 1)) opts.push([dir, false, false])
+        if (s.pending && CUT_AT_MS.some((m) => Math.abs(s.airMs + dMS - m) < dMS / 2)) opts.push([dir, false, false])
       }
       for (const [dir, jump, held] of opts) {
-        const n = world.step(s, dir, jump, held)
+        const n = step(s, dir, jump, held)
         if (n.y > grid.length * T) continue
-        if (n.g) {
-          const c = cellOf(n, S)
+        if (n.onGround) {
+          const c = cellOf(n, S, T, PW, PH)
           if (c !== null && c !== k) { out.add(c); continue }
           if (c === null) continue
         }
         const kk = keyOf(n)
         if (seen.has(kk)) continue
         seen.add(kk)
-        q.push([n, n.g ? 0 : f + 1])
+        q.push([n, n.onGround ? 0 : f + 1])
       }
     }
     edges.set(k, out)
   }
-  return { S, edges }
+  return { S, edges, step }
 }
 
-export function waveFrom(edges, start, reverse) {
+function waveFrom(edges, start, reverse) {
   const adj = new Map()
-  if (reverse) {
-    for (const [a, outs] of edges) for (const b of outs) { if (!adj.has(b)) adj.set(b, []); adj.get(b).push(a) }
-  } else for (const [a, outs] of edges) adj.set(a, [...outs])
+  if (reverse) { for (const [a, outs] of edges) for (const b of outs) { if (!adj.has(b)) adj.set(b, []); adj.get(b).push(a) } }
+  else for (const [a, outs] of edges) adj.set(a, [...outs])
   const seen = new Set([start])
   const q = [start]
   for (let i = 0; i < q.length; i++) for (const n of adj.get(q[i]) ?? []) if (!seen.has(n)) { seen.add(n); q.push(n) }
   return seen
 }
 
-function main() {
+// Естественный ввод: с края площадки в сторону цели, направление и прыжок зажаты.
+function naturalTraps(engine, grid, S, edges, step) {
+  const { C } = engine
+  const T = C.TILE_SIZE, PW = C.PLAYER_WIDTH, PH = C.PLAYER_HEIGHT
+  const traps = []
+  for (const a of S) {
+    const [ax, ay] = a.split(',').map(Number)
+    for (const dy of [1, 2]) for (const dx of [-2, -1, 1, 2]) {
+      const b = `${ax + dx},${ay - dy}`
+      if (!S.has(b) || !edges.get(a)?.has(b)) continue
+      const dir = dx > 0 ? 1 : -1
+      const pos = standPositions(step, a, S, C, grid)
+      if (!pos.length) continue
+      // край площадки в сторону цели — дальняя позиция по dir
+      const edge = pos.reduce((m, p) => (p.x * dir > m.x * dir ? p : m))
+      let s = edge, ok = false, left = false
+      // Жмёт к цели, пока середина героя не над её клеткой, потом отпускает
+      // направление; прыжок держит.
+      const bx0 = (ax + dx) * T
+      for (let f = 0; f < 150; f++) {
+        const mid = s.x + PW / 2
+        const d = mid < bx0 + 8 ? 1 : mid > bx0 + T - 8 ? -1 : 0
+        s = step(s, f === 0 ? dir : d, f === 0, true)
+        if (!s.onGround) left = true
+        // Держа направление, герой садится и дальше цели — засчитываем любую
+        // клетку той же высоты или выше.
+        if (left && s.onGround) { const c = cellOf(s, S, T, PW, PH); ok = c !== null && Number(c.split(',')[1]) <= ay - dy; break }
+      }
+      if (!ok) traps.push(`${a}>${b}`)
+    }
+  }
+  return traps
+}
+
+async function main() {
   const args = process.argv.slice(2)
+  const check = args.includes('--check')
   const ji = args.indexOf('--json')
   const jsonOut = ji >= 0 ? args[ji + 1] : null
   const letters = args.filter((a, i) => !a.startsWith('--') && (ji < 0 || i !== ji + 1))
   const files = fs.readdirSync(MAPS).filter((f) => /^map_[A-Z0-9]+_.*\.txt$/.test(f))
   const want = letters.length ? letters : [...new Set(files.map((f) => f.split('_')[1]))].sort()
+  const engine = await loadEngine()
   const dump = {}
   let bad = 0
-  for (const L of want) {
-    const txt = files.filter((f) => f.split('_')[1] === L)
-    if (txt.length !== 1) { console.log(`${L}: .txt не один — ${txt}`); continue }
-    const grid = loadGrid(path.join(MAPS, txt[0]))
-    const slots = JSON.parse(fs.readFileSync(path.join(MAPS, `map_${L}_slots.json`), 'utf8'))
-    const start = slots.start.join(',')
-    const t0 = Date.now()
-    const { S, edges } = cellEdges(grid)
-    const f = waveFrom(edges, start, false)
-    const b = waveFrom(edges, start, true)
-    const lostF = [...S].filter((c) => !f.has(c))
-    const lostB = [...S].filter((c) => f.has(c) && !b.has(c))
-    console.log(`== ${L} (${txt[0]}): клеток ${S.size}, туда ${f.size}, обратно ${[...f].filter((c) => b.has(c)).length}, ${((Date.now() - t0) / 1000).toFixed(1)} с`)
-    if (lostF.length) console.log(`   не дойти: ${lostF.sort().join(' ')}`)
-    if (lostB.length) console.log(`   не вернуться: ${lostB.sort().join(' ')}`)
-    if (lostF.length || lostB.length) bad++
-    dump[L] = { S: [...S], edges: Object.fromEntries([...edges].map(([k, v]) => [k, [...v]])), lostF, lostB }
+  try {
+    for (const L of want) {
+      const txt = files.filter((f) => f.split('_')[1] === L)
+      if (txt.length !== 1) { console.log(`${L}: .txt не один — ${txt}`); bad++; continue }
+      const grid = loadGrid(path.join(MAPS, txt[0]))
+      const slots = JSON.parse(fs.readFileSync(path.join(MAPS, `map_${L}_slots.json`), 'utf8'))
+      const start = slots.start.join(',')
+      const t0 = Date.now()
+      const { S, edges, step } = cellEdges(engine, grid)
+      const f = waveFrom(edges, start, false)
+      const b = waveFrom(edges, start, true)
+      const lostF = [...S].filter((c) => !f.has(c)).sort()
+      const lostB = [...S].filter((c) => f.has(c) && !b.has(c)).sort()
+      const traps = naturalTraps(engine, grid, S, edges, step)
+      const acc = ACCEPTED_NATURAL[L] ?? new Set()
+      const newTraps = traps.filter((t) => !acc.has(t))
+      const accTraps = traps.filter((t) => acc.has(t))
+      console.log(`== ${L} (${txt[0]}): клеток ${S.size}, туда ${f.size}, обратно ${[...f].filter((c) => b.has(c)).length}; капканов естественного ввода ${newTraps.length}${accTraps.length ? ` (+${accTraps.length} принятых)` : ''}; ${((Date.now() - t0) / 1000).toFixed(1)} с`)
+      if (lostF.length) console.log(`   не дойти: ${lostF.join(' ')}`)
+      if (lostB.length) console.log(`   не вернуться: ${lostB.join(' ')}`)
+      if (newTraps.length) console.log(`   капкан (с края, к цели, прыжок зажат — не берётся): ${newTraps.join(' ')}`)
+      if (accTraps.length) console.log(`   принято (полки-лестницы, решение Андрея): ${accTraps.join(' ')}`)
+      if (lostF.length || lostB.length || newTraps.length) bad++
+      dump[L] = { lostF, lostB, traps }
+    }
+  } finally {
+    await engine.server.close()
   }
   if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(dump))
-  process.exitCode = bad ? 1 : 0
+  if (check) process.exitCode = bad ? 1 : 0
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+main()

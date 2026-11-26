@@ -73,6 +73,18 @@ const WORK_DECOR = {
   'burial-quarter': { 'world-overlay.png': '026c49202927c6821d678f4aa27c58aefb7e81cc0bec54b31bd52e028d502181', 'added-layout.json': '8f958a10de7f708ccbb1da50f17a65fe1b34b7c27dce07b0c2740248cfdf03ec' },
   procession: { 'world-overlay.png': '75af44e7e55f371662eb8cc84d766c7bdd57f1975ebe5887c214797ea37ebabf', 'decor-layout.json': 'dcce842721281c1cd1fc3f2c5f64044f7081eabd114f0e42631992cd2eda088c' },
 }
+// Поднятые мосты (26.11.2026, «Правки 26.11 (мосты)», tools/raise_bridges.py):
+// рабочая копия слоя и сетки рядом с пакетом болота; пакет не правится.
+const WORK_BRIDGES_DIR = `${ART}/maps/swamp/new-two/bridges-2026-11-26`
+const WORK_BRIDGES = {
+  'swamp-yards': { 'world-overlay.png': 'ae1ad3cb0b71eb7edb4c3581088be7b5c65a7254507c4c7f20370b264392eaf6', 'swamp-yards.txt': '12d9b7782a28cd0a5b81e20d382d8cd65a761cbb838749c27ad3092bc61bc644' },
+}
+function workBridges(key, name) {
+  const file = `${WORK_BRIDGES_DIR}/${key}/${name}`
+  if (!fs.existsSync(file)) fail(`нет рабочей копии мостов ${file} (tools/raise_bridges.py)`)
+  if (sha(file) !== WORK_BRIDGES[key][name]) fail(`рабочая копия мостов ${key}/${name} не та, что закреплена в WORK_BRIDGES`)
+  return file
+}
 function workDecor(key, name) {
   const file = `${WORK_DECOR_DIR}/${key}/${name}`
   if (!fs.existsSync(file)) fail(`нет рабочей копии декора ${file} (tools/drop_floor_decor.py)`)
@@ -143,13 +155,14 @@ async function buildMap(letter) {
   const file = `map_${letter}_${key}.txt`
   console.log(`\n== ${letter} — ${key} (${file})`)
   const packOverlay = pinned(`${key}/world-overlay.png`, pack)
-  const overlay = WORK_DECOR[key] ? workDecor(key, 'world-overlay.png') : packOverlay
+  const overlay = WORK_BRIDGES[key] ? workBridges(key, 'world-overlay.png') : WORK_DECOR[key] ? workDecor(key, 'world-overlay.png') : packOverlay
+  if (WORK_BRIDGES[key]) console.log(`  мосты подняты: рабочая копия ${WORK_BRIDGES_DIR}/${key}`)
   if (WORK_DECOR[key]) {
     for (const name of Object.keys(WORK_DECOR[key])) workDecor(key, name)
     console.log(`  декор на кромке: рабочая копия ${WORK_DECOR_DIR}/${key}`)
   }
   const config = JSON.parse(fs.readFileSync(pinned(`${key}/render-config.json`, pack), 'utf8'))
-  const packRows = gridRows(fs.readFileSync(pinned(`${key}/${key}.txt`, pack), 'utf8'))
+  const packRows = gridRows(fs.readFileSync(WORK_BRIDGES[key] ? workBridges(key, `${key}.txt`) : pinned(`${key}/${key}.txt`, pack), 'utf8'))
   const rows = gridRows(fs.readFileSync(path.join(REPO, 'public/assets/maps', file), 'utf8'))
   if (rows.join('\n') !== packRows.join('\n')) fail(`сетка ${file} в игре не совпадает с ${key}.txt пакета`)
   if (config.theme !== theme) fail(`тема ${key} в пакете ${config.theme}, в скрипте ${theme}`)
