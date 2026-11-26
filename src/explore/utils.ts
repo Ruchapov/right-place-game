@@ -55,3 +55,14 @@ export function worldScaleFor(width: number, height: number): number {
   if (!(width > height)) return C.WORLD_SCALE
   return Math.min(C.WORLD_SCALE, Math.max(C.WORLD_SCALE_MIN, height / (C.LANDSCAPE_VIEW_TILES * C.TILE_SIZE)))
 }
+
+/**
+ * Герой прижат к стене (pushPlayerOutX вернул true, 26.11.2026): толкающий
+ * враг встаёт вплотную к его боксу со своей стороны — в стену тянет не героя,
+ * а останавливается сам враг. Назад он уходит туда, откуда пришёл, — там
+ * свободно.
+ */
+export function backOffPinnedHero(e: { x: number; width: number }, pb: { x: number; w: number }): void {
+  const heroCenter = pb.x + pb.w / 2
+  e.x = heroCenter < e.x + e.width / 2 ? pb.x + pb.w : pb.x - e.width
+}

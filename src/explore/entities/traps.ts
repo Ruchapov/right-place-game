@@ -33,6 +33,7 @@ import * as C from '../constants'
 import { isSolid } from '../collision'
 import { SPIKE_H_RATIO } from '../../mapRenderer'
 import type { Enemy, Grid } from '../types'
+import { standLineY } from '../utils'
 
 export type GargoyleSlot = { x: number; y: number; dir: 1 | -1; plate: [number, number] }
 export type StalactiteSlot = { x: number; y: number; ceil: number }
@@ -228,17 +229,23 @@ export function createTrapsSystem(deps: TrapsDeps) {
   // --- сталактиты ---
   const stalactites: Stalactite[] = []
   for (const slot of deps.stalactites) {
+    // Размер (26.11.2026, правки по телефону: «огромная глыба»): шириной
+    // ≈1 клетку (C.STALACTITE_DRAW_W), по центру слота в 2 столбца; верх —
+    // вплотную к нижней кромке потолка. Обломки — той же ширины, по центру, на
+    // видимой линии пола (standLineY), нижняя непрозрачная строка листа на ней.
     const sprite = new Sprite(tx.stalactite)
-    const sc = (2 * T) / tx.stalactite.width
+    const sc = C.STALACTITE_DRAW_W / tx.stalactite.width
     sprite.scale.set(sc)
-    const baseX = slot.x * T
-    const topY = (slot.ceil + 1) * T - 4
+    const centerX = slot.x * T + T
+    const baseX = centerX - C.STALACTITE_DRAW_W / 2
+    const topY = (slot.ceil + 1) * T - C.STALACTITE_CEIL_OVERLAP
     sprite.x = baseX
     sprite.y = topY
     const rubble = new Sprite(tx.rubble)
-    rubble.scale.set((2 * T) / tx.rubble.width)
-    rubble.x = baseX
-    rubble.y = (slot.y + 1) * T - tx.rubble.height * rubble.scale.y + 6
+    const rsc = C.STALACTITE_DRAW_W / tx.rubble.width
+    rubble.scale.set(rsc)
+    rubble.x = centerX - C.STALACTITE_DRAW_W / 2
+    rubble.y = standLineY((slot.y + 1) * T) - tx.rubble.height * C.STALACTITE_RUBBLE_FOOT_FRAC * rsc
     rubble.visible = false
     root.addChild(rubble, sprite)
     const s: Stalactite = { slot, sprite, rubble, state: 'idle', ms: 0, vy: 0, baseX, topY }
@@ -486,13 +493,16 @@ export function createTrapsSystem(deps: TrapsDeps) {
       } else if (s.state === 'shake') {
         s.ms += deltaMS
         s.sprite.x = s.baseX + (deps.reduceMotion ? 0 : Math.sin(s.ms / 18) * C.STALACTITE_SHAKE_PX)
-        if (Math.random() < dt * 25) puff(s.baseX + T * (0.3 + Math.random() * 1.4), zone.y + 2, 1, 0xb8b0a0, 4, -20)
+        if (Math.random() < dt * 25) puff(s.baseX + C.STALACTITE_DRAW_W * (0.15 + Math.random() * 0.7), zone.y + 2, 1, 0xb8b0a0, 4, -20)
         if (s.ms >= C.STALACTITE_SHAKE_MS) { s.state = 'fall'; s.vy = 0; s.sprite.x = s.baseX }
       } else if (s.state === 'fall') {
         s.vy += C.STALACTITE_GRAVITY * dt
         s.sprite.y += s.vy * dt
+        // Коробка острия (26.11.2026): не шире спрайта и по его центру.
         const tipY = s.sprite.y + s.sprite.height * 0.95
-        const tip = { x: s.baseX + T * 0.6, y: tipY - 40, w: T * 0.8, h: 40 }
+        const tipW = C.STALACTITE_DRAW_W * C.STALACTITE_TIP_W_FRAC
+        const tipH = Math.min(40, s.sprite.height * 0.5)
+        const tip = { x: s.baseX + (C.STALACTITE_DRAW_W - tipW) / 2, y: tipY - tipH, w: tipW, h: tipH }
         const floorY = (s.slot.y + 1) * T
         let hit = false
         if (!deps.heroDead() && boxesOverlap(tip, hero)) {
@@ -504,7 +514,7 @@ export function createTrapsSystem(deps: TrapsDeps) {
             if (e.dead || isTrapImmune(e) || !boxesOverlap(tip, enemyBox(e))) continue
             // Падающий камень бьёт и того, кто под ним случайно (втолкнут или в
             // погоне); спокойного врага туда не заносит — он считает зону стеной.
-            hitEnemy(e, s.baseX + T)
+            hitEnemy(e, s.baseX + C.STALACTITE_DRAW_W / 2)
             hit = true
             break
           }
@@ -513,7 +523,7 @@ export function createTrapsSystem(deps: TrapsDeps) {
           s.state = 'done'
           s.sprite.visible = false
           s.rubble.visible = true
-          puff(s.baseX + T, floorY - 4, 14, 0xb8b0a0, 2 * T, 160)
+          puff(s.baseX + C.STALACTITE_DRAW_W / 2, floorY - 4, 14, 0xb8b0a0, C.STALACTITE_DRAW_W, 160)
           cells.delete(key(s.slot.x, s.slot.y))
           cells.delete(key(s.slot.x + 1, s.slot.y))
         }

@@ -7,7 +7,7 @@ import * as N from '../ncConstants'
 import { ncSheet } from '../ncConstants'
 import { cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, wallAhead } from '../stepClimb'
-import { clamp, parryStunFrame, standLineY } from '../utils'
+import { backOffPinnedHero, clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledEnemyAttackDamage, scaledNcEnemyMaxHp } from '../scaling'
 import { redrawEnemyHpBar } from './enemy'
@@ -47,7 +47,7 @@ export type NcEnemyDeps = {
   pushPlayerOutX: (
     body: { x: number; y: number; width: number; height: number },
     playerBox: { x: number; y: number; w: number; h: number },
-  ) => void
+  ) => boolean
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
   onPatrolKilled: (patrolIndex: number, worldX: number, worldY: number) => void
@@ -415,7 +415,14 @@ export function createNcEnemySystem(behavior: NcBehavior, deps: NcEnemyDeps, ass
   }
 
   function pushOut(e: Enemy) {
-    deps.pushPlayerOutX({ x: e.x, y: e.y, width: e.width, height: e.height }, deps.getPlayerCombatBox())
+    const pb = deps.getPlayerCombatBox()
+    if (deps.pushPlayerOutX({ x: e.x, y: e.y, width: e.width, height: e.height }, pb)) {
+      // Герой прижат к стене (26.11.2026): враг встаёт вплотную к нему, рывок
+      // навозника обрывается — урон он уже дал (hitDone) или даст касанием.
+      backOffPinnedHero(e, pb)
+      if (e.nc?.action === 'Dash') e.nc.dashMoved = N.BEETLE_DASH_PX
+      layout(e)
+    }
   }
 
   function update(dt: number, deltaMS: number): void {

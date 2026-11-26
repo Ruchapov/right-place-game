@@ -4036,10 +4036,10 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       // перекрашивается один раз здесь. Без WebGL — исходный цвет.
       const trapTint = TRAP_TINTS[resolvedMapFile ?? ''] ?? {}
       if (app.renderer.type === RendererType.WEBGL) {
-        const bake = async (frames: Texture[], target: [number, number, number] | undefined, srcLum: number): Promise<Texture[]> => {
+        const bake = async (frames: Texture[], target: [number, number, number] | undefined, srcLum: number, grad?: readonly [number, number]): Promise<Texture[]> => {
           if (!target || frames.length === 0 || frames[0] === Texture.EMPTY) return frames
           try {
-            const r = await bakeStoneTint(app!.renderer, frames, { target, srcLum })
+            const r = await bakeStoneTint(app!.renderer, frames, { target, srcLum, grad })
             stoneBaked.push(r.target)
             stoneRebakes.push(r.rebake)
             return r.textures
@@ -4050,7 +4050,7 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         }
         if (chosenGargoyles.length > 0) trapArt.textures.gargoyleFrames = await bake(trapArt.textures.gargoyleFrames, trapTint.gargoyle, TRAP_SRC_LUM.gargoyle)
         if (chosenStalactites.length > 0) {
-          trapArt.textures.stalactite = (await bake([trapArt.textures.stalactite], trapTint.stalactite, TRAP_SRC_LUM.stalactite))[0]
+          trapArt.textures.stalactite = (await bake([trapArt.textures.stalactite], trapTint.stalactite, TRAP_SRC_LUM.stalactite, C.STALACTITE_TINT_GRAD))[0]
           trapArt.textures.rubble = (await bake([trapArt.textures.rubble], trapTint.stalactite, TRAP_SRC_LUM.rubble))[0]
         }
       }
@@ -4200,8 +4200,8 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // пишет в тот же реф, что уезжает в срезе и финише.
         skillDamage,
         // Таран и Телекинез (13.11.2026): толкание — общая система shove.ts.
-        shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx, keepAhead) =>
-          shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx, undefined, keepAhead) ?? false,
+        shove: (enemy, dir, distPx, speed, damage, kind, heavyLimitPx, keepAhead, chain) =>
+          shoveSystem?.shove(enemy, dir, distPx, speed, damage, kind, heavyLimitPx, chain, keepAhead) ?? false,
         // С 17.11.2026 Таран несёт всех живых (решение Андрея).
         canCarry: (enemy) => !enemy.dead,
         canShoveBoss: () => canShoveBossRef.current(),
@@ -5922,16 +5922,16 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       function pushPlayerOutX(
         body: { x: number; y: number; width: number; height: number },
         playerCombatBox: { x: number; y: number; w: number; h: number },
-      ) {
+      ): boolean {
         const verticalReach = playerCombatBox.y < body.y + body.height && playerCombatBox.y + playerCombatBox.h > body.y
-        if (!verticalReach) return
+        if (!verticalReach) return false
         const bodyTop = body.y + body.height * C.PUSH_TOP_MARGIN
-        if (playerCombatBox.y + playerCombatBox.h <= bodyTop) return // перепрыгнул
+        if (playerCombatBox.y + playerCombatBox.h <= bodyTop) return false // перепрыгнул
         const pLeft = playerCombatBox.x
         const pRight = playerCombatBox.x + playerCombatBox.w
         const bLeft = body.x
         const bRight = body.x + body.width
-        if (!(pRight > bLeft && pLeft < bRight)) return
+        if (!(pRight > bLeft && pLeft < bRight)) return false
         const pCenter = playerCombatBox.x + playerCombatBox.w / 2
         const bCenter = body.x + body.width / 2
         // Выталкиваем РЕАЛЬНУЮ phys.x, но так, чтобы вплотную к телу встал
@@ -5939,13 +5939,34 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
         // offsetX=0 (бокс совпадает с phys), в прыжке бокс центрирован/
         // смещён относительно phys.x (см. getPlayerCombatBox).
         const offsetX = playerCombatBox.x - phys.x
-        if (pCenter < bCenter) {
-          phys.x = (body.x - playerCombatBox.w) - offsetX
-        } else {
-          phys.x = (body.x + body.width) - offsetX
+        let target = pCenter < bCenter ? (body.x - playerCombatBox.w) - offsetX : (body.x + body.width) - offsetX
+        target = clamp(target, 0, worldWidthPx - C.PLAYER_WIDTH)
+        // НЕ В ТВЕРДЬ (26.11.2026, правки по телефону: рывок навозника вбивал
+        // героя в стену): если на месте выталкивания бокс героя заходит в '#',
+        // герой встаёт вплотную к стене и дальше не едет — ПРИЖАТ. Тогда
+        // возвращается true, и толкающий (враг) встаёт вплотную к герою сам
+        // (backOffPinnedHero в модулях врагов), рывок навозника обрывается.
+        let pinned = false
+        if (heroBoxSolidAt(target)) {
+          const step = target < phys.x ? 1 : -1
+          let x = target
+          for (let i = 0; i < 256 && heroBoxSolidAt(x) && (step === 1 ? x < phys.x : x > phys.x); i++) x += step
+          target = heroBoxSolidAt(x) ? phys.x : x
+          pinned = true
         }
-        phys.x = clamp(phys.x, 0, worldWidthPx - C.PLAYER_WIDTH)
+        phys.x = target
         phys.vx = 0
+        return pinned
+      }
+
+      // Бокс героя (phys) с левым краем x заходит в твердь '#' — по двум краям и
+      // трём высотам (макушка, середина, у ступней), как стена у врагов.
+      function heroBoxSolidAt(x: number): boolean {
+        const ys = [phys.y + 1, phys.y + C.PLAYER_HEIGHT / 2, phys.y + C.PLAYER_HEIGHT - 1]
+        for (const px of [x + 0.5, x + C.PLAYER_WIDTH - 0.5]) {
+          for (const py of ys) if (isSolid(grid, C.TILE_SIZE, px, py)) return true
+        }
+        return false
       }
 
       // То же выталкивание, но НЕ во время рывка: dash проходит сквозь тела.
@@ -5958,9 +5979,9 @@ export default function Explore({ onClose, skins, endurance, strength, agility, 
       function pushPlayerOutXUnlessDashing(
         body: { x: number; y: number; width: number; height: number },
         playerCombatBox: { x: number; y: number; w: number; h: number },
-      ) {
-        if (dashingRef.current) return
-        pushPlayerOutX(body, playerCombatBox)
+      ): boolean {
+        if (dashingRef.current) return false
+        return pushPlayerOutX(body, playerCombatBox)
       }
 
       // Камера: центрируем игрока на экране, зажимая по границам карты.

@@ -49,7 +49,7 @@ export type EnemyDeps = {
   pushPlayerOutX: (
     body: { x: number; y: number; width: number; height: number },
     playerBox: { x: number; y: number; w: number; h: number },
-  ) => void
+  ) => boolean
   playSpriteAnim: (sprite: AnimatedSprite, frames: Texture[], speed: number, loop: boolean) => void
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   // Награду всплывает сам closeEvent — по серверному числу события и один раз
@@ -268,10 +268,15 @@ export function createEnemySystem(deps: EnemyDeps) {
     enemy: Enemy,
     playerCombatBox: { x: number; y: number; w: number; h: number },
   ) {
-    deps.pushPlayerOutX(
+    const pinned = deps.pushPlayerOutX(
       { x: enemy.x, y: enemy.y, width: C.ENEMY_WIDTH, height: C.ENEMY_HEIGHT },
       playerCombatBox,
     )
+    // Герой прижат к стене (26.11.2026) — враг встаёт вплотную к нему.
+    if (pinned) {
+      const pb = deps.getPlayerCombatBox()
+      enemy.x = pb.x + pb.w / 2 < enemy.x + C.ENEMY_WIDTH / 2 ? pb.x + pb.w : pb.x - C.ENEMY_WIDTH
+    }
   }
 
   // Куда ближе край платформы, на которой стоит зверь (для «спрыгнуть к

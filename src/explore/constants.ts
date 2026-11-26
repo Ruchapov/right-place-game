@@ -793,6 +793,11 @@ export const FIREBALL_IMPACT_ANIM_SPEED = 0.35
 // ⚠️ Больше ставить нельзя: 28 и выше — и зверь на ровном полу перестаёт
 // детонировать снаряд ВООБЩЕ (перекрытия по вертикали столько уже нет).
 export const FIREBALL_HIT_OVERLAP = 27
+// (26.11.2026) Порог по Y — не больше этой доли роста цели (skills.ts,
+// sweepHitX): шар на уровне груди героя перекрывает зверя (80) на 23 px,
+// навозника (75) на 18 — с порогом 27 он пролетал над ними всегда. 0.2 даёт
+// 16 и 15, у людей (128–150) порог прежний, 27.
+export const FIREBALL_HIT_DEPTH_FRAC_Y = 0.2
 // Зона урона взрыва — прямоугольник вокруг точки смерти снаряда, из ТЕХ ЖЕ
 // чисел, что и спрайт импакта (высота FIREBALL_IMPACT_DRAW_H, ширина по
 // пропорции клетки FIREBALL_IMPACT_CELL_W/H, центр в точке попадания).
@@ -2811,6 +2816,20 @@ export const PLATE_RECHARGE_MS = 3000
 // Сталактит.
 export const STALACTITE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Stalactite_Full.png`
 export const STALACTITE_RUBBLE_SRC = `${import.meta.env.BASE_URL}assets/objects/traps/Stalactite_Rubble.png`
+// Размер (26.11.2026, правки по телефону «огромная глыба», было 2 клетки =
+// 128 px): шириной ≈1 клетку, высота — по пропорции листа (330×384 → 79 px).
+// Зона тряски (2 столбца слота) и «стена» для спокойных врагов — прежние.
+export const STALACTITE_DRAW_W = 68
+// Верх спрайта заходит под нижнюю кромку потолка на столько px — без щели.
+export const STALACTITE_CEIL_OVERLAP = 4
+// Ширина коробки удара острия — доля ширины спрайта, по центру.
+export const STALACTITE_TIP_W_FRAC = 0.6
+// Нижняя непрозрачная строка листа обломков (альфа ≥ 128: 134 из 136) — на
+// видимой линии пола.
+export const STALACTITE_RUBBLE_FOOT_FRAC = 135 / 136
+// Светотень перекраски под кладку (stoneTint.ts): у потолка темнее, к острию
+// чуть светлее — тень под платформой переходит в камень.
+export const STALACTITE_TINT_GRAD: readonly [number, number] = [0.85, 1.08]
 export const STALACTITE_SHAKE_MS = 600
 export const STALACTITE_SHAKE_PX = 2
 export const STALACTITE_GRAVITY = 2600 // px/с²

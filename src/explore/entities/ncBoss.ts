@@ -30,7 +30,7 @@ export type NcBossDeps = {
   pushPlayerOutX: (
     body: { x: number; y: number; width: number; height: number },
     playerBox: { x: number; y: number; w: number; h: number },
-  ) => void
+  ) => boolean
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
   dropMana: (worldX: number, worldY: number) => void

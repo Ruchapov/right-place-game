@@ -56,14 +56,18 @@ export function parseTelegramUser(initData: string) {
   const userStr = params.get('user')
   if (!userStr) return null
 
+  type TgUser = { id: number; first_name: string; last_name?: string; username?: string }
+  // URLSearchParams.get УЖЕ раскодировал поле (26.11.2026): второй
+  // decodeURIComponent ронял вход у игрока, в имени которого есть «%» (URIError →
+  // 400 «Cannot parse user data» — новый игрок не мог войти вовсе). Сначала —
+  // как есть; старый путь — только запасной.
   try {
-    return JSON.parse(decodeURIComponent(userStr)) as {
-      id: number
-      first_name: string
-      last_name?: string
-      username?: string
-    }
+    return JSON.parse(userStr) as TgUser
   } catch {
-    return null
+    try {
+      return JSON.parse(decodeURIComponent(userStr)) as TgUser
+    } catch {
+      return null
+    }
   }
 }

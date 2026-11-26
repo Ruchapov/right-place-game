@@ -169,17 +169,32 @@ export async function authRoutes(server: FastifyInstance) {
         }
       }
       // New player — create user + character
-      user = await prisma.user.create({
-        data: {
-          telegramId: BigInt(telegramUser.id),
-          firstName: telegramUser.first_name,
-          username: telegramUser.username,
-          character: {
-            create: invitedById !== null ? { invitedById } : {} // All defaults from schema
-          }
-        },
-        include: { character: true }
-      })
+      // Гонка первого входа (26.11.2026): первый запрос медленный (создание
+      // игрока на холодной базе), клиент по таймауту шлёт повтор — оба не нашли
+      // игрока, второй create падал на уникальности telegramId → 500, и новый
+      // игрок видел ошибку входа. Теперь проигравший гонку перечитывает игрока.
+      try {
+        user = await prisma.user.create({
+          data: {
+            telegramId: BigInt(telegramUser.id),
+            firstName: telegramUser.first_name || 'Герой',
+            username: telegramUser.username,
+            character: {
+              create: invitedById !== null ? { invitedById } : {} // All defaults from schema
+            }
+          },
+          include: { character: true }
+        })
+      } catch (e) {
+        if ((e as { code?: unknown })?.code !== 'P2002') {
+          request.log.error({ err: e, telegramId: telegramUser.id }, 'login: new player create failed')
+          throw e
+        }
+        request.log.warn({ telegramId: telegramUser.id }, 'login: new player created by a parallel login, re-reading')
+        user = await prisma.user.findUnique({ where: { telegramId: BigInt(telegramUser.id) }, include: { character: true } })
+        if (!user) return reply.status(500).send({ error: 'Login race, retry' })
+        invitedById = null
+      }
       if (invitedById !== null) {
         request.log.info({ inviterId: invitedById, userId: user.id }, 'login: new player joined by referral')
         // Колокол пригласившему (бот, 13.11.2026) — лучшим усилием, без ожидания.

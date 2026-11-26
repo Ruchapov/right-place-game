@@ -37,6 +37,7 @@ out vec4 finalColor;
 uniform sampler2D uTexture;
 uniform vec3 uTarget;
 uniform float uSrcLum;
+uniform vec2 uGrad;
 void main() {
   vec4 c = texture(uTexture, vUV);
   if (c.a <= 0.0) { finalColor = vec4(0.0); return; }
@@ -46,7 +47,8 @@ void main() {
   float mn = min(rgb.r, min(rgb.g, rgb.b));
   float sat = (mx - mn) / max(mx, 0.0001);
   float stone = 1.0 - smoothstep(0.22, 0.42, sat);
-  vec3 n = clamp(uTarget * (l / max(uSrcLum, 0.01)), 0.0, 1.0);
+  float g = mix(uGrad.x, uGrad.y, vUV.y);
+  vec3 n = clamp(uTarget * (l / max(uSrcLum, 0.01)) * g, 0.0, 1.0);
   finalColor = vec4(mix(rgb, n, stone) * c.a, c.a);
 }
 `
@@ -56,6 +58,9 @@ export type StoneTint = {
   target: readonly [number, number, number]
   /** Средняя яркость серого камня самого ассета, 0..1 (замер в trapTints.ts). */
   srcLum: number
+  /** Яркость сверху и снизу текстуры (множитель; 26.11.2026 — сталактит у
+   *  потолка темнее, к острию светлее). Нет — [1, 1]. */
+  grad?: readonly [number, number]
 }
 
 export type BakedStone = { textures: Texture[]; target: RenderTexture; rebake: (r: Renderer) => Promise<void> }
@@ -83,6 +88,7 @@ export async function bakeStoneTint(renderer: Renderer, frames: Texture[], tint:
     const uniforms = new UniformGroup({
       uTarget: { value: new Float32Array([tint.target[0] / 255, tint.target[1] / 255, tint.target[2] / 255]), type: 'vec3<f32>' },
       uSrcLum: { value: tint.srcLum, type: 'f32' },
+      uGrad: { value: new Float32Array(tint.grad ?? [1, 1]), type: 'vec2<f32>' },
     })
     const shader = new Shader({ glProgram, resources: { uTexture: source, stoneUniforms: uniforms } })
     const mesh = new Mesh({ geometry, shader })

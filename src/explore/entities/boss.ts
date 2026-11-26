@@ -52,7 +52,7 @@ export type BossDeps = {
   pushPlayerOutX: (
     body: { x: number; y: number; width: number; height: number },
     playerBox: { x: number; y: number; w: number; h: number },
-  ) => void
+  ) => boolean
   playBossAnim: (kind: BossAnimKind) => void
   applyBossLayout: (boss: Boss) => void
   // Награду всплывает сам closeEvent по СЕРВЕРНОМУ числу события (см.

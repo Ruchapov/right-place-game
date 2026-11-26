@@ -7,8 +7,10 @@
   * горгулья — средний цвет кладки стены за головой: клетки (x-dir, y) и
     (x-dir, y-1), непрозрачные пиксели слоя (альфа > 200) без самых тёмных 25%
     (швы), по всем горгульям пула карты;
-  * сталактит — средний цвет потолка над ним: клетки (x, ceil), (x+1, ceil);
-    обломки красятся тем же цветом;
+  * сталактит — средний цвет НИЖНЕЙ стороны потолка над ним (26.11.2026; до
+    этого — вся клетка, светлая лицевая кладка, и сталактит выходил светлее
+    тени под платформой): нижние UNDERSIDE_ROWS строк клеток (x, ceil),
+    (x+1, ceil); обломки красятся тем же цветом;
   * пила — видимый верх пола под рельсом: в каждом столбце рельса (шаг 4 px)
     первая строка с альфой > 128 от верха клетки пола −24 до +40 px; медиана —
     насколько видимый пол ниже линии клетки (px). По ней игра топит рельс в пол.
@@ -37,20 +39,26 @@ ARCHIVE = Path(r'D:\dev\right-place-art\archive\game-assets-old\sheets-full-2026
 T = R.TS
 
 
-def mean_rgb(rgba, cells):
+UNDERSIDE_ROWS = 20
+
+
+def mean_rgb(rgba, cells, rows=None):
     px = []
     H, W = rgba.shape[:2]
     for cx, cy in cells:
         if not (0 <= cx * T < W and 0 <= cy * T < H):
             continue
-        blk = rgba[cy * T:(cy + 1) * T, cx * T:(cx + 1) * T].reshape(-1, 4)
+        y0 = cy * T if rows is None else (cy + 1) * T - rows
+        blk = rgba[y0:(cy + 1) * T, cx * T:(cx + 1) * T].reshape(-1, 4)
         px.append(blk[blk[:, 3] > 200, :3])
     px = np.concatenate(px) if px else np.zeros((0, 3))
-    if len(px) < 200:
+    if len(px) < 100:
         return None
-    # Без самых тёмных 25% — это швы и щели кладки, а не камень.
-    lum = px @ np.array([0.299, 0.587, 0.114])
-    px = px[lum >= np.percentile(lum, 25)]
+    # Без самых тёмных 25% — это швы и щели кладки, а не камень. У нижней
+    # стороны потолка (rows) тень — и есть то, под что красим: берём всё.
+    if rows is None:
+        lum = px @ np.array([0.299, 0.587, 0.114])
+        px = px[lum >= np.percentile(lum, 25)]
     return [int(round(v)) for v in px.mean(0)]
 
 
@@ -94,7 +102,7 @@ def measure():
         st = slots.get('stalactites') or []
         if st:
             cells = [(cx, t['ceil']) for t in st for cx in (t['x'], t['x'] + 1)]
-            e['stalactite'] = mean_rgb(rgba, cells)
+            e['stalactite'] = mean_rgb(rgba, cells, UNDERSIDE_ROWS)
         sw = slots.get('saws') or []
         if sw:
             e['sawSink'] = {f"{t['x0']},{t['y']}": saw_sink(rgba, t) for t in sw}
@@ -111,7 +119,7 @@ def render(out, src):
     lines = ['// СГЕНЕРИРОВАНО tools/measure_trap_tint.py — руками не править.',
              '//',
              '// Слой карты у ловушек (17.11.2026): средний цвет кладки за головой горгульи',
-             '// и потолка над сталактитом (0..255; им красит stoneTint.ts), и насколько',
+             '// и нижней стороны потолка над сталактитом (0..255; им красит stoneTint.ts), и насколько',
              '// видимый верх пола ниже линии клетки под рельсом пилы (px; ключ «x0,y»).',
              '// TRAP_SRC_LUM — средняя яркость серого камня самих ассетов.',
              'export type TrapTint = { gargoyle?: [number, number, number]; stalactite?: [number, number, number]; sawSink?: Record<string, number> }',

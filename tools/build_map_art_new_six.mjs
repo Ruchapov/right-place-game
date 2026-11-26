@@ -70,7 +70,7 @@ const MAPS = {
 // manifest.json (рабочая копия выведена из него).
 const WORK_DECOR_DIR = `${ART}/maps/new-six/decor-floor-2026-11-26`
 const WORK_DECOR = {
-  'burial-quarter': { 'world-overlay.png': 'af885721c60ce8739b58a744aee7c6f7d99d52d4f422e9d14d459aececaa89ea', 'added-layout.json': '0daf926f1c02b0b31a3c48e65b868d2437aa2ed9366bb3605240ad3ff45e7766' },
+  'burial-quarter': { 'world-overlay.png': '026c49202927c6821d678f4aa27c58aefb7e81cc0bec54b31bd52e028d502181', 'added-layout.json': '8f958a10de7f708ccbb1da50f17a65fe1b34b7c27dce07b0c2740248cfdf03ec' },
   procession: { 'world-overlay.png': '75af44e7e55f371662eb8cc84d766c7bdd57f1975ebe5887c214797ea37ebabf', 'decor-layout.json': 'dcce842721281c1cd1fc3f2c5f64044f7081eabd114f0e42631992cd2eda088c' },
 }
 function workDecor(key, name) {

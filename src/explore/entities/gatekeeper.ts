@@ -5,7 +5,7 @@ import type { Grid, PlayerPhysics, Enemy, MapEvent, GatekeeperAnimKind, Gatekeep
 import * as C from '../constants'
 import { cellFootBlockTop } from '../collision'
 import { climbStep, enemyGravity, stepDownOk, wallAhead as stepWallAhead } from '../stepClimb'
-import { clamp, parryStunFrame, standLineY } from '../utils'
+import { backOffPinnedHero, clamp, parryStunFrame, standLineY } from '../utils'
 import { perceive, callPack, lookAround, searchTargetBelow, syncMark, destroyMark, ENEMY_PERCEPTION } from '../perception'
 import { scaledGatekeeperMaxHp, scaledGatekeeperDamage } from '../scaling'
 import { lightHurtSpeed, redrawEnemyHpBar } from './enemy'
@@ -61,7 +61,7 @@ export type GatekeeperDeps = {
   pushPlayerOutX: (
     body: { x: number; y: number; width: number; height: number },
     playerBox: { x: number; y: number; w: number; h: number },
-  ) => void
+  ) => boolean
   findGroundSurfaceY: (x: number, width: number, footY: number) => number | null
   closeEvent: (index: number, worldX?: number, worldY?: number) => void
   // Убит патрульный (30.10.2026, Enemy.patrolIndex) — зовётся там же, где
@@ -345,7 +345,10 @@ export function createGatekeeperSystem(deps: GatekeeperDeps) {
   }
 
   function pushPlayerOut(enemy: Enemy, playerBox: { x: number; y: number; w: number; h: number }) {
-    deps.pushPlayerOutX({ x: enemy.x, y: enemy.y, width: enemy.width, height: enemy.height }, playerBox)
+    // Герой прижат к стене (26.11.2026) — Привратник встаёт вплотную к нему.
+    if (deps.pushPlayerOutX({ x: enemy.x, y: enemy.y, width: enemy.width, height: enemy.height }, playerBox)) {
+      backOffPinnedHero(enemy, deps.getPlayerCombatBox())
+    }
   }
 
   // Стена перед ведущим краем — ТЕ ЖЕ три точки, что в патруле и погоне зверя.

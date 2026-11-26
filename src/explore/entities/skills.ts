@@ -298,7 +298,7 @@ export type SkillsDeps = {
    * Толкнуть врага (общая система толкания). heavyLimitPx — сколько можно
    * Звонарю и Привратнику (0 — не двигать). true — враг сдвинется.
    */
-  shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number, keepAhead?: () => number | null) => boolean
+  shove: (enemy: Enemy, dir: 1 | -1, distPx: number, speed: number, damage: number, kind: 'ram' | 'tk', heavyLimitPx: number, keepAhead?: () => number | null, chain?: Set<Enemy>) => boolean
   /** Можно ли толкать врага Тараном (с 17.11.2026 — всех живых). */
   canCarry: (enemy: Enemy) => boolean
   /**
@@ -426,7 +426,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
   let ramTarget: Enemy | null = null
   // Телекинез (13.11.2026): кулдаун и летящие волны.
   let tkCdMs = 0
-  type TkWave = { sprite: Sprite; t: number; originX: number; centerY: number; dir: 1 | -1; hit: Set<Enemy | Boss>; counted: boolean }
+  type TkWave = { sprite: Sprite; t: number; originX: number; centerY: number; dir: 1 | -1; hit: Set<Enemy | Boss>; chain: Set<Enemy>; counted: boolean }
   const tkWaves: TkWave[] = []
   // Спеки снарядных скиллов. Объявлены ЗДЕСЬ, а не в модульной области, —
   // держат рефы кадров из deps, которые появляются только с системой.
@@ -935,7 +935,21 @@ export function createSkillsSystem(deps: SkillsDeps) {
     // выстрела. Двигаться между нажатием и вылетом герой всё равно не может —
     // каст блокирует горизонталь (см. heroLocked в Explore.tsx), — так что
     // значение то же, но снятое в честной точке.
-    projectiles.push({ spec, sprite, dir, lifeMs: 0, hitApplied: false, originX: deps.phys.x + C.PLAYER_WIDTH / 2 })
+    const fb: Projectile = { spec, sprite, dir, lifeMs: 0, hitApplied: false, originX: deps.phys.x + C.PLAYER_WIDTH / 2 }
+    // Враг вплотную, зашедший в героя или у спины, к которому герой
+    // развернулся (26.11.2026, правки по телефону «вплотную пролетает сквозь»):
+    // точка рождения — в 53 px впереди центра героя, и такой враг оказывался
+    // ПОЗАДИ неё — снаряд улетал. Проверяем отрезок от центра героя до точки
+    // рождения: кто на нём — взрыв сразу, в точке касания.
+    const hitX = sweepHitX(fb, fb.originX, sprite.x)
+    if (hitX !== null) {
+      sprite.x = hitX
+      detonateProjectile(fb)
+      deps.worldContainer.removeChild(sprite)
+      sprite.destroy()
+      return
+    }
+    projectiles.push(fb)
   }
 
   // Прямоугольники цели — одной функцией на оба типа: и враг, и босс заданы
@@ -965,41 +979,46 @@ export function createSkillsSystem(deps: SkillsDeps) {
     }
   }
 
-  // Бокс снаряда — ЕГО СПРАЙТ: прямоугольник от anchor (0.5, 0.5), то есть
-  // половина ширины/высоты в каждую сторону. width/height берутся у спрайта,
-  // а не считаются из констант, потому что высоту отрисовки на подборе даёт
-  // тюнер — бокс обязан совпадать с тем, что игрок видит на экране. У
-  // зеркального (dir === -1) снаряда scale.x отрицательный, но Pixi v8
-  // возвращает из width уже модуль (Container.width = Math.abs(...)), так
-  // что ширина здесь положительная и без своего Math.abs.
-  function projectileBox(fb: Projectile) {
+  // Куда снаряд долетел до цели (центр спрайта, x) на пути от fromX до toX —
+  // или null. СВИП, а не точка (26.11.2026): за кадр снаряд проходит 12 px, и
+  // на рождении — отрезок от центра героя; проверка точкой по кадру пропускала
+  // врага вплотную. Урона здесь НЕТ — только место взрыва: бьёт потом взрыв по
+  // площади (detonateProjectile), всех, а не ту цель, что поймала снаряд.
+  //
+  // Глубина захода (C.FIREBALL_HIT_OVERLAP) — по ОБЕИМ осям, но по Y не больше
+  // FIREBALL_HIT_DEPTH_FRAC_Y роста цели, по X — половины ширины: касание углом
+  // боксов не считается, а низкие цели на полу больше не пропускаются ВСЕГДА —
+  // шар летит на высоте [пол−103, пол−57], зверь (80) даёт перекрытие 23,
+  // навозник (75) — 18, а порог был 27.
+  // Босс — цель наравне с обычными врагами. Из нескольких целей — первая по
+  // ходу полёта.
+  function sweepHitX(fb: Projectile, fromX: number, toX: number): number | null {
     const w = fb.sprite.width
     const h = fb.sprite.height
-    return { x: fb.sprite.x - w / 2, y: fb.sprite.y - h / 2, w, h }
-  }
-
-  // Достаточно ли глубоко снаряд вошёл в цель, чтобы взорваться. Урона здесь
-  // НЕТ — только решение "детонировать": бьёт потом взрыв по площади (см.
-  // detonateProjectile), и бьёт он всех, а не ту цель, что первой поймала
-  // снаряд. Поэтому цикл может обрываться на первом же совпадении.
-  //
-  // Порог по ОБЕИМ осям (C.FIREBALL_HIT_OVERLAP): касание углом боксов не
-  // считается — снаряд гас, визуально не долетев. Босс — цель наравне с
-  // обычными врагами.
-  function shouldDetonate(fb: Projectile): boolean {
-    const need = C.FIREBALL_HIT_OVERLAP
-    const box = projectileBox(fb)
-
+    const cy = fb.sprite.y
+    const dir = fb.dir
+    let best: number | null = null
+    const consider = (t: { x: number; y: number; w: number; h: number }) => {
+      const needY = Math.min(C.FIREBALL_HIT_OVERLAP, t.h * C.FIREBALL_HIT_DEPTH_FRAC_Y)
+      const dy = Math.min(cy + h / 2, t.y + t.h) - Math.max(cy - h / 2, t.y)
+      if (dy < needY) return
+      const needX = Math.min(C.FIREBALL_HIT_OVERLAP, t.w * 0.5)
+      // Центр снаряда, при котором он вошёл в цель на needX и ещё не вышел.
+      const lo = t.x + needX - w / 2
+      const hi = t.x + t.w - needX + w / 2
+      const a = Math.min(fromX, toX)
+      const b = Math.max(fromX, toX)
+      if (hi < a || lo > b) return
+      const x = dir === 1 ? Math.max(fromX, lo) : Math.min(fromX, hi)
+      if (best === null || (dir === 1 ? x < best : x > best)) best = x
+    }
     for (const enemy of deps.enemies.current) {
       if (enemy.dead) continue
-      const d = overlapDepth(box, enemyBox(enemy))
-      if (d.x >= need && d.y >= need) return true
+      consider(enemyBox(enemy))
     }
-
     const boss = deps.boss.current
-    if (!boss || boss.dead) return false
-    const d = overlapDepth(box, bossBox(boss))
-    return d.x >= need && d.y >= need
+    if (boss && !boss.dead) consider(bossBox(boss))
+    return best
   }
 
   // Урон по площади. Зона — прямоугольник вокруг точки смерти снаряда, из ТЕХ
@@ -1154,6 +1173,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     const dtSec = dt / 1000
     const stillFlying: Projectile[] = []
     for (const fb of projectiles) {
+      const prevX = fb.sprite.x
       fb.sprite.x += fb.dir * C.FIREBALL_SPEED * dtSec
       fb.lifeMs += dt
 
@@ -1168,9 +1188,11 @@ export function createSkillsSystem(deps: SkillsDeps) {
       // ровно так же, и цель, прижатая к этой стене, урон получает.
       let remove = false
 
-      // 1) Цель — с порогом глубины захода (см. fireballShouldDetonate):
-      // касание углом боксов взрыв не запускает.
-      if (shouldDetonate(fb)) {
+      // 1) Цель — свипом от прошлой позиции (см. sweepHitX): касание углом
+      // боксов взрыв не запускает, проскочить цель за кадр нельзя.
+      const hitX = sweepHitX(fb, prevX, fb.sprite.x)
+      if (hitX !== null) {
+        fb.sprite.x = hitX
         remove = true
         detonateProjectile(fb)
       }
@@ -1725,7 +1747,7 @@ export function createSkillsSystem(deps: SkillsDeps) {
     sprite.x = originX
     sprite.y = centerY
     deps.worldContainer.addChild(sprite)
-    tkWaves.push({ sprite, t: 0, originX, centerY, dir, hit: new Set(), counted: false })
+    tkWaves.push({ sprite, t: 0, originX, centerY, dir, hit: new Set(), chain: new Set(), counted: false })
   }
 
   function updateTkWaves(dt: number) {
@@ -1745,15 +1767,36 @@ export function createSkillsSystem(deps: SkillsDeps) {
       const y0 = w.centerY - h / 2
       const y1 = w.centerY + h / 2
       const push = C.TELEKINESIS_PUSH_PX * deps.telekinesisPushMult
+      // ОДНА ЦЕПОЧКА НА ВОЛНУ (26.11.2026, правки по телефону: из двух врагов,
+      // стоящих друг в друге, волна уносила одного). Раньше у каждого задетого
+      // был свой толчок со своей цепочкой: первый на первом же шаге «врезался»
+      // во второго (тот не в ЕГО цепочке) — бил его ещё раз и вставал, второй
+      // получал новый толчок с места. Теперь: (1) задетый волной тянет за собой
+      // всех, кто стоит В НЁМ (и в них — по цепочке), — они задеты той же
+      // волной: полный урон один раз, полный путь; (2) все толчки волны — с
+      // общей цепочкой w.chain, друг в друга они не «врезаются». Врага впереди,
+      // не задетого волной, цепочка по-прежнему бьёт и толкает (shove.ts).
+      const overlaps = (a: Enemy, b: Enemy) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
       for (const e of deps.enemies.current) {
-        if (e.dead || w.hit.has(e)) continue
+        if (e.dead || w.hit.has(e) || w.chain.has(e)) continue
         if (!(e.x < x1 && e.x + e.width > x0 && e.y < y1 && e.y + e.height > y0)) continue
+        const group: Enemy[] = [e]
         w.hit.add(e)
+        for (let k = 0; k < group.length; k++) {
+          for (const o of deps.enemies.current) {
+            if (o.dead || w.hit.has(o) || w.chain.has(o) || o.runner || !overlaps(group[k], o)) continue
+            w.hit.add(o)
+            group.push(o)
+          }
+        }
         if (!w.counted) { w.counted = true; deps.onSkillUse('telekinesis') }
-        const died = hitEnemy(e, deps.skillDamage.telekinesis, w.originX, 'skill', true)
-        if (!died) {
-          deps.applyEnemyHitReaction(e)
-          deps.shove(e, w.dir, push, C.TELEKINESIS_SHOVE_SPEED, deps.skillDamage.telekinesis, 'tk', C.TELEKINESIS_BOSS_PUSH_PX)
+        for (const g of group) w.chain.add(g)
+        for (const g of group) {
+          const died = hitEnemy(g, deps.skillDamage.telekinesis, w.originX, 'skill', true)
+          if (!died) {
+            deps.applyEnemyHitReaction(g)
+            deps.shove(g, w.dir, push, C.TELEKINESIS_SHOVE_SPEED, deps.skillDamage.telekinesis, 'tk', C.TELEKINESIS_BOSS_PUSH_PX, undefined, w.chain)
+          }
         }
       }
       const boss = deps.boss.current

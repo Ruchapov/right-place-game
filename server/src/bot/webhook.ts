@@ -338,6 +338,19 @@ export async function registerBotWebhook(log: FastifyBaseLogger): Promise<void> 
     })
     if (!cmds.ok) log.error({ description: cmds.description }, 'bot: setMyCommands failed')
     if (hook.ok && cmds.ok) log.info('bot: webhook and commands registered')
+    // Описание бота (26.11.2026): его видит человек в ПУСТОМ чате, ещё не
+    // нажавший «Начать» (description), и в профиле и превью ссылки
+    // (short_description). Раньше не ставилось нигде — пустой чат молчал.
+    const desc = await call('setMyDescription', {
+      description: 'Right Place — тёмный платформер-рогалик прямо в Telegram. Вылазки, враги и боссы, добыча и прокачка героя. Нажми «Начать», чтобы играть.',
+    })
+    if (desc.ok) log.info('bot: setMyDescription ok')
+    else log.error({ description: desc.description }, 'bot: setMyDescription failed')
+    const short = await call('setMyShortDescription', {
+      short_description: 'Тёмный платформер-рогалик в Telegram: вылазки, боссы, добыча.',
+    })
+    if (short.ok) log.info('bot: setMyShortDescription ok')
+    else log.error({ description: short.description }, 'bot: setMyShortDescription failed')
   } catch (e) {
     log.error({ err: e }, 'bot: webhook registration failed')
   }

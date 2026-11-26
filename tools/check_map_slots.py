@@ -24,9 +24,21 @@ Read-only, ничего не чинит. Печатает таблицу по к
      (штатная и строгая) со ВСЕМИ ловушками на месте: ни одна клетка, достижимая
      без ловушек, не теряется.
 
+  g) (26.11.2026) события — сундук (он же жаровня и чаша Носителя огня),
+     обелиск, Контрабандист, бочка и кувшин: на ровном полу с запасом ≥ 1
+     клетки до края (соседние клетки того же ряда — клетки стояния или стена,
+     не обрыв), не на
+     ступени и не у подъёма (step_problem), достижимы строгой волной. Обелиск и
+     сундук — стены по X: на уступе в 2 клетки (Y [42,16]) на него не встать;
+  h) (26.11.2026) точки врагов (группы и патрульные) — не на ступени, не на
+     проступи лестницы и не вплотную к подъёму (step_problem): оттуда враги
+     почти не спускаются;
+  i) (26.11.2026) проходимость ГЕРОЕМ покадрово — tools/hero_reach.mjs (та же
+     физика, что в игре) — только с ключом --hero: идёт минутами.
+
 Принятые до 13.11.2026 нарушения (ACCEPTED ниже) печатаются строкой «принято» и
 проверку не роняют: подъём на 3 тайла на A, C, E (решение Андрея 10.11.2026) и
-враги вплотную к шипам и сундуки в щели на B2, C2 (так с 29.10.2026). Ловушки
+(до 26.11.2026 ещё враги вплотную к шипам на B2, C2 — исправлены). Ловушки
 13.11.2026 проверяет 4f относительно волн БЕЗ ловушек — она этими исключениями
 не прикрыта.
 
@@ -48,8 +60,8 @@ if hasattr(sys.stdout, 'reconfigure'):
 # Нарушения, принятые до ловушек 13.11.2026 (см. шапку): буква → пункты.
 ACCEPTED = {
     'A': {'4a', '4b', '4c'}, 'C': {'4a', '4b', '4c'}, 'E': {'4a', '4b', '4c'},
-    'B2': {'4d'}, 'C2': {'4d'},
 }
+# (26.11.2026) B2 и C2 «враг вплотную к шипам» исправлены — исключения сняты.
 
 ROOT = Path(__file__).resolve().parent.parent
 MAPS = ROOT / 'public' / 'assets' / 'maps'
@@ -171,6 +183,46 @@ def check(letter):
     if d:
         fails.append('4d: ' + '; '.join(d))
 
+    # 4g — события на ровном полу с запасом до края, не у подъёма, достижимы.
+    strict_f, _, _ = mt.strict_wave(g, start)
+    # Подъём на 3 принят (A, C, E): модель его не допускает вовсе, и достижимость
+    # точек там решает покадровая проверка героем (4i, --hero; 26.11.2026 — все
+    # клетки A, C, E достижимы туда и обратно).
+    check_reach = not (letter in ACCEPTED and '4b' in ACCEPTED[letter])
+    gg = []
+
+    def ledge(x, y):
+        # Край — обрыв: соседняя клетка того же ряда не клетка стояния и не стена.
+        return (x, y) not in S and 0 <= x < len(g[0]) and g[y][x] != '#'
+    breakables = [tuple(p) for p in slots.get('breakables') or []]
+    for kind, pts in (('сундук', chests), ('обелиск', obelisk), ('контрабандист', smugglers), ('бочка', breakables)):
+        for x, y in pts:
+            if (x, y) not in S:
+                continue
+            if ledge(x - 1, y) or ledge(x + 1, y):
+                gg.append(f'{kind} {[x, y]} у края уступа (рядом обрыв)')
+            why = step_problem(g, S, x, y)
+            if why and kind in ('обелиск', 'контрабандист'):
+                gg.append(f'{kind} {[x, y]} {why}')
+            if check_reach and (x, y) not in strict_f:
+                gg.append(f'{kind} {[x, y]} не достижим строгой волной')
+    if gg:
+        fails.append('4g: ' + '; '.join(gg))
+
+    # 4h — точки врагов не на ступенях.
+    hh = []
+    for x, y in enemies:
+        why = step_problem(g, S, x, y)
+        if why:
+            hh.append(f'враг {[x, y]} {why}')
+    if hh:
+        fails.append('4h: ' + '; '.join(hh))
+
+    if HERO:
+        hero = hero_reach(letter)
+        if hero:
+            fails.append('4i: ' + hero)
+
     f_bad = check_traps(letter, txts[0], g, slots, start)
     if f_bad:
         fails.append('4f: ' + '; '.join(f_bad))
@@ -187,6 +239,10 @@ def check(letter):
           + ('ок' if not d else f'НАРУШЕНИЙ {len(d)}'))
     for line in d:
         print(f'     - {line}')
+    for tag, lst in (('4g события', gg), ('4h враги на ступенях', hh)):
+        print(f"  {tag}: " + ('ок' if not lst else f'НАРУШЕНИЙ {len(lst)}'))
+        for line in lst:
+            print(f'     - {line}')
     print(f"  4e враги по рядам: {', '.join(f'ряд {y}: {n}' for y, n in rows)}")
     pools = {k: len(slots.get(k) or []) for k in ('gargoyles', 'stalactites', 'saws')}
     print(f"  4f ловушки: шипов {len(hazards)}, горгулий {pools['gargoyles']}, сталактитов {pools['stalactites']}, "
@@ -239,8 +295,20 @@ def check_traps(letter, txt, g, slots, start):
     return bad
 
 
+HERO = '--hero' in sys.argv
+
+
+def hero_reach(letter):
+    """4i — покадровая проходимость героем (tools/hero_reach.mjs). Пусто — ок."""
+    import subprocess
+    r = subprocess.run(['node', str(ROOT / 'tools' / 'hero_reach.mjs'), letter], capture_output=True, text=True, encoding='utf-8')
+    out = (r.stdout or '').strip()
+    print('  4i ' + out.replace(chr(10), chr(10) + '     '))
+    return '' if r.returncode == 0 else out.split(chr(10), 1)[-1].strip()
+
+
 def main():
-    letters = sys.argv[1:] or sorted({p.name.split('_')[1] for p in MAPS.glob('map_*_slots.json')})
+    letters = [a for a in sys.argv[1:] if not a.startswith('--')] or sorted({p.name.split('_')[1] for p in MAPS.glob('map_*_slots.json')})
     bad = {}
     for letter in letters:
         fails = check(letter)
